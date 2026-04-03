@@ -3,13 +3,14 @@ import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClien
 import { requestJson } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { firebaseAuth } from './firebaseClient';
+import { primeLoginRoutingAfterAccountBootstrap } from './backendRoutingService';
 import { HistoryItem } from '../types';
 
 const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
 };
 
-const BILLING_IDEMPOTENCY_WINDOW_MS = 60_000;
+const BILLING_IDEMPOTENCY_STORAGE_PREFIX = 'vf_billing_checkout_idempotency_v1';
 
 const normalizeBillingIdempotencyToken = (value: string): string =>
   String(value || '')
@@ -25,23 +26,56 @@ const resolveBillingIdempotencyActor = (): string => {
   return 'uid:anonymous';
 };
 
-const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: string): string => {
-  const minuteBucket = Math.floor(Date.now() / BILLING_IDEMPOTENCY_WINDOW_MS);
-  const fallback = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2);
+const resolveBillingIdempotencyStorageKey = (operation: string, subject: string, extra?: string): string => {
   const parts = [
-    'vf',
     normalizeBillingIdempotencyToken(operation) || 'billing',
     normalizeBillingIdempotencyToken(resolveBillingIdempotencyActor()) || 'uid:anonymous',
-    normalizeBillingIdempotencyToken(subject) || normalizeBillingIdempotencyToken(fallback),
+    normalizeBillingIdempotencyToken(subject) || 'subject',
   ];
   const extraToken = normalizeBillingIdempotencyToken(extra || '');
   if (extraToken) {
     parts.push(extraToken);
   }
-  parts.push(String(minuteBucket));
-  return parts.join(':');
+  return `${BILLING_IDEMPOTENCY_STORAGE_PREFIX}:${parts.join(':')}`;
+};
+
+const readPersistedBillingIdempotencyKey = (storageKey: string): string => {
+  if (typeof localStorage === 'undefined') return '';
+  try {
+    return String(localStorage.getItem(storageKey) || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const writePersistedBillingIdempotencyKey = (storageKey: string, value: string): void => {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(storageKey, value);
+  } catch {
+    // no-op
+  }
+};
+
+const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: string): string => {
+  const parts = [
+    'vf',
+    normalizeBillingIdempotencyToken(operation) || 'billing',
+    normalizeBillingIdempotencyToken(resolveBillingIdempotencyActor()) || 'uid:anonymous',
+    normalizeBillingIdempotencyToken(subject) || 'subject',
+  ];
+  const extraToken = normalizeBillingIdempotencyToken(extra || '');
+  if (extraToken) {
+    parts.push(extraToken);
+  }
+  const semanticKey = parts.join(':');
+  const storageKey = resolveBillingIdempotencyStorageKey(operation, subject, extra);
+  const persistedKey = readPersistedBillingIdempotencyKey(storageKey);
+  if (persistedKey) {
+    return persistedKey;
+  }
+  writePersistedBillingIdempotencyKey(storageKey, semanticKey);
+  return semanticKey;
 };
 
 export type BillingPlanName = 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
@@ -49,6 +83,19 @@ export type BillingPlanKey = 'launcher' | 'starter' | 'creator' | 'pro' | 'scale
 export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
 export type BillingVcPackKey = 'standard';
 export type TtsEngineKey = 'DUNO' | 'VECTOR' | 'PRIME';
+
+export interface AccountBillingProfile {
+  companyName?: string | null;
+  billingEmail?: string | null;
+  phone?: string | null;
+  taxId?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+}
 
 export interface AccountEntitlements {
   uid: string;
@@ -149,6 +196,7 @@ export interface AccountBillingSummary {
     userId?: string | null;
     displayName?: string | null;
     email?: string | null;
+    billingProfile?: AccountBillingProfile | null;
     status?: string | null;
     createdAt?: string | null;
     updatedAt?: string | null;
@@ -234,6 +282,12 @@ export interface BillingSubscriptionActionResult {
   message?: string | null;
 }
 
+export interface BillingPortalSession {
+  ok?: boolean;
+  provider?: string | null;
+  url: string;
+}
+
 export const ACCOUNT_DELETE_CONFIRM_PHRASE = 'DELETE_MY_ACCOUNT';
 
 export interface AccountUserProfile {
@@ -241,6 +295,7 @@ export interface AccountUserProfile {
   userId: string;
   displayName?: string;
   email?: string;
+  billingProfile?: AccountBillingProfile | null;
   status?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -307,11 +362,14 @@ export const bootstrapAccountProfile = async (baseUrl?: string): Promise<Account
       { requireAuth: true }
     )
   );
+  void primeLoginRoutingAfterAccountBootstrap({
+    baseUrl: toBaseUrl(baseUrl),
+  }).catch(() => undefined);
   return payload.profile;
 };
 
 export const upsertAccountProfile = async (
-  input: { userId: string; displayName?: string },
+  input: { userId?: string; displayName?: string; billingProfile?: AccountBillingProfile | null },
   baseUrl?: string
 ): Promise<AccountUserProfile> => {
   const payload = await readJsonOrThrow<{ profile: AccountUserProfile }>(
@@ -326,6 +384,32 @@ export const upsertAccountProfile = async (
     )
   );
   return payload.profile;
+};
+
+export const createBillingPortalSession = async (
+  baseUrl?: string,
+  input?: { returnUrl?: string }
+): Promise<BillingPortalSession> => {
+  const payload = await readJsonOrThrow<{ ok?: boolean; provider?: string | null; url?: string }>(
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/billing/portal-session`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ returnUrl: input?.returnUrl }),
+      },
+      { requireAuth: true }
+    )
+  );
+  const url = String(payload?.url || '').trim();
+  if (!url) {
+    throw new Error('Billing portal URL is missing.');
+  }
+  return {
+    url,
+    ...(typeof payload?.ok === 'boolean' ? { ok: payload.ok } : {}),
+    ...(payload?.provider !== undefined ? { provider: payload.provider ?? null } : {}),
+  };
 };
 
 export const deleteAccount = async (

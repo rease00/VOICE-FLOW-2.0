@@ -169,7 +169,21 @@ export interface OpenVoiceCloneVoice extends ClonedVoice {
   originalSampleUrl: string;
 }
 
-export type VoiceCloneStressBenchmarkTarget = 'OPENVOICE_L4_VC' | 'GEMINI_FLASH_TTS';
+export type VoiceCloneBenchmarkRequest = OpenVoiceBenchmarkRequest;
+export type VoiceCloneBenchmarkTimings = OpenVoiceBenchmarkTimings;
+export type VoiceCloneBenchmarkCost = OpenVoiceBenchmarkCost;
+export type VoiceCloneBenchmarkArtifact = OpenVoiceBenchmarkArtifact;
+export type VoiceCloneBenchmarkRuntime = OpenVoiceBenchmarkRuntime;
+export type VoiceCloneBenchmarkResponse = OpenVoiceBenchmarkResponse;
+export type VoiceCloneBenchmarkStatusResponse = OpenVoiceBenchmarkStatusResponse;
+export type VoiceCloneProviderRuntimeStatus = OpenVoiceProviderRuntimeStatus;
+export type VoiceCloneRuntimeProviderStatus = OpenVoiceRuntimeProviderStatus;
+export type VoiceCloneCloneVoice = OpenVoiceCloneVoice;
+
+export type VoiceCloneStressBenchmarkTarget =
+  | 'VOICE_CLONE_L4_VC'
+  | 'OPENVOICE_L4_VC'
+  | 'GEMINI_FLASH_TTS';
 
 export interface VoiceCloneStressConfig {
   startRpm: number;
@@ -252,7 +266,7 @@ const prettyProviderLabel = (value: string): string => {
   return token.replaceAll('_', ' ');
 };
 
-export const getOpenVoiceProviderDisplayStatus = (
+export const getVoiceCloneProviderDisplayStatus = (
   status: OpenVoiceBenchmarkStatusResponse | null | undefined
 ): {
   activeProvider: string;
@@ -325,3 +339,5 @@ export const getOpenVoiceProviderDisplayStatus = (
     concurrencyVerified,
   };
 };
+
+export const getOpenVoiceProviderDisplayStatus = getVoiceCloneProviderDisplayStatus;

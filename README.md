@@ -2,13 +2,13 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Run and deploy your AI Studio app
+# Run and deploy V FLOW AI
 
 This contains everything you need to run your app locally.
 
 Frontend architecture reference: `docs/FRONTEND_ARCHITECTURE.md`
 
-View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZQpALSdbKM7
+View the original app in Google AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZQpALSdbKM7
 
 ## Run Locally
 
@@ -147,7 +147,12 @@ The local backend services run in isolated Python virtual environments:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
 - `Duno` is served through the backend TTS gateway and the Modal-hosted runtime configured by `VF_DUNO_RUNTIME_URL`
-- `OpenVoice/Seed-VC` is served through the backend voice-clone routes and the Modal-hosted runtime configured by `VF_OPENVOICE_RUNTIME_URL`
+- `Voice Clone/Seed-VC` is served through the backend voice-clone routes and the Modal-hosted runtime configured by `VF_VOICE_CLONE_RUNTIME_URL` (legacy `VF_OPENVOICE_RUNTIME_URL` is still accepted)
+- `Voice Clone Demucs separation` can be pinned to a dedicated Modal endpoint via `VF_VOICE_CLONE_SEPARATION_MODAL_RUNTIME_URL` + `VF_VOICE_CLONE_SEPARATION_MODAL_RUNTIME_TOKEN` (falls back to local demucs when `VF_VOICE_CLONE_SEPARATION_MODAL_ALLOW_LOCAL_FALLBACK=1`)
+- Separation GPU scheduling is controlled with `VF_VOICE_CLONE_SEPARATION_MODAL_GPU` (for example `L4,A10G`) and can be enforced with `VF_VOICE_CLONE_SEPARATION_FORCE_GPU=1`
+- Cold-start reliability for separation runtime is controlled with `VF_VOICE_CLONE_SEPARATION_MODAL_TIMEOUT_SEC`, `VF_VOICE_CLONE_SEPARATION_MODAL_STARTUP_TIMEOUT_SEC`, and `VF_VOICE_CLONE_SEPARATION_MODAL_KEEP_WARM`
+- Modal scale-to-zero and request parallelism are controlled with `VF_VOICE_CLONE_SEPARATION_MODAL_MIN_CONTAINERS` (set `0` for scale-to-zero) and `VF_VOICE_CLONE_SEPARATION_MODAL_CONCURRENCY` (for example `2`)
+- Separation billing defaults to `1.2 INR/min` and `1 VC unit/min` using `VF_VOICE_CLONE_SEPARATION_INR_PER_MIN` and `VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN`
 
 Runtime/backend URLs are wired internally to local defaults for the backend and Gemini runtime, while Duno resolves through the backend gateway.
 
@@ -406,7 +411,7 @@ The `Novel` tab now uses Google Drive as the primary workspace backend.
 
 ### Storage Model
 
-- Root folder: `VoiceFlow Novels`
+- Root folder: `V FLOW AI Novels`
 - Novel folders: one folder per novel
 - Chapters: Google Docs files (`Chapter 001 - <title>`, etc.)
 - Exports: `Exports` subfolder inside each novel folder

@@ -13,6 +13,7 @@ import { AppScreen, GenerationSettings, HistoryItem } from '../../types';
 import { BrandLogo } from '../BrandLogo';
 import { EngineLogo } from '../EngineLogo';
 import { useUser } from '../../contexts/UserContext';
+import { APP_ROUTE_PATHS } from '../../src/app/navigation';
 import { useBillingActions } from '../../src/features/billing/hooks/useBillingActions';
 import { useNotifications } from '../../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../src/shared/notifications/deepLink';
@@ -25,15 +26,18 @@ import { useManagedTabs } from '../../src/shared/ui/tabs';
 import { sanitizeUiText } from '../../src/shared/ui/terminology';
 import { resolveHistoryVoiceLabel } from '../../src/shared/voices/historyVoiceLabel';
 import { getEngineDisplayName } from '../../services/engineDisplay';
-import { resolvePrimeAllowedEngines } from '../../views/mainAppHelpers';
+import { resolvePrimeAllowedEngines } from '../../src/shared/workspace/mainAppHelpers';
 import {
   ACCOUNT_DELETE_CONFIRM_PHRASE,
+  createBillingPortalSession,
   fetchAccountEntitlements,
   fetchAccountProfile,
   fetchAccountBillingSummary,
   fetchMySupportConversations,
   markSupportConversationUnresolved,
   postSupportMessage,
+  upsertAccountProfile,
+  type AccountBillingProfile,
   type AccountBillingSummary,
   type AccountEntitlements,
   type AccountUserProfile,
@@ -41,7 +45,7 @@ import {
   type SupportConversation,
   type TtsEngineKey,
 } from '../../services/accountService';
-import { normalizeEngineToken } from '../../views/mainAppHelpers';
+import { normalizeEngineToken } from '../../src/shared/workspace/mainAppHelpers';
 import {
   DEFAULT_ACCOUNT_TAB,
   resolveAccountTabFromSearch,
@@ -50,6 +54,7 @@ import {
   type AccountTabKey,
 } from './accountCenterTabs';
 import { consumeBillingReturnState } from './billingReturnState';
+import { READER_USAGE_UPDATED_EVENT } from '../../src/features/reader/model/offlineLibrary';
 import {
   ACCOUNT_TAB_ICONS,
   InfoRow,
@@ -85,6 +90,7 @@ import {
 type ThemeChoice = 'light' | 'dark' | 'system';
 type SupportLoadState = 'idle' | 'loading' | 'ready' | 'forbidden' | 'error';
 type SupportLoadOptions = { force?: boolean };
+type BillingProfileSaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 const EAGER_ACCOUNT_TABS: AccountTabKey[] = ['account'];
 
@@ -129,7 +135,12 @@ const readSavedUiTheme = (): ThemeChoice => {
 const readSavedUiBrandTheme = (): UiBrandThemeId => {
   const token = String(readStorageString(STORAGE_KEYS.uiBrandTheme) || '').trim().toLowerCase();
   if (token === 'aurora' || token === 'sunset' || token === 'emerald' || token === 'neon') return token;
-  return 'neon';
+  return 'aurora';
+};
+
+const readReaderUsageVfRecord = (): number => {
+  const raw = readStorageJson<{ readerEstimatedTotalVf?: number }>(STORAGE_KEYS.readerUsageRecord);
+  return Math.max(0, Number(raw?.readerEstimatedTotalVf || 0));
 };
 
 const resolveThemeChoice = (themeChoice: ThemeChoice): boolean => {
@@ -210,6 +221,7 @@ const buildFallbackBillingSummary = (
       userId: String(accountProfile?.userId || user.userId || '').trim() || null,
       displayName: String(accountProfile?.displayName || user.name || '').trim() || null,
       email: String(accountProfile?.email || user.email || '').trim() || null,
+      billingProfile: accountProfile?.billingProfile || null,
       status: String(accountProfile?.status || '').trim() || null,
       createdAt: accountProfile?.createdAt || null,
       updatedAt: accountProfile?.updatedAt || null,
@@ -309,6 +321,63 @@ const formatCharsPerVf = (rate: number): string => {
   return `${formatDecimalValue(charsPerVf, minimumFractionDigits, 2)} chars / 1 VF`;
 };
 
+const EMPTY_ACCOUNT_BILLING_PROFILE: Required<Record<keyof AccountBillingProfile, string>> = {
+  companyName: '',
+  billingEmail: '',
+  phone: '',
+  taxId: '',
+  addressLine1: '',
+  addressLine2: '',
+  city: '',
+  state: '',
+  postalCode: '',
+  country: '',
+};
+
+const BILLING_PROFILE_FIELDS: Array<{
+  key: keyof typeof EMPTY_ACCOUNT_BILLING_PROFILE;
+  label: string;
+  placeholder: string;
+  autoComplete: string;
+  type?: 'text' | 'email';
+  fullWidth?: boolean;
+}> = [
+  { key: 'companyName', label: 'Company or legal name', placeholder: 'V Flow Studio Pvt Ltd', autoComplete: 'organization', fullWidth: true },
+  { key: 'billingEmail', label: 'Billing email', placeholder: 'billing@company.com', autoComplete: 'email', type: 'email' },
+  { key: 'phone', label: 'Billing phone', placeholder: '+91 98765 43210', autoComplete: 'tel' },
+  { key: 'taxId', label: 'GST / tax ID', placeholder: 'GSTIN, VAT, or tax ID', autoComplete: 'off' },
+  { key: 'addressLine1', label: 'Address line 1', placeholder: 'Street address', autoComplete: 'address-line1', fullWidth: true },
+  { key: 'addressLine2', label: 'Address line 2', placeholder: 'Suite, floor, or landmark', autoComplete: 'address-line2', fullWidth: true },
+  { key: 'city', label: 'City', placeholder: 'Bengaluru', autoComplete: 'address-level2' },
+  { key: 'state', label: 'State / region', placeholder: 'Karnataka', autoComplete: 'address-level1' },
+  { key: 'postalCode', label: 'Postal code', placeholder: '560001', autoComplete: 'postal-code' },
+  { key: 'country', label: 'Country', placeholder: 'India', autoComplete: 'country-name' },
+];
+
+const normalizeBillingProfileDraft = (
+  value: AccountBillingProfile | null | undefined,
+  fallbackEmail = ''
+): typeof EMPTY_ACCOUNT_BILLING_PROFILE => ({
+  companyName: String(value?.companyName || '').trim(),
+  billingEmail: String(value?.billingEmail || fallbackEmail || '').trim(),
+  phone: String(value?.phone || '').trim(),
+  taxId: String(value?.taxId || '').trim(),
+  addressLine1: String(value?.addressLine1 || '').trim(),
+  addressLine2: String(value?.addressLine2 || '').trim(),
+  city: String(value?.city || '').trim(),
+  state: String(value?.state || '').trim(),
+  postalCode: String(value?.postalCode || '').trim(),
+  country: String(value?.country || '').trim(),
+});
+
+const serializeBillingProfileDraft = (value: typeof EMPTY_ACCOUNT_BILLING_PROFILE): string => JSON.stringify(value);
+
+const toBillingProfilePayload = (value: typeof EMPTY_ACCOUNT_BILLING_PROFILE): AccountBillingProfile | null => {
+  const entries = Object.entries(value).map(([key, raw]) => [key, String(raw ?? '').trim()] as const);
+  const payload = Object.fromEntries(entries.filter((entry) => entry[1].length > 0)) as AccountBillingProfile;
+  return Object.keys(payload).length > 0 ? payload : null;
+};
+
 export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setScreen }) => {
   const {
     user,
@@ -326,12 +395,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const { emit, prefs, setPrefs } = useNotifications();
   const baseUrl = useMemo(() => readSettingsBackendUrl(), []);
-  const billingActions = useBillingActions({ baseUrl, returnPath: '/app/billing' });
+  const billingActions = useBillingActions({ baseUrl, returnPath: APP_ROUTE_PATHS.billing });
 
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>('system');
-  const [brandThemeChoice, setBrandThemeChoice] = useState<UiBrandThemeId>('neon');
+  const [brandThemeChoice, setBrandThemeChoice] = useState<UiBrandThemeId>('aurora');
   const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
   const [hasMounted, setHasMounted] = useState(false);
+  const [readerUsageVf, setReaderUsageVf] = useState<number>(() => readReaderUsageVfRecord());
   const hasAppliedThemeRef = useRef(false);
   const [accountProfile, setAccountProfile] = useState<AccountUserProfile | null>(null);
   const [accountEntitlements, setAccountEntitlements] = useState<AccountEntitlements | null>(null);
@@ -346,9 +416,14 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const [isLoadingActivity, setIsLoadingActivity] = useState(false);
   const [isSendingSupport, setIsSendingSupport] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isOpeningBillingPortal, setIsOpeningBillingPortal] = useState(false);
   const [subscriptionAction, setSubscriptionAction] = useState<'cancel' | 'resume' | null>(null);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [showAllInvoices, setShowAllInvoices] = useState(false);
+  const [billingProfileDraft, setBillingProfileDraft] = useState<typeof EMPTY_ACCOUNT_BILLING_PROFILE>(EMPTY_ACCOUNT_BILLING_PROFILE);
+  const [billingProfileSourceKey, setBillingProfileSourceKey] = useState('');
+  const [billingProfileSaveState, setBillingProfileSaveState] = useState<BillingProfileSaveState>('idle');
+  const [billingProfileSaveError, setBillingProfileSaveError] = useState('');
   const [activeTab, setActiveTab] = useState<AccountTabKey>(DEFAULT_ACCOUNT_TAB);
   const [hasResolvedInitialSearchState, setHasResolvedInitialSearchState] = useState(false);
   const [loadedTabs, setLoadedTabs] = useState<Set<AccountTabKey>>(() => new Set(EAGER_ACCOUNT_TABS));
@@ -361,6 +436,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const updateUserRef = useRef(updateUser);
   const loadHistoryRef = useRef(loadHistory);
   const userIdRef = useRef(String(user.userId || '').trim().toLowerCase());
+  const billingProfileAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const billingProfileSaveSequenceRef = useRef(0);
+  const billingProfileDraftKeyRef = useRef('');
+  const billingProfileSourceKeyRef = useRef('');
 
   useEffect(() => {
     refreshEntitlementsRef.current = refreshEntitlements;
@@ -402,7 +481,24 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     if (typeof window === 'undefined') return undefined;
     setThemeChoice(readSavedUiTheme());
     setBrandThemeChoice(readSavedUiBrandTheme());
+    setReaderUsageVf(readReaderUsageVfRecord());
     setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const syncReaderUsage = () => setReaderUsageVf(readReaderUsageVfRecord());
+    syncReaderUsage();
+    window.addEventListener('focus', syncReaderUsage);
+    window.addEventListener('storage', syncReaderUsage);
+    window.addEventListener(READER_USAGE_UPDATED_EVENT, syncReaderUsage as EventListener);
+    document.addEventListener('visibilitychange', syncReaderUsage);
+    return () => {
+      window.removeEventListener('focus', syncReaderUsage);
+      window.removeEventListener('storage', syncReaderUsage);
+      window.removeEventListener(READER_USAGE_UPDATED_EVENT, syncReaderUsage as EventListener);
+      document.removeEventListener('visibilitychange', syncReaderUsage);
+    };
   }, []);
 
   useEffect(() => {
@@ -783,6 +879,190 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     [accountEntitlements, accountProfile, billingSummary, stats, user]
   );
 
+  const serverBillingProfile = useMemo(
+    () => normalizeBillingProfileDraft(
+      summary.profile.billingProfile || accountProfile?.billingProfile,
+      String(summary.profile.email || accountProfile?.email || user.email || '').trim()
+    ),
+    [accountProfile?.billingProfile, accountProfile?.email, summary.profile.billingProfile, summary.profile.email, user.email]
+  );
+  const serverBillingProfileKey = useMemo(() => serializeBillingProfileDraft(serverBillingProfile), [serverBillingProfile]);
+  const billingProfileDraftKey = useMemo(() => serializeBillingProfileDraft(billingProfileDraft), [billingProfileDraft]);
+  const hasUnsavedBillingProfileChanges = Boolean(billingProfileSourceKey) && billingProfileDraftKey !== billingProfileSourceKey;
+  const canEditBillingProfile = !isAdmin;
+
+  useEffect(() => {
+    billingProfileDraftKeyRef.current = billingProfileDraftKey;
+  }, [billingProfileDraftKey]);
+
+  useEffect(() => {
+    billingProfileSourceKeyRef.current = billingProfileSourceKey;
+  }, [billingProfileSourceKey]);
+
+  const handleBillingProfileFieldChange = useCallback((
+    field: keyof typeof EMPTY_ACCOUNT_BILLING_PROFILE,
+    value: string
+  ) => {
+    setBillingProfileDraft((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+    setBillingProfileSaveError('');
+    setBillingProfileSaveState('idle');
+  }, []);
+
+  const handleOpenBillingPortal = useCallback(async (): Promise<void> => {
+    if (typeof window === 'undefined') return;
+    setBillingProfileSaveError('');
+    setIsOpeningBillingPortal(true);
+    try {
+      const session = await createBillingPortalSession(baseUrl, { returnUrl: window.location.href });
+      window.location.href = session.url;
+    } catch (error) {
+      emit('custom.message', {
+        title: 'Billing',
+        message: sanitizeUiText(error instanceof Error ? error.message : 'Could not open billing management.'),
+        severity: 'error',
+        category: 'activity',
+        dedupeKey: 'billing-portal-open-failed',
+      });
+    } finally {
+      setIsOpeningBillingPortal(false);
+    }
+  }, [baseUrl, emit]);
+
+  const persistBillingProfile = useCallback(async (
+    draft: typeof EMPTY_ACCOUNT_BILLING_PROFILE,
+    sourceKeyAtSchedule: string
+  ): Promise<void> => {
+    if (!hasSessionIdentity) return;
+    if (isAdmin) {
+      setBillingProfileSaveState('idle');
+      setBillingProfileSaveError('');
+      return;
+    }
+    const saveSequence = billingProfileSaveSequenceRef.current + 1;
+    billingProfileSaveSequenceRef.current = saveSequence;
+    try {
+      const savedProfile = await upsertAccountProfile(
+        {
+          ...(accountProfile?.displayName?.trim() ? { displayName: accountProfile.displayName.trim() } : user.name?.trim() ? { displayName: user.name.trim() } : {}),
+          billingProfile: toBillingProfilePayload(draft),
+        },
+        baseUrl
+      );
+      if (billingProfileSaveSequenceRef.current !== saveSequence) return;
+      const nextDraft = normalizeBillingProfileDraft(
+        savedProfile.billingProfile,
+        String(savedProfile.email || summary.profile.email || user.email || '').trim()
+      );
+      const nextKey = serializeBillingProfileDraft(nextDraft);
+      setAccountProfile(savedProfile);
+      setBillingSummary((prev) => (
+        prev
+          ? (() => {
+              const nextSummaryProfile: AccountBillingSummary['profile'] = {
+                ...prev.profile,
+                uid: String(savedProfile.uid || prev.profile.uid || '').trim() || prev.profile.uid,
+                userId: savedProfile.userId || prev.profile.userId || null,
+                displayName: savedProfile.displayName ?? prev.profile.displayName ?? null,
+                email: savedProfile.email ?? prev.profile.email ?? null,
+                billingProfile: savedProfile.billingProfile ?? prev.profile.billingProfile ?? null,
+                status: savedProfile.status ?? prev.profile.status ?? null,
+                createdAt: savedProfile.createdAt ?? prev.profile.createdAt ?? null,
+                updatedAt: savedProfile.updatedAt ?? prev.profile.updatedAt ?? null,
+              };
+              return {
+                ...prev,
+                profile: nextSummaryProfile,
+              };
+            })()
+          : prev
+      ));
+      if (
+        billingProfileSourceKeyRef.current === sourceKeyAtSchedule &&
+        billingProfileDraftKeyRef.current === serializeBillingProfileDraft(draft)
+      ) {
+        setBillingProfileDraft(nextDraft);
+        setBillingProfileSourceKey(nextKey);
+      } else {
+        setBillingProfileSourceKey(nextKey);
+      }
+      setBillingProfileSaveState('saved');
+      setBillingProfileSaveError('');
+    } catch (error) {
+      if (billingProfileSaveSequenceRef.current !== saveSequence) return;
+      const message = sanitizeUiText(error instanceof Error ? error.message : 'Could not save billing details.');
+      setBillingProfileSaveState('error');
+      setBillingProfileSaveError(message);
+      emit('custom.message', {
+        title: 'Billing',
+        message,
+        severity: 'error',
+        category: 'activity',
+        dedupeKey: 'billing-profile-save-failed',
+      });
+    }
+  }, [
+    accountProfile?.displayName,
+    baseUrl,
+    emit,
+    hasSessionIdentity,
+    isAdmin,
+    summary.profile.email,
+    user.email,
+    user.name,
+  ]);
+
+  useEffect(() => {
+    const hasLocalEdits = Boolean(billingProfileSourceKey) && billingProfileDraftKey !== billingProfileSourceKey;
+    const shouldHydrate =
+      !billingProfileSourceKey ||
+      !hasLocalEdits ||
+      billingProfileDraftKey === serverBillingProfileKey;
+    if (!shouldHydrate) return;
+    setBillingProfileDraft(serverBillingProfile);
+    setBillingProfileSourceKey(serverBillingProfileKey);
+    setBillingProfileSaveError('');
+    if (billingProfileSaveState !== 'saving') {
+      setBillingProfileSaveState(serverBillingProfileKey === billingProfileDraftKey ? 'saved' : 'idle');
+    }
+  }, [
+    billingProfileDraftKey,
+    billingProfileSaveState,
+    billingProfileSourceKey,
+    serverBillingProfile,
+    serverBillingProfileKey,
+  ]);
+
+  useEffect(() => {
+    if (billingProfileAutosaveTimerRef.current) {
+      clearTimeout(billingProfileAutosaveTimerRef.current);
+      billingProfileAutosaveTimerRef.current = null;
+    }
+    if (!hasSessionIdentity || !canEditBillingProfile || !billingProfileSourceKey || !hasUnsavedBillingProfileChanges) return undefined;
+    setBillingProfileSaveError('');
+    setBillingProfileSaveState('saving');
+    const draftSnapshot = billingProfileDraft;
+    const sourceKeySnapshot = billingProfileSourceKey;
+    billingProfileAutosaveTimerRef.current = setTimeout(() => {
+      void persistBillingProfile(draftSnapshot, sourceKeySnapshot);
+    }, 700);
+    return () => {
+      if (billingProfileAutosaveTimerRef.current) {
+        clearTimeout(billingProfileAutosaveTimerRef.current);
+        billingProfileAutosaveTimerRef.current = null;
+      }
+    };
+  }, [
+    billingProfileDraft,
+    billingProfileSourceKey,
+    canEditBillingProfile,
+    hasSessionIdentity,
+    hasUnsavedBillingProfileChanges,
+    persistBillingProfile,
+  ]);
+
   const planName = summary.plan.name;
   const isPaidPlan = summary.plan.key !== 'free';
   const monthlyUsed = Math.max(0, Number(stats.vfUsage.monthly.totalVf || 0));
@@ -866,6 +1146,24 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
       : summary.subscription.nextBillingAt
         ? `Recurring billing is scheduled for ${formatDateTime(summary.subscription.nextBillingAt)}.`
         : 'The billing backend has not returned the next renewal timestamp yet.';
+  const billingProfileStatusTone: 'success' | 'warning' | 'neutral' = isAdmin
+    ? 'neutral'
+    : billingProfileSaveState === 'saved'
+      ? 'success'
+      : billingProfileSaveState === 'error' || billingProfileSaveState === 'saving' || hasUnsavedBillingProfileChanges
+        ? 'warning'
+        : 'neutral';
+  const billingProfileStatusMessage = isAdmin
+    ? 'Admin accounts do not use end-user billing profile autosave. Use the billing portal and invoice tools for management tasks.'
+    : billingProfileSaveState === 'saving'
+      ? 'Autosaving billing details...'
+      : billingProfileSaveState === 'saved'
+        ? 'Billing details saved automatically.'
+        : billingProfileSaveState === 'error'
+          ? billingProfileSaveError || 'Could not save billing details.'
+          : hasUnsavedBillingProfileChanges
+            ? 'Changes are queued for autosave.'
+            : 'Add your invoice contact and billing address. Changes save automatically.';
   const activeSupportConversationCount = useMemo(
     () => supportConversations.filter(
       (row) => ['open', 'needs_human'].includes(String(row.status || '').trim().toLowerCase())
@@ -997,7 +1295,6 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.displayName} value={userDisplayName} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.email} value={userEmail} />
-          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.userId} value={accountProfile?.userId || user.userId || 'Pending'} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.accountStatus} value={accountStatus} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.authProviders} value={providerSummary} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.memberSince} value={memberSinceLabel} />
@@ -1096,20 +1393,31 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
   const renderBillingSection = () => (
     <div className="space-y-3 sm:space-y-4">
-      <button
-        type="button"
-        onClick={() => {
-          if (typeof window !== 'undefined') {
-            window.location.href = '/app/billing';
-          }
-        }}
-        className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
-          isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
-        }`}
-      >
-        Open Billing
-      </button>
       <div className="flex flex-wrap gap-2 sm:gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              window.location.href = APP_ROUTE_PATHS.billing;
+            }
+          }}
+          className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+            isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+          }`}
+        >
+          Open Billing
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleOpenBillingPortal()}
+          disabled={isOpeningBillingPortal || !canManageBilling}
+          className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+          }`}
+        >
+          {isOpeningBillingPortal ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : null}
+          Change billing details
+        </button>
         {billingActionVisibility.showChangePlan ? (
           <button
             type="button"
@@ -1131,7 +1439,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             }`}
           >
             {subscriptionAction === 'cancel' ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : null}
-            Cancel recurring
+            Cancel subscription
           </button>
         ) : null}
         {billingActionVisibility.showResumeRecurring ? (
@@ -1169,16 +1477,79 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             {summary.paymentMethod?.expMonth && summary.paymentMethod?.expYear
               ? `Expires ${String(summary.paymentMethod.expMonth).padStart(2, '0')}/${summary.paymentMethod.expYear}`
               : canManageBilling
-                ? 'Manage the default payment method inside Billing.'
+                ? 'Manage the default payment method, billing address, and invoices from the billing portal.'
                 : 'Billing management details are not available yet.'}
           </div>
           <div className="mt-3 grid gap-2.5 sm:mt-4 sm:grid-cols-2 sm:gap-3">
             <InfoRow isDarkUi={isDarkUi} label="Billing country" value={summary.billing.billingCountry || 'Unavailable'} />
             <InfoRow isDarkUi={isDarkUi} label="Currency mode" value={summary.billing.currencyMode || 'Unavailable'} />
           </div>
+          <div className="mt-3 flex flex-wrap gap-2 sm:mt-4">
+            <button
+              type="button"
+              onClick={() => void handleOpenBillingPortal()}
+              disabled={isOpeningBillingPortal || !canManageBilling}
+              className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+              }`}
+            >
+              {isOpeningBillingPortal ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : null}
+              Update payment method
+            </button>
+          </div>
           <div className={`mt-3 rounded-[1rem] border px-3 py-2.5 text-xs sm:mt-4 sm:px-4 sm:py-3 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             {recurringBenefit > 0 ? `${recurringBenefit}% recurring benefit is locked in on ${planName}.` : 'Recurring discounts are not currently available for this plan.'}
           </div>
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Billing profile</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Invoice contact and address</div>
+            <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>
+              Save the contact and address your team uses for invoices. Changes save automatically while you type.
+            </div>
+          </div>
+          <StatusBadge
+            isDarkUi={isDarkUi}
+            tone={billingProfileStatusTone}
+            label={
+              isAdmin
+                ? 'Read only'
+                : billingProfileSaveState === 'saving'
+                  ? 'Saving'
+                  : billingProfileSaveState === 'saved'
+                    ? 'Saved'
+                    : billingProfileSaveState === 'error'
+                      ? 'Needs attention'
+                      : 'Autosave'
+            }
+          />
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {BILLING_PROFILE_FIELDS.map((field) => (
+            <label key={field.key} className={field.fullWidth ? 'sm:col-span-2' : ''}>
+              <div className={labelClass(isDarkUi)}>{field.label}</div>
+              <input
+                type={field.type || 'text'}
+                autoComplete={field.autoComplete}
+                value={billingProfileDraft[field.key]}
+                onChange={(event) => handleBillingProfileFieldChange(field.key, event.target.value)}
+                placeholder={field.placeholder}
+                disabled={!canEditBillingProfile}
+                className={`mt-1.5 h-11 w-full rounded-[0.95rem] border px-3 text-[13px] transition disabled:cursor-not-allowed disabled:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 sm:px-4 sm:text-sm ${
+                  isDarkUi
+                    ? 'border-white/10 bg-slate-950/40 text-white placeholder:text-slate-500 focus-visible:ring-offset-slate-950/80'
+                    : 'border-slate-200 bg-white text-slate-950 placeholder:text-slate-400 focus-visible:ring-offset-white'
+                }`}
+              />
+            </label>
+          ))}
+        </div>
+        <div className={`mt-3 rounded-[1rem] border px-3 py-2.5 text-[12px] leading-5 sm:mt-4 sm:px-4 sm:py-3 sm:text-[13px] ${cardInsetClass(isDarkUi)} ${billingProfileSaveState === 'error' ? (isDarkUi ? 'text-amber-100' : 'text-amber-800') : mutedClass(isDarkUi)}`}>
+          {billingProfileStatusMessage}
         </div>
       </div>
 
@@ -1214,6 +1585,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>
                       Created {formatDateTime(invoice.createdAt)}
                       {invoice.paidAt ? ` | Paid ${formatDateTime(invoice.paidAt)}` : ''}
+                      {invoice.periodStart || invoice.periodEnd ? ` | Period ${formatDate(invoice.periodStart)} to ${formatDate(invoice.periodEnd)}` : ''}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1232,6 +1604,17 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                         <ExternalLink size={12} />
                       </a>
                     ) : null}
+                    {invoice.invoicePdf ? (
+                      <a
+                        href={invoice.invoicePdf}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
+                      >
+                        PDF
+                        <ExternalLink size={12} />
+                      </a>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -1244,10 +1627,11 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
   const renderUsageSection = () => (
     <div className="space-y-3 sm:space-y-4">
-      <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.balance} eyebrow="Monthly used" title={`${formatNumber(monthlyUsed)} VF`} detail={hasUnlimitedAccess ? 'Unlimited access is active.' : `${formatNumber(monthlyLimit)} VF monthly cap.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.spendable} eyebrow="Spendable now" title={formatVfValue(availableBalance)} detail={`${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF available right now.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.currentPlan} eyebrow="Max chars" title={formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} detail="Maximum characters allowed per generation request." />
+        <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.usage} eyebrow="Reader consumed" title={`${formatNumber(readerUsageVf)} VF`} detail="Reader total tracked locally from reading sessions and offline saves." />
       </div>
 
       <div className="grid gap-3 sm:gap-4 xl:grid-cols-3">

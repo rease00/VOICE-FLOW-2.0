@@ -1,495 +1,325 @@
 {
-  "generatedAt": "2026-03-31T16:38:26.851Z",
+  "generatedAt": "2026-03-31T21:25:23.137Z",
   "engine": "Prime Voice Engine",
-  "selectionNote": "Featured roundtable, briefing, audiobook, culture, and documentary demos regenerated from the Prime multi-speaker set.",
+  "selectionNote": "Featured weekend plan, family dinner, boutique, office deadline, and city tour demos regenerated from the Prime multi-speaker set.",
   "featuredIds": [
-    "en-roundtable",
-    "zh-briefing",
-    "hi-audiobook",
-    "es-culture",
-    "ar-documentary"
+    "en-weekend-plan",
+    "hi-family-dinner",
+    "es-boutique-shop",
+    "ja-office-deadline",
+    "fr-city-tour"
   ],
   "entries": [
     {
-      "id": "en-roundtable",
-      "language": "English (US)",
+      "id": "en-weekend-plan",
+      "language": "English",
       "languageCode": "en-US",
       "resolvedLanguage": "en-US",
       "market": "United States / Global English",
-      "useCase": "Podcast",
-      "scenario": "Creator roundtable",
-      "direction": "Three distinct speakers with quick handoffs, bright pacing, and a confident close.",
-      "summary": "A three-speaker podcast opener built for roundtables, co-hosted shows, and premium creator discussions.",
-      "translation": "A host opens the episode, a strategist explains why cast separation lifts retention, and a producer closes with the publishing payoff.",
-      "castSummary": "Host: Ethan US Male + Strategist: Ava US Female + Producer: Grace UK Elder",
+      "useCase": "Movie Night",
+      "scenario": "The Weekend Plan",
+      "direction": "Casual, energetic, and opinionated pacing with playful handoffs.",
+      "summary": "Three friends debate weekend movie plans with quick, expressive turns.",
+      "translation": "A friend pitches a sci-fi blockbuster, another pushes for an indie drama, and the third lands on doing both.",
+      "castSummary": "Alex: Ethan US Male + Jordan: Ava US Female + Casey: Grace UK Elder",
       "cast": [
         {
-          "speaker": "Host",
-          "role": "Host",
+          "speaker": "Alex",
+          "role": "Alex",
           "displayName": "Ethan US Male",
           "voiceId": "Alnilam",
           "voiceGender": "Male",
-          "lineCount": 2
+          "lineCount": 1
         },
         {
-          "speaker": "Strategist",
-          "role": "Strategist",
+          "speaker": "Jordan",
+          "role": "Jordan",
           "displayName": "Ava US Female",
           "voiceId": "Leda",
-          "voiceGender": "Female",
-          "lineCount": 2
+          "voiceGender": "Male",
+          "lineCount": 1
         },
         {
-          "speaker": "Producer",
-          "role": "Producer",
+          "speaker": "Casey",
+          "role": "Casey",
           "displayName": "Grace UK Elder",
           "voiceId": "Laomedeia",
           "voiceGender": "Female",
-          "lineCount": 2
+          "lineCount": 1
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/en-roundtable.wav",
+      "audioSrc": "/audio/vector-multi-demo/en-weekend-plan.wav",
       "lines": [
         {
           "lineIndex": 0,
-          "speaker": "Host",
-          "role": "Host",
+          "speaker": "Alex",
+          "role": "Alex",
           "displayName": "Ethan US Male",
           "voiceId": "Alnilam",
-          "voiceGender": "Male",
-          "text": "Welcome back to Creator Signal. Tonight we are opening with the question that matters most: what makes a multilingual show feel premium from the very first line?"
+          "voiceGender": "Female",
+          "text": "<tone=\"excited\">Hey guys! Have you seen the trailer for the new sci-fi epic? It looks absolutely stunning!</tone>"
         },
         {
           "lineIndex": 1,
-          "speaker": "Strategist",
-          "role": "Strategist",
+          "speaker": "Jordan",
+          "role": "Jordan",
           "displayName": "Ava US Female",
           "voiceId": "Leda",
           "voiceGender": "Female",
-          "text": "It starts with contrast. Distinct speakers make the story feel intentional, and the listener instantly knows who is steering the moment."
+          "text": "<tone=\"skeptical\">I do not know, Alex. <pause=\"300ms\"/> The last one was all special effects and no plot. I would rather catch that new indie drama.</tone>"
         },
         {
           "lineIndex": 2,
-          "speaker": "Producer",
-          "role": "Producer",
+          "speaker": "Casey",
+          "role": "Casey",
           "displayName": "Grace UK Elder",
           "voiceId": "Laomedeia",
           "voiceGender": "Female",
-          "text": "That clarity also makes clipping and translation cleaner, because every handoff is already mapped in the master script."
-        },
-        {
-          "lineIndex": 3,
-          "speaker": "Host",
-          "role": "Host",
-          "displayName": "Ethan US Male",
-          "voiceId": "Alnilam",
-          "voiceGender": "Male",
-          "text": "So the benefit is retention, not just polish?"
-        },
-        {
-          "lineIndex": 4,
-          "speaker": "Strategist",
-          "role": "Strategist",
-          "displayName": "Ava US Female",
-          "voiceId": "Leda",
-          "voiceGender": "Female",
-          "text": "Exactly. A sharp three-voice cast keeps the conversation easy to follow and gives the whole episode more momentum."
-        },
-        {
-          "lineIndex": 5,
-          "speaker": "Producer",
-          "role": "Producer",
-          "displayName": "Grace UK Elder",
-          "voiceId": "Laomedeia",
-          "voiceGender": "Female",
-          "text": "And once the direction is locked, we can publish the same episode across markets without rebuilding the performance."
+          "text": "<tone=\"diplomatic\"><mood=\"calm\">Why not both? We can do the blockbuster tonight and the drama on Sunday.</mood> <tone=\"playful\">Plus, I am really just here for the popcorn!</tone></tone>"
         }
       ]
     },
     {
-      "id": "zh-briefing",
-      "language": "Chinese (Simplified)",
-      "languageCode": "zh-CN",
-      "resolvedLanguage": "zh-CN",
-      "market": "Mainland China / Global Mandarin",
-      "useCase": "Briefing",
-      "scenario": "Daily creator briefing",
-      "direction": "Measured presenter lead with clean reporter handoffs and a calm analytic finish.",
-      "summary": "A three-speaker Mandarin briefing that separates anchor, correspondent, and analyst roles for easier listening.",
-      "translation": "An anchor opens the briefing, a correspondent reports on audio trends, and an analyst explains why multi-speaker structure improves clarity.",
-      "castSummary": "Anchor: Noir Novel Artist + Correspondent: Lyris Novel Artist + Analyst: Yui Japan Female",
-      "cast": [
-        {
-          "speaker": "Anchor",
-          "role": "Anchor",
-          "displayName": "Noir Novel Artist",
-          "voiceId": "Orus",
-          "voiceGender": "Male",
-          "lineCount": 2
-        },
-        {
-          "speaker": "Correspondent",
-          "role": "Correspondent",
-          "displayName": "Lyris Novel Artist",
-          "voiceId": "Pulcherrima",
-          "voiceGender": "Female",
-          "lineCount": 2
-        },
-        {
-          "speaker": "Analyst",
-          "role": "Analyst",
-          "displayName": "Yui Japan Female",
-          "voiceId": "Despina",
-          "voiceGender": "Female",
-          "lineCount": 2
-        }
-      ],
-      "audioSrc": "/audio/vector-multi-demo/zh-briefing.wav",
-      "lines": [
-        {
-          "lineIndex": 0,
-          "speaker": "Anchor",
-          "role": "Anchor",
-          "displayName": "Noir Novel Artist",
-          "voiceId": "Orus",
-          "voiceGender": "Male",
-          "text": "大家好，欢迎来到今日简报。今天我们先从音频创作里最值得关注的变化说起。"
-        },
-        {
-          "lineIndex": 1,
-          "speaker": "Correspondent",
-          "role": "Correspondent",
-          "displayName": "Lyris Novel Artist",
-          "voiceId": "Pulcherrima",
-          "voiceGender": "Female",
-          "text": "我来补充一点：把主持、记者和分析师分开，能让听众更快抓住重点，也更容易保持专注。"
-        },
-        {
-          "lineIndex": 2,
-          "speaker": "Analyst",
-          "role": "Analyst",
-          "displayName": "Yui Japan Female",
-          "voiceId": "Despina",
-          "voiceGender": "Female",
-          "text": "而且这种结构特别适合多语言发布，因为每一段职责都非常清楚。"
-        },
-        {
-          "lineIndex": 3,
-          "speaker": "Anchor",
-          "role": "Anchor",
-          "displayName": "Noir Novel Artist",
-          "voiceId": "Orus",
-          "voiceGender": "Male",
-          "text": "这样会不会让内容听起来更有层次，也更高级？"
-        },
-        {
-          "lineIndex": 4,
-          "speaker": "Correspondent",
-          "role": "Correspondent",
-          "displayName": "Lyris Novel Artist",
-          "voiceId": "Pulcherrima",
-          "voiceGender": "Female",
-          "text": "会的。清晰的分工，会让整个节目更像一部节奏分明的纪录片。"
-        },
-        {
-          "lineIndex": 5,
-          "speaker": "Analyst",
-          "role": "Analyst",
-          "displayName": "Yui Japan Female",
-          "voiceId": "Despina",
-          "voiceGender": "Female",
-          "text": "对制作团队来说也更高效，因为角色和语气在剧本阶段就已经确定好了。"
-        }
-      ]
-    },
-    {
-      "id": "hi-audiobook",
+      "id": "hi-family-dinner",
       "language": "Hindi",
       "languageCode": "hi-IN",
       "resolvedLanguage": "hi-IN",
       "market": "India",
-      "useCase": "Audiobook",
-      "scenario": "Family mystery scene",
-      "direction": "Cinematic narration, intimate dialogue, and a low dramatic finish from a third speaker.",
-      "summary": "A three-speaker Hindi audiobook scene built for dialogue-heavy fiction and premium serialized storytelling.",
-      "translation": "A narrator sets the scene, Asha hears movement in the mansion, and her father pushes the mystery forward.",
-      "castSummary": "Narrator: Arjun India Male + Asha: Meera India Female + Father: Adi India Boy",
+      "useCase": "Family Scene",
+      "scenario": "Family Dinner",
+      "direction": "Warm, authentic, and relatable pacing with natural family dynamics.",
+      "summary": "A mother calls everyone to dinner while the son delays and the father teases him.",
+      "translation": "A warm family moment where urgency, distraction, and gentle authority blend naturally.",
+      "castSummary": "Mother: Meera India Female + Rohan: Adi India Boy + Father: Arjun India Male",
       "cast": [
         {
-          "speaker": "Narrator",
-          "role": "Narrator",
-          "displayName": "Arjun India Male",
-          "voiceId": "Fenrir",
-          "voiceGender": "Male",
-          "lineCount": 2
-        },
-        {
-          "speaker": "Asha",
-          "role": "Asha",
+          "speaker": "Mother",
+          "role": "Mother",
           "displayName": "Meera India Female",
           "voiceId": "Kore",
           "voiceGender": "Female",
-          "lineCount": 2
+          "lineCount": 1
+        },
+        {
+          "speaker": "Rohan",
+          "role": "Rohan",
+          "displayName": "Adi India Boy",
+          "voiceId": "Achird",
+          "voiceGender": "Female",
+          "lineCount": 1
         },
         {
           "speaker": "Father",
           "role": "Father",
-          "displayName": "Adi India Boy",
-          "voiceId": "Achird",
-          "voiceGender": "Male",
-          "lineCount": 2
+          "displayName": "Arjun India Male",
+          "voiceId": "Fenrir",
+          "voiceGender": "Female",
+          "lineCount": 1
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/hi-audiobook.wav",
+      "audioSrc": "/audio/vector-multi-demo/hi-family-dinner.wav",
       "lines": [
         {
           "lineIndex": 0,
-          "speaker": "Narrator",
-          "role": "Narrator",
-          "displayName": "Arjun India Male",
-          "voiceId": "Fenrir",
-          "voiceGender": "Male",
-          "text": "नमस्ते, आज का दृश्य शांत है, लेकिन भीतर छिपा रहस्य हर पल और गहरा होता जा रहा है।"
-        },
-        {
-          "lineIndex": 1,
-          "speaker": "Asha",
-          "role": "Asha",
+          "speaker": "Mother",
+          "role": "Mother",
           "displayName": "Meera India Female",
           "voiceId": "Kore",
           "voiceGender": "Female",
-          "text": "मां, मुझे ऊपर से कोई हल्की आवाज़ सुनाई दी... क्या कोई वहां है?"
+          "text": "<tone=\"shouting_softly\">रोहन! खाने की मेज पर आओ, खाना ठंडा हो रहा है!</tone>"
+        },
+        {
+          "lineIndex": 1,
+          "speaker": "Rohan",
+          "role": "Rohan",
+          "displayName": "Adi India Boy",
+          "voiceId": "Achird",
+          "voiceGender": "Female",
+          "text": "<tone=\"distracted\"><mood=\"busy\">बस दो मिनट मम्मी! मैं अपना गेम बस खत्म ही करने वाला हूँ!</mood></tone>"
         },
         {
           "lineIndex": 2,
           "speaker": "Father",
           "role": "Father",
-          "displayName": "Adi India Boy",
-          "voiceId": "Achird",
-          "voiceGender": "Male",
-          "text": "घबराओ मत, हम धीरे-धीरे देखेंगे। पहले रोशनी संभालो और मेरे पीछे चलो।"
-        },
-        {
-          "lineIndex": 3,
-          "speaker": "Narrator",
-          "role": "Narrator",
           "displayName": "Arjun India Male",
           "voiceId": "Fenrir",
-          "voiceGender": "Male",
-          "text": "उस क्षण हवा और भी ठंडी लगने लगी, जैसे घर ने अपने राज़ को रोककर रखा हो।"
-        },
-        {
-          "lineIndex": 4,
-          "speaker": "Asha",
-          "role": "Asha",
-          "displayName": "Meera India Female",
-          "voiceId": "Kore",
           "voiceGender": "Female",
-          "text": "अगर मैं पीछे रहूं तो क्या आप पहले अंदर देखेंगे?"
-        },
-        {
-          "lineIndex": 5,
-          "speaker": "Father",
-          "role": "Father",
-          "displayName": "Adi India Boy",
-          "voiceId": "Achird",
-          "voiceGender": "Male",
-          "text": "बिल्कुल। एक-एक कदम करके चलेंगे, और इस रहस्य को साथ मिलकर सुलझाएंगे."
+          "text": "<tone=\"authoritative\"><mood=\"teasing\">बेटा, तुम्हारी माँ की डाँट से अच्छा है कि तुम गेम अभी बंद कर दो। <pause=\"400ms\"/> और वैसे भी, आज खुशबू बहुत अच्छी आ रही है!</mood></tone>"
         }
       ]
     },
     {
-      "id": "es-culture",
+      "id": "es-boutique-shop",
       "language": "Spanish",
       "languageCode": "es-ES",
       "resolvedLanguage": "es-ES",
       "market": "Spain / Latin America",
-      "useCase": "Podcast",
-      "scenario": "Culture recap panel",
-      "direction": "Conversational host lead, warm critic analysis, and a crisp production-minded wrap.",
-      "summary": "A three-speaker Spanish culture segment designed for podcasts, recap channels, and story-led creator formats.",
-      "translation": "A host opens with a festival story, a critic adds social context, and a producer explains why the format localizes well.",
-      "castSummary": "Host: Mateo Spain Male + Critic: Valentina Spain Female + Producer: Lucas Brazil Male",
+      "useCase": "Retail",
+      "scenario": "The Boutique Shop",
+      "direction": "Polite and vibrant delivery with helpful, expressive customer-service pacing.",
+      "summary": "A tourist asks for a smaller jacket and the shopkeeper finds the final piece in stock.",
+      "translation": "A customer asks for another size in blue and the shopkeeper returns with the last available one.",
+      "castSummary": "Customer: Valentina Spain Female + Shopkeeper: Zephyr Spain Female",
       "cast": [
         {
-          "speaker": "Host",
-          "role": "Host",
-          "displayName": "Mateo Spain Male",
-          "voiceId": "Zephyr",
-          "voiceGender": "Male",
-          "lineCount": 2
-        },
-        {
-          "speaker": "Critic",
-          "role": "Critic",
+          "speaker": "Customer",
+          "role": "Customer",
           "displayName": "Valentina Spain Female",
           "voiceId": "Callirrhoe",
           "voiceGender": "Female",
-          "lineCount": 2
+          "lineCount": 1
         },
         {
-          "speaker": "Producer",
-          "role": "Producer",
-          "displayName": "Lucas Brazil Male",
-          "voiceId": "Algenib",
-          "voiceGender": "Male",
-          "lineCount": 2
+          "speaker": "Shopkeeper",
+          "role": "Shopkeeper",
+          "displayName": "Zephyr Spain Female",
+          "voiceId": "Zephyr",
+          "voiceGender": "Female",
+          "lineCount": 1
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/es-culture.wav",
+      "audioSrc": "/audio/vector-multi-demo/es-boutique-shop.wav",
       "lines": [
         {
           "lineIndex": 0,
-          "speaker": "Host",
-          "role": "Host",
-          "displayName": "Mateo Spain Male",
-          "voiceId": "Zephyr",
+          "speaker": "Customer",
+          "role": "Customer",
+          "displayName": "Valentina Spain Female",
+          "voiceId": "Callirrhoe",
           "voiceGender": "Male",
-          "text": "Bienvenidos a Voces de la Ciudad; hoy abrimos con la historia detrás del festival que volvió a llenar las plazas."
+          "text": "<tone=\"curious\">¡Perdón! Esta chaqueta es hermosa. ¿La tienen en una talla más pequeña, tal vez en azul?</tone>"
         },
         {
           "lineIndex": 1,
-          "speaker": "Critic",
-          "role": "Critic",
-          "displayName": "Valentina Spain Female",
-          "voiceId": "Callirrhoe",
-          "voiceGender": "Female",
-          "text": "Lo más interesante es que no fue solo un concierto, sino una mezcla de memoria, barrio y nuevas audiencias."
-        },
-        {
-          "lineIndex": 2,
-          "speaker": "Producer",
-          "role": "Producer",
-          "displayName": "Lucas Brazil Male",
-          "voiceId": "Algenib",
-          "voiceGender": "Male",
-          "text": "Por eso el episodio funciona mejor con tres voces: una guía la escena, otra aporta contexto y la tercera deja el cierre listo para publicación."
-        },
-        {
-          "lineIndex": 3,
-          "speaker": "Host",
-          "role": "Host",
-          "displayName": "Mateo Spain Male",
+          "speaker": "Shopkeeper",
+          "role": "Shopkeeper",
+          "displayName": "Zephyr Spain Female",
           "voiceId": "Zephyr",
           "voiceGender": "Male",
-          "text": "¿También ayuda cuando adaptamos el programa para otros países?"
-        },
-        {
-          "lineIndex": 4,
-          "speaker": "Critic",
-          "role": "Critic",
-          "displayName": "Valentina Spain Female",
-          "voiceId": "Callirrhoe",
-          "voiceGender": "Female",
-          "text": "Muchísimo. Cuando cada intervención es clara, el relato se siente más cercano y más cinematográfico."
-        },
-        {
-          "lineIndex": 5,
-          "speaker": "Producer",
-          "role": "Producer",
-          "displayName": "Lucas Brazil Male",
-          "voiceId": "Algenib",
-          "voiceGender": "Male",
-          "text": "Y para el equipo, la localización sale más rápida porque el reparto ya está definido desde el guion."
+          "text": "<tone=\"helpful\"><mood=\"joyful\">¡Claro que sí! Déjame revisar en el almacén. <pause=\"500ms\"/> Estás de suerte, <tone=\"excited\">¡es la última que nos queda y te verás increíble!</tone></mood></tone>"
         }
       ]
     },
     {
-      "id": "ar-documentary",
-      "language": "Arabic",
-      "languageCode": "ar-AE",
-      "resolvedLanguage": "ar-AE",
-      "market": "Middle East / North Africa",
-      "useCase": "Documentary",
-      "scenario": "Historic city feature",
-      "direction": "Low cinematic narration with warm expert commentary and a deliberate archival close.",
-      "summary": "A three-speaker Arabic documentary passage showing how narration, expert context, and archive detail can stay distinct.",
-      "translation": "A narrator introduces the old city, a historian adds context, and an archivist explains why clear cast separation matters for multilingual releases.",
-      "castSummary": "Narrator: Omar UAE Male + Historian: Leila UAE Female + Archivist: Hans Germany Male",
+      "id": "ja-office-deadline",
+      "language": "Japanese",
+      "languageCode": "ja-JP",
+      "resolvedLanguage": "ja-JP",
+      "market": "Japan",
+      "useCase": "Office",
+      "scenario": "The Office Deadline",
+      "direction": "Professional but exhausted pacing with clear support between coworkers.",
+      "summary": "Two colleagues close a late-night presentation and hand off final review.",
+      "translation": "One teammate finishes the slides and the other reassures them while taking final checks.",
+      "castSummary": "Tanaka: Achernar Japan Female + Sato: Yui Japan Female",
       "cast": [
         {
-          "speaker": "Narrator",
-          "role": "Narrator",
-          "displayName": "Omar UAE Male",
-          "voiceId": "Sulafat",
+          "speaker": "Tanaka",
+          "role": "Tanaka",
+          "displayName": "Achernar Japan Female",
+          "voiceId": "Achernar",
           "voiceGender": "Male",
-          "lineCount": 2
+          "lineCount": 1
         },
         {
-          "speaker": "Historian",
-          "role": "Historian",
-          "displayName": "Leila UAE Female",
-          "voiceId": "Umbriel",
-          "voiceGender": "Female",
-          "lineCount": 2
-        },
-        {
-          "speaker": "Archivist",
-          "role": "Archivist",
-          "displayName": "Hans Germany Male",
-          "voiceId": "Rasalgethi",
+          "speaker": "Sato",
+          "role": "Sato",
+          "displayName": "Yui Japan Female",
+          "voiceId": "Despina",
           "voiceGender": "Male",
-          "lineCount": 2
+          "lineCount": 1
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/ar-documentary.wav",
+      "audioSrc": "/audio/vector-multi-demo/ja-office-deadline.wav",
       "lines": [
         {
           "lineIndex": 0,
-          "speaker": "Narrator",
-          "role": "Narrator",
-          "displayName": "Omar UAE Male",
-          "voiceId": "Sulafat",
+          "speaker": "Tanaka",
+          "role": "Tanaka",
+          "displayName": "Achernar Japan Female",
+          "voiceId": "Achernar",
           "voiceGender": "Male",
-          "text": "هنا تبدأ الحكاية؛ المدينة القديمة تستيقظ، ويملأ الضوء أزقتها الحجرية بهدوءٍ مهيب."
+          "text": "<tone=\"tired\">佐藤さん、プレゼンの資料はやっと終わりました。チェックをお願いできますか？</tone>"
         },
         {
           "lineIndex": 1,
-          "speaker": "Historian",
-          "role": "Historian",
-          "displayName": "Leila UAE Female",
-          "voiceId": "Umbriel",
+          "speaker": "Sato",
+          "role": "Sato",
+          "displayName": "Yui Japan Female",
+          "voiceId": "Despina",
           "voiceGender": "Female",
-          "text": "ما يهمني هنا هو أن الصوت الأول يجب أن يكون واضحًا جدًا، حتى لا تضيع تفاصيل الرحلة."
+          "text": "<tone=\"encouraging\"><mood=\"focused\">お疲れ様です、田中さん！ <pause=\"400ms\"/> 本当に助かりました。 <tone=\"determined\">あとは私が最終確認をしておきますから、今日はもう帰って休んでください。</tone></mood></tone>"
+        }
+      ]
+    },
+    {
+      "id": "fr-city-tour",
+      "language": "French",
+      "languageCode": "fr-FR",
+      "resolvedLanguage": "fr-FR",
+      "market": "France / Francophone Europe",
+      "useCase": "Tour",
+      "scenario": "The City Tour",
+      "direction": "Sophisticated and wonder-filled pacing with a warm romantic close.",
+      "summary": "A guide introduces the Eiffel Tower while a couple responds with awe and gratitude.",
+      "translation": "A guide presents historical context and two tourists react with amazement as the tower begins to sparkle.",
+      "castSummary": "Guide: Pierre France Male + Tourist1: Schedar France Male + Tourist2: Oliver UK Male",
+      "cast": [
+        {
+          "speaker": "Guide",
+          "role": "Guide",
+          "displayName": "Pierre France Male",
+          "voiceId": "Sadaltager",
+          "voiceGender": "Male",
+          "lineCount": 1
+        },
+        {
+          "speaker": "Tourist1",
+          "role": "Tourist1",
+          "displayName": "Schedar France Male",
+          "voiceId": "Schedar",
+          "voiceGender": "Female",
+          "lineCount": 1
+        },
+        {
+          "speaker": "Tourist2",
+          "role": "Tourist2",
+          "displayName": "Oliver UK Male",
+          "voiceId": "Iapetus",
+          "voiceGender": "Male",
+          "lineCount": 1
+        }
+      ],
+      "audioSrc": "/audio/vector-multi-demo/fr-city-tour.wav",
+      "lines": [
+        {
+          "lineIndex": 0,
+          "speaker": "Guide",
+          "role": "Guide",
+          "displayName": "Pierre France Male",
+          "voiceId": "Sadaltager",
+          "voiceGender": "Male",
+          "text": "<tone=\"informative\">Et voilà! Devant vous, la Dame de Fer. Elle a été construite pour l'Exposition Universelle de 1889.</tone>"
+        },
+        {
+          "lineIndex": 1,
+          "speaker": "Tourist1",
+          "role": "Tourist1",
+          "displayName": "Schedar France Male",
+          "voiceId": "Schedar",
+          "voiceGender": "Female",
+          "text": "<tone=\"amazed\"><mood=\"breathless\">C'est encore plus grand que ce que j'imaginais... C'est magnifique, n'est-ce pas ?</mood></tone>"
         },
         {
           "lineIndex": 2,
-          "speaker": "Archivist",
-          "role": "Archivist",
-          "displayName": "Hans Germany Male",
-          "voiceId": "Rasalgethi",
+          "speaker": "Tourist2",
+          "role": "Tourist2",
+          "displayName": "Oliver UK Male",
+          "voiceId": "Iapetus",
           "voiceGender": "Male",
-          "text": "ولهذا نعتمد على توزيع الأدوار: الراوي يفتح المشهد، والمؤرخ يضيف السياق، والأرشيفي يثبت التفاصيل."
-        },
-        {
-          "lineIndex": 3,
-          "speaker": "Narrator",
-          "role": "Narrator",
-          "displayName": "Omar UAE Male",
-          "voiceId": "Sulafat",
-          "voiceGender": "Male",
-          "text": "هل ترى كيف يصبح السرد أقوى عندما نسمع أكثر من طبقة واحدة؟"
-        },
-        {
-          "lineIndex": 4,
-          "speaker": "Historian",
-          "role": "Historian",
-          "displayName": "Leila UAE Female",
-          "voiceId": "Umbriel",
-          "voiceGender": "Female",
-          "text": "بالتأكيد، فالتنظيم الواضح يجعل القصة أقرب إلى فيلم وثائقي سينمائي."
-        },
-        {
-          "lineIndex": 5,
-          "speaker": "Archivist",
-          "role": "Archivist",
-          "displayName": "Hans Germany Male",
-          "voiceId": "Rasalgethi",
-          "voiceGender": "Male",
-          "text": "وعندما يكون كل صوت في مكانه، تصبح الترجمة والنشر في أسواق متعددة أسهل بكثير."
+          "text": "<tone=\"romantic\"><mood=\"soft\">Absolument. <pause=\"500ms\"/> Merci de nous avoir amenés ici juste au moment où elle commence à briller.</mood></tone>"
         }
-      ],
-      "rtl": true
+      ]
     }
   ]
 }

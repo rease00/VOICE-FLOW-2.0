@@ -74,6 +74,21 @@ const readErrorPayload = async (response: Response): Promise<{ message: string; 
   return { message, ...(code ? { code } : {}), detail };
 };
 
+const captureResponseHeaders = (response: Response): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    const safeKey = String(key || '').trim().toLowerCase();
+    if (!safeKey) return;
+    headers[safeKey] = String(value ?? '');
+  });
+  return headers;
+};
+
+const isReaderMetadataSyncUnavailable = (error: unknown): boolean => {
+  const status = Number((error as { status?: number } | null | undefined)?.status || 0);
+  return status === 404 || status === 501;
+};
+
 const readerFetchJson = async <T>(
   input: string,
   init?: RequestInit,
@@ -413,7 +428,11 @@ export const primeReaderQueue = async (
   }
 };
 
-export const exportReaderSessionAudio = async (backendBaseUrl: string, sessionId: string): Promise<Blob> => {
+export const exportReaderSessionAudio = async (backendBaseUrl: string, sessionId: string): Promise<{
+  blob: Blob;
+  headers: Record<string, string>;
+  watermarkId: string;
+}> => {
   const response = await authFetch(resolveApiUrl(`/reader/sessions/${encodeURIComponent(sessionId)}/export`, backendBaseUrl));
   if (!response.ok) {
     const errorPayload = await readErrorPayload(response);
@@ -423,7 +442,12 @@ export const exportReaderSessionAudio = async (backendBaseUrl: string, sessionId
     if (typeof errorPayload.detail !== 'undefined') error.detail = errorPayload.detail;
     throw error;
   }
-  return response.blob();
+  const headers = captureResponseHeaders(response);
+  return {
+    blob: await response.blob(),
+    headers,
+    watermarkId: String(headers['x-vf-watermark-id'] || '').trim(),
+  };
 };
 
 export const deleteReaderSession = async (backendBaseUrl: string, sessionId: string): Promise<void> => {
@@ -443,16 +467,233 @@ export const deleteReaderSession = async (backendBaseUrl: string, sessionId: str
 export const getReaderTtsJobAudio = async (
   backendBaseUrl: string,
   jobId: string
-): Promise<{ status: string; audioBase64?: string; mediaType?: string; blob?: Blob }> => {
+): Promise<{ status: string; audioBase64?: string; mediaType?: string; blob?: Blob; headers: Record<string, string>; watermarkId: string }> => {
   const payload = await getTtsJob(jobId, { baseUrl: backendBaseUrl });
-  const result: { status: string; audioBase64?: string; mediaType?: string; blob?: Blob } = {
+  const result: { status: string; audioBase64?: string; mediaType?: string; blob?: Blob; headers: Record<string, string>; watermarkId: string } = {
     status: payload.status,
+    headers: payload.result?.headers ? Object.entries(payload.result.headers).reduce<Record<string, string>>((accumulator, [key, value]) => {
+      const safeKey = String(key || '').trim().toLowerCase();
+      if (!safeKey) return accumulator;
+      accumulator[safeKey] = String(value ?? '');
+      return accumulator;
+    }, {}) : {},
+    watermarkId: String(payload.result?.headers?.['x-vf-watermark-id'] || payload.result?.headers?.['X-VF-Watermark-Id'] || '').trim(),
   };
   if (payload.status === 'completed') {
     const audioResponse = await fetchTtsJobResult(jobId, { baseUrl: backendBaseUrl });
     result.blob = new Blob([audioResponse.audioBytes], { type: audioResponse.mediaType || 'audio/wav' });
     result.mediaType = audioResponse.mediaType || 'audio/wav';
+    result.headers = audioResponse.headers || result.headers;
+    result.watermarkId = String(audioResponse.headers['x-vf-watermark-id'] || result.watermarkId || '').trim();
     return result;
   }
   return result;
 };
+
+export interface ReaderOfflineLibrarySnapshotEntry {
+  id: string;
+  saveScope: 'chapter' | 'book';
+  title: string;
+  unitLabel: string;
+  sessionId: string;
+  unitId: string;
+  sourceJobId: string;
+  bookId?: string;
+  bookTitle?: string;
+  chapterIndex?: number;
+  chapterCount?: number;
+  chapterTextSnapshot?: string;
+  speakerMode: 'single-speaker' | 'multi-speaker';
+  mediaType: string;
+  sizeBytes: number;
+  watermarkId: string;
+  watermarkMetadata: Record<string, unknown>;
+  createdAtMs: number;
+}
+
+export interface ReaderOfflineLibrarySnapshotPayload {
+  sessionId?: string;
+  reason: 'chapter-save' | 'book-save' | 'delete' | 'bootstrap';
+  updatedAtMs: number;
+  entries: ReaderOfflineLibrarySnapshotEntry[];
+}
+
+interface ReaderOfflineMetadataRecord {
+  entryId?: string;
+  contentId?: string;
+  bookId?: string;
+}
+
+interface ReaderOfflineMetadataUpsertPayload {
+  contentId: string;
+  bookId: string;
+  chapterId: string;
+  chapterIndex: number;
+  chapterTitle: string;
+  speakerMode: string;
+  watermarkId: string;
+  watermarkVersion: string;
+  sizeBytes: number;
+  hash: string;
+  durationMs: number;
+  deviceId: string;
+  deviceType: string;
+  deviceLabel: string;
+  deviceMarker: string;
+}
+
+const READER_OFFLINE_DEVICE_ID_STORAGE_KEY = 'vf_reader_offline_device_id_v1';
+
+const getReaderOfflineDeviceId = (): string => {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return '';
+  const existing = String(localStorage.getItem(READER_OFFLINE_DEVICE_ID_STORAGE_KEY) || '').trim();
+  if (existing) return existing;
+  const generated = (
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `reader-device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  );
+  try {
+    localStorage.setItem(READER_OFFLINE_DEVICE_ID_STORAGE_KEY, generated);
+  } catch {
+    // no-op
+  }
+  return generated;
+};
+
+const getReaderOfflineDeviceMetadata = (): {
+  deviceId: string;
+  deviceType: string;
+  deviceLabel: string;
+  deviceMarker: string;
+} => {
+  if (typeof navigator === 'undefined') {
+    return {
+      deviceId: '',
+      deviceType: '',
+      deviceLabel: '',
+      deviceMarker: '',
+    };
+  }
+  const userAgent = String(navigator.userAgent || '').toLowerCase();
+  const isMobile = /iphone|ipad|android|mobile/.test(userAgent);
+  const deviceType = isMobile ? 'mobile' : 'desktop';
+  return {
+    deviceId: getReaderOfflineDeviceId(),
+    deviceType,
+    deviceLabel: String(navigator.platform || navigator.userAgent || '').trim(),
+    deviceMarker: String(navigator.userAgent || '').slice(0, 180),
+  };
+};
+
+const readNumericMetadata = (value: unknown): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.round(value));
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.round(parsed));
+  }
+  return 0;
+};
+
+const toReaderOfflineMetadataUpsertPayload = (
+  entry: ReaderOfflineLibrarySnapshotEntry,
+  sessionId: string
+): ReaderOfflineMetadataUpsertPayload => {
+  const watermarkMetadata = entry.watermarkMetadata && typeof entry.watermarkMetadata === 'object'
+    ? entry.watermarkMetadata as Record<string, unknown>
+    : {};
+  const watermarkVersion = String(
+    watermarkMetadata['watermarkVersion']
+    || watermarkMetadata['x-vf-watermark-version']
+    || ''
+  ).trim();
+  const hash = String(
+    watermarkMetadata.hash
+    || watermarkMetadata.contentHash
+    || watermarkMetadata['x-vf-watermark-hash']
+    || ''
+  ).trim();
+  const durationMs = readNumericMetadata(
+    watermarkMetadata.durationMs
+    || watermarkMetadata.duration
+    || watermarkMetadata['x-vf-duration-ms']
+  );
+  const device = getReaderOfflineDeviceMetadata();
+  const contentId = String(entry.bookId || sessionId || entry.sessionId || '').trim();
+  return {
+    contentId,
+    bookId: contentId,
+    chapterId: String(entry.unitId || '').trim(),
+    chapterIndex: Math.max(0, Number(entry.chapterIndex || 0)),
+    chapterTitle: String(entry.unitLabel || entry.title || '').trim(),
+    speakerMode: String(entry.speakerMode || 'single-speaker').trim(),
+    watermarkId: String(entry.watermarkId || '').trim(),
+    watermarkVersion,
+    sizeBytes: Math.max(0, Number(entry.sizeBytes || 0)),
+    hash,
+    durationMs,
+    deviceId: device.deviceId,
+    deviceType: device.deviceType,
+    deviceLabel: device.deviceLabel,
+    deviceMarker: device.deviceMarker,
+  };
+};
+
+const syncReaderOfflineMetadata = async (
+  backendBaseUrl: string,
+  payload: ReaderOfflineLibrarySnapshotPayload
+): Promise<ReaderOfflineLibrarySnapshotPayload | null> => {
+  try {
+    const listPayload = await readerFetchJson<{ metadata?: ReaderOfflineMetadataRecord[] }>(
+      resolveApiUrl('/reader/offline/metadata', backendBaseUrl),
+      undefined,
+      { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+    );
+    const remoteEntries = Array.isArray(listPayload.metadata) ? listPayload.metadata : [];
+    const safeSessionId = String(payload.sessionId || '').trim();
+    const localEntries = Array.isArray(payload.entries) ? payload.entries.filter((entry) => String(entry.id || '').trim()) : [];
+    const localEntryIds = new Set(localEntries.map((entry) => String(entry.id || '').trim()).filter(Boolean));
+    await Promise.all(localEntries.map((entry) => (
+      readerFetchJson(
+        resolveApiUrl(`/reader/offline/metadata/${encodeURIComponent(String(entry.id || '').trim())}`, backendBaseUrl),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(toReaderOfflineMetadataUpsertPayload(entry, safeSessionId)),
+        },
+        { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+      )
+    )));
+    if (safeSessionId) {
+      const staleRemoteIds = remoteEntries
+        .filter((entry) => {
+          const entryId = String(entry.entryId || '').trim();
+          if (!entryId || localEntryIds.has(entryId)) return false;
+          const remoteContentId = String(entry.contentId || entry.bookId || '').trim();
+          return remoteContentId === safeSessionId;
+        })
+        .map((entry) => String(entry.entryId || '').trim())
+        .filter(Boolean);
+      await Promise.all(staleRemoteIds.map(async (entryId) => {
+        try {
+          await readerFetchJson<{ deleted?: boolean }>(
+            resolveApiUrl(`/reader/offline/metadata/${encodeURIComponent(entryId)}`, backendBaseUrl),
+            { method: 'DELETE' },
+            { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+          );
+        } catch (error) {
+          if (!isReaderMetadataSyncUnavailable(error)) throw error;
+        }
+      }));
+    }
+    return payload;
+  } catch (error) {
+    if (isReaderMetadataSyncUnavailable(error)) return null;
+    throw error;
+  }
+};
+
+export const syncReaderOfflineLibrarySnapshot = (
+  backendBaseUrl: string,
+  payload: ReaderOfflineLibrarySnapshotPayload
+): Promise<ReaderOfflineLibrarySnapshotPayload | null> => syncReaderOfflineMetadata(backendBaseUrl, payload);

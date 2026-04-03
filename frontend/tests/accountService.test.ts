@@ -1,15 +1,22 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 const requestJsonMock = vi.hoisted(() => vi.fn());
+const authFetchMock = vi.hoisted(() => vi.fn());
+const readJsonOrThrowMock = vi.hoisted(() => vi.fn());
+const primeLoginRoutingAfterAccountBootstrapMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../services/authHttpClient', () => ({
-  authFetch: vi.fn(),
+  authFetch: (...args: unknown[]) => authFetchMock(...args),
 }));
 
 vi.mock('../src/shared/api/httpClient', () => ({
   parseResponseError: vi.fn(),
-  readJsonOrThrow: vi.fn(),
+  readJsonOrThrow: (...args: unknown[]) => readJsonOrThrowMock(...args),
   requestJson: (...args: unknown[]) => requestJsonMock(...args),
+}));
+
+vi.mock('../services/backendRoutingService', () => ({
+  primeLoginRoutingAfterAccountBootstrap: (...args: unknown[]) => primeLoginRoutingAfterAccountBootstrapMock(...args),
 }));
 
 describe('billing checkout idempotency headers', () => {
@@ -64,5 +71,56 @@ describe('billing checkout idempotency headers', () => {
     expect(tokenPackHeaders.get('Idempotency-Key')).toContain('standard');
     expect(vcPackHeaders.get('Idempotency-Key')).toContain('vc-token-pack');
     expect(vcPackHeaders.get('Idempotency-Key')).toContain('gold');
+  });
+
+  it('creates a billing portal session for self-serve billing management', async () => {
+    authFetchMock.mockResolvedValueOnce({ ok: true });
+    readJsonOrThrowMock.mockResolvedValueOnce({
+      ok: true,
+      provider: 'razorpay',
+      url: 'https://billing.example.test/manage',
+    });
+
+    const { createBillingPortalSession } = await import('../services/accountService');
+
+    const session = await createBillingPortalSession('https://backend.example.test', {
+      returnUrl: 'https://app.example.test/account',
+    });
+
+    expect(authFetchMock).toHaveBeenCalledWith(
+      'https://backend.example.test/billing/portal-session',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      expect.objectContaining({ requireAuth: true })
+    );
+    const requestInit = authFetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(String(requestInit.body || '')).toContain('https://app.example.test/account');
+    expect(session.provider).toBe('razorpay');
+    expect(session.url).toBe('https://billing.example.test/manage');
+  });
+
+  it('primes backend routing after bootstrapping an account profile', async () => {
+    authFetchMock.mockResolvedValueOnce({ ok: true });
+    readJsonOrThrowMock.mockResolvedValueOnce({
+      profile: {
+        uid: 'uid-1',
+        userId: 'user-1',
+      },
+    });
+    primeLoginRoutingAfterAccountBootstrapMock.mockResolvedValue({
+      applied: true,
+      reason: 'switched',
+      baseUrl: 'https://backend.example.test',
+    });
+
+    const { bootstrapAccountProfile } = await import('../services/accountService');
+    const profile = await bootstrapAccountProfile('https://backend.example.test');
+
+    expect(profile.userId).toBe('user-1');
+    expect(primeLoginRoutingAfterAccountBootstrapMock).toHaveBeenCalledWith({
+      baseUrl: 'https://backend.example.test',
+    });
   });
 });

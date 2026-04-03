@@ -448,7 +448,6 @@ export interface AuthActionResult {
 }
 
 export interface SignInActionResult extends AuthActionResult {
-  requiresUserIdSetup?: boolean;
   requiresEmailVerification?: boolean;
   canResendVerification?: boolean;
   provisioningHint?: string;
@@ -484,7 +483,7 @@ export interface UserContextType {
   getVoiceForCharacter: (name: string) => string | undefined;
 
   signInWithEmail: (email: string, password: string) => Promise<SignInActionResult>;
-  signUpWithEmail: (email: string, password: string, displayName?: string, userId?: string) => Promise<SignUpActionResult>;
+  signUpWithEmail: (email: string, password: string, displayName?: string) => Promise<SignUpActionResult>;
   resendEmailVerification: (email: string, password: string) => Promise<AuthActionResult>;
   requestPasswordReset: (email: string) => Promise<AuthActionResult>;
   signOutUser: () => Promise<void>;

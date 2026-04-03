@@ -2,17 +2,16 @@
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { 
-    Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
-    Music, Video, 
+import {
+    Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles,
+    Music, Video,
     Save, Fingerprint, UploadCloud, Loader2,
     Download, Menu, Box,
-    Plus, Bot, Volume2, Clock, Send, 
+    Bot, Clock, Send,
     Film, Mic2, Sliders,
-    Lock, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell
+    Lock, RefreshCw, Users, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell
 } from 'lucide-react';
 import { Button } from '../components/Button';
-import { UploadDropzone } from '../components/ui/UploadDropzone';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, DUNO_VOICES } from '../constants';
 import {
   GenerationSettings,
@@ -47,7 +46,7 @@ import { normalizeDirectorPreviewComparisonText } from '../components/studio/dir
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
 import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WORKSPACE_NAV_SECTION_LABELS, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
-import { cancelTtsJob, createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
+import { cancelTtsJob, cancelTtsSession, createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../src/shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
@@ -127,6 +126,7 @@ import {
   type SidebarMode,
   type StudioRailTab,
 } from '../src/features/studio/model/layout';
+import { resolveStudioGenerateDockMetrics } from '../src/features/studio/model/generateDock';
 import {
   clearStudioQueueAudioCache,
   deleteStudioQueueAudioBlob,
@@ -144,6 +144,7 @@ import {
   primeLoginTtsSessionKey,
 } from '../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
+import { resolvePublicVoiceLabel } from '../src/shared/voices/voicePublicName';
 import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../services/runtimeStatusMapping';
 import { createSynthesisTraceId } from '../services/synthesisContractService';
 import { APP_ROUTE_PATHS, resolveLoginPath } from '../src/app/navigation';
@@ -163,10 +164,22 @@ interface StudioDirectorPreviewState {
   patchedLineCount: number;
 }
 
+type VoiceSampleSource = {
+  url: string;
+  needsCleanup: boolean;
+};
+
+type VoiceSampleCacheEntry = {
+  source?: VoiceSampleSource;
+  inFlight?: Promise<VoiceSampleSource>;
+};
+
 const DEFAULT_STUDIO_DIRECTOR_MODE_STATE: StudioDirectorModeState = {
   expressiveEmotion: false,
   autoRewrite: false,
 };
+
+const EMPTY_PARSED_STUDIO_SCRIPT = parseMultiSpeakerScript('');
 
 const STUDIO_DIRECTOR_OPTION_ITEMS: Array<{
   key: StudioDirectorOptionKey;
@@ -455,6 +468,14 @@ export const findFirstRecoverableStudioQueueItem = (items: StudioQueueItem[]): S
     .find((item) => item.status === 'failed' || item.status === 'cancelled') || null
 );
 
+export const hasRecoverableSingleInflightGenerationState = (
+  value: Pick<StudioSingleInflightGenerationLedger, 'requestId' | 'jobId'> | null | undefined
+): boolean => {
+  const requestId = String(value?.requestId || '').trim();
+  const jobId = String(value?.jobId || '').trim();
+  return Boolean(requestId || jobId);
+};
+
 const normalizeStoredSingleInflightGenerationLedger = (
   value: unknown
 ): StudioSingleInflightGenerationLedger | null => {
@@ -463,7 +484,7 @@ const normalizeStoredSingleInflightGenerationLedger = (
   if (candidate.mode !== 'single') return null;
   const requestId = String(candidate.requestId || '').trim();
   const jobId = String(candidate.jobId || '').trim();
-  if (!requestId && !jobId) return null;
+  if (!hasRecoverableSingleInflightGenerationState({ requestId, jobId })) return null;
   const textSnapshot = String(candidate.textSnapshot || '');
   const startedAtMs = Number(candidate.startedAtMs || 0);
   return {
@@ -575,6 +596,7 @@ const UI_FONT_SCALE_DEFAULT = 1;
 const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
 const STUDIO_SINGLE_RUN_CHAR_CAP = 8000;
 const STUDIO_EDITOR_HARD_CAP = 50000;
+const STUDIO_DRAFT_PERSIST_DEBOUNCE_MS = 450;
 const STUDIO_QUEUE_INTER_PART_DELAY_MS = 3000;
 const TRANSIENT_GENERATION_RETRY_MAX = 1;
 const TRANSIENT_GENERATION_RETRY_DELAY_MS = 700;
@@ -962,6 +984,7 @@ const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBL
 const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_WINDOW_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
 const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 10000;
 const RUNTIME_STATUS_LEADER_LEASE_MS = 40000;
+const SIMULATED_GENERATION_TICK_MS = 200;
 const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]> = { PRIME: [], VECTOR: [], DUNO: [] };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
 const DEFAULT_DUNO_VOICE_ID = DUNO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
@@ -970,6 +993,16 @@ const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]
   PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   DUNO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
+};
+const STUDIO_CUSTOM_MUSIC_TRACK_ID = 'm_custom_upload';
+const STUDIO_CUSTOM_MUSIC_MAX_FILE_BYTES = 40 * 1024 * 1024;
+const STUDIO_CUSTOM_MUSIC_FILE_ACCEPT = 'audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac';
+
+type CustomStudioMusicTrackUpload = {
+  name: string;
+  url: string;
+  sizeBytes: number;
+  mimeType: string;
 };
 
 const DEFAULT_SETTINGS: GenerationSettings = {
@@ -1016,6 +1049,15 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
   const defaultVoice = engine === 'DUNO'
     ? DEFAULT_DUNO_VOICE_ID
     : DEFAULT_GEM_VOICE_ID;
+  const rawMusicTrackId = typeof value.musicTrackId === 'string'
+    ? value.musicTrackId.trim()
+    : DEFAULT_SETTINGS.musicTrackId;
+  const hasBuiltInMusicTrack = MUSIC_TRACKS.some((track) => track.id === rawMusicTrackId);
+  const normalizedMusicTrackId = (
+    rawMusicTrackId === STUDIO_CUSTOM_MUSIC_TRACK_ID || hasBuiltInMusicTrack
+  )
+    ? rawMusicTrackId
+    : DEFAULT_SETTINGS.musicTrackId;
   const rawMediaBackendUrl = typeof value.mediaBackendUrl === 'string' ? value.mediaBackendUrl : '';
   const mediaBackendSanitized = sanitizeConfiguredApiBaseUrl(rawMediaBackendUrl, DEFAULT_MEDIA_BACKEND_URL);
 
@@ -1044,7 +1086,7 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     style: typeof value.style === 'string' ? value.style : DEFAULT_SETTINGS.style,
     emotionRefId: typeof value.emotionRefId === 'string' ? value.emotionRefId : DEFAULT_SETTINGS.emotionRefId,
     emotionStrength: typeof value.emotionStrength === 'number' ? value.emotionStrength : DEFAULT_SETTINGS.emotionStrength,
-    musicTrackId: typeof value.musicTrackId === 'string' ? value.musicTrackId : DEFAULT_SETTINGS.musicTrackId,
+    musicTrackId: normalizedMusicTrackId,
     musicVolume: resolveStudioMusicGain(value.musicVolume),
     speechVolume: resolveStudioSpeechGain(value.speechVolume),
     useModelSourceSeparation: typeof value.useModelSourceSeparation === 'boolean'
@@ -1103,7 +1145,7 @@ const formatGenerationDuration = (ms: number): string => {
 };
 
 // --- SYSTEM RESOURCE MONITOR ---
-const ResourceMonitor = ({ isWorking }: { isWorking: boolean }) => {
+const ResourceMonitor = ({ isWorking, hidden = false }: { isWorking: boolean; hidden?: boolean }) => {
   const [stats, setStats] = useState({
     cpu: 0,
     ram: 0,
@@ -1112,6 +1154,8 @@ const ResourceMonitor = ({ isWorking }: { isWorking: boolean }) => {
   });
 
   useEffect(() => {
+    if (hidden) return undefined;
+
     let intervalId: number | null = null;
     let longTaskDurationSinceTick = 0;
     let previousTickAt = performance.now();
@@ -1204,7 +1248,9 @@ const ResourceMonitor = ({ isWorking }: { isWorking: boolean }) => {
       }
       longTaskObserver?.disconnect();
     };
-  }, [isWorking]);
+  }, [hidden, isWorking]);
+
+  if (hidden) return null;
 
   return (
     <div className="pointer-events-none fixed bottom-3 left-[calc(16rem+0.75rem)] z-40 hidden select-none xl:flex items-center gap-2 rounded-full border border-slate-300/70 bg-slate-950/82 px-2.5 py-1.5 text-[9px] font-mono text-slate-200 shadow-sm backdrop-blur-md">
@@ -1278,18 +1324,50 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
 
+    let frameId = 0;
     const syncViewportHeight = () => {
-      setViewportHeight(Math.max(0, Math.round(window.innerHeight || 0)));
+      const nextViewportHeight = Math.max(0, Math.round(window.innerHeight || 0));
+      setViewportHeight((previous) => (previous === nextViewportHeight ? previous : nextViewportHeight));
+    };
+    const scheduleViewportSync = () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(syncViewportHeight);
     };
 
     syncViewportHeight();
-    window.addEventListener('resize', syncViewportHeight);
-    window.addEventListener('orientationchange', syncViewportHeight);
+    window.addEventListener('resize', scheduleViewportSync, { passive: true });
+    window.addEventListener('orientationchange', scheduleViewportSync, { passive: true });
     return () => {
-      window.removeEventListener('resize', syncViewportHeight);
-      window.removeEventListener('orientationchange', syncViewportHeight);
+      if (frameId) window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', scheduleViewportSync);
+      window.removeEventListener('orientationchange', scheduleViewportSync);
     };
   }, []);
+
+  const [hasWorkspaceInteracted, setHasWorkspaceInteracted] = useState(false);
+
+  useEffect(() => {
+    if (hasWorkspaceInteracted || typeof window === 'undefined') return undefined;
+
+    let interactionTimerId: number | null = null;
+    const markInteracted = () => {
+      interactionTimerId = window.setTimeout(() => {
+        setHasWorkspaceInteracted(true);
+      }, 0);
+    };
+
+    window.addEventListener('pointerdown', markInteracted, { passive: true, once: true });
+    window.addEventListener('keydown', markInteracted, { passive: true, once: true });
+    window.addEventListener('touchstart', markInteracted, { passive: true, once: true });
+    return () => {
+      if (interactionTimerId !== null) {
+        window.clearTimeout(interactionTimerId);
+      }
+      window.removeEventListener('pointerdown', markInteracted);
+      window.removeEventListener('keydown', markInteracted);
+      window.removeEventListener('touchstart', markInteracted);
+    };
+  }, [hasWorkspaceInteracted]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1317,6 +1395,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const pathname = usePathname();
   const [activeTab, setActiveTab] = useState<Tab>(() => resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO);
   const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
+  const shouldHydrateStudioWorkspaceStateOnInit = activeTab === Tab.STUDIO;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (
@@ -1331,7 +1410,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }));
   
   // Studio Text State
-  const [text, setText] = useState<string>(() => resolveInitialStudioDraftText(STUDIO_EDITOR_HARD_CAP));
+  const [text, setText] = useState<string>(() => (
+    shouldHydrateStudioWorkspaceStateOnInit
+      ? resolveInitialStudioDraftText(STUDIO_EDITOR_HARD_CAP)
+      : ''
+  ));
   
   // Settings State
   const [settings, setSettings] = useState<GenerationSettings>(() => {
@@ -1390,14 +1473,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // Generation Status State
   const [isGenerating, setIsGenerating] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(0);
-  const [processingStage, setProcessingStage] = useState('');
+  const [progress, setProgressState] = useState(0);
+  const timeLeftRef = useRef(0);
+  const processingStageRef = useRef('');
   const [generationTiming, setGenerationTiming] = useState<GenerationTimingSnapshot | null>(null);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
   const [liveAudioChunks, setLiveAudioChunks] = useState<LiveAudioChunkItem[]>([]);
   const [studioQueueState, setStudioQueueState] = useState<StudioQueueState | null>(() => (
-    normalizeStoredStudioQueueState(readStorageJson(STORAGE_KEYS.studioQueue))
+    shouldHydrateStudioWorkspaceStateOnInit
+      ? normalizeStoredStudioQueueState(readStorageJson(STORAGE_KEYS.studioQueue))
+      : null
   ));
   const [studioQueueAudioUrls, setStudioQueueAudioUrls] = useState<Record<string, string>>({});
   
@@ -1411,11 +1496,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const generationActivityAtRef = useRef<number>(0);
   const generationWatchdogTimerRef = useRef<number | null>(null);
   const seenRuntimeDiagnosticsTracesRef = useRef<Set<string>>(new Set());
+  const setProgress = useCallback((value: React.SetStateAction<number>) => {
+    startTransition(() => {
+      setProgressState(value);
+    });
+  }, []);
+  const setTimeLeft = useCallback((value: React.SetStateAction<number>) => {
+    timeLeftRef.current = typeof value === 'function'
+      ? (value as (previous: number) => number)(timeLeftRef.current)
+      : value;
+  }, []);
+  const setProcessingStage = useCallback((value: string) => {
+    processingStageRef.current = value;
+  }, []);
   const activeGatewayRequestIdRef = useRef<string>('');
   const activeGatewayJobIdRef = useRef<string>('');
   const singleInflightLedgerRef = useRef<StudioSingleInflightGenerationLedger | null>(
-    normalizeStoredSingleInflightGenerationLedger(readStorageJson(STORAGE_KEYS.studioSingleInflightGeneration))
+    shouldHydrateStudioWorkspaceStateOnInit
+      ? normalizeStoredSingleInflightGenerationLedger(readStorageJson(STORAGE_KEYS.studioSingleInflightGeneration))
+      : null
   );
+  const studioWorkspaceBootHydratedRef = useRef(shouldHydrateStudioWorkspaceStateOnInit);
   const singleInflightAutoResumeAttemptedRef = useRef(false);
   const backendRoutingRediscoveryInFlightRef = useRef(false);
   const backendRoutingRediscoveryLastAttemptAtRef = useRef(0);
@@ -1448,6 +1549,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const lastTtsAccessBlockedRef = useRef<boolean | null>(null);
   const ttsAccessClockRetryAtRef = useRef<number>(0);
   const runtimeAutoSelectProbeInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!isStudioWorkspaceTab || studioWorkspaceBootHydratedRef.current) return;
+
+    studioWorkspaceBootHydratedRef.current = true;
+    const storedDraft = resolveInitialStudioDraftText(STUDIO_EDITOR_HARD_CAP);
+    const storedQueueState = normalizeStoredStudioQueueState(readStorageJson(STORAGE_KEYS.studioQueue));
+    const storedSingleInflightLedger = normalizeStoredSingleInflightGenerationLedger(
+      readStorageJson(STORAGE_KEYS.studioSingleInflightGeneration)
+    );
+
+    setText((previous) => (previous.length > 0 ? previous : storedDraft));
+    setStudioQueueState((previous) => previous ?? storedQueueState);
+    singleInflightLedgerRef.current = storedSingleInflightLedger;
+  }, [isStudioWorkspaceTab]);
   
   // Modals & Overlays
   const [showSettings, setShowSettings] = useState(false);
@@ -1554,6 +1670,61 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const studioImportInputRef = useRef<HTMLInputElement>(null);
+  const customMusicTrackInputRef = useRef<HTMLInputElement>(null);
+  const customMusicTrackUploadRef = useRef<CustomStudioMusicTrackUpload | null>(null);
+  const [customMusicTrackUpload, setCustomMusicTrackUpload] = useState<CustomStudioMusicTrackUpload | null>(null);
+  const setCustomMusicTrackUploadManaged = useCallback((nextUpload: CustomStudioMusicTrackUpload | null) => {
+    setCustomMusicTrackUpload((previousUpload) => {
+      if (previousUpload?.url && previousUpload.url !== nextUpload?.url) {
+        try {
+          URL.revokeObjectURL(previousUpload.url);
+        } catch {}
+      }
+      customMusicTrackUploadRef.current = nextUpload;
+      return nextUpload;
+    });
+  }, []);
+  const resolveCustomMusicTrackUrlForSettings = useCallback((runSettings: GenerationSettings): string => {
+    const selectedTrackId = String(runSettings.musicTrackId || '').trim();
+    if (selectedTrackId !== STUDIO_CUSTOM_MUSIC_TRACK_ID) return '';
+    return String(customMusicTrackUploadRef.current?.url || '').trim();
+  }, []);
+  const studioMusicTrackOptions = useMemo(() => {
+    const options = MUSIC_TRACKS.map((track) => ({
+      id: track.id,
+      label: `${track.name} (${track.category})`,
+    }));
+    if (settings.musicTrackId === STUDIO_CUSTOM_MUSIC_TRACK_ID || customMusicTrackUpload) {
+      options.push({
+        id: STUDIO_CUSTOM_MUSIC_TRACK_ID,
+        label: customMusicTrackUpload
+          ? `Custom Upload: ${customMusicTrackUpload.name}`
+          : 'Custom Upload (re-upload required)',
+      });
+    }
+    return options;
+  }, [customMusicTrackUpload, settings.musicTrackId]);
+
+  useEffect(() => {
+    return () => {
+      const currentUpload = customMusicTrackUploadRef.current;
+      if (currentUpload?.url) {
+        try {
+          URL.revokeObjectURL(currentUpload.url);
+        } catch {}
+      }
+      customMusicTrackUploadRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    if (settings.musicTrackId !== STUDIO_CUSTOM_MUSIC_TRACK_ID) return;
+    if (customMusicTrackUploadRef.current?.url) return;
+    setSettings((prev) => (
+      prev.musicTrackId === STUDIO_CUSTOM_MUSIC_TRACK_ID
+        ? { ...prev, musicTrackId: DEFAULT_SETTINGS.musicTrackId }
+        : prev
+    ));
+  }, [settings.musicTrackId]);
 
   const toggleStudioMobilePanel = useCallback((panel: keyof typeof studioMobilePanels) => {
     setStudioMobilePanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
@@ -1714,6 +1885,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [voiceCloneTarget]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) {
+          setSpeakerVcReferenceMap({});
+          speakerVcReferenceStorageReadyRef.current = false;
+          return;
+      }
       const stored = readStorageJson(STORAGE_KEYS.studioSpeakerVcReferences);
       let nextMap: Record<string, SpeakerVcReference> = {};
       if (stored && typeof stored === 'object' && !Array.isArray(stored) && !hasSpeakerVcReferencePayloadShape(stored)) {
@@ -1724,7 +1900,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
       setSpeakerVcReferenceMap(nextMap);
       speakerVcReferenceStorageReadyRef.current = true;
-  }, [speakerVcReferenceOwnerKey]);
+  }, [isStudioWorkspaceTab, speakerVcReferenceOwnerKey]);
 
   const [characterModalOpen, setCharacterModalOpen] = useState(false);
   const [editingChar, setEditingChar] = useState<CharacterProfile | null>(null);
@@ -1744,6 +1920,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const studioMainRef = useRef<HTMLDivElement>(null);
+  const studioEditorShellRef = useRef<HTMLDivElement>(null);
   const creditsSurfaceRef = useRef<HTMLDivElement>(null);
   const creditsSurfaceTriggerRef = useRef<HTMLButtonElement>(null);
   const selectedDubbingClip = useMemo(
@@ -1841,6 +2018,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- PREVIEW STATE ---
   const [previewState, setPreviewState] = useState<{ id: string, status: 'loading' | 'playing' } | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const voiceSampleCacheRef = useRef<Map<string, VoiceSampleCacheEntry>>(new Map());
   const [engineSwitchInProgress, setEngineSwitchInProgress] = useState<GenerationSettings['engine'] | null>(null);
   const [managedActiveEngine, setManagedActiveEngine] = useState<GenerationSettings['engine'] | null>(null);
   const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<GenerationSettings['engine'], EngineRuntimeStatus>>({
@@ -1910,9 +2088,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const currentEngineSpendable = Math.max(
     0,
-    Number(stats.wallet?.spendableNowByEngine?.[settings.engine] || 0)
+    Number(stats.wallet?.spendableNowByEngine?.[managedActiveEngine || settings.engine] || 0)
   );
-  const canRunDunoWithoutWallet = settings.engine === 'DUNO';
+  const canRunDunoWithoutWallet = (managedActiveEngine || settings.engine) === 'DUNO';
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletMonthlyFreeLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
@@ -2534,7 +2712,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const resolveVoiceDisplayMeta = useCallback((voice: VoiceOption): { name: string; countryTag: string } => {
       const countryTag = resolveVoiceCountryTag(voice);
-      const rawName = String(voice.name || '').trim();
+      const rawName = String(
+        resolvePublicVoiceLabel(voice.name, voice.geminiVoiceName, voice.id)
+        || voice.name
+        || voice.geminiVoiceName
+        || voice.id
+        || ''
+      ).trim();
       if (!rawName) return { name: 'Voice', countryTag };
 
       const tokens = rawName.split(/\s+/).filter(Boolean);
@@ -2563,8 +2747,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const withVoiceMeta = useCallback((voice: VoiceOption, engine: GenerationSettings['engine']): VoiceOption => {
       const tier = resolveVoiceAccessTier(engine, voice);
+      const publicName = resolvePublicVoiceLabel(voice.name, voice.geminiVoiceName, voice.id)
+        || String(voice.name || '').trim()
+        || String(voice.geminiVoiceName || '').trim()
+        || String(voice.id || '').trim()
+        || 'Voice';
       return {
           ...voice,
+          name: publicName,
           engine,
           country: resolveVoiceCountry(voice),
           ageGroup: resolveVoiceAgeGroup(voice),
@@ -2826,8 +3016,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
 
   const studioTextLanguageCode = useMemo(
-      () => resolveTextLanguageCode(text),
-      [resolveTextLanguageCode, text]
+      () => (isStudioWorkspaceTab ? resolveTextLanguageCode(text) : ''),
+      [isStudioWorkspaceTab, resolveTextLanguageCode, text]
   );
 
   const dubbingTextLanguageCode = useMemo(
@@ -2838,7 +3028,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activeScriptLanguageCode =
       false ? dubbingTextLanguageCode : studioTextLanguageCode;
 
-  const studioParsedScript = useMemo(() => parseMultiSpeakerScript(text), [text]);
+  const studioParsedScript = useMemo(
+      () => (isStudioWorkspaceTab ? parseMultiSpeakerScript(text) : EMPTY_PARSED_STUDIO_SCRIPT),
+      [isStudioWorkspaceTab, text]
+  );
   const studioCrewTags = useMemo(
       () => (studioParsedScript.crewTagsList || []).filter(Boolean),
       [studioParsedScript]
@@ -2846,9 +3039,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const castSpeakers = useMemo(() => {
       const names = new Set<string>();
-      const script = false ? dubScript : text;
-      if (script.trim()) {
-          const parsed = isStudioWorkspaceTab ? studioParsedScript : parseMultiSpeakerScript(script);
+      if (isStudioWorkspaceTab && text.trim()) {
+          const parsed = studioParsedScript;
           parsed.speakersList
               .map((speaker) => speaker.trim())
               .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX')
@@ -2862,7 +3054,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
       if (!names.size) names.add('Narrator');
       return [...names];
-  }, [detectedSpeakers, dubScript, isStudioWorkspaceTab, studioParsedScript, text]);
+  }, [detectedSpeakers, isStudioWorkspaceTab, studioParsedScript, text]);
   const isStudioMultiSpeakerEnabled = settings.multiSpeakerEnabled !== false;
   const explicitStudioSpeakers = useMemo(
       () => studioParsedScript.speakersList.filter((speaker) => String(speaker || '').trim().length > 0),
@@ -2887,6 +3079,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       })),
     [isStudioMultiSpeakerEnabled]
   );
+  const desktopDockTabItems = useMemo(
+    () => studioRailTabItems.filter((item) => item.id !== 'mix' && item.id !== 'queue'),
+    [studioRailTabItems]
+  );
+  const getStudioRailTabDotClassName = (isActive: boolean, isDisabled: boolean): string => {
+    if (isActive) {
+      return isDarkUi ? 'bg-cyan-300' : 'bg-cyan-500';
+    }
+    if (isDisabled) {
+      return isDarkUi ? 'bg-slate-700/90' : 'bg-gray-300';
+    }
+    return isDarkUi ? 'bg-slate-500/80' : 'bg-slate-400';
+  };
   const studioRailTabs = useManagedTabs({
     items: studioRailTabItems,
     activeId: studioRailTab,
@@ -3304,6 +3509,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [
     hasSessionIdentity,
     isAuthOrProfileBlockingMessage,
+    isStudioWorkspaceTab,
     managedActiveEngine,
     mediaBackendUrl,
     settings.engine,
@@ -3312,6 +3518,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ]);
 
   useEffect(() => {
+    if (!isStudioWorkspaceTab) {
+      clearRuntimeAutoSelectSessionRun();
+      runtimeAutoSelectProbeInFlightRef.current = false;
+      return;
+    }
     if (!hasSessionIdentity) {
       clearRuntimeAutoSelectSessionRun();
       runtimeAutoSelectProbeInFlightRef.current = false;
@@ -3469,11 +3680,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         syncVoiceId?: string;
         requireAccess?: boolean;
         preferBrowserRuntime?: boolean;
+        waitForOnline?: boolean;
+        commitSettings?: boolean;
         signal?: AbortSignal;
       }
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       throwIfSignalAborted(options?.signal);
       const engineLabel = getEngineDisplayName(engine);
+      const shouldWaitForOnline = options?.waitForOnline !== false;
+      const shouldCommitSettings = options?.commitSettings !== false;
       if (!isPrimeEngineAllowed(engine)) {
           throw new Error(`${engineLabel} is not enabled for your current plan.`);
       }
@@ -3537,11 +3752,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   : getEngineVoiceCatalog(engine);
               const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
               syncedVoiceId = validVoiceId;
-              setSettings((prev) => (
-                  prev.engine === engine && prev.voiceId === validVoiceId
-                      ? prev
-                      : { ...prev, engine, voiceId: validVoiceId }
-              ));
+              if (shouldCommitSettings) {
+                  setSettings((prev) => (
+                      prev.engine === engine && prev.voiceId === validVoiceId
+                          ? prev
+                          : { ...prev, engine, voiceId: validVoiceId }
+                  ));
+              }
           }
           return {
               runtimeUrl,
@@ -3579,23 +3796,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       [engine]: { state: 'standby', detail: standbyDetail },
                   }));
                   let syncedVoiceId: string | undefined;
-                  if (options?.syncVoiceId) {
-                      const candidateVoiceId = options.syncVoiceId || settings.voiceId;
-                      const validVoiceId = selectVoiceIdFromCatalog(
-                          engine,
-                          fallbackCatalog.length > 0 ? fallbackCatalog : getEngineVoiceCatalog(engine),
-                          candidateVoiceId
-                      );
-                      syncedVoiceId = validVoiceId;
-                      setSettings((prev) => (
-                          prev.engine === engine && prev.voiceId === validVoiceId
-                              ? prev
-                              : { ...prev, engine, voiceId: validVoiceId }
-                      ));
-                  }
+                   if (options?.syncVoiceId) {
+                       const candidateVoiceId = options.syncVoiceId || settings.voiceId;
+                       const validVoiceId = selectVoiceIdFromCatalog(
+                           engine,
+                           fallbackCatalog.length > 0 ? fallbackCatalog : getEngineVoiceCatalog(engine),
+                           candidateVoiceId
+                       );
+                       syncedVoiceId = validVoiceId;
+                       if (shouldCommitSettings) {
+                           setSettings((prev) => (
+                               prev.engine === engine && prev.voiceId === validVoiceId
+                                   ? prev
+                                   : { ...prev, engine, voiceId: validVoiceId }
+                           ));
+                       }
+                   }
+                  setManagedActiveEngine(engine);
                   if (!options?.silent) {
-                      showToast(`${engineLabel} runtime switch is admin-locked. Continuing with auto-recovery.`, 'info');
-                  }
+                       showToast(`${engineLabel} runtime switch is admin-locked. Continuing with auto-recovery.`, 'info');
+                   }
                   return {
                       runtimeUrl,
                       catalog: fallbackCatalog,
@@ -3614,14 +3834,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               throw new Error(switchError?.message || `Failed to switch ${engineLabel} runtime.`);
           }
 
-          setManagedActiveEngine(engine);
-          const switchState = normalizeEngineRuntimeState(switchResult?.state, 'starting');
-          if (switchState === 'not_configured') {
-              throw new Error(switchResult?.detail || getRuntimeNotConfiguredMessage(engine));
-          }
+           const switchState = normalizeEngineRuntimeState(switchResult?.state, 'starting');
+           if (switchState === 'not_configured') {
+               throw new Error(switchResult?.detail || getRuntimeNotConfiguredMessage(engine));
+           }
           if (switchState === 'offline') {
               throw new Error(switchResult?.detail || getRuntimeOfflineMessage(engine));
           }
+          setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
               const next = { ...prev };
                 next[engine] = mergeRuntimeStatus(next[engine], {
@@ -3632,47 +3852,61 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (other === engine) return;
                   if (next[other].state === 'not_configured') return;
                     next[other] = mergeRuntimeStatus(next[other], { state: 'standby', detail: 'Standby (auto-start on switch)' });
-              });
-              return next;
-          });
+               });
+               return next;
+           });
 
-          if (switchState !== 'online') {
-              const timeoutMs = options?.timeoutMs ?? (switchResult?.state === 'starting' ? 90000 : 60000);
-              const online = await waitForRuntimeOnline(engine, timeoutMs, options?.signal);
-              if (!online) {
-                  throw new Error(`${engineLabel} runtime did not become online within ${Math.round(timeoutMs / 1000)}s. Check gateway status and runtime logs.`);
-              }
-          }
+           let runtimeOnline = switchState === 'online';
+           if (!runtimeOnline && shouldWaitForOnline) {
+               const timeoutMs = options?.timeoutMs ?? (switchResult?.state === 'starting' ? 90000 : 60000);
+               const online = await waitForRuntimeOnline(engine, timeoutMs, options?.signal);
+               if (!online) {
+                   setManagedActiveEngine(settings.engine);
+                   throw new Error(`${engineLabel} runtime did not become online within ${Math.round(timeoutMs / 1000)}s. Check gateway status and runtime logs.`);
+               }
+               runtimeOnline = true;
+           }
 
-          const refreshedCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl);
-          setTtsRuntimeStatus(prev => ({
-            ...prev,
-            [engine]: mergeRuntimeStatus(prev[engine], { state: 'online', detail: 'Runtime online' }),
-          }));
-          let syncedVoiceId: string | undefined;
-          if (options?.syncVoiceId) {
-              const candidateVoiceId = options.syncVoiceId || settings.voiceId;
-              const fallbackCatalog = refreshedCatalog.length > 0
-                  ? refreshedCatalog
-                  : getEngineVoiceCatalog(engine);
-              const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
-              syncedVoiceId = validVoiceId;
-              setSettings((prev) => (
-                  prev.engine === engine && prev.voiceId === validVoiceId
-                      ? prev
-                      : { ...prev, engine, voiceId: validVoiceId }
-              ));
-          }
-          if (!options?.silent) {
-              showToast(`${engineLabel} runtime is online.`, 'info');
-          }
-          return {
-              runtimeUrl,
-              catalog: refreshedCatalog,
+           const refreshedCatalog =
+               runtimeOnline || shouldWaitForOnline
+                   ? await refreshEngineVoiceCatalog(engine, runtimeUrl)
+                   : (runtimeVoiceCatalogs[engine]?.length > 0
+                       ? runtimeVoiceCatalogs[engine]
+                       : getEngineVoiceCatalog(engine));
+           setTtsRuntimeStatus(prev => ({
+             ...prev,
+             [engine]: mergeRuntimeStatus(prev[engine], {
+               state: runtimeOnline ? 'online' : 'starting',
+               detail: runtimeOnline ? 'Runtime online' : (switchResult?.detail || 'Runtime starting in background'),
+             }),
+           }));
+           let syncedVoiceId: string | undefined;
+           if (options?.syncVoiceId) {
+               const candidateVoiceId = options.syncVoiceId || settings.voiceId;
+               const fallbackCatalog = refreshedCatalog.length > 0
+                   ? refreshedCatalog
+                   : getEngineVoiceCatalog(engine);
+               const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
+               syncedVoiceId = validVoiceId;
+               if (shouldCommitSettings) {
+                   setSettings((prev) => (
+                       prev.engine === engine && prev.voiceId === validVoiceId
+                           ? prev
+                           : { ...prev, engine, voiceId: validVoiceId }
+                   ));
+               }
+           }
+           if (!options?.silent && runtimeOnline) {
+               showToast(`${engineLabel} runtime is online.`, 'info');
+           }
+           return {
+               runtimeUrl,
+               catalog: refreshedCatalog,
               ...(syncedVoiceId ? { syncedVoiceId } : {}),
           };
       } catch (error: any) {
           if ((error as { name?: string } | null)?.name === 'AbortError') {
+              setManagedActiveEngine(settings.engine);
               setTtsRuntimeStatus((prev) => ({
                 ...prev,
                 [engine]: mergeRuntimeStatus(prev[engine], {
@@ -3856,13 +4090,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       };
   }, []);
   useEffect(() => {
+      if (!isStudioWorkspaceTab || !studioWorkspaceBootHydratedRef.current) return;
       const nextDraft = String(text || '').slice(0, STUDIO_EDITOR_HARD_CAP);
-      if (!nextDraft.trim()) {
-          removeStorageKey(STORAGE_KEYS.studioDraftText);
-          return;
-      }
-      writeStorageString(STORAGE_KEYS.studioDraftText, nextDraft);
-  }, [text]);
+      const persistDraft = () => {
+          if (!nextDraft.trim()) {
+              removeStorageKey(STORAGE_KEYS.studioDraftText);
+              return;
+          }
+          writeStorageString(STORAGE_KEYS.studioDraftText, nextDraft);
+      };
+      const timeoutId = window.setTimeout(persistDraft, STUDIO_DRAFT_PERSIST_DEBOUNCE_MS);
+      return () => window.clearTimeout(timeoutId);
+  }, [isStudioWorkspaceTab, text]);
   useEffect(() => {
       if (!isStudioWorkspaceTab) return;
       if (isStudioMultiSpeakerEnabled && studioRailTab === 'voice') {
@@ -3873,6 +4112,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setStudioRailTab('voice');
       }
   }, [isStudioMultiSpeakerEnabled, isStudioWorkspaceTab, studioRailTab]);
+  useEffect(() => {
+      if (!isDesktop || !isStudioWorkspaceTab) return;
+      if (studioRailTab !== 'mix') return;
+      const fallbackTab = desktopDockTabItems.find((item) => !item.disabled)?.id || 'voice';
+      if (fallbackTab !== studioRailTab) {
+          setStudioRailTab(fallbackTab);
+      }
+  }, [desktopDockTabItems, isDesktop, isStudioWorkspaceTab, studioRailTab]);
   useEffect(() => {
       if (isStudioWorkspaceTab) return;
       setIsStudioEditorFullscreen(false);
@@ -3990,7 +4237,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           lastRuntimeStatesRef.current[engine] = next;
       }
-  }, [emit, hasSessionIdentity, settings.engine, ttsRuntimeStatus]);
+  }, [emit, hasSessionIdentity, managedActiveEngine, settings.engine, ttsRuntimeStatus]);
   useEffect(() => {
       if (!hasSessionIdentity) {
           lastTtsAccessBlockedRef.current = ttsAccessState.blocked;
@@ -4201,6 +4448,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [engineSwitchInProgress, isGenerating]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) return undefined;
       const tabId = runtimePollTabIdRef.current;
       const coordinationAvailable = isRuntimePollCoordinationAvailable();
       const busy = isGenerating || Boolean(engineSwitchInProgress);
@@ -4292,9 +4540,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               releaseRuntimePollLeadership(tabId);
           }
       };
-  }, [engineSwitchInProgress, isGenerating, refreshTtsRuntimeStatus]);
+  }, [engineSwitchInProgress, isGenerating, isStudioWorkspaceTab, refreshTtsRuntimeStatus]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) return undefined;
       let cancelled = false;
       let timerId: number | null = null;
 
@@ -4342,6 +4591,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [
       engineSwitchInProgress,
       isGenerating,
+      isStudioWorkspaceTab,
       runtimePollLeaderVersion,
       refreshTtsRuntimeStatus,
   ]);
@@ -4361,15 +4611,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [hasSessionIdentity]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
       if (!hasSessionIdentity) return;
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       if (runtimeAutoSelectProbeInFlightRef.current) return;
       const currentTelemetry = selectedEngineTelemetry[settings.engine];
       if (!shouldRefreshSelectedEngineTelemetry(currentTelemetry, Date.now())) return;
       void refreshTtsRuntimeStatus({ broadcast: false });
-  }, [hasSessionIdentity, refreshTtsRuntimeStatus, selectedEngineTelemetry, settings.engine]);
+  }, [hasSessionIdentity, isStudioWorkspaceTab, refreshTtsRuntimeStatus, selectedEngineTelemetry, settings.engine]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
       const validVoiceId = getValidVoiceIdForEngine(settings.engine, settings.voiceId);
       if (validVoiceId === settings.voiceId) return;
 
@@ -4387,9 +4639,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               speakerMapping: refreshedMapping,
           };
       });
-  }, [settings.engine, settings.voiceId, getValidVoiceIdForEngine, getEngineVoiceCatalog]);
+  }, [isStudioWorkspaceTab, settings.engine, settings.voiceId, getValidVoiceIdForEngine, getEngineVoiceCatalog]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
       const scoped = getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode);
       if (!scoped.length) return;
       if (scoped.some((voice) => voice.id === settings.voiceId)) return;
@@ -4398,12 +4651,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setSettings((prev) => ({ ...prev, voiceId: fallbackVoiceId }));
   }, [
       getLanguageScopedVoiceCatalog,
+      isStudioWorkspaceTab,
       settings.engine,
       settings.voiceId,
       studioTextLanguageCode,
   ]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
       if (!castSpeakers.length) return;
 
       const scoped = getLanguageScopedVoiceCatalog(settings.engine, activeScriptLanguageCode);
@@ -4446,6 +4701,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       getEngineVoiceCatalog,
       getLanguageScopedVoiceCatalog,
       getVoiceForCharacter,
+      isStudioWorkspaceTab,
       settings.engine,
       upsertSpeakerVoiceMapping,
   ]);
@@ -4877,40 +5133,63 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [studioQueueState]);
 
   useEffect(() => {
-      if (!isStudioWorkspaceTab) return;
-      let frameId = 0;
-      const applyDockCenter = () => {
-          const studioMainRect = studioMainRef.current?.getBoundingClientRect();
-          const fallback = Math.round(window.innerWidth / 2);
-          const centerX = studioMainRect ? Math.round(studioMainRect.left + (studioMainRect.width / 2)) : fallback;
-          document.documentElement.style.setProperty('--vf-studio-dock-center-x', `${centerX}px`);
+      if (typeof document === 'undefined') return undefined;
+
+      const root = document.documentElement;
+      const clearDockMetrics = () => {
+          root.style.removeProperty('--vf-studio-dock-center-x');
+          root.style.removeProperty('--vf-studio-dock-width');
       };
-      const scheduleDockCenter = () => {
+
+      if (!isStudioWorkspaceTab) {
+          clearDockMetrics();
+          return undefined;
+      }
+
+      let frameId = 0;
+      const applyDockMetrics = () => {
+          const dockTargetRect = studioEditorShellRef.current?.getBoundingClientRect() ?? studioMainRef.current?.getBoundingClientRect();
+          const metrics = resolveStudioGenerateDockMetrics({
+              viewportWidth: window.innerWidth,
+              mode: viewportMode,
+              editorLeft: dockTargetRect?.left ?? null,
+              editorWidth: dockTargetRect?.width ?? null,
+              isLargeDesktop,
+              isNarrowDesktop,
+          });
+          root.style.setProperty('--vf-studio-dock-center-x', `${metrics.centerX}px`);
+          root.style.setProperty('--vf-studio-dock-width', `${metrics.width}px`);
+      };
+      const scheduleDockMetrics = () => {
           if (frameId) window.cancelAnimationFrame(frameId);
           frameId = window.requestAnimationFrame(() => {
-              applyDockCenter();
+              applyDockMetrics();
           });
       };
 
       const observer = typeof ResizeObserver !== 'undefined'
           ? new ResizeObserver(() => {
-              scheduleDockCenter();
+              scheduleDockMetrics();
           })
           : null;
       if (observer && studioMainRef.current) {
           observer.observe(studioMainRef.current);
       }
+      if (observer && studioEditorShellRef.current) {
+          observer.observe(studioEditorShellRef.current);
+      }
 
-      scheduleDockCenter();
-      window.addEventListener('resize', scheduleDockCenter, { passive: true });
-      window.addEventListener('orientationchange', scheduleDockCenter, { passive: true });
+      scheduleDockMetrics();
+      window.addEventListener('resize', scheduleDockMetrics, { passive: true });
+      window.addEventListener('orientationchange', scheduleDockMetrics, { passive: true });
       return () => {
           if (frameId) window.cancelAnimationFrame(frameId);
-          window.removeEventListener('resize', scheduleDockCenter);
-          window.removeEventListener('orientationchange', scheduleDockCenter);
+          window.removeEventListener('resize', scheduleDockMetrics);
+          window.removeEventListener('orientationchange', scheduleDockMetrics);
           if (observer) observer.disconnect();
+          clearDockMetrics();
       };
-  }, [isStudioWorkspaceTab, uiDensity, uiFontScale, sidebarMode]);
+  }, [isLargeDesktop, isNarrowDesktop, isStudioEditorFullscreen, isStudioWorkspaceTab, sidebarMode, uiDensity, uiFontScale, viewportMode]);
 
   useEffect(() => {
       if (isChatOpen && chatEndRef.current) {
@@ -4930,6 +5209,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const cancelInflightTtsJobs = useCallback(() => {
       const jobIds = new Set<string>();
+      void cancelTtsSession({ baseUrl: mediaBackendUrl }).catch(() => undefined);
       const activeGatewayJobId = String(activeGatewayJobIdRef.current || '').trim();
       if (activeGatewayJobId) {
           jobIds.add(activeGatewayJobId);
@@ -4953,6 +5233,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return () => { 
           if(progressTimerRef.current) clearInterval(progressTimerRef.current);
           if(previewAudioRef.current) previewAudioRef.current.pause();
+          voiceSampleCacheRef.current.forEach((entry) => {
+              if (!entry.source?.needsCleanup) return;
+              const sourceUrl = String(entry.source.url || '').trim();
+              if (!sourceUrl) return;
+              try {
+                  URL.revokeObjectURL(sourceUrl);
+              } catch {
+                  // Ignore URL cleanup failures for cached previews.
+              }
+          });
+          voiceSampleCacheRef.current.clear();
           if (generationWatchdogTimerRef.current) window.clearTimeout(generationWatchdogTimerRef.current);
           if (studioQueueCooldownTimerRef.current) window.clearTimeout(studioQueueCooldownTimerRef.current);
           if (queueMasterRebuildTimerRef.current) window.clearTimeout(queueMasterRebuildTimerRef.current);
@@ -5204,16 +5495,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
          return;
      }
 
-     const increment = 100 / (estSeconds * 10); // update every 100ms
+     const increment = 90 / Math.max(1, Math.ceil((Math.max(1, estSeconds) * 1000) / SIMULATED_GENERATION_TICK_MS));
      
      progressTimerRef.current = setInterval(() => {
          setProgress(prev => {
              if (prev >= 90) return 90; // Stall at 90% until real completion
-             return prev + increment;
+             return Math.min(90, prev + increment);
          });
-         setTimeLeft(prev => Math.max(0, prev - 0.1)); // inaccurate but visual
+         setTimeLeft(prev => Math.max(0, prev - (SIMULATED_GENERATION_TICK_MS / 1000)));
          markGenerationActivity();
-     }, 100);
+     }, SIMULATED_GENERATION_TICK_MS);
   };
 
   const stopSimulation = () => {
@@ -5487,7 +5778,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       });
                       const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
                       const { applyStudioAudioMix } = await loadStudioMixService();
-                      const mixedBuffer = await applyStudioAudioMix(decoded, runSettings);
+                      const mixedBuffer = await applyStudioAudioMix(decoded, runSettings, {
+                          customMusicTrackUrl: resolveCustomMusicTrackUrlForSettings(runSettings),
+                      });
                       wavBlob = audioBufferToWav(mixedBuffer);
                   } else {
                       generationOutput = await performGeneration(
@@ -5614,7 +5907,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           activeGatewayRequestIdRef.current = '';
           activeGatewayJobIdRef.current = '';
       }
-  }, [performGeneration, replaceStudioQueueItemAudioUrl, showToast, syncActiveGatewayIds, updateStudioQueueState]);
+  }, [
+      performGeneration,
+      replaceStudioQueueItemAudioUrl,
+      resolveCustomMusicTrackUrlForSettings,
+      showToast,
+      syncActiveGatewayIds,
+      updateStudioQueueState,
+  ]);
 
   const startStudioQueueInterPartCooldown = useCallback(async (
       nextItem: StudioQueueItem,
@@ -5668,7 +5968,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       queueRunnerLockRef.current = true;
       isStudioQueueRunActiveRef.current = true;
       clearStudioQueueCooldownTimer();
-      const generationNotificationKey = `queue:${settings.engine}`;
+      const generationEngine = managedActiveEngine || settings.engine;
+      const generationNotificationKey = `queue:${generationEngine}`;
 
       try {
           let nextItem = findNextStudioQueueProcessItem(initialState || studioQueueStateRef.current);
@@ -5756,7 +6057,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               title: 'Generation Completed',
               message: queueCompletionMessage,
               entityKey: generationNotificationKey,
-              dedupeKey: `generation-completed-queue:${settings.engine}`,
+              dedupeKey: `generation-completed-queue:${generationEngine}`,
               channel: 'inbox',
           });
           showToast(queueCompletionMessage, 'success');
@@ -5775,11 +6076,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       detectedSpeakers.length,
       isStudioMultiSpeakerEnabled,
       loadHistory,
+      managedActiveEngine,
       rebuildStudioQueueMasterAudio,
       runStudioQueueItem,
       scheduleStudioQueueMasterRebuild,
       clearStudioQueueCooldownTimer,
       startStudioQueueInterPartCooldown,
+      settings,
       emit,
       showToast,
       text,
@@ -5788,6 +6091,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const startStudioQueuedGeneration = useCallback(async (): Promise<void> => {
       const currentHash = hashStudioQueueSource(text);
       const existingState = studioQueueStateRef.current;
+      const generationEngine = managedActiveEngine || settings.engine;
       const lockedQueueSettings: GenerationSettings = buildStudioGenerationSettings({
           ...settings,
           speakerMapping: {
@@ -5849,7 +6153,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       generationFirstAudioAtRef.current = 0;
       setGenerationTiming(null);
       setStudioRailTab('queue');
-      const generationNotificationKey = `queue:${settings.engine}`;
+      const generationNotificationKey = `queue:${generationEngine}`;
 
       const estTime = Math.max(4, Math.ceil(text.length / 14));
       startSimulation(estTime, 'Preparing queued generation...', 'live');
@@ -5857,7 +6161,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           title: 'Generation Started',
           message: 'Queued Studio generation started.',
           entityKey: generationNotificationKey,
-          dedupeKey: `generation-started:${settings.engine}`,
+          dedupeKey: `generation-started:${generationEngine}`,
           channel: 'inbox',
       });
 
@@ -5868,7 +6172,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               showToast('Queue cancelled.', 'info');
               return;
           }
-          syncRuntimeBlockedStateFromError(settings.engine, error);
+          syncRuntimeBlockedStateFromError(generationEngine, error);
           generationFailureBurstRef.current += 1;
           const queueFailureMessage = formatFrontendError(error, {
               fallback: 'Queue generation failed. Check runtime health and retry.',
@@ -5879,7 +6183,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               title: 'Generation Failure',
               message: queueFailureMessage,
               entityKey: generationNotificationKey,
-              dedupeKey: `generation-failed-main:${settings.engine}`,
+              dedupeKey: `generation-failed-main:${generationEngine}`,
               action: {
                   label: 'Open Settings',
                   onClick: () => setShowSettings(true),
@@ -5892,6 +6196,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       executeStudioQueue,
       buildStudioGenerationSettings,
       maxCharsPerGeneration,
+      managedActiveEngine,
       resetStudioQueueOutputState,
       settings,
       setStudioRailTab,
@@ -5964,6 +6269,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, setStudioRailTab, showToast, text.length]);
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) {
+          studioQueueAutoResumeAttemptedRef.current = false;
+          return;
+      }
       if (!studioQueueState?.items.length) {
           studioQueueAutoResumeAttemptedRef.current = false;
           return;
@@ -5990,7 +6299,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               showToast(recoveryFailureMessage || 'Queue recovery failed.', 'error');
           }
       });
-  }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, scheduleStudioQueueMasterRebuild, setStudioRailTab, showToast, studioQueueState]);
+  }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, isStudioWorkspaceTab, scheduleStudioQueueMasterRebuild, setStudioRailTab, showToast, studioQueueState]);
 
   const handleCancelGeneration = () => {
       if (!isGenerating) return;
@@ -6118,7 +6427,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       throwIfSignalAborted(signal);
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
       const { applyStudioAudioMix } = await loadStudioMixService();
-      const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings);
+      const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings, {
+          customMusicTrackUrl: resolveCustomMusicTrackUrlForSettings(generationSettings),
+      });
       throwIfSignalAborted(signal);
       setLiveProgress(90, 'Rendering final audio buffer...');
       const wavBlob = audioBufferToWav(mixedBuffer);
@@ -6160,8 +6471,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       generationRunStartedAtRef.current = generationStartedAtMs;
       generationFirstAudioAtRef.current = 0;
       setGenerationTiming(null);
+      const generationEngine = managedActiveEngine || settings.engine;
       const generationRequestId = String(inflightLedger?.requestId || '').trim()
-          || createSynthesisTraceId(resolveEngineToken(settings.engine) as GenerationSettings['engine']);
+          || createSynthesisTraceId(resolveEngineToken(generationEngine) as GenerationSettings['engine']);
       let currentJobId = String(inflightLedger?.jobId || '').trim();
       patchSingleInflightGenerationLedger({
           mode: 'single',
@@ -6177,16 +6489,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       seenLiveChunkKeysRef.current.clear();
 
       const estTime = Math.max(3, Math.ceil(generationText.length / 14));
-      const generationNotificationKey = `single:${settings.engine}`;
+      const generationNotificationKey = `single:${generationEngine}`;
       const preparingLabel = options?.treatAsRecovery
           ? 'Reconnecting generation...'
-          : (settings.engine === 'DUNO' ? 'Preparing DUNO synthesis...' : 'Preparing generation...');
+          : (generationEngine === 'DUNO' ? 'Preparing DUNO synthesis...' : 'Preparing generation...');
       startSimulation(estTime, preparingLabel, 'live');
       emit('generation.started', {
         title: 'Generation Started',
         message: options?.treatAsRecovery ? 'Reconnecting existing generation.' : 'Generation started.',
         entityKey: generationNotificationKey,
-        dedupeKey: `generation-started:${settings.engine}`,
+        dedupeKey: `generation-started:${generationEngine}`,
         channel: 'inbox',
       });
 
@@ -6208,7 +6520,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       });
                       const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
                       const { applyStudioAudioMix } = await loadStudioMixService();
-                      const mixedBuffer = await applyStudioAudioMix(decoded, runSettings);
+                      const mixedBuffer = await applyStudioAudioMix(decoded, runSettings, {
+                          customMusicTrackUrl: resolveCustomMusicTrackUrlForSettings(runSettings),
+                      });
                       const wavBlob = audioBufferToWav(mixedBuffer);
                       const parsedForRun = parseMultiSpeakerScript(generationText);
                       const runSpeakers = parsedForRun.speakersList
@@ -6244,7 +6558,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (staleJobId) {
                       try {
                           const { cancelTtsJob } = await import('../src/shared/api/gatewayClient');
-                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(settings) });
+                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(buildStudioGenerationSettings(settings)) });
                       } catch {
                           // Best-effort cancellation before retrying with the same request id.
                       }
@@ -6305,7 +6619,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               title: 'Generation Completed',
               message: completionMessage,
               entityKey: generationNotificationKey,
-              dedupeKey: `generation-completed-single:${settings.engine}`,
+              dedupeKey: `generation-completed-single:${generationEngine}`,
               channel: 'inbox',
           });
           showToast(completionMessage, 'success');
@@ -6320,7 +6634,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       title: 'Generation Stalled',
                       message: stallMessage,
                       entityKey: generationNotificationKey,
-                      dedupeKey: `generation-stalled-main:${settings.engine}`,
+                      dedupeKey: `generation-stalled-main:${generationEngine}`,
                       action: {
                           label: 'Open Settings',
                           onClick: () => setShowSettings(true),
@@ -6329,7 +6643,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }
           } else {
               clearSingleInflightGenerationLedger();
-              syncRuntimeBlockedStateFromError(settings.engine, e);
+              syncRuntimeBlockedStateFromError(generationEngine, e);
               generationFailureBurstRef.current += 1;
               const failureMessage = formatFrontendError(e, {
                   fallback: 'Generation failed. Check runtime health and retry.',
@@ -6340,7 +6654,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   title: 'Generation Failure',
                   message: failureMessage,
                   entityKey: generationNotificationKey,
-                  dedupeKey: `generation-failed-main:${settings.engine}`,
+                  dedupeKey: `generation-failed-main:${generationEngine}`,
                   action: {
                       label: 'Open Settings',
                       onClick: () => setShowSettings(true),
@@ -6364,8 +6678,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       emit,
       hasAdminConsoleAccess,
       loadHistory,
+      managedActiveEngine,
       patchSingleInflightGenerationLedger,
       performGeneration,
+      resolveCustomMusicTrackUrlForSettings,
       settings,
       showToast,
       stopSimulation,
@@ -6375,6 +6691,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerate = async () => {
     if (isGenerating || singleRunLockRef.current) return;
+    if (engineSwitchInProgress) {
+      showToast('Wait for the engine switch to finish before generating.', 'info');
+      return;
+    }
     if (studioDirectorPreview) {
       showToast('Apply or discard the AI Director preview first. The directed pass is waiting for review.', 'info');
       return;
@@ -6385,6 +6705,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         return;
     }
     if (!text.trim()) return showToast("Please enter some text.", "info");
+    const activeEngineForGeneration = managedActiveEngine || settings.engine;
     if (text.length > maxCharsPerGeneration) {
       if (!isStudioQueueModeEnabled) {
         emit('custom.message', {
@@ -6409,7 +6730,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return;
     }
     if (isWalletBlocked && !canRunDunoWithoutWallet) {
-      showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Billing to top up or upgrade.`, 'error');
+      showToast(`Insufficient ${getEngineDisplayName(activeEngineForGeneration)} VF balance. Open Billing to top up or upgrade.`, 'error');
       openBillingCenter();
       return;
     }
@@ -6417,10 +6738,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   useEffect(() => {
+      if (!isStudioWorkspaceTab) {
+          singleInflightAutoResumeAttemptedRef.current = false;
+          return;
+      }
       const inflightSingle = singleInflightLedgerRef.current;
       if (!inflightSingle) return;
-      const inflightJobId = String(inflightSingle.jobId || '').trim();
-      if (!inflightJobId) return;
+      if (!hasRecoverableSingleInflightGenerationState(inflightSingle)) return;
       const inflightStartedAtMs = Number(inflightSingle.startedAtMs || 0);
       if (
           Number.isFinite(inflightStartedAtMs)
@@ -6436,7 +6760,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (studioQueueState?.items.some((item) => item.status === 'running')) return;
       singleInflightAutoResumeAttemptedRef.current = true;
       void runSingleGeneration({ inflightLedger: inflightSingle, treatAsRecovery: true });
-  }, [clearSingleInflightGenerationLedger, isGenerating, runSingleGeneration, studioQueueState]);
+  }, [clearSingleInflightGenerationLedger, isGenerating, isStudioWorkspaceTab, runSingleGeneration, studioQueueState]);
 
   // --- Character Management Logic ---
   const openCharacterModal = (char?: CharacterProfile, presetVoiceId?: string) => {
@@ -6504,12 +6828,45 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return String(clonedVoice.originalSampleUrl || clonedVoice.referenceAudioUrl || '').trim();
   }, [resolveVoicePreviewUrl]);
 
+  const buildVoiceSampleCacheKey = useCallback(
+      (
+          voiceId: string,
+          name: string,
+          engine: GenerationSettings['engine'] = 'PRIME'
+      ): string => {
+          const normalizedEngine = resolveEngineToken(engine);
+          const normalizedVoiceId = String(voiceId || '').trim();
+          const normalizedName = String(name || '').trim().toLowerCase();
+          return `${normalizedEngine}:${normalizedVoiceId}:${normalizedName}`;
+      },
+      []
+  );
+
   const buildVoiceSampleSource = useCallback(async (
       voiceId: string,
       name: string,
       engine: GenerationSettings['engine'] = 'PRIME'
   ): Promise<{ url: string; needsCleanup: boolean }> => {
-      const selectedVoice = getVoiceById(voiceId);
+      const normalizedVoiceId = String(voiceId || '').trim();
+      const normalizedName = String(name || '').trim();
+      const normalizedEngine = resolveEngineToken(engine) as GenerationSettings['engine'];
+      if (!normalizedVoiceId) {
+          throw new Error('Select a voice before previewing.');
+      }
+
+      const cacheKey = buildVoiceSampleCacheKey(normalizedVoiceId, normalizedName, normalizedEngine);
+      const cache = voiceSampleCacheRef.current;
+      const cachedEntry = cache.get(cacheKey);
+      if (cachedEntry?.source) {
+          return { url: cachedEntry.source.url, needsCleanup: false };
+      }
+      if (cachedEntry?.inFlight) {
+          const source = await cachedEntry.inFlight;
+          return { url: source.url, needsCleanup: false };
+      }
+
+      const inFlight = (async (): Promise<VoiceSampleSource> => {
+      const selectedVoice = getVoiceById(normalizedVoiceId);
       const fallbackPreviewUrl = resolveVoicePreviewUrl(selectedVoice);
       const clonedPlaybackUrl = resolveClonedVoicePlaybackUrl(selectedVoice);
 
@@ -6520,27 +6877,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return { url: fallbackPreviewUrl, needsCleanup: false };
       }
 
-      await ensureEngineOnline(engine, { silent: true, syncVoiceId: voiceId, requireAccess: true });
+      await ensureEngineOnline(normalizedEngine, { silent: true, syncVoiceId: normalizedVoiceId, requireAccess: true });
 
       const previewSettings: GenerationSettings = {
           ...settings,
-          engine,
-          voiceId,
+          engine: normalizedEngine,
+          voiceId: normalizedVoiceId,
           speed: 1.0,
           emotion: 'Neutral',
       };
 
-      const text = `Hello! I am ${name}. I can bring your story to life.`;
+      const text = `Hello! I am ${normalizedName || 'the speaker'}. I can bring your story to life.`;
 
-      let voiceParam = name;
-      if (isGemRuntimeEngine(engine)) {
-        voiceParam = getVoiceById(voiceId)?.geminiVoiceName || clonedVoices.find((voice) => voice.id === voiceId)?.geminiVoiceName || 'Fenrir';
+      let voiceParam = normalizedName;
+      if (isGemRuntimeEngine(normalizedEngine)) {
+        voiceParam = selectedVoice?.geminiVoiceName || clonedVoices.find((voice) => voice.id === normalizedVoiceId)?.geminiVoiceName || 'Fenrir';
       } else {
-        voiceParam = voiceId;
+        voiceParam = normalizedVoiceId;
       }
 
       const { generateSpeech } = await loadGeminiService();
-      const previewRequestId = `voice-preview:${resolveEngineToken(engine)}:${String(voiceId || name || 'voice').trim().replace(/\s+/g, '_')}`;
+      const previewRequestId = `voice-preview:${resolveEngineToken(normalizedEngine)}:${String(normalizedVoiceId || normalizedName || 'voice').trim().replace(/\s+/g, '_')}`;
       const buffer = await generateSpeech(
           text,
           voiceParam,
@@ -6551,9 +6908,39 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       );
       const blob = audioBufferToWav(buffer);
       return { url: URL.createObjectURL(blob), needsCleanup: true };
-  }, [clonedVoices, ensureEngineOnline, getVoiceById, isGemRuntimeEngine, resolveClonedVoicePlaybackUrl, resolveVoicePreviewUrl, settings]);
+      })();
+
+      cache.set(cacheKey, { inFlight });
+      try {
+          const source = await inFlight;
+          cache.set(cacheKey, { source });
+          return { url: source.url, needsCleanup: false };
+      } catch (error) {
+          const latest = cache.get(cacheKey);
+          if (latest?.inFlight === inFlight) {
+              cache.delete(cacheKey);
+          }
+          throw error;
+      }
+  }, [buildVoiceSampleCacheKey, clonedVoices, ensureEngineOnline, getVoiceById, isGemRuntimeEngine, resolveClonedVoicePlaybackUrl, resolveVoicePreviewUrl, settings]);
+
+  const warmVoiceSample = useCallback(async (
+      voiceId: string,
+      name: string,
+      engine: GenerationSettings['engine'] = 'PRIME',
+      options?: { silent?: boolean }
+  ): Promise<void> => {
+      try {
+          await buildVoiceSampleSource(voiceId, name, engine);
+      } catch (error: any) {
+          if (options?.silent) return;
+          syncRuntimeBlockedStateFromError(engine, error);
+          showToast(error?.message || 'Unable to prepare the voice preview.', 'error');
+      }
+  }, [buildVoiceSampleSource, showToast, syncRuntimeBlockedStateFromError]);
 
   const playVoiceSample = async (voiceId: string, name: string, engine: GenerationSettings['engine'] = 'PRIME') => {
+      const normalizedEngine = resolveEngineToken(engine) as GenerationSettings['engine'];
       // Stop current
       if (previewAudioRef.current) {
           previewAudioRef.current.pause();
@@ -6568,7 +6955,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       setPreviewState({ id: voiceId, status: 'loading' });
 
-      const playAudioSource = async (sourceUrl: string, revokeOnEnd: boolean): Promise<void> => {
+      const playAudioSource = async (sourceUrl: string): Promise<void> => {
           const audio = new Audio(sourceUrl);
           audio.crossOrigin = 'anonymous';
           previewAudioRef.current = audio;
@@ -6593,23 +6980,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           audio.onended = () => {
               setPreviewState(null);
               previewAudioRef.current = null;
-              if (revokeOnEnd) {
-                  try {
-                      URL.revokeObjectURL(sourceUrl);
-                  } catch {
-                      // ignore cleanup errors
-                  }
-              }
           };
           await audio.play();
           setPreviewState({ id: voiceId, status: 'playing' });
       };
 
       try {
-          const sampleSource = await buildVoiceSampleSource(voiceId, name, engine);
-          await playAudioSource(sampleSource.url, sampleSource.needsCleanup);
+          const sampleSource = await buildVoiceSampleSource(voiceId, name, normalizedEngine);
+          await playAudioSource(sampleSource.url);
       } catch (e: any) {
-          syncRuntimeBlockedStateFromError(engine, e);
+          syncRuntimeBlockedStateFromError(normalizedEngine, e);
           showToast(e.message, 'error');
           setPreviewState(null);
       }
@@ -6932,8 +7312,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerateDub = async () => {
       if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
+      const activeEngineForDubbing = managedActiveEngine || settings.engine;
       if (isWalletBlocked && !canRunDunoWithoutWallet) {
-          showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Billing to top up or upgrade.`, 'error');
+          showToast(`Insufficient ${getEngineDisplayName(activeEngineForDubbing)} VF balance. Open Billing to top up or upgrade.`, 'error');
           openBillingCenter();
           return;
       }
@@ -6979,7 +7360,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } = await loadMediaBackendService();
 
       resetDubbingLivePlayback();
-      const generationNotificationKey = `async-job:${settings.engine}`;
+      const generationNotificationKey = `async-job:${activeEngineForDubbing}`;
       startSimulation(26, 'Submitting backend async job...', 'live');
       patchDubbingUiState({
           phase: 'running',
@@ -6991,7 +7372,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           title: 'Generation Started',
           message: 'Generation started for async queue workflow.',
           entityKey: generationNotificationKey,
-          dedupeKey: `generation-started-async:${settings.engine}`,
+          dedupeKey: `generation-started-async:${activeEngineForDubbing}`,
           channel: 'inbox',
       });
 
@@ -7249,7 +7630,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               });
               showToast('Dubbing cancelled.', 'info');
           } else {
-              syncRuntimeBlockedStateFromError(settings.engine, e);
+              syncRuntimeBlockedStateFromError(activeEngineForDubbing, e);
               generationFailureBurstRef.current += 1;
               const dubbingFailureMessage = formatFrontendError(e, {
                   fallback: 'Generation failed. Check backend health and retry.',
@@ -7260,7 +7641,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   title: 'Generation Failure',
                   message: dubbingFailureMessage,
                   entityKey: generationNotificationKey,
-                  dedupeKey: `generation-failed-async:${settings.engine}`,
+                  dedupeKey: `generation-failed-async:${activeEngineForDubbing}`,
                   action: {
                       label: 'Open Settings',
                       onClick: () => setShowSettings(true),
@@ -7465,6 +7846,54 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setIsStudioImporting(false);
       }
   }, [mediaBackendUrl, showToast, toUserFriendlySystemMessage]);
+
+  const handleCustomMusicTrackInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+      const selectedFile = event.target.files?.[0] || null;
+      if (!selectedFile) {
+          event.target.value = '';
+          return;
+      }
+      const mimeType = String(selectedFile.type || '').trim().toLowerCase();
+      const fileName = String(selectedFile.name || '').trim();
+      const hasKnownAudioExtension = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i.test(fileName);
+      if (!mimeType.startsWith('audio/') && !hasKnownAudioExtension) {
+          showToast('Please upload a valid audio file for background music.', 'info');
+          event.target.value = '';
+          return;
+      }
+      if (selectedFile.size > STUDIO_CUSTOM_MUSIC_MAX_FILE_BYTES) {
+          const maxMb = Math.round(STUDIO_CUSTOM_MUSIC_MAX_FILE_BYTES / (1024 * 1024));
+          showToast(`Background track is too large. Use a file up to ${maxMb}MB.`, 'info');
+          event.target.value = '';
+          return;
+      }
+      const objectUrl = URL.createObjectURL(selectedFile);
+      setCustomMusicTrackUploadManaged({
+          name: fileName || 'Uploaded track',
+          url: objectUrl,
+          sizeBytes: selectedFile.size,
+          mimeType: mimeType || 'audio/*',
+      });
+      setSettings((prev) => ({ ...prev, musicTrackId: STUDIO_CUSTOM_MUSIC_TRACK_ID }));
+      showToast(`Background track "${fileName || 'uploaded file'}" is ready.`, 'success');
+      event.target.value = '';
+  }, [setCustomMusicTrackUploadManaged, showToast]);
+
+  const clearCustomMusicTrackUpload = useCallback(() => {
+      const hadUpload = Boolean(customMusicTrackUploadRef.current?.url);
+      if (customMusicTrackInputRef.current) {
+          customMusicTrackInputRef.current.value = '';
+      }
+      setCustomMusicTrackUploadManaged(null);
+      setSettings((prev) => (
+          prev.musicTrackId === STUDIO_CUSTOM_MUSIC_TRACK_ID
+              ? { ...prev, musicTrackId: DEFAULT_SETTINGS.musicTrackId }
+              : prev
+      ));
+      if (hadUpload) {
+          showToast('Custom background track removed.', 'info');
+      }
+  }, [setCustomMusicTrackUploadManaged, showToast]);
 
   const handleStudioImportInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
       const files = event.target.files;
@@ -7722,9 +8151,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [closeVoiceCloneModal, settings.engine, showToast, speakerVcReferenceMap]);
 
   function buildStudioGenerationSettings(baseSettings: GenerationSettings): GenerationSettings {
+      const resolvedEngine = managedActiveEngine || baseSettings.engine;
       return {
           ...baseSettings,
-          runtimeProvider: ttsRuntimeStatus[baseSettings.engine]?.provider || '',
+          engine: resolvedEngine,
+          runtimeProvider: ttsRuntimeStatus[resolvedEngine]?.provider || '',
           speakerMapping: {
               ...(baseSettings.speakerMapping || {}),
           },
@@ -7765,7 +8196,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const galleryVoicePool = useMemo(() => {
       const dedup = new Map<string, VoiceOption>();
       clonedVoices.forEach((voice) => {
-          if (voice?.id) dedup.set(voice.id, voice);
+          if (!voice?.id) return;
+          const voiceEngine = resolveEngineToken(voice.engine || settings.engine) as GenerationSettings['engine'];
+          dedup.set(voice.id, withVoiceMeta(voice, voiceEngine));
       });
       ENGINE_ORDER.forEach((engine) => {
           getEngineVoiceCatalog(engine).forEach((voice) => {
@@ -7830,6 +8263,65 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       () => castVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'pro'),
       [castVoiceOptions, resolveVoiceAccessTier, settings.engine]
   );
+  const speakerPreviewWarmTargets = useMemo(() => {
+      if (activeTab !== Tab.STUDIO && activeTab !== Tab.VOICE_CLONING) {
+          return [];
+      }
+      const targets = new Map<string, { voiceId: string; speakerName: string; engine: GenerationSettings['engine'] }>();
+      const registerTarget = (voiceId: string, speakerName: string) => {
+          const normalizedVoiceId = String(voiceId || '').trim();
+          const normalizedSpeakerName = String(speakerName || '').trim();
+          if (!normalizedVoiceId || !normalizedSpeakerName) return;
+          const engine = resolveEngineToken(getVoiceById(normalizedVoiceId)?.engine || settings.engine) as GenerationSettings['engine'];
+          const cacheKey = buildVoiceSampleCacheKey(normalizedVoiceId, normalizedSpeakerName, engine);
+          if (targets.has(cacheKey)) return;
+          targets.set(cacheKey, {
+              voiceId: normalizedVoiceId,
+              speakerName: normalizedSpeakerName,
+              engine,
+          });
+      };
+
+      characterLibrary.forEach((character) => {
+          registerTarget(character.voiceId, character.name);
+      });
+
+      if (isStudioWorkspaceTab && isStudioMultiSpeakerEnabled) {
+          castSpeakers.forEach((speaker) => {
+              const mappedVoiceId = resolveMappedVoiceForSpeaker(speaker) || settings.voiceId;
+              registerTarget(mappedVoiceId, speaker);
+          });
+      }
+
+      return Array.from(targets.values());
+  }, [
+      activeTab,
+      buildVoiceSampleCacheKey,
+      castSpeakers,
+      characterLibrary,
+      getVoiceById,
+      isStudioMultiSpeakerEnabled,
+      isStudioWorkspaceTab,
+      resolveMappedVoiceForSpeaker,
+      settings.engine,
+      settings.voiceId,
+  ]);
+  useEffect(() => {
+      if (speakerPreviewWarmTargets.length <= 0) return;
+      let cancelled = false;
+
+      const warmAllSpeakerSamples = async () => {
+          for (const target of speakerPreviewWarmTargets) {
+              if (cancelled) return;
+              await warmVoiceSample(target.voiceId, target.speakerName, target.engine, { silent: true });
+          }
+      };
+
+      void warmAllSpeakerSamples();
+      return () => {
+          cancelled = true;
+      };
+  }, [speakerPreviewWarmTargets, warmVoiceSample]);
   const getEngineLabel = (engine: GenerationSettings['engine']) => getEngineDisplayName(engine);
   const getEngineSubLabel = (engine: GenerationSettings['engine']) => (
     engine === 'DUNO'
@@ -7897,6 +8389,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activateTtsEngine = async (engine: GenerationSettings['engine']) => {
       const targetEngine = resolveEngineToken(engine) as GenerationSettings['engine'];
       if (engineSwitchInProgress) return;
+      const previousActiveEngine = managedActiveEngine || settings.engine;
       if (!isPrimeEngineAllowed(targetEngine)) {
           if (!hasUnlimitedAccess && !isPaidBillingPlan && walletPaidVfBalance <= 0) {
               setShowSubscriptionModal(true);
@@ -7910,38 +8403,57 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const nextVoiceId = getValidVoiceIdForEngine(targetEngine, settings.voiceId);
 
-      setSettings(prev => {
-          const catalog = getEngineVoiceCatalog(targetEngine);
-          const fallbackVoiceId = getValidVoiceIdForEngine(targetEngine, catalog[0]?.id || nextVoiceId || prev.voiceId);
-          const refreshedMapping: Record<string, string> = {};
-          Object.entries(prev.speakerMapping || {}).forEach(([speaker, mappedVoiceId]) => {
-              refreshedMapping[speaker] = getValidVoiceIdForEngine(targetEngine, mappedVoiceId || fallbackVoiceId);
-          });
-          return {
-              ...prev,
-              engine: targetEngine,
-              voiceId: getValidVoiceIdForEngine(targetEngine, prev.voiceId),
-              speakerMapping: refreshedMapping,
-          };
-      });
-
       try {
-          if (targetEngine !== 'DUNO') {
-              await ensureEngineOnline(targetEngine, { syncVoiceId: nextVoiceId });
-              return;
-          }
-          await ensureEngineOnline(targetEngine, { syncVoiceId: nextVoiceId });
+          setManagedActiveEngine(targetEngine);
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              [targetEngine]: mergeRuntimeStatus(prev[targetEngine], { state: 'starting', detail: 'Starting runtime...' }),
+          }));
+
+          const activation = await ensureEngineOnline(targetEngine, {
+              syncVoiceId: nextVoiceId,
+              waitForOnline: false,
+              commitSettings: false,
+          });
+          const runtimeCatalog = activation.catalog.length > 0
+              ? activation.catalog
+              : getEngineVoiceCatalog(targetEngine);
+          const preferredVoiceId = activation.syncedVoiceId
+              || selectVoiceIdFromCatalog(targetEngine, runtimeCatalog, nextVoiceId);
+          const resolvedVoiceId = getValidVoiceIdForEngine(targetEngine, preferredVoiceId);
+          setSettings((prev) => {
+              const fallbackVoiceId = getValidVoiceIdForEngine(
+                  targetEngine,
+                  runtimeCatalog[0]?.id || resolvedVoiceId || prev.voiceId
+              );
+              const refreshedMapping: Record<string, string> = {};
+              Object.entries(prev.speakerMapping || {}).forEach(([speaker, mappedVoiceId]) => {
+                  refreshedMapping[speaker] = getValidVoiceIdForEngine(targetEngine, mappedVoiceId || fallbackVoiceId);
+              });
+              return {
+                  ...prev,
+                  engine: targetEngine,
+                  voiceId: getValidVoiceIdForEngine(targetEngine, resolvedVoiceId || prev.voiceId),
+                  speakerMapping: refreshedMapping,
+              };
+          });
       } catch (error: any) {
           showToast(`Failed to activate ${getEngineLabel(targetEngine)}: ${error?.message || 'Unknown error'}`, 'error');
+          setManagedActiveEngine(previousActiveEngine);
       }
   };
   const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
-  const contentMaxWidthClass = isStudioWorkspaceTab
-      ? 'max-w-[1320px]'
+  const contentMaxWidthClass = activeTab === Tab.NOVEL || isStudioWorkspaceTab
+      ? 'max-w-[1480px]'
       : activeTab === Tab.READER || activeTab === Tab.VOICE_CLONING
         ? 'max-w-[1360px]'
         : 'max-w-5xl';
-  const isStandaloneReaderRoute = String(pathname || '').trim().toLowerCase().startsWith('/reader');
+  const normalizedPathname = String(pathname || '').trim().toLowerCase();
+  const isStandaloneReaderRoute = (
+      normalizedPathname.startsWith('/reader')
+      || normalizedPathname === '/app/reader'
+      || normalizedPathname.startsWith('/app/reader/')
+  );
 
   useEffect(() => {
       const nextTab = resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO;
@@ -7962,26 +8474,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   }, [activeTab, workspaceTabs]);
   useEffect(() => {
-      const preloadActive = TAB_PRELOADERS[activeTab];
-      if (preloadActive) {
-          void preloadActive();
-      }
+      if (!hasWorkspaceInteracted) return undefined;
       const nextTab = resolveWorkspaceNextPreloadTab(workspaceTabs, activeTab, {
         allowReaderPreload: ENABLE_STUDIO_READER_PRELOAD,
         allowNextPreloadFromStudio: ENABLE_STUDIO_READER_PRELOAD,
       });
       const preloadNext = nextTab ? TAB_PRELOADERS[nextTab] : undefined;
       if (!preloadNext) return undefined;
-      const win = typeof window !== 'undefined'
-        ? window as Window & { requestIdleCallback?: (callback: IdleRequestCallback) => number; cancelIdleCallback?: (id: number) => void }
-        : undefined;
-      if (win?.requestIdleCallback) {
-          const idleId = win.requestIdleCallback(() => { void preloadNext(); });
-          return () => win.cancelIdleCallback?.(idleId);
-      }
-      const timeoutId = window.setTimeout(() => { void preloadNext(); }, 300);
-      return () => window.clearTimeout(timeoutId);
-  }, [activeTab, workspaceTabs]);
+      if (typeof window === 'undefined') return undefined;
+      const win = window as Window & { requestIdleCallback?: (callback: IdleRequestCallback) => number; cancelIdleCallback?: (id: number) => void };
+      let idleId: number | null = null;
+      const timeoutId = window.setTimeout(() => {
+          if (document.visibilityState !== 'visible') return;
+          if (win.requestIdleCallback) {
+              idleId = win.requestIdleCallback(() => { void preloadNext(); });
+              return;
+          }
+          void preloadNext();
+      }, 4000);
+      return () => {
+          window.clearTimeout(timeoutId);
+          if (idleId !== null) {
+              win.cancelIdleCallback?.(idleId);
+          }
+      };
+  }, [activeTab, hasWorkspaceInteracted, workspaceTabs]);
   const openAuthScreen = (mode: 'login' | 'signup') => {
       writeStorageString(STORAGE_KEYS.authIntent, mode);
       setIsMobileMenuOpen(false);
@@ -8406,157 +8923,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       <div className="vf-sidebar-scroll custom-scrollbar flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <div className="flex min-h-full flex-col">
-
-        {false && (
-        <div className="px-4 pb-4">
-          <div className={`vf-sidebar-balance rounded-2xl border p-3 shadow-sm ${
-            isDarkUi ? 'border-slate-800 bg-slate-900/75 shadow-black/20' : 'border-gray-200 bg-white'
-          }`}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className={`text-[10px] font-black uppercase tracking-[0.2em] ${isDarkUi ? 'text-cyan-200/80' : 'text-cyan-700/70'}`}>
-                  Plan & Credits
-                </div>
-                <div className={`mt-2 text-base font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {activePlanLabel} workspace
-                </div>
-                <div className={`mt-1 text-[11px] leading-5 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                  {hasUnlimitedAccess
-                    ? 'Unlimited access is active for this account.'
-                    : isPaidBillingPlan
-                      ? 'Recurring billing and larger monthly caps are enabled.'
-                      : 'Upgrade only when you need bigger caps or more engines.'}
-                </div>
-              </div>
-              <button
-                onClick={() => setShowSubscriptionModal(true)}
-                className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-colors ${
-                  isPaidBillingPlan
-                    ? (isDarkUi ? 'bg-cyan-500/14 text-cyan-100 hover:bg-cyan-500/24' : 'bg-cyan-50 text-cyan-700 hover:bg-cyan-100')
-                    : (isDarkUi ? 'bg-amber-400 text-slate-950 hover:bg-amber-300' : 'bg-amber-500 text-white hover:bg-amber-400')
-                }`}
-              >
-                {isPaidBillingPlan ? 'Manage' : 'Upgrade'}
-              </button>
-            </div>
-
-            {!hasUnlimitedAccess && (
-              <>
-                <div className="mt-3 grid grid-cols-1 gap-2">
-              <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Spendable</div>
-                <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
-                </div>
-                <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                  {getEngineDisplayName(settings.engine)}
-                </div>
-              </div>
-                </div>
-
-            <div className={`mt-3 rounded-xl border px-3 py-3 text-[11px] ${isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-300' : 'border-gray-200 bg-white/90 text-gray-600'}`}>
-              <div className="flex items-center justify-between gap-2">
-                <span>Monthly free pool</span>
-                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{balanceRemainingLabel}</strong>
-              </div>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <span>Paid VF</span>
-                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{walletPaid.toLocaleString()}</strong>
-              </div>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <span>Allowed engines</span>
-                <strong className={`max-w-[9rem] truncate text-right ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {primeAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
-                </strong>
-              </div>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <span>Token-pack savings</span>
-                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>
-                  {tokenPackDiscountPercent > 0 ? `${tokenPackDiscountPercent}% off` : 'No plan discount'}
-                </strong>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button
-                onClick={openBillingCenter}
-                className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold ${
-                  isDarkUi
-                    ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
-                    : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
-                }`}
-              >
-                <Bell size={12} />
-                Open Billing
-            </button>
-            <button
-              onClick={() => { void handleBuyTokenPack(); }}
-              disabled={creditsActionState.buyTokenPackDisabled}
-              className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
-                isDarkUi
-                  ? 'border-emerald-400/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
-                  : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                }`}
-              >
-                {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-                Purchase {selectedTokenPackMeta.label}
-              </button>
-            </div>
-            <div className="mt-2">
-              <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                Token Pack
-              </label>
-              <select
-                value={selectedTokenPack}
-                onChange={(event) => setSelectedTokenPack(event.target.value as TokenPackKey)}
-                className={`h-8 w-full rounded-lg border px-2 text-[11px] font-semibold outline-none transition-colors ${
-                  isDarkUi
-                    ? 'border-slate-700 bg-slate-950/70 text-slate-100 focus:border-cyan-400'
-                    : 'border-gray-200 bg-white text-gray-900 focus:border-cyan-300'
-                }`}
-              >
-                {(Object.keys(TOKEN_PACK_MATRIX) as TokenPackKey[]).map((packKey) => {
-                  const item = TOKEN_PACK_MATRIX[packKey];
-                  const displayPrice = applyTokenPackDiscount(item.baseInr, tokenPackDiscountPercent);
-                  return (
-                    <option key={packKey} value={packKey}>
-                      {joinUiFragments([item.label, `${item.vf.toLocaleString()} VF`, formatInr(displayPrice)])}
-                    </option>
-                  );
-                })}
-              </select>
-              <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                Checkout price: {formatInr(selectedTokenPackPriceInr)} ({tokenPackDiscountPercent > 0 ? `${tokenPackDiscountPercent}% plan discount saves ${formatInr(selectedTokenPackSavingsInr)}` : 'Standard pricing'})
-              </div>
-            </div>
-            <div className="mt-2 flex items-center gap-1">
-              <input
-                value={couponCode}
-                onChange={(event) => setCouponCode(event.target.value)}
-                placeholder="Wallet coupon"
-                className={`h-8 min-w-0 flex-1 rounded-lg border px-2 text-[11px] outline-none transition-colors ${
-                  isDarkUi
-                    ? 'border-slate-700 bg-slate-950/70 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400'
-                    : 'border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-cyan-300'
-                }`}
-              />
-              <button
-                onClick={() => { void handleRedeemCoupon(); }}
-                disabled={creditsActionState.redeemCouponDisabled}
-                className={`h-8 rounded-lg border px-2 text-[11px] font-semibold disabled:opacity-50 ${
-                  isDarkUi
-                    ? 'border-cyan-400/35 text-cyan-200 hover:bg-cyan-500/10'
-                    : 'border-cyan-200 text-cyan-700 hover:bg-cyan-50'
-                }`}
-              >
-                {isRedeemingCoupon ? <Loader2 size={12} className="animate-spin" /> : 'Redeem'}
-              </button>
-            </div>
-              </>
-            )}
-            </div>
-        </div>
-        )}
           <div className={`vf-sidebar-footer sticky bottom-0 z-10 mt-auto shrink-0 border-t p-3 backdrop-blur-sm ${isDarkUi ? 'border-slate-800 bg-slate-950/88' : 'border-gray-200 bg-white/90'}`}>
             {isDesktopCompact ? (
               <div className="space-y-2">
@@ -8861,10 +9227,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
                           <div>
                               <div className={`flex justify-between text-[11px] mb-1 font-semibold ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>
-                                  <span className="flex items-center gap-1"><Type size={11}/> UI Scale</span>
-                                  <span>{Math.round(uiFontScale * 100)}%</span>
-                              </div>
-                              <div className={`rounded-md border px-2 py-1 text-[10px] font-medium ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>
+                              <span className="flex items-center gap-1"><Type size={11}/> UI Scale</span>
+                              <span>{Math.round(uiFontScale * 100)}%</span>
+                          </div>
+                          <div className={`rounded-md border px-2 py-1 text-[10px] font-medium ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>
                                   Locked at 100%
                               </div>
                           </div>
@@ -8877,7 +9243,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <div className={settingsCardClass}>
                         <div className="grid grid-cols-1 gap-2">
                           {ENGINE_ORDER.map(engine => {
-                              const isActive = settings.engine === engine;
+                              const isActive = (managedActiveEngine || settings.engine) === engine;
                               const status = ttsRuntimeStatus[engine];
                               const pending = engineSwitchInProgress === engine;
                               const switchLocked = Boolean(engineSwitchInProgress) && !pending;
@@ -8977,10 +9343,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   };
 
-  const usesPhoneStudioDock = isStudioWorkspaceTab && isPhone;
-  const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
+  const usesFloatingStudioDock = isStudioWorkspaceTab;
   const shouldHideAssistantForReader = activeTab === Tab.READER;
-  const useDesktopPinnedMixRail = isDesktop && !isPhone;
   const isStudioCastPanelOpen = !isPhone || studioMobilePanels.cast;
   const studioMainSpacingClass = isPhone
     ? isShortPhone
@@ -9032,16 +9396,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       ? 'space-y-3'
       : 'space-y-4'
     : 'space-y-6';
-  const studioFloatingDockWidthClass = isDesktop
-    ? (isLargeDesktop
-      ? 'w-[clamp(16.25rem,25vw,18.5rem)] max-w-[calc(100vw-2rem)]'
-      : isNarrowDesktop
-        ? 'w-[clamp(15.5rem,27vw,17.25rem)] max-w-[calc(100vw-2rem)]'
-        : 'w-[clamp(16rem,26vw,19rem)] max-w-[calc(100vw-2rem)]')
-    : 'w-[clamp(15.5rem,31vw,18.25rem)] max-w-[calc(100vw-2rem)]';
-  const studioFloatingDockVariantClass = isDesktop
-    ? 'vf-studio-generate-anchor--desktop'
-    : 'vf-studio-generate-anchor--tablet';
+  const studioFloatingDockVariantClass = isPhone
+    ? 'vf-studio-generate-anchor--phone'
+    : isDesktop
+      ? 'vf-studio-generate-anchor--desktop'
+      : 'vf-studio-generate-anchor--tablet';
+  const studioGenerateButtonSize = isDesktop && !isNarrowDesktop ? 'default' : 'compact';
+  const shouldDockStudioPanelBelowEditor = isDesktop && (studioRailTab === 'voice' || studioRailTab === 'cast');
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
@@ -9119,12 +9480,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                      <EngineRuntimeStrip
                        engineOrder={ENGINE_ORDER}
                        statuses={ttsRuntimeStatus}
-                       accessState={ttsAccessState}
-                       allowedEngines={primeAllowedEngines}
-                       activeEngine={settings.engine}
-                       switchingEngine={engineSwitchInProgress}
-                       compact={!isDesktop}
-                       dense={isPhone}
+                        accessState={ttsAccessState}
+                        allowedEngines={primeAllowedEngines}
+                        activeEngine={managedActiveEngine || settings.engine}
+                        switchingEngine={engineSwitchInProgress}
+                        compact={!isDesktop}
+                        dense={isPhone}
                        resolvedTheme={resolvedTheme}
                        onActivate={activateTtsEngine}
                      />
@@ -9247,36 +9608,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     onClick={() => setIsStudioEditorFullscreen(false)}
                                 />
                             )}
+                            <div ref={studioEditorShellRef} className="min-w-0">
                             <SectionCard className={`vf-editor-shell rounded-3xl overflow-hidden flex flex-col ${studioEditorHeightClass} relative ${
                                 isStudioEditorFullscreen ? 'vf-editor-shell--fullscreen z-[58]' : 'group transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] hover:shadow-md'
                             }`}>
                                 {/* Toolbar */}
-                                <div className={`vf-studio-toolbar border-b ${isPhone ? 'flex flex-col items-stretch gap-1 px-2 py-1.5' : 'flex items-center justify-between gap-2.5 px-3 py-2.5'}`}>
-                                    <div className={`${isPhone ? 'vf-toolbar-primary vf-toolbar-primary--phone flex min-w-0 items-center gap-1 overflow-x-auto pr-0' : 'vf-toolbar-primary flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2'}`}>
-                                        <button onClick={() => setText(t => t + ' [pause] ')} className="vf-toolbar-action text-xs font-bold transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
-                                        <button onClick={() => setText(t => t + ' (Whisper): ')} className="vf-toolbar-action text-xs font-bold transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
-
-                                        {!isPhone && <div className="vf-toolbar-divider"></div>}
-
+                                <div className="vf-studio-toolbar vf-studio-toolbar--compact border-b px-2 py-1.5 sm:px-3 sm:py-2.5">
+                                    <div className="vf-toolbar-primary vf-toolbar-primary--end flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
                                         <ProofreadCluster
                                             isBusy={isAiWriting}
                                             onProofread={(mode) => { void handleProofread(mode); }}
                                             novelLabel="Audio Novel"
                                         />
 
-                                        {!isPhone && <div className="vf-toolbar-divider"></div>}
-
-                                        <button
-                                            onClick={() => { setText(''); setGeneratedAudioUrlManaged(null); }}
-                                            className="vf-toolbar-action vf-toolbar-action--danger text-xs font-bold transition-colors"
-                                            title="Clear"
-                                            aria-label="Clear studio script"
-                                        >
-                                            <Trash2 size={14}/>
-                                        </button>
-                                    </div>
-
-                                    <div className={`vf-toolbar-secondary ${isPhone ? 'w-full justify-start flex-nowrap overflow-x-auto pb-0.5' : 'ml-2 shrink-0'}`}>
                                          {!isPhone && detectedLang && <span className="vf-toolbar-tag text-[10px] font-bold border px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
                                          <button
                                             type="button"
@@ -9288,33 +9632,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             {isStudioImporting ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
                                             <span>{isStudioImporting ? 'Importing...' : 'Import'}</span>
                                          </button>
-                                         <button
-                                            type="button"
-                                            onClick={() => setIsChatOpen(true)}
-                                            className="vf-toolbar-action text-xs font-bold transition-colors"
-                                            title="Open creative assistant"
-                                         >
-                                            <Sparkles size={13}/>
-                                            <span>{isPhone ? 'Assist' : 'Assistant'}</span>
-                                         </button>
-                                         <button
-                                            type="button"
-                                            onClick={() => handleDirectorAI(text)}
-                                            disabled={isAiWriting}
-                                            title={`${studioDirectorPreview ? 'Refresh' : 'Analyze'} the current text and review an AI Director pass before applying. Current mode: ${describeStudioDirectorModeState(studioDirectorModeState)}.`}
-                                            className="vf-toolbar-ai text-xs font-bold disabled:opacity-50 transition-colors shadow-sm"
-                                         >
-                                            {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>} 
-                                            <span>{studioDirectorPreview ? 'Refresh Preview' : 'AI Director'}</span>
-                                         </button>
-                                         <input
-                                            ref={studioImportInputRef}
-                                            type="file"
-                                            className="hidden"
-                                            multiple
-                                            onChange={handleStudioImportInputChange}
-                                         />
+
+                                        <button
+                                            onClick={() => { setText(''); setGeneratedAudioUrlManaged(null); }}
+                                            className="vf-toolbar-action vf-toolbar-action--danger text-xs font-bold transition-colors"
+                                            title="Clear"
+                                            aria-label="Clear studio script"
+                                        >
+                                            <Trash2 size={14}/>
+                                        </button>
                                     </div>
+                                    <input
+                                        ref={studioImportInputRef}
+                                        type="file"
+                                        className="hidden"
+                                        multiple
+                                        onChange={handleStudioImportInputChange}
+                                    />
                                 </div>
                                 
                                 <div className="flex-1 min-h-0">
@@ -9339,6 +9673,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           onChange={setText}
                                           onRawBlurNormalize={normalizeStudioSpeakerHeaders}
                                           maxChars={STUDIO_EDITOR_HARD_CAP}
+                                          assistantActionLabel={isPhone ? 'Assist' : 'Assistant'}
+                                          assistantActionTitle="Open creative assistant"
+                                          onAssistantAction={() => setIsChatOpen(true)}
+                                          directorActionLabel={studioDirectorPreview ? 'Refresh Preview' : 'AI Director'}
+                                          directorActionTitle={`${studioDirectorPreview ? 'Refresh' : 'Analyze'} the current text and review an AI Director pass before applying. Current mode: ${describeStudioDirectorModeState(studioDirectorModeState)}.`}
+                                          onDirectorAction={() => handleDirectorAI(text)}
+                                          directorActionBusy={isAiWriting}
                                           onOverflow={({ maxChars }) => {
                                             const now = Date.now();
                                             if (now - studioTextHardCapNoticeAtRef.current < 1800) return;
@@ -9364,8 +9705,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     onTranslate={() => { void handleTranslate(); }}
                                 />
 
-                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-2 py-1 gap-1' : 'px-4 sm:px-6 py-3 gap-3'}`}>
-                                    <div className={`flex flex-wrap items-center ${isPhone ? 'gap-1' : 'gap-2'}`}>
+                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-start ${isPhone ? 'px-2 py-1 gap-1' : 'px-4 sm:px-6 py-3 gap-3'}`}>
+                                    <div className={`flex min-w-0 flex-1 flex-wrap items-center ${isPhone ? 'gap-1' : 'gap-2'}`}>
                                         <span className="vf-editor-count">{`${text.length.toLocaleString()} / ${maxCharsPerGeneration.toLocaleString()} chars`}</span>
                                         {studioDirectorPreview && (
                                             <span className="vf-director-preview__pending">
@@ -9382,7 +9723,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             </span>
                                         )}
                                     </div>
-                                    <div className={`flex items-center ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'flex-wrap gap-2'}`}>
+                                    <div className={`ml-auto flex min-w-0 items-center ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'flex-wrap gap-2'}`}>
                                         <button
                                             type="button"
                                             onClick={() => setStudioQueueModeEnabled(!isStudioQueueModeEnabled)}
@@ -9425,6 +9766,44 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </div>
                                 </div>
                             </SectionCard>
+                            </div>
+
+                            {isDesktop && (
+                              <SectionCard className="mt-6 rounded-2xl p-3">
+                                <div
+                                  className="vf-scrollbar-invisible flex flex-nowrap justify-center gap-1.5 overflow-x-auto pb-0.5"
+                                  {...studioRailTabs.listProps}
+                                >
+                                  {desktopDockTabItems.map((tabItem) => {
+                                    const isActive = studioRailTab === tabItem.id;
+                                    const isDisabled = Boolean(tabItem.disabled);
+                                    return (
+                                      <button
+                                        key={`desktop-dock-${tabItem.id}`}
+                                        type="button"
+                                        {...studioRailTabs.getTabProps(tabItem.id, isDisabled)}
+                                        title={isDisabled ? 'Voice controls are disabled while Multi-Speaker mode is on. Use Cast.' : undefined}
+                                        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                          isActive
+                                            ? (isDarkUi ? 'border-cyan-500/45 bg-cyan-500/14 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700')
+                                          : isDisabled
+                                              ? (isDarkUi ? 'cursor-not-allowed border-slate-800 bg-slate-950 text-slate-500' : 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400')
+                                              : (isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200' : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700')
+                                        }`}
+                                      >
+                                        <span
+                                          aria-hidden="true"
+                                          className={`h-2 w-2 shrink-0 rounded-full ${getStudioRailTabDotClassName(isActive, isDisabled)}`}
+                                        />
+                                        <span className={`leading-none ${isDisabled ? 'opacity-70' : ''}`}>
+                                          {tabItem.label}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </SectionCard>
+                            )}
 
                             {/* Generated Audio Player */}
                             {(generatedAudioUrl || isGenerating || liveAudioChunks.length > 0) && (
@@ -9465,10 +9844,141 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         </div>
 
 	                        {/* Controls Sidebar */}
-		                        <div className={`vf-studio-rail h-fit xl:sticky xl:top-24 xl:self-start ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
-                              {!useDesktopPinnedMixRail && (
+                        {shouldDockStudioPanelBelowEditor && (
+                          <div className="vf-studio-rail h-fit xl:sticky xl:top-24 xl:self-start">
+                            <SectionCard className="p-5 rounded-3xl">
+	                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+	                                    <Sliders size={13} /> Audio Mix
+	                                </h3>
+                                    <div>
+	                                <div className="space-y-4">
+		                                    <div>
+		                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
+		                                            <span>Speech Speed</span>
+		                                            <span>{settings.speed.toFixed(1)}x</span>
+		                                        </div>
+		                                        <input
+	                                            type="range"
+	                                            min="0.5"
+	                                            max="2.0"
+	                                            step="0.1"
+	                                            value={settings.speed}
+	                                            onChange={(e) => setSettings(s => ({ ...s, speed: parseFloat(e.target.value) }))}
+	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
+	                                        />
+	                                    </div>
+	                                    <div>
+	                                        <div className="text-xs mb-1 font-bold text-gray-700">TTS Output Language</div>
+	                                        <select
+	                                            value={settings.language}
+	                                            onChange={(e) => setSettings(s => ({ ...s, language: e.target.value }))}
+	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+	                                        >
+	                                            <option value="Auto">Auto-Detect</option>
+	                                            {LANGUAGES.map(l => <option key={l.code} value={l.name}>{l.name}</option>)}
+	                                        </select>
+	                                    </div>
+	                                    <div>
+	                                        <div className="text-xs mb-1 font-bold text-gray-700">Background Music Track</div>
+	                                        <select
+	                                            value={settings.musicTrackId}
+	                                            onChange={(e) => setSettings(s => ({ ...s, musicTrackId: e.target.value }))}
+	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+	                                        >
+	                                            {studioMusicTrackOptions.map((option) => (
+	                                                <option key={option.id} value={option.id}>{option.label}</option>
+	                                            ))}
+	                                        </select>
+	                                        <div className="mt-2 flex flex-wrap items-center gap-2">
+	                                            <button
+	                                                type="button"
+	                                                onClick={() => customMusicTrackInputRef.current?.click()}
+	                                                className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 transition hover:bg-indigo-100"
+	                                            >
+	                                                <UploadCloud size={12} />
+	                                                <span>{customMusicTrackUpload ? 'Replace Upload' : 'Upload Music'}</span>
+	                                            </button>
+	                                            {customMusicTrackUpload && (
+	                                                <button
+	                                                    type="button"
+	                                                    onClick={clearCustomMusicTrackUpload}
+	                                                    className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 transition hover:bg-rose-100"
+	                                                >
+	                                                    <X size={12} />
+	                                                    <span>Remove</span>
+	                                                </button>
+	                                            )}
+	                                        </div>
+	                                        <input
+	                                            ref={customMusicTrackInputRef}
+	                                            type="file"
+	                                            accept={STUDIO_CUSTOM_MUSIC_FILE_ACCEPT}
+	                                            className="hidden"
+	                                            onChange={handleCustomMusicTrackInputChange}
+	                                        />
+	                                        <div className="mt-1 text-[10px] font-medium text-gray-500">
+	                                            {customMusicTrackUpload
+	                                                ? `Uploaded: ${customMusicTrackUpload.name}`
+	                                                : 'Upload an MP3/WAV/M4A/OGG track to use as background music.'}
+	                                        </div>
+	                                    </div>
+	                                    <div>
+	                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
+	                                            <span>Speech Volume</span>
+	                                            <span>
+                                                {resolveStudioSpeechGain(settings.speechVolume).toFixed(2)}x
+                                                <span className="ml-1 text-[10px] font-semibold text-gray-500">
+                                                  ({Math.round((resolveStudioSpeechGain(settings.speechVolume) / STUDIO_SPEECH_GAIN_MAX) * 100)}% of max)
+                                                </span>
+                                              </span>
+	                                        </div>
+	                                        <input
+	                                            type="range"
+	                                            min={String(STUDIO_SPEECH_GAIN_MIN)}
+	                                            max={String(STUDIO_SPEECH_GAIN_MAX)}
+	                                            step="0.05"
+	                                            value={resolveStudioSpeechGain(settings.speechVolume)}
+	                                            onChange={(e) => setSettings(s => ({ ...s, speechVolume: parseFloat(e.target.value) }))}
+                                                aria-label="Speech volume gain"
+	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
+	                                        />
+	                                    </div>
+	                                    <div>
+	                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
+	                                            <span>Music Volume</span>
+	                                            <span>{resolveStudioMusicGain(settings.musicVolume).toFixed(2)}x ({Math.round(resolveStudioMusicGain(settings.musicVolume) * 100)}%)</span>
+	                                        </div>
+		                                        <input
+		                                            type="range"
+		                                            min="0"
+		                                            max="1"
+		                                            step="0.05"
+		                                            value={resolveStudioMusicGain(settings.musicVolume)}
+		                                            onChange={(e) => setSettings(s => ({ ...s, musicVolume: parseFloat(e.target.value) }))}
+                                                    aria-label="Music volume gain"
+		                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
+		                                        />
+		                                </div>
+			                                </div>
+                                    </div>
+                            </SectionCard>
+                          </div>
+                        )}
+                        <div className={`vf-studio-rail h-fit ${isPhone ? 'space-y-4' : 'space-y-5'} ${
+                          shouldDockStudioPanelBelowEditor
+                            ? 'xl:col-start-1 xl:min-w-0'
+                            : 'xl:sticky xl:top-24 xl:self-start'
+                        }`}>
+                              {!isDesktop && (
                               <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-3 rounded-3xl'}>
-                                <div className={isPhone ? 'vf-scrollbar-invisible flex snap-x snap-proximity flex-nowrap gap-1.5 overflow-x-auto pb-0.5' : 'flex flex-wrap gap-2'} {...studioRailTabs.listProps}>
+                                <div
+                                  className={
+                                    isPhone
+                                      ? 'vf-scrollbar-invisible flex snap-x snap-proximity flex-nowrap gap-1.5 overflow-x-auto pb-0.5'
+                                      : 'vf-scrollbar-invisible flex flex-nowrap justify-end gap-1.5 overflow-x-auto pb-0.5'
+                                  }
+                                  {...studioRailTabs.listProps}
+                                >
                                   {studioRailTabItems.map((tabItem) => {
                                     const isActive = studioRailTab === tabItem.id;
                                     const isDisabled = Boolean(tabItem.disabled);
@@ -9481,28 +9991,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         className={`inline-flex items-center gap-1.5 rounded-full border font-bold uppercase tracking-wide transition ${isPhone ? 'shrink-0 snap-start px-2 py-1 text-[9px]' : 'px-3 py-1.5 text-[10px]'} ${
                                           isActive
                                             ? (isDarkUi ? 'border-cyan-500/45 bg-cyan-500/14 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700')
-                                            : isDisabled
-                                              ? (isDarkUi ? 'cursor-not-allowed border-slate-800 bg-slate-950 text-slate-500 opacity-65' : 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400')
+                                          : isDisabled
+                                              ? (isDarkUi ? 'cursor-not-allowed border-slate-800 bg-slate-950 text-slate-500' : 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400')
                                             : (isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200' : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700')
                                         }`}
                                       >
-                                        {tabItem.id === 'voice'
-                                          ? <Mic2 size={12} />
-                                          : tabItem.id === 'mix'
-                                            ? <Sliders size={12} />
-                                            : tabItem.id === 'cast'
-                                              ? <Bot size={12} />
-                                              : tabItem.id === 'queue'
-                                                ? <Clock size={12} />
-                                                : <Activity size={12} />}
-                                        {tabItem.label}
+                                        <span
+                                          aria-hidden="true"
+                                          className={`h-2 w-2 shrink-0 rounded-full ${getStudioRailTabDotClassName(isActive, isDisabled)}`}
+                                        />
+                                        <span className={`leading-none ${isDisabled ? 'opacity-70' : ''}`}>
+                                          {tabItem.label}
+                                        </span>
                                       </button>
                                     );
                                   })}
                                 </div>
                               </SectionCard>
                               )}
-		                            {studioRailTab === 'voice' && !useDesktopPinnedMixRail && (
+		                            {studioRailTab === 'voice' && (
+                                <div className={shouldDockStudioPanelBelowEditor ? 'xl:col-start-1 xl:row-start-1 xl:min-w-0' : ''}>
 	                            <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <div className="flex w-full items-start justify-between gap-2">
@@ -9659,29 +10167,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             </div>
                                         </div>
 	                                </div>
-                                
-                                {/* Emotion/Speed Selector */}
-                                <div className="pt-4 border-t border-gray-100 space-y-3">
-                                    {isGemRuntimeEngine(settings.engine) && (
-                                        <div>
-                                            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Emotion</h3>
-                                            <select 
-                                                value={settings.emotion} 
-                                                onChange={(e) => setSettings(s => ({...s, emotion: e.target.value}))}
-                                                className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500"
-	                                            >
-	                                                {EMOTIONS.map(e => <option key={e} value={e}>{e}</option>)}
-	                                            </select>
-	                                        </div>
-	                                    )}
-		                                </div>
                                     </>
                                     )}
-		                            </SectionCard>
+			                            </SectionCard>
+                                  </div>
                                   )}
 
 	                            {/* Studio Audio Mix */}
-                                  {(studioRailTab === 'mix' || useDesktopPinnedMixRail) && (
+                                  {((isDesktop && !shouldDockStudioPanelBelowEditor) || studioRailTab === 'mix') && (
+                                    <div className={shouldDockStudioPanelBelowEditor ? 'xl:col-start-2 xl:row-start-2' : ''}>
 		                            <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -9735,8 +10229,42 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            onChange={(e) => setSettings(s => ({ ...s, musicTrackId: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
-	                                            {MUSIC_TRACKS.map(t => <option key={t.id} value={t.id}>{t.name} ({t.category})</option>)}
+	                                            {studioMusicTrackOptions.map((option) => (
+	                                                <option key={option.id} value={option.id}>{option.label}</option>
+	                                            ))}
 	                                        </select>
+	                                        <div className="mt-2 flex flex-wrap items-center gap-2">
+	                                            <button
+	                                                type="button"
+	                                                onClick={() => customMusicTrackInputRef.current?.click()}
+	                                                className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 transition hover:bg-indigo-100"
+	                                            >
+	                                                <UploadCloud size={12} />
+	                                                <span>{customMusicTrackUpload ? 'Replace Upload' : 'Upload Music'}</span>
+	                                            </button>
+	                                            {customMusicTrackUpload && (
+	                                                <button
+	                                                    type="button"
+	                                                    onClick={clearCustomMusicTrackUpload}
+	                                                    className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 transition hover:bg-rose-100"
+	                                                >
+	                                                    <X size={12} />
+	                                                    <span>Remove</span>
+	                                                </button>
+	                                            )}
+	                                        </div>
+	                                        <input
+	                                            ref={customMusicTrackInputRef}
+	                                            type="file"
+	                                            accept={STUDIO_CUSTOM_MUSIC_FILE_ACCEPT}
+	                                            className="hidden"
+	                                            onChange={handleCustomMusicTrackInputChange}
+	                                        />
+	                                        <div className="mt-1 text-[10px] font-medium text-gray-500">
+	                                            {customMusicTrackUpload
+	                                                ? `Uploaded: ${customMusicTrackUpload.name}`
+	                                                : 'Upload an MP3/WAV/M4A/OGG track to use as background music.'}
+	                                        </div>
 	                                    </div>
 	                                    <div>
 	                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
@@ -9779,13 +10307,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </div>
                                     )}
 			                            </SectionCard>
+                                    </div>
                                   )}
 
-                                    {studioRailTab === 'cast' && !useDesktopPinnedMixRail && (
-                                      isStudioMultiSpeakerEnabled ? (
+                                    {studioRailTab === 'cast' && (
+                                      <div className={shouldDockStudioPanelBelowEditor ? 'xl:col-start-1 xl:row-start-1 xl:min-w-0' : ''}>
+                                      {isStudioMultiSpeakerEnabled ? (
 		                            <>
 		                            {/* Cast & Crew */}
-	                            <SectionCard className={`${isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
+	                            <SectionCard className={`${isPhone ? 'p-3 rounded-2xl' : 'p-4 rounded-3xl'} border animate-in fade-in ${
                                       isDarkUi
                                         ? 'bg-slate-900/75 border-indigo-500/20'
                                         : 'bg-indigo-50 border-indigo-100'
@@ -9810,9 +10340,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                               : 'Disabled'}
                                                         </p>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
+                                                    <div className="flex items-center gap-1.5">
                                                         {studioCrewTags.length > 0 && (
-                                                            <span className={`shrink-0 rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-wide ${
+                                                            <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
                                                                 isDarkUi
                                                                   ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
                                                                   : 'border-cyan-100 bg-white text-cyan-600'
@@ -9834,10 +10364,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                         castVoiceOptions.length === 0
                                                     }
                                                     title="Refresh cast from the current text and assign voices"
-                                                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                    className={`vf-studio-chip inline-flex items-center gap-1 border px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] transition ${
                                                         isDarkUi
-                                                            ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
-                                                            : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                                                            ? 'border-indigo-500/30 bg-slate-950 text-indigo-200 hover:bg-slate-900'
+                                                            : 'border-indigo-200 bg-white text-indigo-600 hover:bg-indigo-50'
                                                     } disabled:opacity-60`}
                                                 >
                                                     {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
@@ -9851,11 +10381,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             )}
                                         </div>
                                     ) : (
-                                    <div className="flex items-center justify-between mb-3">
-                                        <h3 className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 ${
+                                    <div className="mb-3 flex items-center justify-between gap-2">
+                                        <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
                                             isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
                                         }`}><Bot size={14}/> Cast &amp; Crew</h3>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-1.5">
                                             <button
                                                 type="button"
                                                 onClick={autoAssignCastVoices}
@@ -9867,17 +10397,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     castVoiceOptions.length === 0
                                                 }
                                                 title="Refresh cast from the current text and assign voices"
-                                                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                className={`vf-studio-chip inline-flex items-center gap-1 border px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] transition ${
                                                     isDarkUi
-                                                        ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
-                                                        : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                                                        ? 'border-indigo-500/30 bg-slate-950 text-indigo-200 hover:bg-slate-900'
+                                                        : 'border-indigo-200 bg-white text-indigo-600 hover:bg-indigo-50'
                                                 } disabled:opacity-60`}
                                             >
                                                 {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
                                                 AI Auto
                                             </button>
                                             {studioCrewTags.length > 0 && (
-                                                <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase ${
+                                                <span className={`vf-studio-chip px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
                                                     isDarkUi
                                                       ? 'bg-slate-950 text-cyan-200 border border-cyan-500/30'
                                                       : 'bg-white text-cyan-600 border border-cyan-100'
@@ -9885,7 +10415,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     {studioCrewTags.length} crew
                                                 </span>
                                             )}
-                                            <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase ${
+                                            <span className={`vf-studio-chip px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
                                                 isDarkUi
                                                   ? 'bg-slate-950 text-indigo-200 border border-indigo-500/30'
                                                   : 'bg-white text-indigo-500 border border-indigo-100'
@@ -9918,16 +10448,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 : '';
                                             const isSpeakerVoicePresetLocked = Boolean(speakerVcReference);
                                             return (
-                                                <div key={speaker} className={`flex items-center justify-between gap-2 p-2 rounded-lg border shadow-sm ${
+                                                <div key={speaker} className={`flex flex-nowrap items-center justify-between gap-2 rounded-2xl border p-2 shadow-sm ${
                                                     isDarkUi
                                                       ? 'bg-slate-950 border-indigo-500/20'
                                                       : 'bg-white border-indigo-100'
                                                 }`}>
                                                     <div className="flex min-w-0 flex-col gap-0.5">
-                                                        <span className={`truncate text-xs font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>{speaker}</span>
+                                                        <span className={`truncate text-[11px] font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>{speaker}</span>
                                                         {speakerVcReference && (
                                                             <div className="flex flex-wrap items-center gap-1.5">
-                                                                <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                                                <span className={`vf-studio-chip inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.14em] ${
                                                                     isDarkUi
                                                                         ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
                                                                         : 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -9938,7 +10468,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                                     {speakerVcReference.sourceVoiceName || speakerVcReference.referenceAudioName}
                                                                     {speakerVcReferenceTime ? ` - ${speakerVcReferenceTime}` : ''}
                                                                 </span>
-                                                                <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                                                                <span className={`vf-studio-chip inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.14em] ${
                                                                     isDarkUi
                                                                         ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
                                                                         : 'border-amber-200 bg-amber-50 text-amber-700'
@@ -9948,12 +10478,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                             </div>
                                                         )}
                                                     </div>
-                                                    <div className="flex items-center gap-2">
+                                                    <div className="flex shrink-0 items-center gap-1.5">
                                                         {speakerVcReference && (
                                                             <button
                                                                 type="button"
                                                                 onClick={() => clearSpeakerVcReference(speaker)}
-                                                                className={`inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-full border transition xl:h-7 xl:w-7 ${
+                                                                className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition ${
                                                                   isDarkUi
                                                                     ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-200'
                                                                     : 'border-gray-200 bg-white text-gray-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600'
@@ -9971,7 +10501,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                               speaker,
                                                               char?.id
                                                             )}
-                                                            className={`inline-flex h-[44px] min-w-[6.8rem] shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[11px] font-semibold transition xl:h-8 xl:min-w-[4.8rem] ${
+                                                            className={`vf-studio-chip inline-flex h-8 min-w-[6.2rem] shrink-0 items-center justify-center gap-1.5 border px-2.5 text-[10px] font-semibold transition ${
                                                               isDarkUi
                                                                 ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
                                                                 : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
@@ -9983,7 +10513,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                             <span>{speakerVcReference ? 'Update Ref' : 'Add Ref'}</span>
                                                         </button>
                                                         <select 
-                                                            className={`max-w-[150px] rounded p-1 text-[10px] font-bold outline-none ${
+                                                            className={`vf-studio-chip h-8 min-w-[10.5rem] max-w-[11.5rem] rounded-full px-2.5 py-1 text-[10px] font-semibold outline-none ${
                                                                 isDarkUi ? 'bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-700'
                                                             } ${
                                                                 isSpeakerVoicePresetLocked ? 'cursor-not-allowed opacity-60' : ''
@@ -10101,9 +10631,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           </button>
                                         </SectionCard>
                                       )
+                                      }
+                                      </div>
                                     )}
 
-                                    {studioRailTab === 'queue' && !useDesktopPinnedMixRail && shouldShowStudioQueuePanel && (
+                                    {studioRailTab === 'queue' && shouldShowStudioQueuePanel && (
                                         <Suspense fallback={<SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}><div className={`text-sm ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading queue...</div></SectionCard>}>
                                           <LazyStudioQueuePanel
                                               queueState={studioQueueState}
@@ -10126,7 +10658,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           />
                                         </Suspense>
                                     )}
-                                    {studioRailTab === 'queue' && !useDesktopPinnedMixRail && !shouldShowStudioQueuePanel && (
+                                    {studioRailTab === 'queue' && !shouldShowStudioQueuePanel && (
                                       <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                         <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
                                           <Clock size={13} /> Queue
@@ -10142,279 +10674,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </div>
                 )}
 
-                {/* --- REDESIGNED CHARACTER TAB (legacy, removed from nav) --- */}
-                {false && (
-                    <div className="max-w-5xl mx-auto animate-in fade-in">
-                        
-                        {/* Tab Switcher & Header */}
-                        <div className="mb-8 flex flex-col items-start justify-between gap-4 lg:flex-row lg:items-center">
-                            <div>
-                                <h2 className="text-2xl font-bold text-gray-800">Character & Voice Studio</h2>
-                                <p className="text-sm text-gray-500">Manage your cast or browse the gallery to find the perfect voice.</p>
-                            </div>
-                            
-                            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
-                                <div className="flex w-full rounded-xl border border-gray-200 bg-white p-1 shadow-sm sm:w-auto">
-                                    <button
-                                        onClick={() => setCharTab('CAST')}
-                                        className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] sm:flex-none sm:px-5 ${charTab === 'CAST' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
-                                    >
-                                        <Users size={16}/> My Cast
-                                    </button>
-                                    <button
-                                        onClick={() => setCharTab('GALLERY')}
-                                        className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] sm:flex-none sm:px-5 ${charTab === 'GALLERY' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
-                                    >
-                                        <StoreIcon size={16}/> Voice Gallery
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* --- MY CAST VIEW --- */}
-                        {charTab === 'CAST' && (
-                             <>
-                                 <div className="flex justify-end mb-4">
-                                     <Button onClick={() => openCharacterModal()} className="shadow-lg shadow-indigo-200">
-                                         <Plus size={18} className="mr-2"/> Add Character
-                                     </Button>
-                                 </div>
-                                 
-                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-	                                     {characterLibrary.map(char => {
-	                                         const voice = getVoiceById(char.voiceId) || clonedVoices.find(v => v.id === char.voiceId);
-                                         const isLoadingPreview = previewState?.id === char.voiceId && previewState.status === 'loading';
-                                         const isPlayingPreview = previewState?.id === char.voiceId && previewState.status === 'playing';
-
-                                         return (
-                                             <div key={char.id} className="bg-white rounded-2xl p-5 border border-gray-200 shadow-sm hover:shadow-md transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] group relative overflow-hidden">
-                                                 <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl from-gray-50 to-transparent rounded-bl-full pointer-events-none"></div>
-                                                 
-                                                 <div className="flex items-start gap-4 mb-4 relative z-10">
-                                                     <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white font-bold text-2xl shadow-lg transform group-hover:scale-105 transition-transform" style={{ backgroundColor: char.avatarColor || '#6366f1' }}>
-                                                         {char.name.substring(0, 2).toUpperCase()}
-                                                     </div>
-                                                     <div className="flex-1">
-                                                         <h3 className="font-bold text-lg text-gray-900 leading-tight">{char.name}</h3>
-                                                         <span className="inline-block mt-1 px-2 py-0.5 rounded-md bg-gray-100 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
-                                                             {joinUiFragments([char.age || 'Adult', char.gender || 'Unknown'])}
-                                                         </span>
-                                                     </div>
-                                                     
-                                                     <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                         <button onClick={() => openCharacterModal(char)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors"><Edit2 size={16}/></button>
-                                                         <button onClick={() => deleteChar(char.id)} className="p-2 hover:bg-red-50 rounded-lg text-red-400 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
-                                                     </div>
-                                                 </div>
-
-                                                  <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 flex items-center justify-between">
-                                                       <div className="flex flex-col">
-                                                           <span className="text-[10px] font-bold text-gray-400 uppercase">Assigned Voice</span>
-                                                           <span className="text-sm font-bold text-indigo-600 truncate max-w-[120px]">{voice ? resolveVoiceDisplayLabel(voice) : char.voiceId}</span>
-                                                       </div>
-                                                       <button 
-                                                           onClick={(e) => { e.stopPropagation(); handlePreviewCharacter(char); }} 
-                                                           className={`w-10 h-10 rounded-full flex items-center justify-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${isPlayingPreview ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-gray-200 text-indigo-600 hover:bg-indigo-50'}`}
-                                                      >
-                                                          {isLoadingPreview ? <Loader2 size={18} className="animate-spin"/> : isPlayingPreview ? <Pause size={18} fill="currentColor"/> : <Play size={18} fill="currentColor" className="ml-0.5"/>}
-                                                      </button>
-                                                 </div>
-                                             </div>
-                                         );
-                                     })}
-                                 </div>
-                             </>
-                        )}
-
-                        {/* --- VOICE GALLERY VIEW --- */}
-                        {charTab === 'GALLERY' && (
-                             <div className="space-y-6">
-                                 {/* Filters */}
-                                 <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-                                     <div className="relative w-full md:w-64">
-                                         <Search size={16} className="absolute left-3 top-3 text-gray-400"/>
-                                         <input 
-                                            type="text" 
-                                            placeholder="Search voices..." 
-                                            value={voiceSearch}
-                                            onChange={(e) => {
-                                              const nextValue = e.target.value;
-                                              startTransition(() => {
-                                                setVoiceSearch(nextValue);
-                                              });
-                                            }}
-                                            className="w-full pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                                         />
-                                     </div>
-                                     
-                                     <div className="flex gap-2 w-full md:w-auto overflow-x-auto no-scrollbar">
-                                         <select 
-                                            value={voiceFilterGender}
-                                            onChange={(e) => setVoiceFilterGender(e.target.value as any)}
-                                            className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-600 outline-none cursor-pointer hover:bg-gray-100"
-                                         >
-                                             <option value="All">All Genders</option>
-                                             <option value="Male">Male</option>
-                                             <option value="Female">Female</option>
-                                         </select>
-                                         <select 
-                                            value={voiceFilterAccent}
-                                            onChange={(e) => setVoiceFilterAccent(e.target.value)}
-                                            className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-600 outline-none cursor-pointer hover:bg-gray-100"
-                                         >
-                                             <option value="All">All Countries</option>
-                                             {uniqueAccents.map(a => <option key={a} value={a}>{a}</option>)}
-                                         </select>
-                                     </div>
-                                 </div>
-
-                                 {/* Voice Grid */}
-                                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                                     {filteredVoices.map(v => {
-                                         const voiceMeta = resolveVoiceDisplayMeta(v);
-                                         const isLoading = previewState?.id === v.id && previewState.status === 'loading';
-                                         const isPlaying = previewState?.id === v.id && previewState.status === 'playing';
-                                         const voiceEngine = (v.engine || settings.engine) as GenerationSettings['engine'];
-                                         const accessTier = resolveVoiceAccessTier(voiceEngine, v);
-                                         const isLocked = isVoiceLockedForFreeTier(voiceEngine, v);
-                                         
-                                         return (
-                                             <div key={v.id} className="bg-white p-4 rounded-2xl border border-gray-200 hover:border-indigo-200 hover:shadow-md transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] group flex flex-col gap-3">
-                                                  <div className="flex items-center justify-between">
-                                                      <div className="flex items-center gap-3">
-                                                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${v.gender === 'Female' ? 'bg-pink-500' : v.gender === 'Male' ? 'bg-blue-500' : 'bg-purple-500'}`}>
-                                                              {voiceMeta.name[0] || 'V'}
-                                                          </div>
-                                                             <div>
-                                                                 <div className="flex items-center gap-1.5">
-                                                                     <h4 className="font-bold text-gray-900 text-sm">{voiceMeta.name}</h4>
-                                                                     {voiceMeta.countryTag && (
-                                                                         <span className="rounded-full border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-[9px] font-extrabold leading-none text-gray-600">
-                                                                             {voiceMeta.countryTag}
-                                                                         </span>
-                                                                     )}
-                                                                 </div>
-                                                                 <div className="text-[10px] text-gray-500 font-medium">{resolveVoicePersonaLabel(v)}</div>
-                                                                 <div className={`inline-flex mt-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
-                                                                     accessTier === 'free'
-                                                                         ? 'bg-emerald-100 text-emerald-700'
-                                                                        : 'bg-amber-100 text-amber-700'
-                                                                }`}>
-                                                                    {accessTier}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                     
-                                                     <button 
-                                                        onClick={() => handleVoicePreview(v.id, v.name)}
-                                                        className={`inline-flex items-center justify-center rounded-full transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
-                                                          isPhone ? 'h-[44px] w-[44px]' : 'h-8 w-8'
-                                                        } ${isPlaying ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-indigo-100 hover:text-indigo-600'}`}
-                                                     >
-                                                         {isLoading ? <Loader2 size={14} className="animate-spin"/> : isPlaying ? <Pause size={14} fill="currentColor"/> : <Play size={14} fill="currentColor"/>}
-                                                     </button>
-                                                 </div>
-                                                 
-                                                 <button 
-                                                    onClick={() => {
-                                                        if (isLocked) {
-                                                            setShowSubscriptionModal(true);
-                                                            return;
-                                                        }
-                                                        openCharacterModal(undefined, v.id);
-                                                    }}
-                                                    className={`w-full py-2 rounded-lg border text-xs font-bold transition-colors flex items-center justify-center gap-2 ${
-                                                        isLocked
-                                                            ? 'border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100'
-                                                            : 'border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200'
-                                                    }`}
-                                                 >
-                                                     {isLocked ? <Lock size={14}/> : <Plus size={14}/>} {isLocked ? 'Upgrade for Pro Voice' : 'Create Character'}
-                                                 </button>
-                                             </div>
-                                         )
-                                     })}
-                                     
-                                  </div>
-                              </div>
-                         )}
-
-                         {/* ... modal ... */}
-                        {characterModalOpen && (
-                             <div className="vf-scrim vf-scrim--modal fixed inset-0 z-50 flex items-center justify-center p-4">
-                                 <div className="bg-white w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-3xl shadow-2xl p-6 animate-in zoom-in duration-200">
-                                     <div className="flex justify-between items-center mb-6">
-                                         <h3 className="text-lg font-bold">{editingChar ? 'Edit Character' : 'New Character'}</h3>
-                                         <button onClick={() => setCharacterModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={18}/></button>
-                                     </div>
-                                     <div className="space-y-4">
-                                         {/* ... form fields ... */}
-                                         <div className="flex items-center gap-4">
-                                             <div className="w-16 h-16 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-sm relative group/color cursor-pointer" style={{ backgroundColor: charForm.avatarColor }}>
-                                                  {charForm.name ? charForm.name.substring(0, 2).toUpperCase() : '?'}
-                                                  <input type="color" className="absolute inset-0 opacity-0 cursor-pointer" value={charForm.avatarColor} onChange={e => setCharForm({...charForm, avatarColor: e.target.value})} />
-                                             </div>
-                                             <div className="flex-1">
-                                                 <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Name</label>
-                                                 <input value={charForm.name} onChange={e => setCharForm({...charForm, name: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-bold outline-none focus:ring-2 focus:ring-indigo-500" placeholder="e.g. Narrator, Hero" />
-                                             </div>
-                                         </div>
-                                         
-                                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                                             <div>
-                                                 <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Gender</label>
-                                                 <select value={charForm.gender} onChange={e => setCharForm({...charForm, gender: e.target.value as any})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
-                                                     <option value="Male">Male</option>
-                                                     <option value="Female">Female</option>
-                                                     <option value="Unknown">Non-Binary / Other</option>
-                                                 </select>
-                                             </div>
-                                             <div>
-                                                 <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Age Group</label>
-                                                 <select value={charForm.age} onChange={e => setCharForm({...charForm, age: e.target.value as any})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
-                                                     <option value="Child">Child</option>
-                                                     <option value="Young Adult">Young Adult</option>
-                                                     <option value="Adult">Adult</option>
-                                                     <option value="Elderly">Elderly</option>
-                                                 </select>
-                                             </div>
-                                         </div>
-
-	                                         <div>
-	                                              <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Voice</label>
-	                                              <select value={charForm.voiceId} onChange={e => setCharForm({...charForm, voiceId: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none font-medium">
-                                                      <optgroup label="Free Speakers">
-                                                          {galleryVoicePool
-                                                              .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'free')
-                                                              .map((voice) => (
-                                                                  <option key={voice.id} value={voice.id}>
-                                                                      {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)})`}
-                                                                  </option>
-                                                              ))}
-                                                      </optgroup>
-                                                      <optgroup label="Pro Speakers">
-                                                          {galleryVoicePool
-                                                              .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'pro')
-                                                              .map((voice) => (
-                                                                  <option
-                                                                      key={voice.id}
-                                                                      value={voice.id}
-                                                                      disabled={isVoiceLockedForFreeTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice)}
-                                                                  >
-                                                                      {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)}) - Pro`}
-                                                                  </option>
-                                                              ))}
-                                                     </optgroup>
-                                                  </select>
-	                                         </div>
-
-                                         <Button fullWidth onClick={saveCharacter} className="mt-4">{editingChar ? 'Save Changes' : 'Create Character'}</Button>
-                                     </div>
-                                 </div>
-                             </div>
-                        )}
-                    </div>
-                )}
 
                 {isVoiceCloneModalOpen && voiceCloneTarget ? (
                   <Suspense
@@ -10630,6 +10889,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <VoiceCloningTabContent
                         backendBaseUrl={mediaBackendUrl}
                         selectedEngine={settings.engine}
+                        voiceLibraryVoices={getEngineVoiceCatalog(settings.engine)}
+                        voicePreviewState={previewState}
+                        onPreviewVoice={handleVoicePreview}
                         denseTabs={isPhone || isTablet || isNarrowDesktop}
                       />
                     </Suspense>
@@ -10653,33 +10915,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   </div>
                 )}
                 
-                {usesPhoneStudioDock && !isChatOpen && (
-                    <div
-                        className="fixed inset-x-0 bottom-0 z-[47] px-2 pointer-events-none"
-                        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.55rem)' }}
-                    >
-                        <div className="mx-auto w-full max-w-[1140px]">
-                            <div className="mx-auto w-full max-w-xl pointer-events-auto">
-                                <div className="vf-studio-generate-dock rounded-xl border border-indigo-400/35 p-1 backdrop-blur-lg">
-                                    <MorphingGenerateButton
-                                      onClick={handleGenerate}
-                                      onCancel={handleCancelGeneration}
-                                      disabled={!text.trim()}
-                                      isGenerating={isGenerating}
-                                      progress={progress}
-                                      stage=""
-                                      size="compact"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )}
             </div>
         </div>
 
-        {usesCompactFloatingStudioDock && !isChatOpen && (
-            <div className={`vf-studio-generate-anchor ${studioFloatingDockVariantClass} fixed z-[47] ${studioFloatingDockWidthClass}`}>
+        {usesFloatingStudioDock && !isChatOpen && (
+            <div
+                data-testid="studio-generate-dock"
+                className={`vf-studio-generate-anchor ${studioFloatingDockVariantClass} fixed z-[47]`}
+            >
                 <div className={`vf-studio-generate-dock rounded-2xl border border-indigo-400/35 backdrop-blur-lg ${isDesktop ? 'p-1.5' : 'p-1'}`}>
                     <MorphingGenerateButton
                       onClick={handleGenerate}
@@ -10688,7 +10931,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       isGenerating={isGenerating}
                       progress={progress}
                       stage=""
-                      size="compact"
+                      size={studioGenerateButtonSize}
                     />
                 </div>
             </div>
@@ -10870,7 +11113,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       {/* Resource Monitor */}
       {ENABLE_RESOURCE_MONITOR ? (
-        <ResourceMonitor isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading} />
+        <ResourceMonitor
+          isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading}
+          hidden={shouldHideAssistantForReader}
+        />
       ) : null}
 
       {/* Modals & Overlays */}
@@ -10879,25 +11125,5 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     </div>
   );
 };
-// Add missing StoreIcon component definition (it was used in the redesign)
-const StoreIcon = ({ size, className }: { size?: number, className?: string }) => (
-    <svg 
-      width={size || 24} 
-      height={size || 24} 
-      viewBox="0 0 24 24" 
-      fill="none" 
-      stroke="currentColor" 
-      strokeWidth="2" 
-      strokeLinecap="round" 
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7" />
-      <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
-      <path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4" />
-      <path d="M2 7h20" />
-      <path d="M22 7v3a2 2 0 0 1-2 2v0a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7" />
-    </svg>
-);
 
 

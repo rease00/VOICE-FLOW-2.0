@@ -11,6 +11,12 @@ const ADMIN_TOKEN_PROPAGATION_DELAY_MS = 5_000;
 
 const escapeRegExp = (value: string): string => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const getReaderHome = async (page: Parameters<typeof test>[0]['page']) => {
+  const readerBrowseHome = page.getByTestId('reader-browse-home');
+  if (await readerBrowseHome.isVisible().catch(() => false)) return readerBrowseHome;
+  return page.getByTestId('reader-home');
+};
+
 const openWorkspaceTab = async (page: Parameters<typeof test>[0]['page'], label: string): Promise<void> => {
   const button = page.locator('aside').getByRole('button', { name: new RegExp(`^${label}$`) }).first();
   if (await button.isVisible().catch(() => false)) {
@@ -57,10 +63,28 @@ const openWorkspaceTab = async (page: Parameters<typeof test>[0]['page'], label:
 };
 
 const unlockAdminMutations = async (page: Parameters<typeof test>[0]['page']): Promise<void> => {
-  await openWorkspaceTab(page, 'Admin');
-  const unlockTab = page.getByRole('tab', { name: /^Unlock$/i }).first();
-  await unlockTab.click({ force: true });
-  await expect(unlockTab).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+  const activateUnlockTab = async (): Promise<void> => {
+    await openWorkspaceTab(page, 'Admin');
+    const unlockTab = page.getByRole('tab', { name: /^Unlock$/i }).first();
+    await expect(unlockTab).toBeVisible({ timeout: 30_000 });
+    await unlockTab.click({ force: true });
+    await expect(unlockTab).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+  };
+
+  await activateUnlockTab();
+  const issueKeyButton = page.getByRole('button', { name: /^Issue Key$/i }).first();
+  if (!(await issueKeyButton.isVisible().catch(() => false))) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
+    await activateUnlockTab();
+  }
+  if (!(await issueKeyButton.isVisible().catch(() => false))) {
+    test.skip(
+      true,
+      'Admin unlock controls are not available for this authenticated session. '
+        + 'Use a super-admin account with Unlock controls enabled.'
+    );
+    return;
+  }
 
   let unlockIssuePayload: { unlockKey?: string } = {};
   let issueResolved = false;
@@ -70,7 +94,7 @@ const unlockAdminMutations = async (page: Parameters<typeof test>[0]['page']): P
       (response) => response.request().method() === 'POST' && response.url().includes('/admin/session-unlock/issue'),
       { timeout: 120_000 }
     );
-    await page.getByRole('button', { name: /^Issue Key$/i }).click({ force: true });
+    await issueKeyButton.click({ force: true });
     const issueResponse = await unlockIssueResponse;
     if (issueResponse.ok()) {
       unlockIssuePayload = await issueResponse.json() as { unlockKey?: string };
@@ -214,7 +238,7 @@ const verifyReaderOpen = async (
   contentType: 'novel' | 'manga'
 ): Promise<void> => {
   await openWorkspaceTab(page, 'Reader');
-  const readerHome = page.getByTestId('reader-home');
+  const readerHome = await getReaderHome(page);
   await expect(readerHome).toBeVisible({ timeout: 30_000 });
   const readerError = page.getByText(/Reader could not load right now|Could not load Reader catalog/i).first();
   if (await readerError.isVisible().catch(() => false)) {

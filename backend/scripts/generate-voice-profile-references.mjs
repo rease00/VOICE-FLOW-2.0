@@ -34,7 +34,7 @@ function toPosixPath(inputPath) {
 
 function sampleTextForProfile(profile) {
   const name = String(profile.displayName || profile.profileId || "Speaker").trim();
-  return `${name}. VoiceFlow high quality reference sample for narration and dialogue.`;
+  return `${name}. V FLOW AI high quality reference sample for narration and dialogue.`;
 }
 
 function canonicalVoiceIdEntries(voiceToProfile) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AppScreen } from '../../entities/contracts';
+import { resolveAppScreenFromPathname, resolveSafeInternalNextPath } from '../navigation';
 import { resolveInitialScreen, resolveSessionScreen } from './screenRouting';
 
 describe('screenRouting', () => {
@@ -10,7 +11,7 @@ describe('screenRouting', () => {
   it('respects dev deep links for supported screens', () => {
     expect(resolveInitialScreen('?vf-screen=login', true)).toBe(AppScreen.LOGIN);
     expect(resolveInitialScreen('?vf-screen=profile', true)).toBe(AppScreen.PROFILE);
-    expect(resolveInitialScreen('?vf-screen=user-id', true)).toBe(AppScreen.USER_ID_SETUP);
+    expect(resolveInitialScreen('?vf-screen=user-id', true)).toBe(AppScreen.MAIN);
   });
 
   it('holds routing decisions until auth bootstrap is ready', () => {
@@ -19,8 +20,6 @@ describe('screenRouting', () => {
       currentScreen: AppScreen.LOGIN,
       hasSession: true,
       canOpenAdminConsole: false,
-      needsUserIdSetup: false,
-      hasUserId: true,
     })).toBeNull();
   });
 
@@ -30,8 +29,6 @@ describe('screenRouting', () => {
       currentScreen: AppScreen.LOGIN,
       hasSession: true,
       canOpenAdminConsole: false,
-      needsUserIdSetup: false,
-      hasUserId: true,
     })).toBe(AppScreen.MAIN);
 
     expect(resolveSessionScreen({
@@ -39,8 +36,6 @@ describe('screenRouting', () => {
       currentScreen: AppScreen.ONBOARDING,
       hasSession: true,
       canOpenAdminConsole: false,
-      needsUserIdSetup: false,
-      hasUserId: true,
     })).toBe(AppScreen.MAIN);
   });
 
@@ -50,8 +45,6 @@ describe('screenRouting', () => {
       currentScreen: AppScreen.PROFILE,
       hasSession: false,
       canOpenAdminConsole: false,
-      needsUserIdSetup: false,
-      hasUserId: false,
     })).toBe(AppScreen.LOGIN);
   });
 
@@ -61,39 +54,31 @@ describe('screenRouting', () => {
       currentScreen: AppScreen.MAIN,
       hasSession: false,
       canOpenAdminConsole: false,
-      needsUserIdSetup: false,
-      hasUserId: false,
     })).toBeNull();
   });
 
-  it('routes incomplete profiles into user-id setup and exits once complete', () => {
-    expect(resolveSessionScreen({
-      authReady: true,
-      currentScreen: AppScreen.MAIN,
-      hasSession: true,
-      canOpenAdminConsole: false,
-      needsUserIdSetup: true,
-      hasUserId: false,
-    })).toBe(AppScreen.USER_ID_SETUP);
-
+  it('redirects legacy user-id setup screen into main workspace', () => {
     expect(resolveSessionScreen({
       authReady: true,
       currentScreen: AppScreen.USER_ID_SETUP,
       hasSession: true,
       canOpenAdminConsole: false,
-      needsUserIdSetup: false,
-      hasUserId: true,
     })).toBe(AppScreen.MAIN);
   });
 
-  it('lets admin-authenticated sessions bypass login and setup screens', () => {
+  it('treats reader aliases as main app routes and canonicalizes internal next paths', () => {
+    expect(resolveAppScreenFromPathname('/reader')).toBe(AppScreen.MAIN);
+    expect(resolveAppScreenFromPathname('/reader/novel/title-7')).toBe(AppScreen.MAIN);
+    expect(resolveAppScreenFromPathname('/app/reader/novel/title-7')).toBe(AppScreen.MAIN);
+    expect(resolveSafeInternalNextPath('/reader/novel/title-7?tab=read#top')).toBe('/app/reader/novel/title-7?tab=read#top');
+  });
+
+  it('lets admin-authenticated sessions bypass login screens', () => {
     expect(resolveSessionScreen({
       authReady: true,
       currentScreen: AppScreen.LOGIN,
       hasSession: true,
       canOpenAdminConsole: true,
-      needsUserIdSetup: true,
-      hasUserId: false,
     })).toBe(AppScreen.MAIN);
   });
 });

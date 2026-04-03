@@ -35,10 +35,10 @@ describe('voice clone audio helpers', () => {
       arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     } as Response);
 
-    const encoded = await fetchUrlToBase64('https://backend.example/voice-lab/openvoice/artifacts/abc.wav?sig=123');
+    const encoded = await fetchUrlToBase64('https://backend.example/voice-lab/voice-clone/artifacts/abc.wav?sig=123');
 
     expect(authFetchMock).toHaveBeenCalledTimes(1);
-    expect(authFetchMock.mock.calls[0]?.[0]).toContain('/voice-lab/openvoice/artifacts/abc.wav');
+    expect(authFetchMock.mock.calls[0]?.[0]).toContain('/voice-lab/voice-clone/artifacts/abc.wav');
     expect(encoded).toBe('AQIDBA==');
   });
 
@@ -51,11 +51,11 @@ describe('voice clone audio helpers', () => {
     } as Response);
 
     const url = await resolveVoiceClonePlayableAudioUrlWithFallback({
-      artifact: { downloadUrl: '/voice-lab/openvoice/artifacts/abc.wav?sig=123' },
+      artifact: { downloadUrl: '/voice-lab/voice-clone/artifacts/abc.wav?sig=123' },
     }, 'audio/wav');
 
     expect(authFetchMock).toHaveBeenCalledTimes(1);
-    expect(authFetchMock.mock.calls[0]?.[0]).toBe('/api/backend/voice-lab/openvoice/artifacts/abc.wav?sig=123');
+    expect(authFetchMock.mock.calls[0]?.[0]).toBe('/api/backend/voice-lab/voice-clone/artifacts/abc.wav?sig=123');
     expect(url).toBe('data:audio/wav;base64,CQoLDA==');
   });
 
@@ -80,7 +80,7 @@ describe('voice clone audio helpers', () => {
     } as Response);
 
     const url = await resolveVoiceClonePlayableAudioUrlWithFallback({
-      artifact: { downloadUrl: 'https://backend.example/voice-lab/openvoice/artifacts/abc.wav?sig=123' },
+      artifact: { downloadUrl: 'https://backend.example/voice-lab/voice-clone/artifacts/abc.wav?sig=123' },
     }, 'audio/wav');
 
     expect(authFetchMock).toHaveBeenCalledTimes(1);

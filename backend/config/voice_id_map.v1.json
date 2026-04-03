@@ -69,16 +69,16 @@
         {
           "voice_id": "v10",
           "voice": "Charon",
-          "name": "Tahlia",
+          "name": "Charon Australia Male",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v11",
           "voice": "Achernar",
-          "name": "Daichi",
+          "name": "Achernar Japan Female",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v12",
@@ -97,16 +97,16 @@
         {
           "voice_id": "v14",
           "voice": "Algieba",
-          "name": "Larissa",
+          "name": "Algieba Brazil Male",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v15",
           "voice": "Zephyr",
-          "name": "Javier",
+          "name": "Zephyr Spain Female",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v16",
@@ -132,9 +132,9 @@
         {
           "voice_id": "v19",
           "voice": "Gacrux",
-          "name": "Mahesh",
+          "name": "Gacrux India Elder Female",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v20",
@@ -167,9 +167,9 @@
         {
           "voice_id": "v24",
           "voice": "Sadachbia",
-          "name": "Greta",
+          "name": "Sadachbia Germany Male",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v25",
@@ -181,37 +181,37 @@
         {
           "voice_id": "v26",
           "voice": "Schedar",
-          "name": "Elodie",
+          "name": "Schedar France Male",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v27",
           "voice": "Sulafat",
-          "name": "Zayed",
+          "name": "Sulafat UAE Female",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v28",
           "voice": "Umbriel",
-          "name": "Noora",
-          "language": "multilingual",
-          "gender": "female"
-        },
-        {
-          "voice_id": "v29",
-          "voice": "Vindemiatrix",
-          "name": "Nikolai",
+          "name": "Umbriel UAE Male",
           "language": "multilingual",
           "gender": "male"
         },
         {
-          "voice_id": "v30",
-          "voice": "Zubenelgenubi",
-          "name": "Svetlana",
+          "voice_id": "v29",
+          "voice": "Vindemiatrix",
+          "name": "Vindemiatrix Russia Female",
           "language": "multilingual",
           "gender": "female"
+        },
+        {
+          "voice_id": "v30",
+          "voice": "Zubenelgenubi",
+          "name": "Zubenelgenubi Russia Male",
+          "language": "multilingual",
+          "gender": "male"
         }
       ],
       "voiceToProfile": {

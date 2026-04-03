@@ -44,7 +44,7 @@ describe('NovelWorkspaceV2 responsive layout', () => {
     useUserMock.mockReturnValue({ user: null });
   });
 
-  it('uses the mobile chip launcher and hides inline create forms on phones', () => {
+  it('uses mobile Novel/Chapter tabs and keeps controls inside the selected tab on phones', () => {
     viewportMock.mockReturnValue({
       width: 390,
       mode: 'phone',
@@ -56,10 +56,12 @@ describe('NovelWorkspaceV2 responsive layout', () => {
     const markup = renderWorkspace();
 
     expect(markup).toContain('data-novel-layout="phone"');
-    expect(markup).toContain('+ Novel');
-    expect(markup).toContain('+ Chapter');
-    expect(markup).not.toContain('Novel name');
+    expect(markup).toContain('Tools');
+    expect(markup).toContain('Novel');
+    expect(markup).toContain('Chapter');
+    expect(markup).toContain('Novel name');
     expect(markup).not.toContain('Chapter title');
+    expect(markup).not.toContain('Target culture');
   });
 
   it('keeps the compact inline create rail on tablets', () => {
@@ -91,9 +93,21 @@ describe('NovelWorkspaceV2 responsive layout', () => {
     const markup = renderWorkspace();
 
     expect(markup).toContain('data-novel-layout="desktop"');
+    expect(markup).toContain('Library');
+    expect(markup).toContain('novel-library-tabs');
+    expect(markup).toContain('Inspector');
+    expect(markup).toContain('novel-tools-tabs');
+    expect(markup).toContain('novel-editor-tabs');
+    expect(markup).toContain('novel-workspace-back');
+    expect(markup).toContain('novel-workspace-forward');
+    expect(markup).toContain('Browser cache autosave');
+    expect(markup).toContain('Target culture');
     expect(markup).toContain('Novel name');
     expect(markup).toContain('Save');
-    expect(markup).toContain('Advanced: Google Drive');
+    expect(markup).toContain('Source');
+    expect(markup).toContain('Adapted');
+    expect(markup).not.toContain('Advanced: Google Drive');
     expect(markup).not.toContain('+ Novel');
+    expect(markup).not.toContain('novel-workspace-expand');
   });
 });

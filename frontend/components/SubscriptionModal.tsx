@@ -3,6 +3,8 @@ import { ArrowRight, Check, Crown, RefreshCw, ShieldCheck, Sparkles, Wallet, X }
 import { Button } from './Button';
 import { useUser } from '../contexts/UserContext';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
+import { BILLING_PLAN_ROWS } from '../src/features/billing/catalog';
+import { APP_ROUTE_PATHS } from '../src/app/navigation';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson } from '../src/shared/storage/localStore';
@@ -32,6 +34,16 @@ const formatInr = (amount: number): string =>
     maximumFractionDigits: 0,
   }).format(Math.max(0, Number(amount || 0)));
 
+const PLAN_PRICING = Object.fromEntries(
+  BILLING_PLAN_ROWS.map((plan) => [
+    plan.key,
+    {
+      firstCycleInr: plan.firstCycleInr,
+      recurringInr: plan.recurringInr,
+    },
+  ])
+) as Record<BillingPlanKey, { firstCycleInr: number; recurringInr: number }>;
+
 const resolveCurrentPlanCard = (planName: string): PlanCardConfig['id'] | null => {
   const token = String(planName || '').trim().toLowerCase();
   if (token === 'launcher' || token === 'launch') return 'launcher';
@@ -44,7 +56,7 @@ const resolveCurrentPlanCard = (planName: string): PlanCardConfig['id'] | null =
 
 export const SubscriptionModal: React.FC = () => {
   const { showSubscriptionModal, setShowSubscriptionModal, stats, refreshEntitlements } = useUser();
-  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath: '/app/billing' });
+  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath: APP_ROUTE_PATHS.billing });
   const [isLoading, setIsLoading] = useState<BillingPlanKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshingUsage, setIsRefreshingUsage] = useState(false);
@@ -61,8 +73,8 @@ export const SubscriptionModal: React.FC = () => {
     {
       id: 'launcher',
       title: 'Launcher',
-      firstCycleInr: 129,
-      recurringInr: 129,
+      firstCycleInr: PLAN_PRICING.launcher.firstCycleInr,
+      recurringInr: PLAN_PRICING.launcher.recurringInr,
       description: 'For early-stage creators starting paid production.',
       bullets: ['30,000 VF monthly cap', 'All engines, 9k chars per generation', 'Starter-grade checkout speed'],
       actionPlan: 'launcher',
@@ -70,8 +82,8 @@ export const SubscriptionModal: React.FC = () => {
     {
       id: 'starter',
       title: 'Starter',
-      firstCycleInr: 450,
-      recurringInr: 450,
+      firstCycleInr: PLAN_PRICING.starter.firstCycleInr,
+      recurringInr: PLAN_PRICING.starter.recurringInr,
       description: 'Best for consistent monthly AI audio output.',
       bullets: ['65,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'starter',
@@ -79,8 +91,8 @@ export const SubscriptionModal: React.FC = () => {
     {
       id: 'creator',
       title: 'Creator',
-      firstCycleInr: 1499,
-      recurringInr: 1499,
+      firstCycleInr: PLAN_PRICING.creator.firstCycleInr,
+      recurringInr: PLAN_PRICING.creator.recurringInr,
       description: 'For creators publishing regularly at higher volume.',
       bullets: ['225,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'creator',
@@ -90,8 +102,8 @@ export const SubscriptionModal: React.FC = () => {
     {
       id: 'pro',
       title: 'Pro',
-      firstCycleInr: 2999,
-      recurringInr: 2999,
+      firstCycleInr: PLAN_PRICING.pro.firstCycleInr,
+      recurringInr: PLAN_PRICING.pro.recurringInr,
       description: 'For heavy production workloads and team throughput.',
       bullets: ['500,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'pro',
@@ -99,8 +111,8 @@ export const SubscriptionModal: React.FC = () => {
     {
       id: 'scale',
       title: 'Scale',
-      firstCycleInr: 4500,
-      recurringInr: 4500,
+      firstCycleInr: PLAN_PRICING.scale.firstCycleInr,
+      recurringInr: PLAN_PRICING.scale.recurringInr,
       description: 'For highest-volume pipelines and release velocity.',
       bullets: ['850,000 VF monthly cap', 'All engines, 15k chars per generation', 'Early access to all future features'],
       actionPlan: 'scale',
@@ -190,7 +202,7 @@ export const SubscriptionModal: React.FC = () => {
             </div>
             <h2 className={`mt-2 text-3xl font-semibold tracking-tight ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Upgrade Plan</h2>
             <p className={`mx-auto mt-2 max-w-2xl text-sm leading-6 ${isDarkUi ? 'text-slate-300' : 'text-slate-600'}`}>
-              Cleaner pricing, larger monthly caps, and checkout that stays inside the project billing flow.
+              Compare first-month and renewal pricing, larger monthly caps, and checkout that stays inside the project billing flow.
             </p>
             <div className="mt-4 flex items-center justify-center">
               <span
@@ -360,7 +372,7 @@ export const SubscriptionModal: React.FC = () => {
               fullWidth
               onClick={() => {
                 setShowSubscriptionModal(false);
-                window.location.href = '/app/billing';
+                window.location.href = APP_ROUTE_PATHS.billing;
               }}
               disabled={isBusy}
               variant="secondary"

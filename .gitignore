@@ -54,6 +54,7 @@ tsc-errors.txt
 # Local secrets and credentials (never commit)
 API.txt
 FIREBASE.txt
+frontend/tests/smoke/fixtures/studio-admin-credentials.json
 backend/config/gemini_api_pools.json
 *firebase-adminsdk*.json
 voiceflow-*-firebase-adminsdk*.json

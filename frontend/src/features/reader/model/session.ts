@@ -18,6 +18,94 @@ export const resolveReaderBillingDisplay = (session: ReaderSession | null | unde
   };
 };
 
+export interface ReaderBillingEstimate {
+  vfPerChar: number;
+  consumedChars: number;
+  totalChars: number;
+  liveChars: number;
+  consumedVf: number;
+  totalVf: number;
+  remainingVf: number;
+  label: string;
+  detail: string;
+}
+
+const formatDecimal = (value: number): string => {
+  const safe = Math.max(0, Number(value || 0));
+  const rounded = Math.round(safe * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+};
+
+const formatInteger = (value: number): string => (
+  Math.max(0, Math.round(Number(value || 0))).toLocaleString()
+);
+
+const normalizeScriptStatus = (value: string | undefined): 'pending' | 'processing' | 'ready' => {
+  const token = normalizeStatus(value);
+  if (
+    token === 'ready'
+    || token === 'completed'
+    || token === 'complete'
+    || token === 'done'
+    || token === 'finished'
+    || token === 'available'
+    || token === 'exported'
+  ) {
+    return 'ready';
+  }
+  if (
+    token === 'running'
+    || token === 'processing'
+    || token === 'generating'
+    || token === 'active'
+    || token === 'warming'
+    || token === 'preparing'
+    || token === 'in_progress'
+    || token === 'progress'
+  ) {
+    return 'processing';
+  }
+  return 'pending';
+};
+
+export const resolveReaderBillingEstimate = (
+  session: ReaderSession | null | undefined,
+  input?: {
+    progressPct?: number;
+  }
+): ReaderBillingEstimate => {
+  const billing = session?.billing;
+  const vfPerChar = Math.max(0, Number(billing?.vfPerChar || 0));
+  const consumedChars = Math.max(0, Number(session?.consumedChars || 0));
+  const totalChars = Math.max(0, Number(session?.totalChars || 0));
+  const progressPct = Math.max(0, Math.min(100, Number(input?.progressPct ?? session?.progressPct ?? 0)));
+  const progressChars = totalChars > 0
+    ? Math.max(0, Math.min(totalChars, Math.round(totalChars * (progressPct / 100))))
+    : consumedChars;
+  const cappedConsumedChars = totalChars > 0 ? Math.min(consumedChars, totalChars) : consumedChars;
+  const liveChars = totalChars > 0
+    ? Math.max(cappedConsumedChars, progressChars)
+    : consumedChars;
+  const consumedVf = liveChars * vfPerChar;
+  const totalVf = totalChars > 0 ? totalChars * vfPerChar : consumedVf;
+  const remainingVf = Math.max(0, totalVf - consumedVf);
+  return {
+    vfPerChar,
+    consumedChars,
+    totalChars,
+    liveChars,
+    consumedVf,
+    totalVf,
+    remainingVf,
+    label: totalVf > 0
+      ? `VF est ${formatDecimal(consumedVf)} / ${formatDecimal(totalVf)}`
+      : `VF est ${formatDecimal(consumedVf)}`,
+    detail: totalChars > 0
+      ? `${formatInteger(liveChars)} chars tracked`
+      : `${formatInteger(liveChars)} chars tracked`,
+  };
+};
+
 export const resolveReaderProgressLabel = (session: ReaderSession | null | undefined): string => {
   const progressPct = Math.max(0, Math.round(Number(session?.progressPct || 0)));
   return `${progressPct}% complete`;
@@ -106,10 +194,32 @@ export interface ReaderPlayableUnit {
   mode: ReaderMode;
   index: number;
   confidenceLow: boolean;
+  charCount: number;
 }
 
 const resolvePanelBody = (panel: ReaderPanelManifest): string =>
   String(panel.displayText || panel.translatedText || panel.sourceText || panel.text || '').trim();
+
+export interface ReaderScriptSegment {
+  id: string;
+  title: string;
+  body: string;
+  status: 'pending' | 'processing' | 'ready';
+  index: number;
+  charCount: number;
+  speaker?: string;
+}
+
+const resolveUnitStatus = (unitStatus: string | undefined, jobId: string, body: string): 'pending' | 'processing' | 'ready' => {
+  const token = normalizeStatus(unitStatus);
+  const isReady = normalizeScriptStatus(token) === 'ready';
+  if (isReady) return 'ready';
+  const isProcessing = normalizeScriptStatus(token) === 'processing';
+  if (isProcessing) return 'processing';
+  if (token === 'queued' || token === 'pending') return 'pending';
+  if (jobId && body) return 'processing';
+  return 'pending';
+};
 
 export const getReaderPlayableUnits = (session: ReaderSession | null | undefined): ReaderPlayableUnit[] => {
   if (!session) return [];
@@ -123,6 +233,7 @@ export const getReaderPlayableUnits = (session: ReaderSession | null | undefined
       mode: 'comic',
       index: panel.index,
       confidenceLow: Boolean(panel.lowConfidence),
+      charCount: Math.max(0, Number(panel.text?.trim().length || panel.displayText?.trim().length || panel.sourceText?.trim().length || 0)),
     }));
   }
   return session.windows.map((window) => ({
@@ -134,5 +245,26 @@ export const getReaderPlayableUnits = (session: ReaderSession | null | undefined
     mode: 'novel',
     index: window.index,
     confidenceLow: Boolean(window.lowConfidence),
+    charCount: Math.max(0, Number(window.charCount || String(window.displayText || window.translatedText || window.sourceText || window.text || '').trim().length || 0)),
   }));
+};
+
+export const resolveReaderPlayableUnits = getReaderPlayableUnits;
+
+export const resolveReaderScriptSegments = (session: ReaderSession | null | undefined): ReaderScriptSegment[] => {
+  if (!session) return [];
+  return getReaderPlayableUnits(session).map((unit) => {
+    const panelSpeaker = session.contentKind === 'comic'
+      ? String(session.panels[unit.index]?.speaker || '').trim()
+      : '';
+    return {
+      id: unit.id,
+      title: unit.title,
+      body: unit.body,
+      status: resolveUnitStatus(unit.status, unit.jobId, unit.body),
+      index: unit.index,
+      charCount: unit.charCount,
+      ...(panelSpeaker ? { speaker: panelSpeaker } : {}),
+    };
+  });
 };

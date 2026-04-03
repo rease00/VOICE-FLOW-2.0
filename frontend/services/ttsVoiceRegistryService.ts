@@ -107,13 +107,17 @@ const toVoiceOption = (
   index: number
 ): VoiceOption => {
   const id = String(raw.voice_id || raw.id || raw.voiceId || raw.voice || `voice_${index}`).trim();
-  const name = String(
+  const runtimeVoiceName = String(raw.voice || raw.runtimeVoice || raw.voiceName || raw.voice_id || raw.id || '').trim();
+  const mappedDisplayName = String(
     raw.displayName
     || raw.display_name
     || raw.mapped_name
     || raw.name
-    || raw.voice
     || raw.label
+  ).trim();
+  const name = String(
+    mappedDisplayName
+    || runtimeVoiceName
     || (engine === 'DUNO' && id === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName(engine)}` : '')
     || id
   ).trim();

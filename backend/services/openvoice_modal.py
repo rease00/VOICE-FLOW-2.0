@@ -16,39 +16,102 @@ from typing import Any, Literal, Optional
 import requests
 from pydantic import BaseModel, Field
 
+def _env_first(*names: str) -> str:
+    for name in names:
+        token = str(os.getenv(name) or "").strip()
+        if token:
+            return token
+    return ""
+
 OPENVOICE_GPU_RATE_PER_SEC_USD = 0.000222
 OPENVOICE_DEFAULT_COST_MULTIPLIER = 1.0
 OPENVOICE_DEFAULT_TIMEOUT_SEC = max(
     10.0,
-    float((os.getenv("VF_OPENVOICE_RUNTIME_TIMEOUT_SEC") or "150").strip() or "150"),
+    float(
+        (
+            _env_first(
+                "VF_VOICE_CLONE_MODAL_RUNTIME_TIMEOUT_SEC",
+                "VF_OPENVOICE_MODAL_RUNTIME_TIMEOUT_SEC",
+                "VF_VOICE_CLONE_RUNTIME_TIMEOUT_SEC",
+                "VF_OPENVOICE_RUNTIME_TIMEOUT_SEC",
+            )
+            or "150"
+        ).strip()
+        or "150"
+    ),
 )
-OPENVOICE_DEFAULT_RUNTIME_URL = str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
-OPENVOICE_RUNTIME_TOKEN = str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
-OPENVOICE_ARTIFACT_SECRET = str(os.getenv("VF_OPENVOICE_ARTIFACT_SECRET") or "").strip()
+OPENVOICE_DEFAULT_RUNTIME_URL = _env_first(
+    "VF_VOICE_CLONE_MODAL_RUNTIME_URL",
+    "VF_OPENVOICE_MODAL_RUNTIME_URL",
+    "VF_VOICE_CLONE_RUNTIME_URL",
+    "VF_OPENVOICE_RUNTIME_URL",
+).rstrip("/")
+OPENVOICE_RUNTIME_TOKEN = _env_first(
+    "VF_VOICE_CLONE_MODAL_RUNTIME_TOKEN",
+    "VF_OPENVOICE_MODAL_RUNTIME_TOKEN",
+    "VF_VOICE_CLONE_RUNTIME_TOKEN",
+    "VF_OPENVOICE_RUNTIME_TOKEN",
+)
+OPENVOICE_ARTIFACT_SECRET = _env_first(
+    "VF_VOICE_CLONE_ARTIFACT_SECRET",
+    "VF_OPENVOICE_ARTIFACT_SECRET",
+)
 OPENVOICE_DEV_ALLOW_EPHEMERAL_SECRET = str(
-    os.getenv("VF_OPENVOICE_ALLOW_EPHEMERAL_ARTIFACT_SECRET")
-    or os.getenv("VF_OPENVOICE_ALLOW_EPHEMERAL_SECRET")
+    _env_first(
+        "VF_VOICE_CLONE_ALLOW_EPHEMERAL_ARTIFACT_SECRET",
+        "VF_VOICE_CLONE_ALLOW_EPHEMERAL_SECRET",
+        "VF_OPENVOICE_ALLOW_EPHEMERAL_ARTIFACT_SECRET",
+        "VF_OPENVOICE_ALLOW_EPHEMERAL_SECRET",
+    )
     or ""
 ).strip().lower() in {"1", "true", "yes", "on"}
 OPENVOICE_ARTIFACT_SIGNATURE_VERSION = 1
 OPENVOICE_ARTIFACT_SIGNATURE_TTL_SEC = max(
     30,
     int(
-        (os.getenv("VF_OPENVOICE_ARTIFACT_SIGNATURE_TTL_SEC") or "120").strip()
+        (
+            _env_first(
+                "VF_VOICE_CLONE_ARTIFACT_SIGNATURE_TTL_SEC",
+                "VF_OPENVOICE_ARTIFACT_SIGNATURE_TTL_SEC",
+            )
+            or "120"
+        ).strip()
         or "120"
     ),
 )
 OPENVOICE_MAX_AUDIO_BYTES = max(
     64_000,
-    int((os.getenv("VF_OPENVOICE_MAX_AUDIO_BYTES") or str(12 * 1024 * 1024)).strip() or str(12 * 1024 * 1024)),
+    int(
+        (
+            _env_first(
+                "VF_VOICE_CLONE_MAX_AUDIO_BYTES",
+                "VF_OPENVOICE_MAX_AUDIO_BYTES",
+            )
+            or str(12 * 1024 * 1024)
+        ).strip()
+        or str(12 * 1024 * 1024)
+    ),
 )
-OPENVOICE_MAX_AUDIO_BASE64_CHARS = max(85_000, int((os.getenv("VF_OPENVOICE_MAX_AUDIO_BASE64_CHARS") or str(((OPENVOICE_MAX_AUDIO_BYTES * 4) // 3) + 16)).strip() or str(((OPENVOICE_MAX_AUDIO_BYTES * 4) // 3) + 16)))
+OPENVOICE_MAX_AUDIO_BASE64_CHARS = max(
+    85_000,
+    int(
+        (
+            _env_first(
+                "VF_VOICE_CLONE_MAX_AUDIO_BASE64_CHARS",
+                "VF_OPENVOICE_MAX_AUDIO_BASE64_CHARS",
+            )
+            or str(((OPENVOICE_MAX_AUDIO_BYTES * 4) // 3) + 16)
+        ).strip()
+        or str(((OPENVOICE_MAX_AUDIO_BYTES * 4) // 3) + 16)
+    ),
+)
 OPENVOICE_ARTIFACT_ROOT = Path(
     str(
-        os.getenv(
+        _env_first(
+            "VF_VOICE_CLONE_ARTIFACT_DIR",
             "VF_OPENVOICE_ARTIFACT_DIR",
-            str(Path(__file__).resolve().parents[1] / "artifacts" / "openvoice"),
         )
+        or str(Path(__file__).resolve().parents[1] / "artifacts" / "voice-clone")
     ).strip()
 ).resolve()
 OPENVOICE_ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -125,10 +188,14 @@ def _resolve_openvoice_artifact_secret(secret: str | None = None) -> str:
     if candidate:
         return candidate
     if _is_openvoice_production():
-        raise RuntimeError("VF_OPENVOICE_ARTIFACT_SECRET is required for OpenVoice artifact signing in production.")
+        raise RuntimeError(
+            "VF_VOICE_CLONE_ARTIFACT_SECRET is required for Voice Clone artifact signing in production."
+        )
     if OPENVOICE_DEV_ALLOW_EPHEMERAL_SECRET and OPENVOICE_RUNTIME_TOKEN:
         return OPENVOICE_RUNTIME_TOKEN
-    raise RuntimeError("VF_OPENVOICE_ARTIFACT_SECRET is required for OpenVoice artifact signing.")
+    raise RuntimeError(
+        "VF_VOICE_CLONE_ARTIFACT_SECRET is required for Voice Clone artifact signing."
+    )
 
 
 def _openvoice_uid_prefix(uid: object) -> str:
@@ -275,7 +342,7 @@ class OpenVoiceArtifact:
     artifact_id: str
     path: Path
     content_type: str = "audio/wav"
-    file_name: str = "openvoice.wav"
+    file_name: str = "voice-clone.wav"
 
     @property
     def size_bytes(self) -> int:
@@ -323,12 +390,23 @@ class OpenVoiceModalClient:
         resolved_base_url = (
             str(base_url).strip()
             if base_url is not None and str(base_url).strip()
-            else str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or OPENVOICE_DEFAULT_RUNTIME_URL)
+            else _env_first(
+                "VF_VOICE_CLONE_RUNTIME_URL",
+                "VF_OPENVOICE_RUNTIME_URL",
+            )
+            or OPENVOICE_DEFAULT_RUNTIME_URL
         )
         resolved_token = (
             str(token).strip()
             if token is not None and str(token).strip()
-            else str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or OPENVOICE_RUNTIME_TOKEN or "").strip()
+            else (
+                _env_first(
+                    "VF_VOICE_CLONE_RUNTIME_TOKEN",
+                    "VF_OPENVOICE_RUNTIME_TOKEN",
+                )
+                or OPENVOICE_RUNTIME_TOKEN
+                or ""
+            ).strip()
         )
         self.base_url = resolved_base_url.strip().rstrip("/")
         self.token = resolved_token
@@ -348,7 +426,7 @@ class OpenVoiceModalClient:
     ) -> dict[str, Any]:
         if not self.base_url:
             raise OpenVoiceRuntimeError(
-                "Seed-VC runtime is not configured. Set VF_OPENVOICE_RUNTIME_URL to your Modal endpoint."
+                "Voice Clone runtime is not configured. Set VF_VOICE_CLONE_RUNTIME_URL to your Modal endpoint."
             )
         url = f"{self.base_url}{path}"
         try:
@@ -387,6 +465,9 @@ class OpenVoiceModalClient:
     def tts_then_vc(self, payload: dict[str, Any], *, timeout_sec: Optional[float] = None) -> dict[str, Any]:
         return self._request_json("POST", "/v1/tts-vc", json_payload=payload, timeout_sec=timeout_sec)
 
+    def separate(self, payload: dict[str, Any], *, timeout_sec: Optional[float] = None) -> dict[str, Any]:
+        return self._request_json("POST", "/v1/separate", json_payload=payload, timeout_sec=timeout_sec)
+
 
 def save_openvoice_artifact(audio_bytes: bytes, artifact_id: str, *, root: Path | None = None) -> OpenVoiceArtifact:
     safe_root = Path(root or OPENVOICE_ARTIFACT_ROOT).resolve()
@@ -414,7 +495,7 @@ def save_openvoice_artifact(audio_bytes: bytes, artifact_id: str, *, root: Path 
 def build_openvoice_artifact_url(
     artifact_id: str,
     *,
-    base_path: str = "/voice-lab/openvoice/artifacts",
+    base_path: str = "/voice-lab/voice-clone/artifacts",
     secret: str | None = None,
     uid: str | None = None,
     exp: int | None = None,

@@ -18,6 +18,8 @@ describe('billing catalog parity', () => {
     expect(BILLING_TOKEN_PACK_KEYS).toEqual(['micro', 'standard', 'mega', 'ultra']);
     expect(BILLING_VC_PACK_KEYS).toEqual(['standard']);
     expect(BILLING_PLAN_ROWS.map((row) => row.name)).toEqual(['Launcher', 'Starter', 'Creator', 'Pro', 'Scale']);
+    expect(BILLING_PLAN_ROWS.map((row) => row.firstCycleInr)).toEqual([129, 450, 1499, 2999, 4500]);
+    expect(BILLING_PLAN_ROWS.map((row) => row.recurringInr)).toEqual([129, 428, 1424, 2699, 3825]);
     expect(BILLING_TOKEN_PACK_ROWS.map((row) => row.label)).toEqual(['Micro', 'Standard', 'Mega', 'Ultra']);
     expect(BILLING_VC_PACK_ROWS.map((row) => row.label)).toEqual(['Standard']);
   });
@@ -40,7 +42,9 @@ describe('billing catalog parity', () => {
     expect(publicBillingPageSource).toContain("from './surface/BillingSurface'");
     expect(publicBillingPageSource).toContain('mode="public"');
     expect(publicBillingPageSource).toContain('homeUrl="/landing"');
-    expect(publicBillingPageSource).toContain('appBuyUrl="/app/billing"');
+    expect(publicBillingPageSource).toContain('const BILLING_PATH = \'/billing\'');
+    expect(publicBillingPageSource).toContain('appBuyUrl={BILLING_PATH}');
+    expect(publicBillingPageSource).not.toContain('window.location.replace');
 
     expect(billingCenterSource).not.toContain('const PLAN_ROWS');
     expect(publicBillingPageSource).not.toContain('const PLAN_ROWS');

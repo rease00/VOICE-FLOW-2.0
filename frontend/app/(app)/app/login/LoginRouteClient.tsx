@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { AppScreen } from '../../../../types';
 import { Login } from '../../../../views/Login';
 import { resolveAppPath, resolveLoginPath, type AuthRouteMode } from '../../../../src/app/navigation';
+import { UserProvider, useOptionalUser } from '../../../../src/features/auth/context/UserContext';
 
 interface LoginRouteClientProps {
   initialMode?: AuthRouteMode;
@@ -13,6 +14,7 @@ interface LoginRouteClientProps {
 
 export function LoginRouteClient({ initialMode, nextPath }: LoginRouteClientProps) {
   const router = useRouter();
+  const userContext = useOptionalUser();
 
   const setScreen = useCallback((screen: AppScreen) => {
     router.replace(resolveAppPath(screen));
@@ -26,13 +28,21 @@ export function LoginRouteClient({ initialMode, nextPath }: LoginRouteClientProp
     router.replace(path);
   }, [router]);
 
+  const loginProps = {
+    setScreen,
+    syncModeToRoute,
+    navigateToPath,
+    ...(nextPath ? { nextPath } : {}),
+    ...(initialMode ? { initialMode } : {}),
+  };
+
+  if (userContext) {
+    return <Login {...loginProps} />;
+  }
+
   return (
-    <Login
-      setScreen={setScreen}
-      syncModeToRoute={syncModeToRoute}
-      navigateToPath={navigateToPath}
-      {...(nextPath ? { nextPath } : {})}
-      {...(initialMode ? { initialMode } : {})}
-    />
+    <UserProvider>
+      <Login {...loginProps} />
+    </UserProvider>
   );
 }

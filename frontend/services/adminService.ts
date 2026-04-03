@@ -396,6 +396,17 @@ export interface AudioMetadataRecord {
   userId?: string;
   identityType?: string;
   identityValue?: string;
+  provenance?: Record<string, unknown> | null;
+  outputSha256?: string;
+  audibleLabelApplied?: boolean;
+  watermarkMode?: string;
+  watermarkId?: string;
+  watermarkVersion?: string;
+  watermarkDetectable?: boolean;
+  c2paStatus?: string;
+  c2paManifestRef?: string;
+  provenanceVersion?: string;
+  provenanceError?: string;
   email?: string;
   phoneNumber?: string;
   submittedAt?: string;
@@ -427,6 +438,9 @@ export interface AudioMetadataFilters {
   paymentRef?: string;
   status?: string;
   engine?: string;
+  outputSha256?: string;
+  watermarkId?: string;
+  c2paStatus?: string;
   from?: string;
   to?: string;
   cursor?: string;
@@ -1224,6 +1238,9 @@ const buildAudioMetadataQuery = (options?: AudioMetadataFilters): string => {
   if (options?.paymentRef?.trim()) query.set('paymentRef', options.paymentRef.trim());
   if (options?.status?.trim()) query.set('status', options.status.trim());
   if (options?.engine?.trim()) query.set('engine', options.engine.trim());
+  if (options?.outputSha256?.trim()) query.set('outputSha256', options.outputSha256.trim());
+  if (options?.watermarkId?.trim()) query.set('watermarkId', options.watermarkId.trim());
+  if (options?.c2paStatus?.trim()) query.set('c2paStatus', options.c2paStatus.trim());
   if (options?.from?.trim()) query.set('from', options.from.trim());
   if (options?.to?.trim()) query.set('to', options.to.trim());
   if (options?.cursor?.trim()) query.set('cursor', options.cursor.trim());

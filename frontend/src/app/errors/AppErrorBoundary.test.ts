@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyUnhandledRejection } from './AppErrorBoundary';
+import { classifyUnhandledRejection } from './unhandledRejectionRecovery';
 
 describe('classifyUnhandledRejection', () => {
   it('treats fetch and network failures as recoverable transient errors', () => {

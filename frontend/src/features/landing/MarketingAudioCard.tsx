@@ -1,7 +1,7 @@
 'use client';
 
 import { type CSSProperties, useEffect, useId, useRef, useState } from 'react';
-import { Download, Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { Pause, Play } from 'lucide-react';
 
 export interface MarketingAudioCardBadge {
   label: string;
@@ -18,9 +18,8 @@ export interface MarketingAudioCardProps {
   note?: string;
   badges?: readonly MarketingAudioCardBadge[];
   cast?: readonly string[];
-  downloadFileName?: string;
   fallback?: string;
-  variant?: 'hero' | 'list';
+  variant?: 'hero' | 'list' | 'scene';
 }
 
 const DEFAULT_FALLBACK = 'Audio preview is not available right now.';
@@ -45,7 +44,6 @@ export function MarketingAudioCard({
   note,
   badges = [],
   cast = [],
-  downloadFileName,
   fallback = DEFAULT_FALLBACK,
   variant = 'list',
 }: MarketingAudioCardProps) {
@@ -53,7 +51,6 @@ export function MarketingAudioCard({
   const progressId = useId();
   const [isReady, setIsReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [hasError, setHasError] = useState(false);
@@ -65,7 +62,6 @@ export function MarketingAudioCard({
     const syncState = () => {
       setCurrentTime(audio.currentTime || 0);
       setDuration(audio.duration || 0);
-      setIsMuted(audio.muted);
       setIsPlaying(!audio.paused && !audio.ended);
       setIsReady(Number.isFinite(audio.duration) && audio.duration > 0);
     };
@@ -92,7 +88,6 @@ export function MarketingAudioCard({
     audio.addEventListener('timeupdate', syncState);
     audio.addEventListener('play', syncState);
     audio.addEventListener('pause', syncState);
-    audio.addEventListener('volumechange', syncState);
     audio.addEventListener('ended', handleEnded);
     audio.addEventListener('error', handleError);
 
@@ -102,7 +97,6 @@ export function MarketingAudioCard({
       audio.removeEventListener('timeupdate', syncState);
       audio.removeEventListener('play', syncState);
       audio.removeEventListener('pause', syncState);
-      audio.removeEventListener('volumechange', syncState);
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('error', handleError);
     };
@@ -111,6 +105,7 @@ export function MarketingAudioCard({
   const progressMax = duration > 0 ? duration : 1;
   const progressValue = Math.min(currentTime, progressMax);
   const progressPercent = progressMax > 0 ? Math.min((progressValue / progressMax) * 100, 100) : 0;
+  const waveState = isPlaying && isReady && !hasError ? 'active' : 'idle';
 
   const waveformStyle = {
     '--vf-audio-progress': `${progressPercent}%`,
@@ -141,19 +136,13 @@ export function MarketingAudioCard({
     setCurrentTime(parsed);
   };
 
-  const toggleMute = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.muted = !audio.muted;
-    setIsMuted(audio.muted);
-  };
-
   const showTransport = !hasError;
 
   return (
     <article
       className={`vf-marketing-audio-card vf-marketing-audio-card--${variant}`}
       data-audio-player="vf-marketing"
+      data-audio-state={hasError ? 'error' : isPlaying ? 'playing' : isReady ? 'ready' : 'idle'}
     >
       <audio ref={audioRef} preload={preload} src={audioSrc} aria-label={ariaLabel} />
 
@@ -190,7 +179,12 @@ export function MarketingAudioCard({
 
       {showTransport ? (
         <>
-          <div className="vf-marketing-audio-card__wave" aria-hidden="true" style={waveformStyle}>
+          <div
+            className="vf-marketing-audio-card__wave"
+            aria-hidden="true"
+            data-wave-state={waveState}
+            style={waveformStyle}
+          >
             {WAVE_BARS.map((height, index) => (
               <span
                 key={`${title}-wave-${index}`}
@@ -232,26 +226,6 @@ export function MarketingAudioCard({
                 <span>{formatTime(progressValue)}</span>
                 <span>{isReady ? formatTime(duration) : 'Loading'}</span>
               </div>
-            </div>
-
-            <div className="vf-marketing-audio-card__actions">
-              <button
-                type="button"
-                className="vf-marketing-audio-card__icon"
-                onClick={toggleMute}
-                aria-label={isMuted ? `Unmute ${title}` : `Mute ${title}`}
-              >
-                {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-              </button>
-
-              <a
-                className="vf-marketing-audio-card__icon"
-                href={audioSrc}
-                download={downloadFileName}
-                aria-label={`Download ${title}`}
-              >
-                <Download size={16} />
-              </a>
             </div>
           </div>
         </>

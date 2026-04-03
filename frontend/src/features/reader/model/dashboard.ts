@@ -224,15 +224,17 @@ export const resolveReaderHomeViewModel = (
     library: tabItems.library.length,
     imported: tabItems.imported.length,
   };
-  const sections: ReaderDashboardSection[] = [
-    {
-      id: 'continueReading',
-      label: 'Continue Reading',
-      heading: 'Resume without losing your place',
-      description: 'Recent sessions and titles with progress stay pinned here first.',
-      emptyMessage: 'No resumable titles match this filter yet.',
-      items: filterSectionItems(dashboard.shelves.continueReading || [], homeTab, searchTerm),
-    },
+  const candidateSections: ReaderDashboardSection[] = [
+    ...(homeTab === 'library'
+      ? [{
+          id: 'continueReading' as const,
+          label: 'Continue Reading',
+          heading: 'Resume without losing your place',
+          description: 'Recent sessions and titles with progress stay pinned here first.',
+          emptyMessage: 'No resumable titles match this filter yet.',
+          items: filterSectionItems(dashboard.shelves.continueReading || [], homeTab, searchTerm),
+        }]
+      : []),
     {
       id: 'trending',
       label: 'Trending',
@@ -258,13 +260,13 @@ export const resolveReaderHomeViewModel = (
       items: filterSectionItems(dashboard.shelves.recentlyImported || [], homeTab, searchTerm),
     },
   ];
-  const [continueReadingSection, trendingSection, newArrivalsSection, recentlyImportedSection] = sections;
+  const sections = candidateSections.filter((section) => section.items.length > 0);
   const visibleCount = tabCounts[homeTab];
   const renderedShelves = {
-    continueReading: continueReadingSection?.items || [],
-    trending: trendingSection?.items || [],
-    newArrivals: newArrivalsSection?.items || [],
-    recentlyImported: recentlyImportedSection?.items || [],
+    continueReading: sections.find((section) => section.id === 'continueReading')?.items || [],
+    trending: sections.find((section) => section.id === 'trending')?.items || [],
+    newArrivals: sections.find((section) => section.id === 'newArrivals')?.items || [],
+    recentlyImported: sections.find((section) => section.id === 'recentlyImported')?.items || [],
   };
 
   return {

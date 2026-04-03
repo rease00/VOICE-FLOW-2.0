@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
+  ChevronLeft,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   CloudDownload,
   CloudUpload,
@@ -363,200 +365,7 @@ const buildMemoryInstruction = (ledger: ProjectMemoryLedger): string => {
 };
 
 type NovelCreateMode = 'novel' | 'chapter';
-
-interface NovelCreateSheetProps {
-  open: boolean;
-  mode: NovelCreateMode;
-  draftName: string;
-  hasSelectedProject: boolean;
-  selectedProjectName: string;
-  onClose: () => void;
-  onModeChange: (mode: NovelCreateMode) => void;
-  onDraftNameChange: (value: string) => void;
-  onSubmit: () => void;
-}
-
-const NovelCreateSheet: React.FC<NovelCreateSheetProps> = ({
-  open,
-  mode,
-  draftName,
-  hasSelectedProject,
-  selectedProjectName,
-  onClose,
-  onModeChange,
-  onDraftNameChange,
-  onSubmit,
-}) => {
-  const dialogRef = useRef<HTMLFormElement | null>(null);
-  const previousActiveRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    previousActiveRef.current = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
-    const dialog = dialogRef.current;
-    const focusableSelector = [
-      'button:not([disabled])',
-      '[href]',
-      'input:not([disabled])',
-      'select:not([disabled])',
-      'textarea:not([disabled])',
-      '[tabindex]:not([tabindex="-1"])',
-    ].join(',');
-    const focusFirst = (): void => {
-      if (!dialog) return;
-      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
-        (element) => element.offsetParent !== null
-      );
-      (focusable[0] || dialog)?.focus?.();
-    };
-    focusFirst();
-
-    const onKeydown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab' || !dialog) return;
-      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
-        (element) => element.offsetParent !== null
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      const active = document.activeElement as HTMLElement | null;
-      if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (event.shiftKey && active === first) {
-        event.preventDefault();
-        last.focus();
-      }
-    };
-
-    window.addEventListener('keydown', onKeydown);
-    return () => {
-      window.removeEventListener('keydown', onKeydown);
-      previousActiveRef.current?.focus?.();
-      previousActiveRef.current = null;
-    };
-  }, [onClose, open]);
-
-  if (!open) return null;
-
-  const isChapterMode = mode === 'chapter';
-  const submitDisabled = !draftName.trim() || (isChapterMode && !hasSelectedProject);
-
-  const modeChipClassName = (active: boolean) => [
-    'inline-flex min-h-10 flex-1 items-center justify-center rounded-full px-3 text-sm font-semibold transition-colors',
-    active
-      ? 'bg-slate-900 text-white shadow-[0_10px_24px_rgba(15,23,42,0.18)]'
-      : 'bg-transparent text-slate-500 hover:text-slate-900',
-  ].join(' ');
-
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/60 p-3 backdrop-blur-sm sm:items-center sm:p-4"
-      role="presentation"
-      onClick={onClose}
-    >
-      <form
-        ref={dialogRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="novel-create-sheet-title"
-        aria-describedby="novel-create-sheet-description"
-        className="w-full max-w-md rounded-[1.5rem] border border-slate-200 bg-white p-4 text-slate-900 shadow-[0_24px_80px_rgba(15,23,42,0.32)] sm:p-5"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (submitDisabled) return;
-          onSubmit();
-        }}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-indigo-500">Create</p>
-            <h3 id="novel-create-sheet-title" className="mt-1 text-lg font-semibold text-slate-900">
-              {isChapterMode ? 'Create chapter' : 'Create novel'}
-            </h3>
-            <p id="novel-create-sheet-description" className="mt-1 text-sm leading-6 text-slate-500">
-              {isChapterMode
-                ? 'Add a chapter to the selected novel from one compact sheet.'
-                : 'Start a new novel workspace without leaving the mobile view.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-10 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-4 grid grid-cols-2 gap-2 rounded-full bg-slate-100 p-1">
-          <button type="button" className={modeChipClassName(mode === 'novel')} onClick={() => onModeChange('novel')}>
-            Novel
-          </button>
-          <button type="button" className={modeChipClassName(mode === 'chapter')} onClick={() => onModeChange('chapter')}>
-            Chapter
-          </button>
-        </div>
-
-        {isChapterMode && !hasSelectedProject ? (
-          <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-            Create or select a novel first, then come back here to add a chapter.
-          </div>
-        ) : null}
-        {isChapterMode && hasSelectedProject ? (
-          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-            Chapter will be added to <span className="font-semibold text-slate-900">{selectedProjectName}</span>.
-          </div>
-        ) : null}
-
-        <label htmlFor="novel-create-sheet-name" className="mt-4 block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-          {isChapterMode ? 'Chapter title' : 'Novel name'}
-        </label>
-        <input
-          id="novel-create-sheet-name"
-          value={draftName}
-          onChange={(event) => onDraftNameChange(event.target.value)}
-          placeholder={isChapterMode ? 'Chapter title' : 'Novel name'}
-          autoFocus
-          autoComplete="off"
-          className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:bg-white"
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter') return;
-            event.preventDefault();
-            if (submitDisabled) return;
-            onSubmit();
-          }}
-        />
-
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-10 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-semibold text-slate-600 hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={submitDisabled}
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-full bg-indigo-600 px-4 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(79,70,229,0.18)] transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Plus size={15} className="shrink-0" />
-            {isChapterMode ? 'Create chapter' : 'Create novel'}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-};
+type MobileToolsTab = 'adaptation' | 'summary' | 'ledger' | 'drive';
 
 export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, mediaBackendUrl, onToast, onSendToStudio }) => {
   const { width, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
@@ -564,11 +373,11 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const isTightPhone = isPhone && width < 460;
   const [mobileEditorPane, setMobileEditorPane] = useState<'source' | 'adapted'>('source');
   const [mobilePanelOpen, setMobilePanelOpen] = useState({
-    library: false,
-    adaptation: false,
-    summary: false,
-    ledger: false,
+    library: true,
   });
+  const [mobileLibraryTab, setMobileLibraryTab] = useState<NovelCreateMode>('novel');
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+  const [mobileToolsTab, setMobileToolsTab] = useState<MobileToolsTab>('adaptation');
   const { user } = useUser();
   const canSeeAdminDiagnostics = hasAdminConsoleAccess(user);
   const [driveState, setDriveState] = useState<DriveConnectionState>(buildDriveState('checking', 'Checking Google Drive access...'));
@@ -576,7 +385,6 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const [isConnectingDrive, setIsConnectingDrive] = useState(false);
   const [isUploadingToDrive, setIsUploadingToDrive] = useState(false);
   const [isDownloadingFromDrive, setIsDownloadingFromDrive] = useState(false);
-  const [showAdvancedDrive, setShowAdvancedDrive] = useState(false);
 
   const [projects, setProjects] = useState<NovelProject[]>([]);
   const [chaptersByProjectId, setChaptersByProjectId] = useState<ChaptersByProjectId>({});
@@ -600,9 +408,6 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const [memoryFilter, setMemoryFilter] = useState('');
   const [memoryDraftSource, setMemoryDraftSource] = useState('');
   const [memoryDraftAdapted, setMemoryDraftAdapted] = useState('');
-  const [isCreatePopupOpen, setIsCreatePopupOpen] = useState(false);
-  const [createPopupMode, setCreatePopupMode] = useState<NovelCreateMode>('novel');
-  const [createPopupName, setCreatePopupName] = useState('');
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importFiles, setImportFiles] = useState<File[]>([]);
   const [importRawText, setImportRawText] = useState('');
@@ -630,16 +435,6 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     setMobilePanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
   };
 
-  const openCreatePopup = useCallback((mode: NovelCreateMode) => {
-    setCreatePopupMode(mode);
-    setIsCreatePopupOpen(true);
-  }, []);
-
-  const closeCreatePopup = useCallback(() => {
-    setIsCreatePopupOpen(false);
-    setCreatePopupName('');
-  }, []);
-
   const toNovelPublicError = useCallback((errorLike: unknown, fallback: string, context: 'auth' | 'media' | 'runtime' = 'media'): string => (
     formatFrontendError(errorLike, {
       fallback,
@@ -665,6 +460,10 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     () => (chapterVersionsByProjectId[selectedProjectId]?.[selectedChapterId] || []).slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
     [chapterVersionsByProjectId, selectedProjectId, selectedChapterId]
   );
+  const selectedChapterIndex = useMemo(
+    () => chapters.findIndex((chapter) => chapter.id === selectedChapterId),
+    [chapters, selectedChapterId]
+  );
   const selectedChapterSummary = useMemo(
     () => selectedChapterSummaries.find((row) => row.chapterId === selectedChapterId) || null,
     [selectedChapterSummaries, selectedChapterId]
@@ -686,6 +485,20 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     if (!source || !adapted) return false;
     return source === adapted;
   }, [chapterText, adaptedOutput]);
+  const hasPreviousChapter = selectedChapterIndex > 0;
+  const hasNextChapter = selectedChapterIndex >= 0 && selectedChapterIndex < chapters.length - 1;
+  const goToPreviousChapter = useCallback(() => {
+    if (!hasPreviousChapter) return;
+    const previousChapter = chapters[selectedChapterIndex - 1];
+    if (!previousChapter) return;
+    setSelectedChapterId(previousChapter.id);
+  }, [chapters, hasPreviousChapter, selectedChapterIndex]);
+  const goToNextChapter = useCallback(() => {
+    if (!hasNextChapter) return;
+    const nextChapter = chapters[selectedChapterIndex + 1];
+    if (!nextChapter) return;
+    setSelectedChapterId(nextChapter.id);
+  }, [chapters, hasNextChapter, selectedChapterIndex]);
 
   const refreshDriveSession = useCallback(async () => {
     setDriveState(buildDriveState('checking', 'Checking Google Drive access...'));
@@ -1268,22 +1081,11 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const handleCreateNovel = (): void => {
     if (!createNovelFromName(newProjectName)) return;
     setNewProjectName('');
-    closeCreatePopup();
   };
 
   const handleCreateChapter = (): void => {
     if (!createChapterFromTitle(newChapterTitle)) return;
     setNewChapterTitle('');
-    closeCreatePopup();
-  };
-
-  const handleCreatePopupSubmit = (): void => {
-    if (createPopupMode === 'novel') {
-      if (!createNovelFromName(createPopupName)) return;
-    } else {
-      if (!createChapterFromTitle(createPopupName)) return;
-    }
-    closeCreatePopup();
   };
 
   const handleDeleteChapter = (chapter: NovelChapter): void => {
@@ -1622,146 +1424,353 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const canConnectDrive = driveState.status !== 'checking' && driveState.status !== 'connected';
   const connectLabel = driveState.status === 'needs_google_identity' ? 'Link Google Account' : driveState.status === 'needs_login' ? 'Login with Google' : 'Reconnect Google Drive';
   const novelCountLabel = `${projects.length} novel${projects.length === 1 ? '' : 's'}`;
+  const phoneChipControlClassName = 'min-h-9 rounded-full px-2.5 text-[10px] font-semibold';
+  const phoneInputClassName = 'min-h-9 rounded-xl px-2.5 text-[11px]';
+  const phoneSectionTitleClassName = 'text-[10px] font-bold uppercase tracking-wide text-gray-500';
   const toolbarButtonClassName = isPhone
-    ? 'inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-xl px-3 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-11 sm:w-auto sm:px-4 sm:text-sm'
+    ? `inline-flex w-full items-center justify-center gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`
     : isTablet
       ? 'inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto'
       : 'inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto';
   const sectionToggleButtonClassName = isPhone
-    ? 'mb-2 flex min-h-10 w-full items-center justify-between gap-2 rounded-xl px-1 text-left'
+    ? 'mb-1.5 flex min-h-9 w-full items-center justify-between gap-1.5 rounded-xl px-1 text-left'
     : isTablet
       ? 'mb-2 flex min-h-11 w-full items-center justify-between gap-3 rounded-xl px-1 text-left'
       : 'mb-2 flex min-h-11 w-full items-center justify-between gap-3 rounded-xl px-1 text-left';
   const compactActionButtonClassName = isPhone
-    ? 'inline-flex min-h-10 items-center justify-center rounded-lg px-2.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50'
+    ? 'inline-flex min-h-9 items-center justify-center rounded-full px-2 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50'
     : isTablet
       ? 'inline-flex min-h-10 items-center justify-center rounded-lg px-2.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50'
       : 'inline-flex min-h-11 items-center justify-center rounded-lg px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50';
   const pillActionButtonClassName = isPhone
-    ? 'inline-flex min-h-10 items-center justify-center rounded-full px-3 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50'
+    ? 'inline-flex min-h-8 items-center justify-center rounded-full px-2.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50'
     : isTablet
       ? 'inline-flex min-h-10 items-center justify-center rounded-full px-3 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50'
-      : 'inline-flex min-h-11 items-center justify-center rounded-full px-3 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50';
-  const workspaceRootClassName = isPhone
-    ? 'mx-auto flex h-full max-w-[1360px] flex-col animate-in fade-in pb-2'
+      : 'inline-flex min-h-10 items-center justify-center rounded-full px-3 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50';
+  const headerSegmentButtonClassName = isPhone
+    ? 'inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full px-2.5 text-[10px] font-semibold text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50'
     : isTablet
-      ? 'mx-auto flex h-full max-w-[1360px] flex-col animate-in fade-in pb-4'
-      : 'mx-auto flex h-full max-w-[1360px] flex-col animate-in fade-in pb-8';
+      ? 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-full px-3 text-[10px] font-semibold text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50'
+      : 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50';
+  const headerPrimaryActionButtonClassName = isPhone
+    ? 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-full bg-indigo-600 px-3 text-[10px] font-semibold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
+    : isTablet
+      ? 'inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-[11px] font-semibold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
+      : 'inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full bg-indigo-600 px-4 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50';
+  const cacheBadgeClassName = isPhone
+    ? 'rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9px] font-semibold text-emerald-700'
+    : isTablet
+      ? 'rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700'
+      : 'rounded-full border border-emerald-200 bg-emerald-50 px-3 py-0.5 text-[10px] font-semibold text-emerald-700';
+  const workspaceRootClassName = isPhone
+    ? 'mx-auto flex min-h-[100dvh] w-full flex-col animate-in fade-in pb-1'
+    : isTablet
+      ? 'mx-auto flex min-h-[100dvh] w-full max-w-[1360px] flex-col animate-in fade-in pb-4'
+      : 'mx-auto flex min-h-[100dvh] w-full max-w-none flex-col animate-in fade-in overflow-hidden pb-4';
   const workspaceHeaderClassName = isPhone
-    ? 'mb-2.5 flex flex-col gap-2'
+    ? 'mb-2 flex flex-col gap-1.5'
     : isTablet
       ? 'mb-3 flex items-start justify-between gap-3 flex-wrap'
-      : 'mb-4 flex items-center justify-between gap-4 flex-wrap';
+      : 'mb-3 flex items-start justify-between gap-3 flex-wrap';
   const workspaceTitleClassName = isPhone
-    ? 'text-xl font-bold tracking-tight text-gray-900'
+    ? 'text-lg font-bold tracking-tight text-gray-900'
     : isTablet
       ? 'text-2xl font-bold tracking-tight text-gray-900'
       : 'text-[2rem] font-bold tracking-tight text-gray-900';
   const workspaceDescriptionClassName = isPhone
-    ? 'text-xs text-gray-500'
+    ? 'text-[11px] text-gray-500'
     : isTablet
       ? 'max-w-2xl text-sm text-gray-500'
-      : 'max-w-2xl text-sm text-gray-500';
+      : 'max-w-xl text-sm text-gray-500';
   const workspaceToolbarClassName = isPhone
-    ? `grid w-full gap-2 sm:flex sm:w-auto sm:flex-wrap ${isTightPhone ? 'grid-cols-2' : 'grid-cols-3'}`
-    : 'flex w-full flex-wrap gap-2 sm:w-auto';
+    ? `grid w-full gap-1.5 sm:flex sm:w-auto sm:flex-wrap ${isTightPhone ? 'grid-cols-2' : 'grid-cols-3'}`
+    : 'flex w-full flex-wrap gap-1.5 sm:w-auto';
   const workspacePanelClassName = isPhone
-    ? 'rounded-2xl border border-gray-200 bg-white p-2.5 shadow-[0_1px_0_rgba(15,23,42,0.02)]'
+    ? 'rounded-xl border border-gray-200 bg-white p-2 shadow-[0_1px_0_rgba(15,23,42,0.02)]'
     : isTablet
       ? 'rounded-[1.35rem] border border-gray-200 bg-white p-3.5 shadow-[0_1px_0_rgba(15,23,42,0.02)]'
-      : 'rounded-[1.5rem] border border-gray-200 bg-white p-4 shadow-[0_1px_0_rgba(15,23,42,0.02)]';
-  const workspacePanelSpacingClassName = isPhone ? 'space-y-2.5' : isTablet ? 'space-y-3' : 'space-y-4';
+      : 'rounded-[1.35rem] border border-gray-200 bg-white p-4 shadow-[0_1px_0_rgba(15,23,42,0.02)]';
+  const workspacePanelSpacingClassName = isPhone ? 'space-y-2' : isTablet ? 'space-y-3' : 'space-y-3';
   const workspaceEditorHeaderClassName = isPhone
-    ? 'flex flex-wrap items-start justify-between gap-2 border-b border-gray-100 bg-gray-50 p-2'
+    ? 'flex flex-wrap items-start justify-between gap-1.5 border-b border-gray-100 bg-gray-50 p-1.5'
     : isTablet
       ? 'flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 p-3'
-      : 'flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 p-4';
+      : 'flex flex-wrap items-start justify-between gap-2 border-b border-gray-100 bg-gray-50 p-4';
   const workspaceEditorTabsClassName = isPhone
-    ? 'grid grid-cols-2 gap-2 border-b border-gray-100 bg-white px-2 py-1.5'
+    ? 'grid grid-cols-2 gap-1 border-b border-gray-100 bg-white px-1.5 py-1'
     : 'grid grid-cols-2 gap-2 border-b border-gray-100 bg-white px-3 py-2';
   const workspaceEditorPaneHeaderClassName = isPhone
-    ? 'border-b border-gray-100 bg-gray-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-gray-500'
+    ? 'border-b border-gray-100 bg-gray-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-gray-500'
     : isTablet
       ? 'border-b border-gray-100 bg-gray-50 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500'
-      : 'border-b border-gray-100 bg-gray-50 px-5 py-2.5 text-[11px] font-bold uppercase tracking-wide text-gray-500';
+      : 'border-b border-gray-100 bg-gray-50 px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-gray-500';
   const workspaceEditorTextareaClassName = isPhone
-    ? 'h-[150px] p-3 resize-none outline-none text-[13px] leading-relaxed text-gray-800 font-serif'
+    ? 'h-[220px] p-2.5 resize-none outline-none text-[12px] leading-relaxed text-gray-800 font-serif'
     : isTablet
       ? 'min-h-[220px] flex-1 p-4 resize-none outline-none text-[14px] leading-relaxed text-gray-800 font-serif'
-      : 'min-h-[280px] flex-1 p-5 resize-none outline-none text-[15px] leading-relaxed text-gray-800 font-serif';
+      : 'min-h-0 flex-1 overflow-y-auto p-5 resize-none outline-none text-[15px] leading-7 text-gray-800 font-serif';
   const workspaceEditorFooterClassName = isPhone
-    ? 'px-2 py-2 border-t border-gray-100 bg-gray-50 flex flex-col gap-1.5'
+    ? 'px-1.5 py-1.5 border-t border-gray-100 bg-gray-50 flex flex-col gap-1'
     : isTablet
       ? 'px-3 py-3 border-t border-gray-100 bg-gray-50 flex flex-wrap gap-2 justify-between items-center'
       : 'px-4 py-3 border-t border-gray-100 bg-gray-50 flex flex-wrap gap-2 justify-between items-center';
-  const workspaceEditorFooterActionsClassName = isPhone ? 'grid grid-cols-2 gap-1.5' : 'flex flex-wrap gap-2';
+  const workspaceEditorFooterActionsClassName = isPhone ? 'grid grid-cols-2 gap-1' : 'flex flex-nowrap gap-1.5 overflow-x-auto custom-scrollbar';
 
   useEffect(() => {
     if (!isPhone) return;
-    if (!selectedProjectId || projects.length === 0) {
-      setMobilePanelOpen((previous) => (previous.library ? previous : { ...previous, library: true }));
-    }
-  }, [isPhone, projects.length, selectedProjectId]);
+    setMobilePanelOpen((previous) => (previous.library ? previous : { ...previous, library: true }));
+  }, [isPhone]);
 
   const workspaceGridClassName = isPhone
     ? 'grid grid-cols-1 gap-3 min-h-0'
-    : 'grid grid-cols-1 gap-4 min-h-[650px] md:grid-cols-2 lg:grid-cols-12';
+    : 'grid flex-1 min-h-0 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-[16.5rem_minmax(0,1.15fr)_16.5rem] 2xl:grid-cols-[17.5rem_minmax(0,1.2fr)_17.5rem]';
   const workspaceLibraryColumnClassName = isPhone
-    ? ''
-    : 'md:col-start-1 md:row-start-1 md:row-span-2 md:self-start lg:col-span-3 lg:row-span-1';
+    ? 'order-2'
+    : 'md:col-start-1 md:row-start-1 md:row-span-2 xl:col-start-1 xl:row-start-1 xl:row-span-1';
   const workspaceEditorColumnClassName = isPhone
-    ? ''
-    : 'md:col-start-2 md:row-start-1 md:self-start lg:col-span-6 lg:col-start-auto';
+    ? 'order-1'
+    : 'md:col-start-2 md:row-start-1 xl:col-start-2 xl:row-start-1 xl:row-span-1';
   const workspaceSupportColumnClassName = isPhone
-    ? ''
-    : 'md:col-start-2 md:row-start-2 md:self-start lg:col-span-3 lg:col-start-auto';
+    ? 'order-3'
+    : 'md:col-start-2 md:row-start-2 xl:col-start-3 xl:row-start-1 xl:row-span-1';
+  const showNovelLibraryControls = mobileLibraryTab === 'novel';
+  const showChapterLibraryControls = mobileLibraryTab === 'chapter';
+  const libraryTabButtonClassName = (tab: NovelCreateMode): string => [
+    isPhone ? 'min-h-8 rounded-full px-2 text-[10px]' : 'min-h-10 rounded-full px-4 text-[11px]',
+    'font-semibold transition-colors',
+    mobileLibraryTab === tab ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600',
+  ].join(' ');
+  const inspectorTabButtonClassName = (tab: MobileToolsTab): string => [
+    isPhone ? 'min-h-8 rounded-full px-2 text-[10px]' : 'min-h-10 rounded-full px-4 text-[11px]',
+    'font-semibold transition-colors',
+    mobileToolsTab === tab ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600',
+  ].join(' ');
+
+  const adaptationSectionContent = (
+    <>
+      <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={`mb-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 ${isPhone ? phoneInputClassName : 'min-h-11 text-sm'}`}>
+        <option value="Hinglish">Hinglish</option>
+        <option value="English">English</option>
+        <option value="Hindi">Hindi</option>
+        {LANGUAGES.map((lang) => <option key={lang.code} value={lang.name}>{lang.name}</option>)}
+      </select>
+      <input value={targetCulture} onChange={(e) => setTargetCulture(e.target.value)} placeholder="Target culture" className={`mb-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 ${isPhone ? phoneInputClassName : 'min-h-11 text-sm'}`} />
+      {isPhone ? (
+        <div className="mb-1.5 flex flex-wrap gap-1">
+          <button onClick={() => { void handleAdaptSelected(); }} disabled={isAdapting || isBatchRunning || !selectedChapterId} className={`inline-flex items-center justify-center bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isAdapting ? 'Adapting...' : 'Adapt'}</button>
+          <button onClick={() => { void handleRunBatch(); }} disabled={isAdapting || !selectedChapterId} className={`inline-flex items-center justify-center border border-emerald-200 bg-emerald-50 text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isBatchRunning ? 'Stop Batch' : 'Run Batch'}</button>
+          <button onClick={() => { void handleResumeFailedBatch(); }} disabled={isBatchRunning} className={`inline-flex items-center justify-center border border-amber-200 bg-amber-50 text-amber-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>Resume Failed</button>
+        </div>
+      ) : (
+        <>
+          <button onClick={() => { void handleAdaptSelected(); }} disabled={isAdapting || isBatchRunning || !selectedChapterId} className="mb-2 w-full rounded-lg bg-indigo-600 px-4 min-h-11 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">{isAdapting ? 'Adapting...' : 'Adapt Chapter'}</button>
+          <button onClick={() => { void handleRunBatch(); }} disabled={isAdapting || !selectedChapterId} className="mb-2 w-full rounded-lg border border-emerald-200 bg-emerald-50 px-4 min-h-11 text-sm font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{isBatchRunning ? 'Stop Batch' : 'Run Batch'}</button>
+          <button onClick={() => { void handleResumeFailedBatch(); }} disabled={isBatchRunning} className="w-full rounded-lg border border-amber-200 bg-amber-50 px-4 min-h-11 text-sm font-semibold text-amber-700 disabled:cursor-not-allowed disabled:opacity-50">Resume Failed</button>
+        </>
+      )}
+      {batchMessage && <p className="mt-2 text-[11px] text-gray-600">{batchMessage}</p>}
+    </>
+  );
+
+  const summarySectionContent = (
+    <>
+      {selectedChapterSummary ? (
+        <div className="space-y-2 text-xs text-gray-700">
+          <p className="rounded-lg border border-gray-200 bg-gray-50 p-2">{selectedChapterSummary.summary || 'No summary generated yet.'}</p>
+          <div>
+            <p className="text-[11px] font-semibold text-gray-600 mb-1">New Characters</p>
+            <p className="text-[11px] text-gray-700">{selectedChapterSummary.newCharacters.length > 0 ? selectedChapterSummary.newCharacters.join(', ') : 'None'}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold text-gray-600 mb-1">New Places</p>
+            <p className="text-[11px] text-gray-700">{selectedChapterSummary.newPlaces.length > 0 ? selectedChapterSummary.newPlaces.join(', ') : 'None'}</p>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-gray-500">Run adaptation to generate chapter summary.</p>
+      )}
+      <div className="mt-3 border-t border-gray-100 pt-3">
+        <p className="text-xs font-bold text-gray-600 mb-2">Versions (Revert)</p>
+        <div className="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5">
+          {selectedChapterVersions.length === 0 && <p className="text-[11px] text-gray-500">No snapshots yet.</p>}
+          {selectedChapterVersions.slice(0, 12).map((row) => (
+            <div key={row.id} className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-[11px] font-semibold text-gray-700">{row.label}</p>
+                  <p className="text-[10px] text-gray-500">{new Date(row.timestamp).toLocaleString()}</p>
+                </div>
+                <button
+                  onClick={() => handleRevertVersion(row)}
+                  className={`${pillActionButtonClassName} border border-indigo-200 bg-white text-indigo-700`}
+                >
+                  Revert
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+
+  const ledgerSectionContent = (
+    <>
+      <div className={`mb-2 ${isPhone ? 'flex items-center justify-between' : 'hidden'}`}>
+        <h4 className={phoneSectionTitleClassName}>Memory Tags</h4>
+        <button onClick={addMemoryTagRow} className={`${pillActionButtonClassName} bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}>+ Add Tag</button>
+      </div>
+      <div className="mb-2 flex gap-2">
+        <button onClick={() => setMemoryTab('character')} className={`flex-1 rounded-full px-3 font-semibold ${memoryTab === 'character' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}>Characters</button>
+        <button onClick={() => setMemoryTab('place')} className={`flex-1 rounded-full px-3 font-semibold ${memoryTab === 'place' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}>Places</button>
+      </div>
+      <div className="mb-2 rounded-xl border border-gray-200 bg-gray-50 p-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input
+            value={memoryDraftSource}
+            onChange={(event) => setMemoryDraftSource(event.target.value)}
+            placeholder="Source name"
+            className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
+          />
+          <ArrowRight size={12} className="text-gray-400" />
+          <input
+            value={memoryDraftAdapted}
+            onChange={(event) => setMemoryDraftAdapted(event.target.value)}
+            placeholder="Adapted name"
+            className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
+          />
+          <button
+            onClick={addMemoryTagRow}
+            className={`${pillActionButtonClassName} border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50`}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+      <input value={memoryFilter} onChange={(e) => setMemoryFilter(e.target.value)} placeholder="Filter" className={`mb-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 ${isPhone ? phoneInputClassName : 'min-h-11 text-sm'}`} />
+      <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
+        {filteredMemoryRows.map((row) => (
+          <div key={row.id} className="vf-card-lift rounded-xl border border-gray-200 bg-gray-50 p-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                value={row.sourceName}
+                onChange={(e) => updateMemoryRow(memoryTab, row.id, { sourceName: e.target.value })}
+                className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 font-medium text-gray-700 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
+              />
+              <ArrowRight size={12} className="text-gray-400" />
+              <input
+                value={row.adaptedName}
+                onChange={(e) => updateMemoryRow(memoryTab, row.id, { adaptedName: e.target.value })}
+                className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 font-semibold text-indigo-700 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-[10px] font-medium text-gray-500">
+                {row.locked ? 'Locked mapping' : 'Editable mapping'}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => updateMemoryRow(memoryTab, row.id, { locked: !row.locked })}
+                  className={`${pillActionButtonClassName} ${
+                    row.locked ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600'
+                  }`}
+                >
+                  {row.locked ? <Lock size={11} className="inline mr-1" /> : <Unlock size={11} className="inline mr-1" />}
+                  {row.locked ? 'Locked' : 'Open'}
+                </button>
+                <button onClick={() => removeMemoryRow(memoryTab, row.id)} className={`${pillActionButtonClassName} border border-red-200 bg-red-50 text-red-700`}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
+  const driveSectionContent = (
+    <div className="space-y-2">
+      <p className="text-xs text-gray-600">{driveState.message}</p>
+      {isPhone ? (
+        <div className="flex flex-wrap gap-1">
+          <Button onClick={handleDriveConnectAction} disabled={!canConnectDrive || isConnectingDrive} className={`bg-indigo-600 hover:bg-indigo-700 ${phoneChipControlClassName}`}>{isConnectingDrive ? <Loader2 size={14} className="animate-spin mr-1" /> : <FolderOpen size={14} className="mr-1" />}{driveState.status === 'connected' ? 'Connected' : connectLabel}</Button>
+          <button onClick={() => { void handleUploadCurrentNovelToDrive(); }} disabled={driveState.status !== 'connected' || isUploadingToDrive || !selectedProjectId} className={`inline-flex items-center justify-center gap-1 border border-indigo-200 bg-indigo-50 text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isUploadingToDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudUpload size={14} />}Upload</button>
+          <button onClick={() => { void handleDownloadNovelFromDrive(); }} disabled={driveState.status !== 'connected' || isDownloadingFromDrive} className={`inline-flex items-center justify-center gap-1 border border-emerald-200 bg-emerald-50 text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isDownloadingFromDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}Download</button>
+        </div>
+      ) : (
+        <>
+          <Button onClick={handleDriveConnectAction} disabled={!canConnectDrive || isConnectingDrive} className="w-full bg-indigo-600 hover:bg-indigo-700">{isConnectingDrive ? <Loader2 size={14} className="animate-spin mr-2" /> : <FolderOpen size={14} className="mr-2" />}{driveState.status === 'connected' ? 'Drive Connected' : connectLabel}</Button>
+          <button onClick={() => { void handleUploadCurrentNovelToDrive(); }} disabled={driveState.status !== 'connected' || isUploadingToDrive || !selectedProjectId} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 text-sm font-semibold text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">{isUploadingToDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudUpload size={14} />}Upload Selected Folder</button>
+          <button onClick={() => { void handleDownloadNovelFromDrive(); }} disabled={driveState.status !== 'connected' || isDownloadingFromDrive} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{isDownloadingFromDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}Download Folder to Local</button>
+        </>
+      )}
+    </div>
+  );
+
+  const inspectorTabBarContent = (
+    <div className="grid grid-cols-4 gap-1.5 rounded-full border border-gray-200 bg-gray-100 p-1.5" data-testid="novel-tools-tabs">
+      <button type="button" onClick={() => setMobileToolsTab('adaptation')} className={inspectorTabButtonClassName('adaptation')} data-testid="novel-tools-tab-adapt">Adapt</button>
+      <button type="button" onClick={() => setMobileToolsTab('summary')} className={inspectorTabButtonClassName('summary')} data-testid="novel-tools-tab-memory">Memory</button>
+      <button type="button" onClick={() => setMobileToolsTab('ledger')} className={inspectorTabButtonClassName('ledger')} data-testid="novel-tools-tab-ledger">Ledger</button>
+      <button type="button" onClick={() => setMobileToolsTab('drive')} className={inspectorTabButtonClassName('drive')} data-testid="novel-tools-tab-drive">Drive</button>
+    </div>
+  );
+
+  const inspectorTabContent = mobileToolsTab === 'adaptation'
+    ? adaptationSectionContent
+    : mobileToolsTab === 'summary'
+      ? summarySectionContent
+      : mobileToolsTab === 'ledger'
+        ? ledgerSectionContent
+        : driveSectionContent;
 
   return (
     <div className={workspaceRootClassName} data-novel-layout={layoutMode} data-testid="novel-workspace">
       <div className={workspaceHeaderClassName}>
-        <div>
-          <h2 className={workspaceTitleClassName}>Novel Workspace</h2>
-          <p className={workspaceDescriptionClassName}>Chapter-by-chapter adaptation with lockable memory and import flow.</p>
+          <div>
+            <h2 className={workspaceTitleClassName}>Novel Workspace</h2>
+            <p className={workspaceDescriptionClassName}>Chapter-by-chapter adaptation with lockable memory and import flow.</p>
+          </div>
+          <div className={workspaceToolbarClassName}>
+            <button
+              ref={importTriggerRef}
+              onClick={() => setIsImportModalOpen(true)}
+              className={`${toolbarButtonClassName} bg-indigo-600 text-white hover:bg-indigo-700`}
+            >
+              <FileUp size={14} />Import File
+            </button>
+            <button
+              onClick={() => { void bindLocalFolder(); }}
+              disabled={isBindingLocalFolder}
+              className={`${toolbarButtonClassName} border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}
+            >
+              {isBindingLocalFolder ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}
+              Bind Local Folder
+            </button>
+            <button
+              onClick={() => { void refreshDriveSession(); }}
+              className={`${toolbarButtonClassName} border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 ${isTightPhone ? 'col-span-2' : ''}`}
+            >
+              <RefreshCw size={14} className={driveState.status === 'checking' ? 'animate-spin' : ''} />
+              Refresh Drive
+            </button>
+          </div>
         </div>
-        <div className={workspaceToolbarClassName}>
-          <button
-            ref={importTriggerRef}
-            onClick={() => setIsImportModalOpen(true)}
-            className={`${toolbarButtonClassName} bg-indigo-600 text-white hover:bg-indigo-700`}
-          >
-            <FileUp size={14} />Import File
-          </button>
-          <button
-            onClick={() => { void bindLocalFolder(); }}
-            disabled={isBindingLocalFolder}
-            className={`${toolbarButtonClassName} border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}
-          >
-            {isBindingLocalFolder ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}
-            Bind Local Folder
-          </button>
-          <button
-            onClick={() => { void refreshDriveSession(); }}
-            className={`${toolbarButtonClassName} border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 ${isTightPhone ? 'col-span-2' : ''}`}
-          >
-            <RefreshCw size={14} className={driveState.status === 'checking' ? 'animate-spin' : ''} />
-            Refresh Drive
-          </button>
+        <div className={`rounded-xl border border-indigo-100 bg-indigo-50/60 text-indigo-700 ${isPhone ? 'mb-2 px-2.5 py-1.5 text-[11px]' : 'mb-3 px-3 py-2 text-xs'}`}>
+          {boundLocalFolderName ? `Local folder: ${boundLocalFolderName}` : 'No local folder bound'}.
+          {localFolderStatus && localFolderStatus !== 'No local folder bound.' ? ` ${localFolderStatus}` : ''}
         </div>
-      </div>
-      <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-700">
-        {boundLocalFolderName ? `Local folder: ${boundLocalFolderName}` : 'No local folder bound'}.
-        {localFolderStatus && localFolderStatus !== 'No local folder bound.' ? ` ${localFolderStatus}` : ''}
-      </div>
 
-      <div className={workspaceGridClassName}>
-        <div className={`${workspaceLibraryColumnClassName} ${workspacePanelClassName} ${workspacePanelSpacingClassName}`}>
+        <div className={workspaceGridClassName}>
+        <div className={`${workspaceLibraryColumnClassName} ${workspacePanelClassName} ${workspacePanelSpacingClassName} ${isPhone ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}>
           {isPhone ? (
-            <div className="mb-2 rounded-xl px-1">
-              <div className="flex min-h-10 items-center gap-2">
+            <div className="mb-1.5 rounded-xl px-0.5">
+              <div className="flex min-h-9 items-center gap-1.5">
                 <button type="button" onClick={() => toggleMobilePanel('library')} className="min-w-0 flex flex-1 items-center gap-2 text-left">
                   <FolderOpen size={16} className="shrink-0 text-indigo-600" />
                   <div className="min-w-0">
-                    <h3 className="truncate text-sm font-bold text-gray-800">Library</h3>
+                    <h3 className="truncate text-xs font-bold text-gray-800">Library</h3>
                     <p className="truncate text-[10px] text-gray-500">
                       {selectedProject?.name || 'No novel selected'}
                       {selectedChapter ? ` / ${selectedChapter.title}` : ''}
@@ -1771,162 +1780,250 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
                 <button
                   type="button"
                   onClick={() => toggleMobilePanel('library')}
-                  className="inline-flex min-h-10 w-8 items-center justify-center rounded-lg text-gray-500"
+                  className="inline-flex min-h-9 w-7 items-center justify-center rounded-full text-gray-500"
                   aria-label={mobilePanelOpen.library ? 'Collapse library' : 'Expand library'}
                 >
                   {mobilePanelOpen.library ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                 </button>
               </div>
-              <div className={`mt-1.5 flex flex-wrap items-center gap-1.5 ${isTightPhone ? '' : 'justify-end'}`}>
-                <button
-                  type="button"
-                  onClick={() => openCreatePopup('novel')}
-                  className={`${pillActionButtonClassName} bg-indigo-50 text-indigo-700 hover:bg-indigo-100 ${isTightPhone ? 'px-2' : ''}`}
-                  aria-label="Create novel"
-                  aria-haspopup="dialog"
-                >
-                  <span aria-hidden="true">+ Novel</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openCreatePopup('chapter')}
-                  className={`${pillActionButtonClassName} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 ${isTightPhone ? 'px-2' : ''}`}
-                  aria-label={selectedProjectId ? 'Create chapter' : 'Create chapter or switch to novel'}
-                  aria-haspopup="dialog"
-                >
-                  <span aria-hidden="true">+ Chapter</span>
-                </button>
+              <div className={`mt-1.5 flex items-center gap-1 ${isTightPhone ? 'flex-col items-stretch' : ''}`}>
+                <div className="grid flex-1 grid-cols-2 gap-1 rounded-full border border-gray-200 bg-gray-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setMobileLibraryTab('novel')}
+                    className={`min-h-8 rounded-full px-2 text-[10px] font-semibold transition-colors ${
+                      mobileLibraryTab === 'novel' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600'
+                    }`}
+                    aria-selected={mobileLibraryTab === 'novel'}
+                  >
+                    Novel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobileLibraryTab('chapter')}
+                    className={`min-h-8 rounded-full px-2 text-[10px] font-semibold transition-colors ${
+                      mobileLibraryTab === 'chapter' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600'
+                    }`}
+                    aria-selected={mobileLibraryTab === 'chapter'}
+                  >
+                    Chapter
+                  </button>
+                </div>
                 <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500">
                   {novelCountLabel}
                 </span>
               </div>
             </div>
           ) : null}
-          {(!isPhone || mobilePanelOpen.library) && (
-            <>
-              {!isPhone && (
-                <div>
-                  <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Create Novel</label>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <input
-                      value={newProjectName}
-                      onChange={(e) => setNewProjectName(e.target.value)}
-                      placeholder="Novel name"
-                      className={`flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 outline-none ${isPhone ? 'min-h-10 text-xs' : isTablet ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                    />
-                    <button
-                      onClick={handleCreateNovel}
-                      className={`inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 font-semibold text-white hover:bg-indigo-700 sm:min-w-11 sm:px-3 ${isPhone ? 'min-h-10 text-xs' : isTablet ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                      aria-label="Create novel"
-                    >
-                      <Plus size={16} className="shrink-0" />
-                      <span className="sm:hidden">Create novel</span>
-                    </button>
-                  </div>
+          {!isPhone && (
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <FolderOpen size={16} className="shrink-0 text-indigo-600" />
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-bold text-gray-800">Library</h3>
+                  <p className="truncate text-[11px] text-gray-500">
+                    {selectedProject?.name || 'No novel selected'}
+                    {selectedChapter ? ` / ${selectedChapter.title}` : ''}
+                  </p>
                 </div>
-              )}
-              <div className="max-h-56 overflow-y-auto custom-scrollbar space-y-1.5">
-                {projects.length === 0 && <p className="text-xs text-gray-500">No local novels yet.</p>}
-                {projects.map((project) => (
-                  <div key={project.id} className={`p-2.5 rounded-xl border ${selectedProjectId === project.id ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
-                    <div className="flex items-center justify-between gap-2">
+              </div>
+              <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+                {novelCountLabel}
+              </span>
+            </div>
+          )}
+          {!isPhone && (
+            <div className="grid grid-cols-2 gap-1.5 rounded-full border border-gray-200 bg-gray-100 p-1.5" data-testid="novel-library-tabs">
+              <button
+                type="button"
+                onClick={() => setMobileLibraryTab('novel')}
+                className={libraryTabButtonClassName('novel')}
+                aria-selected={mobileLibraryTab === 'novel'}
+              >
+                Novel
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileLibraryTab('chapter')}
+                className={libraryTabButtonClassName('chapter')}
+                aria-selected={mobileLibraryTab === 'chapter'}
+              >
+                Chapter
+              </button>
+            </div>
+          )}
+          <div className={isPhone ? '' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1'}>
+            {(!isPhone || mobilePanelOpen.library) && (
+              <>
+              {showNovelLibraryControls && (
+                <>
+                  <div>
+                    <label className={`block mb-1 ${isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}`}>Create Novel</label>
+                    <div className={`flex flex-col sm:flex-row ${isPhone ? 'gap-1.5' : 'gap-2'}`}>
+                      <input
+                        value={newProjectName}
+                        onChange={(e) => setNewProjectName(e.target.value)}
+                        placeholder="Novel name"
+                        className={`flex-1 border border-gray-200 bg-gray-50 outline-none ${isPhone ? phoneInputClassName : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-3 text-sm'}`}
+                      />
                       <button
-                        type="button"
-                        onClick={() => setSelectedProjectId(project.id)}
-                        className="min-h-11 min-w-0 flex-1 rounded-lg px-2 text-left text-sm font-semibold text-gray-800 truncate"
+                        onClick={handleCreateNovel}
+                        className={`inline-flex items-center justify-center gap-1.5 bg-indigo-600 font-semibold text-white hover:bg-indigo-700 sm:min-w-11 ${isPhone ? `${phoneChipControlClassName} px-3` : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-4 text-sm'}`}
+                        aria-label="Create novel"
                       >
-                        {project.name}
+                        <Plus size={16} className="shrink-0" />
+                        <span className="sm:hidden">Create novel</span>
                       </button>
-                      <div className="flex gap-1">
-                        <button onClick={() => handleRenameNovel(project)} className={`${compactActionButtonClassName} bg-gray-100 text-gray-600 hover:bg-gray-200`}>Rename</button>
-                        <button onClick={() => handleDeleteNovel(project)} className={`${compactActionButtonClassName} bg-red-50 text-red-700 hover:bg-red-100`} aria-label={`Delete novel ${project.name}`}><Trash2 size={13} /></button>
-                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
-              {selectedProjectId ? (
-                <div>
-                  <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Create Chapter</label>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <input
-                      value={newChapterTitle}
-                      onChange={(e) => setNewChapterTitle(e.target.value)}
-                      placeholder="Chapter title"
-                      className={`flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 outline-none ${isPhone ? 'min-h-10 text-xs' : isTablet ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                    />
-                    <button
-                      onClick={handleCreateChapter}
-                      className={`inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 font-semibold text-white hover:bg-emerald-700 sm:min-w-11 sm:px-3 ${isPhone ? 'min-h-10 text-xs' : isTablet ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                      aria-label="Create chapter"
-                    >
-                      <Plus size={16} className="shrink-0" />
-                      <span className="sm:hidden">Create chapter</span>
-                    </button>
-                  </div>
-                  <div className="mt-3 max-h-44 overflow-y-auto custom-scrollbar space-y-1.5">
-                    {chapters.length === 0 && <p className="text-xs text-gray-500">No local chapters yet.</p>}
-                    {chapters.map((chapter) => {
-                      const state = selectedStateMap.get(chapter.id)?.status || chapter.adaptationStatus || 'idle';
-                      return (
-                        <div key={chapter.id} className="flex items-center gap-1.5">
-                          <button onClick={() => setSelectedChapterId(chapter.id)} className={`min-h-11 flex-1 rounded-lg border p-3 text-left text-xs font-semibold ${chapter.id === selectedChapterId ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-white text-gray-700'}`}>
-                            <div className="truncate">{chapter.name}</div>
-                            <div className="text-[10px] text-gray-500 mt-1">{state}</div>
+                  <div className={`max-h-56 overflow-y-auto custom-scrollbar ${isPhone ? 'space-y-1' : 'space-y-1.5'}`}>
+                    {projects.length === 0 && <p className="text-xs text-gray-500">No local novels yet.</p>}
+                    {projects.map((project) => (
+                      <div key={project.id} className={`${isPhone ? 'p-2 rounded-xl' : 'p-2.5 rounded-xl'} border ${selectedProjectId === project.id ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedProjectId(project.id)}
+                            className={`min-w-0 flex-1 rounded-lg px-2 text-left font-semibold text-gray-800 truncate ${isPhone ? 'min-h-9 text-xs' : 'min-h-11 text-sm'}`}
+                          >
+                            {project.name}
                           </button>
-                          <button onClick={() => handleDeleteChapter(chapter)} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-red-100 bg-red-50 px-3 text-red-700 hover:bg-red-100" aria-label={`Delete chapter ${chapter.name}`}><Trash2 size={14} /></button>
+                          <div className="flex gap-1">
+                            <button onClick={() => handleRenameNovel(project)} className={`${compactActionButtonClassName} bg-gray-100 text-gray-600 hover:bg-gray-200`}>Rename</button>
+                            <button onClick={() => handleDeleteNovel(project)} className={`${compactActionButtonClassName} bg-red-50 text-red-700 hover:bg-red-100`} aria-label={`Delete novel ${project.name}`}><Trash2 size={13} /></button>
+                          </div>
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ) : (
-                <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-500">
-                  Create a novel first to unlock chapter controls.
-                </p>
+                </>
+              )}
+              {showChapterLibraryControls && (
+                selectedProjectId ? (
+                  <div>
+                    <label className={`block mb-1 ${isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}`}>Create Chapter</label>
+                    <div className={`flex flex-col sm:flex-row ${isPhone ? 'gap-1.5' : 'gap-2'}`}>
+                      <input
+                        value={newChapterTitle}
+                        onChange={(e) => setNewChapterTitle(e.target.value)}
+                        placeholder="Chapter title"
+                        className={`flex-1 border border-gray-200 bg-gray-50 outline-none ${isPhone ? phoneInputClassName : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-3 text-sm'}`}
+                      />
+                      <button
+                        onClick={handleCreateChapter}
+                        className={`inline-flex items-center justify-center gap-1.5 bg-emerald-600 font-semibold text-white hover:bg-emerald-700 sm:min-w-11 ${isPhone ? `${phoneChipControlClassName} px-3` : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-4 text-sm'}`}
+                        aria-label="Create chapter"
+                      >
+                        <Plus size={16} className="shrink-0" />
+                        <span className="sm:hidden">Create chapter</span>
+                      </button>
+                    </div>
+                    <div className={`mt-2.5 max-h-44 overflow-y-auto custom-scrollbar ${isPhone ? 'space-y-1' : 'space-y-1.5'}`}>
+                      {chapters.length === 0 && <p className="text-xs text-gray-500">No local chapters yet.</p>}
+                      {chapters.map((chapter) => {
+                        const state = selectedStateMap.get(chapter.id)?.status || chapter.adaptationStatus || 'idle';
+                        return (
+                          <div key={chapter.id} className="flex items-center gap-1.5">
+                            <button onClick={() => setSelectedChapterId(chapter.id)} className={`flex-1 rounded-lg border text-left text-xs font-semibold ${isPhone ? 'min-h-9 p-2' : 'min-h-11 p-3'} ${chapter.id === selectedChapterId ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-white text-gray-700'}`}>
+                              <div className="truncate">{chapter.name}</div>
+                              <div className="text-[10px] text-gray-500 mt-1">{state}</div>
+                            </button>
+                            <button onClick={() => handleDeleteChapter(chapter)} className={`inline-flex items-center justify-center border border-red-100 bg-red-50 text-red-700 hover:bg-red-100 ${isPhone ? 'min-h-9 min-w-9 rounded-full px-2.5' : 'min-h-11 min-w-11 rounded-lg px-3'}`} aria-label={`Delete chapter ${chapter.name}`}><Trash2 size={14} /></button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-500">
+                    Create a novel first to unlock chapter controls.
+                  </p>
+                )
               )}
             </>
           )}
+          </div>
         </div>
 
-        <div className={`${workspaceEditorColumnClassName} bg-white rounded-2xl border border-gray-200 flex flex-col overflow-hidden`}>
+        <div className={`${workspaceEditorColumnClassName} bg-white ${isPhone ? 'rounded-xl' : 'rounded-2xl'} border border-gray-200 flex min-h-0 flex-col overflow-hidden`}>
           <div className={workspaceEditorHeaderClassName}>
             <div className="min-w-0">
-              <p className="text-xs font-bold text-gray-500 uppercase">Editor</p>
-              <p className="text-sm font-semibold text-gray-800 truncate">{selectedProject?.name || 'No novel selected'} {selectedChapter ? ` / ${selectedChapter.title}` : ''}</p>
+              <p className={isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}>Editor</p>
+              <p className={`${isPhone ? 'text-xs' : 'text-sm'} font-semibold text-gray-800 truncate`}>{selectedProject?.name || 'No novel selected'} {selectedChapter ? ` / ${selectedChapter.title}` : ''}</p>
+              {!isPhone && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={cacheBadgeClassName}
+                    title="Saved in browser cache. Clearing browser storage removes this workspace."
+                  >
+                    Browser cache autosave
+                  </span>
+                  <span className="rounded-full border border-gray-200 bg-white px-3 py-0.5 text-[10px] font-semibold text-gray-500">
+                    {selectedChapterId ? 'Chapter state stays local' : 'Select a chapter to edit'}
+                  </span>
+                </div>
+              )}
             </div>
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              {!isPhone && (
+                <div className="flex items-center rounded-full border border-gray-200 bg-white p-1 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
+                  <button
+                    type="button"
+                    onClick={goToPreviousChapter}
+                    disabled={!hasPreviousChapter}
+                    className={headerSegmentButtonClassName}
+                    data-testid="novel-workspace-back"
+                    aria-label="Previous chapter"
+                  >
+                    <ChevronLeft size={14} />
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={goToNextChapter}
+                    disabled={!hasNextChapter}
+                    className={headerSegmentButtonClassName}
+                    data-testid="novel-workspace-forward"
+                    aria-label="Next chapter"
+                  >
+                    <ChevronRight size={14} />
+                    Forward
+                  </button>
+                </div>
+              )}
+              <button
+                onClick={handleManualSave}
+                disabled={!selectedChapterId}
+                className={headerPrimaryActionButtonClassName}
+                data-testid="novel-workspace-save"
+              >
+                <Save size={14} />
+                Save
+              </button>
+            </div>
+          </div>
+          <div className={workspaceEditorTabsClassName} data-testid="novel-editor-tabs">
             <button
-              onClick={handleManualSave}
-              disabled={!selectedChapterId}
-              className={`inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${isPhone ? 'min-h-10 px-3 text-xs' : 'min-h-11 text-sm'}`}
+              type="button"
+              onClick={() => setMobileEditorPane('source')}
+              className={`rounded-full px-3 font-semibold transition-colors ${mobileEditorPane === 'source' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
             >
-              <Save size={14} />Save
+              Source
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobileEditorPane('adapted')}
+              className={`rounded-full px-3 font-semibold transition-colors ${mobileEditorPane === 'adapted' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
+            >
+              Adapted
             </button>
           </div>
-          {isPhone && (
-            <div className={workspaceEditorTabsClassName}>
-              <button
-                type="button"
-                onClick={() => setMobileEditorPane('source')}
-                className={`rounded-lg px-3 font-semibold transition-colors ${mobileEditorPane === 'source' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-              >
-                Source
-              </button>
-              <button
-                type="button"
-                onClick={() => setMobileEditorPane('adapted')}
-                className={`rounded-lg px-3 font-semibold transition-colors ${mobileEditorPane === 'adapted' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-              >
-                Adapted
-              </button>
-            </div>
-          )}
-          <div className={`grid min-h-0 flex-1 ${isDesktop ? 'grid-cols-2' : 'grid-cols-1'}`}>
-            <div className={`flex min-h-0 flex-col border-gray-100 ${isDesktop ? 'border-r' : ''} ${isPhone && mobileEditorPane !== 'source' ? 'hidden' : ''}`}>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className={`flex min-h-0 flex-1 flex-col border-gray-100 ${mobileEditorPane !== 'source' ? 'hidden' : ''}`}>
               <div className={workspaceEditorPaneHeaderClassName}>Source</div>
               <textarea value={chapterText} onChange={(e) => setChapterText(e.target.value)} placeholder="Source chapter..." className={workspaceEditorTextareaClassName} />
             </div>
-            <div className={`flex min-h-0 flex-col ${isPhone && mobileEditorPane !== 'adapted' ? 'hidden' : ''}`}>
+            <div className={`flex min-h-0 flex-1 flex-col ${mobileEditorPane !== 'adapted' ? 'hidden' : ''}`}>
               <div className={workspaceEditorPaneHeaderClassName}>Adapted</div>
               <textarea value={adaptedOutput} onChange={(e) => setAdaptedOutput(e.target.value)} placeholder="Adapted output..." className={workspaceEditorTextareaClassName} />
             </div>
@@ -1960,198 +2057,44 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
           </div>
         </div>
 
-        <div className={`${workspaceSupportColumnClassName} ${workspacePanelSpacingClassName}`}>
-          <div className={workspacePanelClassName}>
-            {isPhone ? (
-              <button type="button" onClick={() => toggleMobilePanel('adaptation')} className={sectionToggleButtonClassName}>
-                <div className="flex items-center gap-2">
-                  <Wand2 size={16} className="text-indigo-600" />
-                  <h3 className="text-sm font-bold text-gray-800">Adaptation</h3>
+        <div className={`${workspaceSupportColumnClassName} ${isPhone ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}>
+          {isPhone ? (
+            <div className={`${workspacePanelClassName} flex min-h-0 flex-col overflow-hidden`}>
+              <button type="button" onClick={() => setMobileToolsOpen((previous) => !previous)} className={sectionToggleButtonClassName} data-testid="novel-tools-toggle">
+                <div className="flex items-center gap-1.5">
+                  <Wand2 size={15} className="text-indigo-600" />
+                  <h3 className="text-xs font-bold text-gray-800">Tools</h3>
                 </div>
-                {mobilePanelOpen.adaptation ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                {mobileToolsOpen ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
               </button>
-            ) : (
-              <div className="mb-2 flex items-center gap-2"><Wand2 size={16} className="text-indigo-600" /><h3 className="text-sm font-bold text-gray-800">Adaptation</h3></div>
-            )}
-            {(!isPhone || mobilePanelOpen.adaptation) && (
-            <>
-            <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={`mb-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>
-              <option value="Hinglish">Hinglish</option>
-              <option value="English">English</option>
-              <option value="Hindi">Hindi</option>
-              {LANGUAGES.map((lang) => <option key={lang.code} value={lang.name}>{lang.name}</option>)}
-            </select>
-            <input value={targetCulture} onChange={(e) => setTargetCulture(e.target.value)} placeholder="Target culture" className={`mb-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`} />
-            <button onClick={() => { void handleAdaptSelected(); }} disabled={isAdapting || isBatchRunning || !selectedChapterId} className={`mb-2 w-full rounded-lg bg-indigo-600 px-4 font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>{isAdapting ? 'Adapting...' : 'Adapt Chapter'}</button>
-            <button onClick={() => { void handleRunBatch(); }} disabled={isAdapting || !selectedChapterId} className={`mb-2 w-full rounded-lg border border-emerald-200 bg-emerald-50 px-4 font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>{isBatchRunning ? 'Stop Batch' : 'Run Batch'}</button>
-            <button onClick={() => { void handleResumeFailedBatch(); }} disabled={isBatchRunning} className={`w-full rounded-lg border border-amber-200 bg-amber-50 px-4 font-semibold text-amber-700 disabled:cursor-not-allowed disabled:opacity-50 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>Resume Failed</button>
-            {batchMessage && <p className="text-[11px] text-gray-600 mt-2">{batchMessage}</p>}
-            </>
-            )}
-          </div>
-          <div className={workspacePanelClassName}>
-            {isPhone ? (
-              <button type="button" onClick={() => toggleMobilePanel('summary')} className={sectionToggleButtonClassName}>
-                <h3 className="text-sm font-bold text-gray-800">Chapter Memory</h3>
-                {mobilePanelOpen.summary ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-              </button>
-            ) : (
-              <h3 className="text-sm font-bold text-gray-800 mb-2">Chapter Memory</h3>
-            )}
-            {(!isPhone || mobilePanelOpen.summary) && (
-            <>
-            {selectedChapterSummary ? (
-              <div className="space-y-2 text-xs text-gray-700">
-                <p className="rounded-lg border border-gray-200 bg-gray-50 p-2">{selectedChapterSummary.summary || 'No summary generated yet.'}</p>
-                <div>
-                  <p className="text-[11px] font-semibold text-gray-600 mb-1">New Characters</p>
-                  <p className="text-[11px] text-gray-700">{selectedChapterSummary.newCharacters.length > 0 ? selectedChapterSummary.newCharacters.join(', ') : 'None'}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold text-gray-600 mb-1">New Places</p>
-                  <p className="text-[11px] text-gray-700">{selectedChapterSummary.newPlaces.length > 0 ? selectedChapterSummary.newPlaces.join(', ') : 'None'}</p>
+              {mobileToolsOpen && (
+                <>
+                  {inspectorTabBarContent}
+                  <div className="mt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
+                    {inspectorTabContent}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className={`${workspacePanelClassName} flex min-h-0 flex-col overflow-hidden`}>
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Wand2 size={16} className="text-indigo-600" />
+                    <h3 className="text-sm font-bold text-gray-800">Inspector</h3>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-gray-500">Adaptation, memory, ledger, and drive.</p>
                 </div>
               </div>
-            ) : (
-              <p className="text-xs text-gray-500">Run adaptation to generate chapter summary.</p>
-            )}
-            <div className="mt-3 border-t border-gray-100 pt-3">
-              <p className="text-xs font-bold text-gray-600 mb-2">Versions (Revert)</p>
-              <div className="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5">
-                {selectedChapterVersions.length === 0 && <p className="text-[11px] text-gray-500">No snapshots yet.</p>}
-                {selectedChapterVersions.slice(0, 12).map((row) => (
-                  <div key={row.id} className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-[11px] font-semibold text-gray-700">{row.label}</p>
-                        <p className="text-[10px] text-gray-500">{new Date(row.timestamp).toLocaleString()}</p>
-                      </div>
-                      <button
-                        onClick={() => handleRevertVersion(row)}
-                        className={`${pillActionButtonClassName} border border-indigo-200 bg-white text-indigo-700`}
-                      >
-                        Revert
-                      </button>
-                    </div>
-                  </div>
-                ))}
+              {inspectorTabBarContent}
+              <div className="mt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
+                {inspectorTabContent}
               </div>
             </div>
-            </>
-            )}
-          </div>
-          <div className={workspacePanelClassName}>
-            {isPhone ? (
-              <button type="button" onClick={() => toggleMobilePanel('ledger')} className={sectionToggleButtonClassName}>
-                <h3 className="text-sm font-bold text-gray-800">Memory Ledger</h3>
-                {mobilePanelOpen.ledger ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-              </button>
-            ) : (
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="text-sm font-bold text-gray-800">Memory Ledger</h3>
-                <button onClick={addMemoryTagRow} className={`${pillActionButtonClassName} bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}>+ Add Tag</button>
-              </div>
-            )}
-            {(!isPhone || mobilePanelOpen.ledger) && (
-            <>
-            {isPhone && (
-              <div className="mb-2 flex justify-end">
-                <button onClick={addMemoryTagRow} className={`${pillActionButtonClassName} bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}>+ Add Tag</button>
-              </div>
-            )}
-            <div className="mb-2 flex gap-2">
-              <button onClick={() => setMemoryTab('character')} className={`flex-1 rounded-lg px-3 font-semibold ${memoryTab === 'character' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>Characters</button>
-              <button onClick={() => setMemoryTab('place')} className={`flex-1 rounded-lg px-3 font-semibold ${memoryTab === 'place' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>Places</button>
-            </div>
-            <div className="mb-2 rounded-xl border border-gray-200 bg-gray-50 p-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <input
-                  value={memoryDraftSource}
-                  onChange={(event) => setMemoryDraftSource(event.target.value)}
-                  placeholder="Source name"
-                  className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                />
-                <ArrowRight size={12} className="text-gray-400" />
-                <input
-                  value={memoryDraftAdapted}
-                  onChange={(event) => setMemoryDraftAdapted(event.target.value)}
-                  placeholder="Adapted name"
-                  className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                />
-                <button
-                  onClick={addMemoryTagRow}
-                  className={`${pillActionButtonClassName} border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50`}
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-            <input value={memoryFilter} onChange={(e) => setMemoryFilter(e.target.value)} placeholder="Filter" className={`mb-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`} />
-            <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
-              {filteredMemoryRows.map((row) => (
-                <div key={row.id} className="vf-card-lift rounded-xl border border-gray-200 bg-gray-50 p-2.5">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <input
-                      value={row.sourceName}
-                      onChange={(e) => updateMemoryRow(memoryTab, row.id, { sourceName: e.target.value })}
-                      className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 font-medium text-gray-700 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                    />
-                    <ArrowRight size={12} className="text-gray-400" />
-                    <input
-                      value={row.adaptedName}
-                      onChange={(e) => updateMemoryRow(memoryTab, row.id, { adaptedName: e.target.value })}
-                      className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 font-semibold text-indigo-700 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-medium text-gray-500">
-                      {row.locked ? 'Locked mapping' : 'Editable mapping'}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => updateMemoryRow(memoryTab, row.id, { locked: !row.locked })}
-                        className={`${pillActionButtonClassName} ${
-                          row.locked ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600'
-                        }`}
-                      >
-                        {row.locked ? <Lock size={11} className="inline mr-1" /> : <Unlock size={11} className="inline mr-1" />}
-                        {row.locked ? 'Locked' : 'Open'}
-                      </button>
-                      <button onClick={() => removeMemoryRow(memoryTab, row.id)} className={`${pillActionButtonClassName} border border-red-200 bg-red-50 text-red-700`}>
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            </>
-            )}
-          </div>
-          <div className={workspacePanelClassName}>
-            <button onClick={() => setShowAdvancedDrive((prev) => !prev)} className="flex min-h-11 w-full items-center justify-between gap-3 rounded-xl px-1 text-left text-sm font-bold text-gray-800"><span>Advanced: Google Drive</span>{showAdvancedDrive ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
-            {showAdvancedDrive && (
-              <div className="mt-3 space-y-2">
-                <p className="text-xs text-gray-600">{driveState.message}</p>
-                <Button onClick={handleDriveConnectAction} disabled={!canConnectDrive || isConnectingDrive} className="w-full bg-indigo-600 hover:bg-indigo-700">{isConnectingDrive ? <Loader2 size={14} className="animate-spin mr-2" /> : <FolderOpen size={14} className="mr-2" />}{driveState.status === 'connected' ? 'Drive Connected' : connectLabel}</Button>
-                <button onClick={() => { void handleUploadCurrentNovelToDrive(); }} disabled={driveState.status !== 'connected' || isUploadingToDrive || !selectedProjectId} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 text-sm font-semibold text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">{isUploadingToDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudUpload size={14} />}Upload Selected Folder</button>
-                <button onClick={() => { void handleDownloadNovelFromDrive(); }} disabled={driveState.status !== 'connected' || isDownloadingFromDrive} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{isDownloadingFromDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}Download Folder to Local</button>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </div>
-      <NovelCreateSheet
-        open={isPhone && isCreatePopupOpen}
-        mode={createPopupMode}
-        draftName={createPopupName}
-        hasSelectedProject={Boolean(selectedProjectId)}
-        selectedProjectName={selectedProject?.name || ''}
-        onClose={closeCreatePopup}
-        onModeChange={setCreatePopupMode}
-        onDraftNameChange={setCreatePopupName}
-        onSubmit={handleCreatePopupSubmit}
-      />
       {isImportModalOpen && (
         <div
           className={`vf-scrim vf-scrim--modal fixed inset-0 z-[90] flex ${isPhone ? 'items-stretch justify-stretch p-0' : 'items-center justify-center p-4'} lg:left-64 lg:p-6`}

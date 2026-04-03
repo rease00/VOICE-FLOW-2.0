@@ -59,3 +59,34 @@ export const formatReaderMultiSpeakerMode = (mode: ReaderEffectiveMultiSpeakerMo
   if (mode === 'line_map') return 'Reader line map';
   return 'Single narrator';
 };
+
+export const resolveReaderCastDraft = (input: {
+  castDraft?: Record<string, string>;
+  detectedSpeakers: string[];
+  narratorVoiceId: string;
+  multiSpeakerEnabled: boolean;
+}): Record<string, string> => {
+  const resolvedDraft = Object.entries(input.castDraft || {}).reduce<Record<string, string>>((accumulator, [speaker, voiceId]) => {
+    const normalizedSpeaker = String(speaker || '').trim();
+    if (!normalizedSpeaker) return accumulator;
+    const normalizedVoiceId = String(voiceId || '').trim();
+    if (normalizedVoiceId) accumulator[normalizedSpeaker] = normalizedVoiceId;
+    return accumulator;
+  }, {});
+
+  if (!input.multiSpeakerEnabled) {
+    return resolvedDraft;
+  }
+
+  const narratorVoiceId = String(input.narratorVoiceId || '').trim();
+  input.detectedSpeakers
+    .map((speaker) => String(speaker || '').trim())
+    .filter((speaker) => Boolean(speaker) && speaker.toLowerCase() !== 'narrator')
+    .forEach((speaker) => {
+      if (!resolvedDraft[speaker]) {
+        resolvedDraft[speaker] = narratorVoiceId;
+      }
+    });
+
+  return resolvedDraft;
+};

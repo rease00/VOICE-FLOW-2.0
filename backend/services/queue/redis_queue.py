@@ -31,6 +31,13 @@ DEFAULT_LANE_WEIGHTS = {
 }
 
 QUEUE_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+WORKER_CATEGORY_APP_LOCAL = "APP_LOCAL"
+WORKER_CATEGORY_GLOBAL_API = "GLOBAL_API"
+DEFAULT_WORKER_CATEGORY = WORKER_CATEGORY_GLOBAL_API
+WORKER_CATEGORIES = {
+    WORKER_CATEGORY_APP_LOCAL,
+    WORKER_CATEGORY_GLOBAL_API,
+}
 
 
 def normalize_lane(lane: str) -> str:
@@ -40,6 +47,27 @@ def normalize_lane(lane: str) -> str:
     if token in {"pro", "free"}:
         return token
     return "free"
+
+
+def normalize_worker_category(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    if token in WORKER_CATEGORIES:
+        return token
+    if token in {"APP", "APP_SIDE", "INBUILT", "INBUILT_APP"}:
+        return WORKER_CATEGORY_APP_LOCAL
+    return DEFAULT_WORKER_CATEGORY
+
+
+def _execution_worker_category() -> str:
+    explicit = str(os.getenv("VF_TTS_WORKER_CATEGORY") or "").strip()
+    if explicit:
+        return normalize_worker_category(explicit)
+    role = str(os.getenv("VF_SERVICE_ROLE") or "").strip().lower()
+    if role == "api":
+        return WORKER_CATEGORY_APP_LOCAL
+    if role == "worker":
+        return WORKER_CATEGORY_GLOBAL_API
+    return DEFAULT_WORKER_CATEGORY
 
 
 def _env_int(name: str, default: int) -> int:
@@ -174,6 +202,10 @@ local worker_id = ARGV[4]
 local now_ms = tonumber(ARGV[5]) or 0
 local claim_ttl_sec = tonumber(ARGV[6]) or 60
 local lane = ARGV[7]
+local worker_category = string.upper(tostring(ARGV[8] or "GLOBAL_API"))
+if worker_category == "" then
+  worker_category = "GLOBAL_API"
+end
 
 local job_id = redis.call("LPOP", ready_key)
 if not job_id then
@@ -199,6 +231,15 @@ if status == "completed" or status == "failed" or status == "cancelled" then
 end
 if status ~= "queued" then
   return {"ineligible", tostring(job_id)}
+end
+
+local job_category = string.upper(tostring(job["workerCategory"] or "GLOBAL_API"))
+if job_category == "" then
+  job_category = "GLOBAL_API"
+end
+if job_category ~= worker_category then
+  redis.call("RPUSH", ready_key, job_id)
+  return {"category_mismatch", tostring(job_id)}
 end
 
 local existing_claim = redis.call("GET", claim_key)
@@ -242,6 +283,7 @@ if (tonumber(job["startedAtMs"] or 0) or 0) <= 0 then
   job["startedAtMs"] = now_ms
 end
 job["updatedAtMs"] = now_ms
+job["claimRenewedAtMs"] = now_ms
 if not job["lane"] or tostring(job["lane"]) == "" then
   job["lane"] = lane
 end
@@ -270,6 +312,10 @@ return {"reserved", encoded_job}
         self._inline_result_max_bytes = max(64_000, int(inline_result_max_bytes))
         self._max_queue_depth = max(1, _env_int("VF_TTS_QUEUE_MAX_DEPTH", self._DEFAULT_MAX_QUEUE_DEPTH))
         self._max_queued_per_lane = max(0, _env_int("VF_TTS_QUEUE_MAX_QUEUED_PER_LANE", 0))
+        self._max_queued_per_category = {
+            WORKER_CATEGORY_APP_LOCAL: max(0, _env_int("VF_TTS_QUEUE_MAX_QUEUED_APP_LOCAL", 0)),
+            WORKER_CATEGORY_GLOBAL_API: max(0, _env_int("VF_TTS_QUEUE_MAX_QUEUED_GLOBAL_API", 0)),
+        }
         self._max_recovery_attempts = max(
             1,
             _env_int("VF_TTS_QUEUE_MAX_RECOVERY_ATTEMPTS", self._DEFAULT_MAX_RECOVERY_ATTEMPTS),
@@ -282,6 +328,7 @@ return {"reserved", encoded_job}
             for key, value in (lane_weights or DEFAULT_LANE_WEIGHTS).items()
         }
         self._claim_ttl_sec = max(30, self._result_ttl_ms // 1000)
+        self._missing_claim_grace_ms = max(5_000, _env_int("VF_TTS_QUEUE_MISSING_CLAIM_GRACE_SEC", 60) * 1000)
         self._dead_letter_enabled = _env_bool("VF_TTS_QUEUE_DEAD_LETTER_ENABLED", False)
         self._dead_letter_ttl_sec = max(
             60,
@@ -437,6 +484,7 @@ return {"reserved", encoded_job}
             "uid": str(base.get("uid") or "").strip(),
             "requestId": raw_request_id or raw_job_id or "",
             "lane": normalized_lane,
+            "workerCategory": normalize_worker_category(base.get("workerCategory")),
             "createdAtMs": int(base.get("createdAtMs") or base.get("created_at_ms") or anchor),
             "updatedAtMs": int(base.get("updatedAtMs") or base.get("updated_at_ms") or anchor),
             "status": str(base.get("status") or "queued").strip().lower() or "queued",
@@ -572,6 +620,18 @@ return {"reserved", encoded_job}
 
     def _persist_record_update(self, record: dict[str, Any]) -> dict[str, Any]:
         updated = self._normalize_record(existing=record, now_ms=self._now_ms())
+        updated_status = str(updated.get("status") or "").strip().lower()
+
+        def _is_terminal_conflict(previous: Optional[dict[str, Any]]) -> bool:
+            if not isinstance(previous, dict):
+                return False
+            previous_status = str(previous.get("status") or "").strip().lower()
+            if previous_status not in QUEUE_TERMINAL_STATUSES:
+                return False
+            if not updated_status:
+                return False
+            return updated_status != previous_status
+
         if self._redis is not None:
             job_id = str(updated.get("jobId") or "").strip()
             if not job_id:
@@ -579,6 +639,8 @@ return {"reserved", encoded_job}
             ttl_ms = max(self._DEFAULT_JOB_TTL_MS, int(updated.get("expiresAtMs") or 0) - int(updated.get("createdAtMs") or self._now_ms()))
             ttl_sec = max(60, int(round(ttl_ms / 1000)))
             previous = self._load_redis_record(job_id)
+            if _is_terminal_conflict(previous):
+                return dict(previous or {})
             adjustments = self._user_queued_counter_adjustments(previous, updated)
             counter_updates: list[tuple[str, int]] = []
             for uid, delta in adjustments.items():
@@ -601,8 +663,12 @@ return {"reserved", encoded_job}
                 raise RuntimeError(f"Redis update failed: {exc}") from exc
         if self._redis is None:
             with self._lock:
-                self._jobs[str(updated.get("jobId") or "")] = dict(updated)
-                self._job_lanes[str(updated.get("jobId") or "")] = str(updated.get("lane") or "free")
+                safe_job_id = str(updated.get("jobId") or "").strip()
+                previous_memory = self._jobs.get(safe_job_id) if safe_job_id else None
+                if _is_terminal_conflict(previous_memory):
+                    return dict(previous_memory or {})
+                self._jobs[safe_job_id] = dict(updated)
+                self._job_lanes[safe_job_id] = str(updated.get("lane") or "free")
         return dict(updated)
 
     def _claim_metadata(self, job_id: str) -> dict[str, Any]:
@@ -628,6 +694,39 @@ return {"reserved", encoded_job}
         anchor = int(now_ms if now_ms is not None else self._now_ms())
         return anchor - claimed_at_ms >= int(self._claim_ttl_sec * 1000)
 
+    def _is_recent_missing_claim(self, record: dict[str, Any], *, now_ms: Optional[int] = None) -> bool:
+        anchor = int(now_ms if now_ms is not None else self._now_ms())
+        last_claim_renewed_ms = max(
+            0,
+            int(record.get("claimRenewedAtMs") or 0),
+            int(record.get("updatedAtMs") or 0),
+            int(record.get("startedAtMs") or 0),
+        )
+        if last_claim_renewed_ms <= 0:
+            return False
+        return (anchor - last_claim_renewed_ms) < int(self._missing_claim_grace_ms)
+
+    def _record_claim_renewed(self, *, job_id: str, worker_id: str, renewed_at_ms: int) -> None:
+        safe_job_id = str(job_id or "").strip()
+        safe_worker_id = str(worker_id or "").strip() or "worker"
+        if not safe_job_id:
+            return
+        record = self.get(safe_job_id)
+        if not isinstance(record, dict):
+            return
+        if str(record.get("status") or "").strip().lower() != "running":
+            return
+        if str(record.get("workerId") or "").strip() not in {"", safe_worker_id}:
+            return
+        updated = dict(record)
+        updated["claimRenewedAtMs"] = int(renewed_at_ms)
+        updated["updatedAtMs"] = max(int(updated.get("updatedAtMs") or 0), int(renewed_at_ms))
+        try:
+            self._persist_record_update(updated)
+        except Exception:
+            # Renewal metadata sync is best-effort and must not block claim extension.
+            return
+
     def _queue_depth_for_lane(self, lane: str) -> int:
         safe_lane = normalize_lane(lane)
         if self._redis is None:
@@ -646,6 +745,40 @@ return {"reserved", encoded_job}
             raise RuntimeError(
                 f"Per-lane queued cap exceeded for lane '{safe_lane}' ({lane_depth}/{self._max_queued_per_lane})."
             )
+
+    def _queued_depth_for_category(self, worker_category: str) -> int:
+        safe_category = normalize_worker_category(worker_category)
+        queued = 0
+        for record in self._iter_records():
+            if str(record.get("status") or "").strip().lower() != "queued":
+                continue
+            if normalize_worker_category(record.get("workerCategory")) != safe_category:
+                continue
+            queued += 1
+        return queued
+
+    def _enforce_category_queue_cap(self, worker_category: str) -> None:
+        safe_category = normalize_worker_category(worker_category)
+        category_cap = int(self._max_queued_per_category.get(safe_category) or 0)
+        if category_cap <= 0:
+            return
+        queued_depth = self._queued_depth_for_category(safe_category)
+        if queued_depth >= category_cap:
+            raise RuntimeError(
+                f"Per-category queued cap exceeded for worker category '{safe_category}' ({queued_depth}/{category_cap})."
+            )
+
+    def _category_depth_snapshot(self) -> dict[str, int]:
+        counts: dict[str, int] = {
+            WORKER_CATEGORY_APP_LOCAL: 0,
+            WORKER_CATEGORY_GLOBAL_API: 0,
+        }
+        for record in self._iter_records():
+            if str(record.get("status") or "").strip().lower() != "queued":
+                continue
+            category = normalize_worker_category(record.get("workerCategory"))
+            counts[category] = int(counts.get(category, 0)) + 1
+        return counts
 
     def _record_reserve_anomaly(self, *, lane: str, job_id: str, reason: str, raw_record: Optional[str] = None) -> None:
         if self._redis is None:
@@ -791,9 +924,25 @@ return {"reserved", encoded_job}
         safe_worker_id = str(worker_id or "").strip() or "worker"
         if not safe_job_id:
             return False
+        claim_key = self._claim_key(safe_job_id)
         claim_metadata = self._claim_metadata(safe_job_id)
         if not claim_metadata:
-            return False
+            record = self.get(safe_job_id)
+            if not isinstance(record, dict):
+                return False
+            if str(record.get("status") or "").strip().lower() != "running":
+                return False
+            if str(record.get("workerId") or "").strip() not in {"", safe_worker_id}:
+                return False
+            renewed_at_ms = self._now_ms()
+            token = self._claim_token(worker_id=safe_worker_id, claimed_at_ms=renewed_at_ms)
+            try:
+                renewed = bool(self._redis.set(claim_key, token, ex=self._claim_ttl_sec, nx=True))
+            except Exception as exc:
+                raise RuntimeError(f"Redis claim renewal failed: {exc}") from exc
+            if renewed:
+                self._record_claim_renewed(job_id=safe_job_id, worker_id=safe_worker_id, renewed_at_ms=renewed_at_ms)
+            return renewed
         if str(claim_metadata.get("workerId") or "").strip() not in {"", safe_worker_id}:
             return False
         renewed_at_ms = self._now_ms()
@@ -801,18 +950,31 @@ return {"reserved", encoded_job}
         try:
             try:
                 renewed = self._redis.set(
-                    self._claim_key(safe_job_id),
+                    claim_key,
                     token,
                     ex=self._claim_ttl_sec,
                     xx=True,
                 )
             except TypeError:
                 renewed = self._redis.set(
-                    self._claim_key(safe_job_id),
+                    claim_key,
                     token,
                     ex=self._claim_ttl_sec,
                 )
-            return bool(renewed)
+            if renewed:
+                self._record_claim_renewed(job_id=safe_job_id, worker_id=safe_worker_id, renewed_at_ms=renewed_at_ms)
+                return True
+            record = self.get(safe_job_id)
+            if not isinstance(record, dict):
+                return False
+            if str(record.get("status") or "").strip().lower() != "running":
+                return False
+            if str(record.get("workerId") or "").strip() not in {"", safe_worker_id}:
+                return False
+            renewed = bool(self._redis.set(claim_key, token, ex=self._claim_ttl_sec, nx=True))
+            if renewed:
+                self._record_claim_renewed(job_id=safe_job_id, worker_id=safe_worker_id, renewed_at_ms=renewed_at_ms)
+            return renewed
         except Exception as exc:
             raise RuntimeError(f"Redis claim renewal failed: {exc}") from exc
 
@@ -822,11 +984,13 @@ return {"reserved", encoded_job}
         lane: str,
         worker_id: str,
         now_ms: int,
+        worker_category: str,
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         eval_fn = getattr(self._redis, "eval", None)
         if not callable(eval_fn):
             return False, None
         normalized_lane = normalize_lane(lane)
+        normalized_category = normalize_worker_category(worker_category)
         try:
             result = eval_fn(
                 self._RESERVE_FROM_LANE_LUA,
@@ -839,6 +1003,7 @@ return {"reserved", encoded_job}
                 str(int(now_ms)),
                 str(int(self._claim_ttl_sec)),
                 normalized_lane,
+                normalized_category,
             )
         except Exception:
             return False, None
@@ -883,8 +1048,10 @@ return {"reserved", encoded_job}
         lane: str,
         worker_id: str,
         now_ms: int,
+        worker_category: str,
     ) -> Optional[dict[str, Any]]:
         normalized_lane = normalize_lane(lane)
+        normalized_category = normalize_worker_category(worker_category)
         ready_key = self._ready_key(normalized_lane)
         try:
             job_id = self._redis.lpop(ready_key)
@@ -916,6 +1083,12 @@ return {"reserved", encoded_job}
                 pass
             return None
         if status != "queued":
+            return None
+        if normalize_worker_category(record.get("workerCategory")) != normalized_category:
+            try:
+                self._enqueue_ready_once(lane=normalized_lane, job_id=safe_job_id)
+            except Exception:
+                pass
             return None
         claim_metadata = self._claim_metadata(safe_job_id)
         if claim_metadata and not self._claim_is_stale(claim_metadata, now_ms=now_ms):
@@ -950,6 +1123,7 @@ return {"reserved", encoded_job}
         updated["workerId"] = str(worker_id or "").strip() or "worker"
         updated["attempts"] = max(0, int(updated.get("attempts") or 0)) + 1
         updated["updatedAtMs"] = int(now_ms)
+        updated["claimRenewedAtMs"] = int(now_ms)
         if not int(updated.get("startedAtMs") or 0):
             updated["startedAtMs"] = int(now_ms)
         if not str(updated.get("lane") or "").strip():
@@ -966,42 +1140,59 @@ return {"reserved", encoded_job}
 
     def reserve_next(self, *, worker_id: str) -> Optional[dict[str, Any]]:
         safe_worker_id = str(worker_id or "").strip() or "worker"
+        worker_category = _execution_worker_category()
         if self._redis is None:
-            item = self._compat_queue.pop()
-            if not item:
-                return None
-            now_ms = self._now_ms()
-            record = dict(item.payload or {})
-            record["status"] = "running"
-            record["workerId"] = safe_worker_id
-            record["attempts"] = max(0, int(record.get("attempts") or 0)) + 1
-            record["updatedAtMs"] = now_ms
-            if not int(record.get("startedAtMs") or 0):
-                record["startedAtMs"] = now_ms
-            safe_job_id = str(record.get("jobId") or record.get("job_id") or "").strip()
-            if safe_job_id:
-                with self._lock:
-                    self._jobs[safe_job_id] = dict(record)
-                    self._job_lanes[safe_job_id] = str(record.get("lane") or "free")
-            return record
-        for lane in self._rotate_lanes():
-            now_ms = self._now_ms()
-            used_eval, reserved = self._reserve_from_lane_with_eval(
-                lane=lane,
-                worker_id=safe_worker_id,
-                now_ms=now_ms,
-            )
-            if used_eval:
+            staged: list[QueueItem] = []
+            max_checks = max(1, int(self._compat_queue.depth()))
+            for _ in range(max_checks):
+                item = self._compat_queue.pop()
+                if not item:
+                    break
+                record = dict(item.payload or {})
+                if normalize_worker_category(record.get("workerCategory")) != worker_category:
+                    staged.append(item)
+                    continue
+                for pending in staged:
+                    self._compat_queue.push(pending.lane, pending.payload)
+                now_ms = self._now_ms()
+                record["status"] = "running"
+                record["workerId"] = safe_worker_id
+                record["attempts"] = max(0, int(record.get("attempts") or 0)) + 1
+                record["updatedAtMs"] = now_ms
+                record["claimRenewedAtMs"] = now_ms
+                if not int(record.get("startedAtMs") or 0):
+                    record["startedAtMs"] = now_ms
+                safe_job_id = str(record.get("jobId") or record.get("job_id") or "").strip()
+                if safe_job_id:
+                    with self._lock:
+                        self._jobs[safe_job_id] = dict(record)
+                        self._job_lanes[safe_job_id] = str(record.get("lane") or "free")
+                return record
+            for pending in staged:
+                self._compat_queue.push(pending.lane, pending.payload)
+            return None
+        max_checks = max(1, self._queue_depth_total())
+        for _ in range(max_checks):
+            for lane in self._rotate_lanes():
+                now_ms = self._now_ms()
+                used_eval, reserved = self._reserve_from_lane_with_eval(
+                    lane=lane,
+                    worker_id=safe_worker_id,
+                    now_ms=now_ms,
+                    worker_category=worker_category,
+                )
+                if used_eval:
+                    if reserved:
+                        return reserved
+                    continue
+                reserved = self._reserve_from_lane_fallback(
+                    lane=lane,
+                    worker_id=safe_worker_id,
+                    now_ms=now_ms,
+                    worker_category=worker_category,
+                )
                 if reserved:
                     return reserved
-                continue
-            reserved = self._reserve_from_lane_fallback(
-                lane=lane,
-                worker_id=safe_worker_id,
-                now_ms=now_ms,
-            )
-            if reserved:
-                return reserved
         return None
 
     def requeue(
@@ -1023,10 +1214,13 @@ return {"reserved", encoded_job}
             current = self._normalize_record(payload=payload)
         if not current:
             return None
+        current_status = str(current.get("status") or "").strip().lower()
+        if current_status in QUEUE_TERMINAL_STATUSES:
+            return dict(current)
         if str(current.get("workerId") or "").strip() not in {"", safe_worker_id} and not recovery:
             return None
         claim_metadata = self._claim_metadata(safe_job_id)
-        if str(current.get("status") or "").strip().lower() == "queued" and not claim_metadata and not recovery:
+        if current_status == "queued" and not claim_metadata and not recovery:
             return dict(current)
         if not bypass_depth_check and self._queue_depth_total() >= self._max_queue_depth and str(current.get("status") or "").lower() != "queued":
             raise RuntimeError("Redis queue depth limit exceeded.")
@@ -1067,7 +1261,10 @@ return {"reserved", encoded_job}
             if not job_id:
                 continue
             claim_metadata = self._claim_metadata(job_id)
-            if claim_metadata and not self._claim_is_stale(claim_metadata, now_ms=now_ms):
+            if claim_metadata:
+                if not self._claim_is_stale(claim_metadata, now_ms=now_ms):
+                    continue
+            elif self._is_recent_missing_claim(record, now_ms=now_ms):
                 continue
             recovery_attempts = max(0, int(record.get("recoveryAttempts") or 0))
             worker_id = str(record.get("workerId") or "reaper").strip() or "reaper"
@@ -1107,6 +1304,7 @@ return {"reserved", encoded_job}
         anchor = self._now_ms()
         record = self._normalize_record(payload=base, lane=normalized_lane, now_ms=anchor)
         record["lane"] = normalized_lane
+        record["workerCategory"] = normalize_worker_category(record.get("workerCategory"))
         record["createdAtMs"] = int(base.get("createdAtMs") or base.get("created_at_ms") or anchor)
         record["updatedAtMs"] = anchor
         if not str(record.get("requestId") or "").strip():
@@ -1185,6 +1383,7 @@ return {"reserved", encoded_job}
                     return existing
             self._enforce_user_queued_cap(str(record.get("uid") or ""))
             self._enforce_lane_queue_cap(normalized_lane)
+            self._enforce_category_queue_cap(str(record.get("workerCategory") or DEFAULT_WORKER_CATEGORY))
             if self._queue_depth_total() >= self._max_queue_depth:
                 raise RuntimeError("Redis queue depth limit exceeded.")
             persisted = self._persist_redis_record(record)
@@ -1197,26 +1396,14 @@ return {"reserved", encoded_job}
             return persisted
         self._enforce_user_queued_cap(str(record.get("uid") or ""))
         self._enforce_lane_queue_cap(normalized_lane)
+        self._enforce_category_queue_cap(str(record.get("workerCategory") or DEFAULT_WORKER_CATEGORY))
         return self._store_memory_record(record)
 
     def enqueue(self, *, lane: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.submit(lane=lane, payload=payload)
 
     def dequeue_next(self) -> Optional[dict[str, Any]]:
-        if self._redis is None:
-            item = self._compat_queue.pop()
-            return dict(item.payload) if item else None
-        for lane in self._rotate_lanes():
-            try:
-                job_id = self._redis.lpop(self._ready_key(lane))
-            except Exception as exc:
-                raise RuntimeError(f"Redis dequeue failed: {exc}") from exc
-            if not job_id:
-                continue
-            job = self.get(str(job_id))
-            if job:
-                return job
-        return None
+        return self.reserve_next(worker_id="worker")
 
     def claim(self, job_id: str, *, worker_id: str, lane: Optional[str] = None) -> Optional[dict[str, Any]]:
         self._require_redis()
@@ -1259,6 +1446,7 @@ return {"reserved", encoded_job}
             if claim_metadata and self._claim_is_stale(claim_metadata):
                 updated["recoveryAttempts"] = max(0, int(updated.get("recoveryAttempts") or 0)) + 1
             updated["updatedAtMs"] = self._now_ms()
+            updated["claimRenewedAtMs"] = int(updated["updatedAtMs"])
             if not int(updated.get("startedAtMs") or 0):
                 updated["startedAtMs"] = updated["updatedAtMs"]
             if lane:
@@ -1547,10 +1735,12 @@ return {"reserved", encoded_job}
 
     def depth_snapshot(self) -> dict[str, Any]:
         lanes = sorted(set(self._weights.keys()) | {"free", "pro", "pro_plus"})
+        by_category = self._category_depth_snapshot()
         if self._redis is None:
             return {
                 "total": self._compat_queue.depth(),
                 "byLane": self._compat_queue.depth_by_lane(),
+                "byCategory": by_category,
                 "storage": "memory",
             }
         try:
@@ -1560,5 +1750,6 @@ return {"reserved", encoded_job}
         return {
             "total": int(sum(by_lane.values())),
             "byLane": by_lane,
+            "byCategory": by_category,
             "storage": "redis",
         }

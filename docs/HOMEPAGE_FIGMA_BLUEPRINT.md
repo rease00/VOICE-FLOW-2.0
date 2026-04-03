@@ -1,4 +1,4 @@
-# VoiceFlow Homepage Blueprint (Dark Mode)
+# V FLOW AI Homepage Blueprint (Dark Mode)
 
 This blueprint is tailored to your current app visual language (`deep navy + cyan/violet glow`, left rail, top command bar, floating FAB, studio-style cards).  
 Use this directly to build a new Home page in Figma.

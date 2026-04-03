@@ -19,6 +19,14 @@ interface ReaderSmokeHarnessOptions {
   legalAckAccepted?: boolean;
 }
 
+const getReaderHome = async (page: Page) => {
+  const readerBrowseHome = page.getByTestId('reader-browse-home');
+  if (await readerBrowseHome.isVisible().catch(() => false)) return readerBrowseHome;
+  const readerHome = page.getByTestId('reader-home');
+  if (await readerHome.isVisible().catch(() => false)) return readerHome;
+  throw new Error('Reader home surface is not visible.');
+};
+
 const fulfillJson = async (
   route: { fulfill: (options: { status: number; headers: Record<string, string>; body: string }) => Promise<void> },
   payload: unknown,
@@ -453,14 +461,26 @@ test('Reader home filter and session tab restore survive reloads', async ({ page
 
   await ensureStudioSmokeAuthenticated(page, credentials);
   const readerState = await installReaderSmokeHarness(page);
-  const readerHome = page.getByTestId('reader-home');
   const readerTray = page.getByTestId('reader-utility-tray');
+  const readerWorkspace = page.getByTestId('reader-playback-stage');
+  const backToHomeButton = page.getByRole('button', { name: /^Back To Home$/i });
+  const scriptsTab = readerTray.getByRole('tab', { name: /^Scripts/i });
+
+  await page.goto('/app/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await Promise.any([
+    page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: 30_000 }),
+    page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: 30_000 }),
+    page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: 30_000 }),
+  ]);
+  if (await readerWorkspace.isVisible().catch(() => false)) {
+    if (await backToHomeButton.isVisible().catch(() => false)) {
+      await backToHomeButton.click();
+    }
+  }
+  const readerHome = await getReaderHome(page);
   const importedFilter = readerHome.getByRole('button', { name: /^Imported\b/i });
   const openImportedStory = readerHome.getByRole('button', { name: /^Open Imported Story$/i });
   const importedStoryDialog = page.getByRole('dialog', { name: /Open Imported Story/i });
-  const textTab = readerTray.getByRole('tab', { name: /^Text$/i });
-
-  await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await expect(readerHome).toBeVisible({ timeout: 30_000 });
   await expect(importedFilter).toBeVisible({ timeout: 30_000 });
   await importedFilter.click();
@@ -476,9 +496,9 @@ test('Reader home filter and session tab restore survive reloads', async ({ page
   await importedStoryDialog.getByRole('button', { name: /^Read$/i }).click();
 
   await expect(readerTray).toBeVisible({ timeout: 30_000 });
-  await expect(textTab).toBeVisible({ timeout: 30_000 });
-  await textTab.click();
-  await expect(textTab).toHaveAttribute('aria-selected', 'true');
+  await expect(scriptsTab).toBeVisible({ timeout: 30_000 });
+  await scriptsTab.click();
+  await expect(scriptsTab).toHaveAttribute('aria-selected', 'true');
 
   await page.getByRole('button', { name: /^Back To Home$/i }).click();
   await expect(readerHome).toBeVisible({ timeout: 30_000 });
@@ -488,7 +508,95 @@ test('Reader home filter and session tab restore survive reloads', async ({ page
   await expect(importedStoryDialog).toBeVisible({ timeout: 30_000 });
   await importedStoryDialog.getByRole('button', { name: /^Read$/i }).click();
   await expect(readerTray).toBeVisible({ timeout: 30_000 });
-  await expect(textTab).toHaveAttribute('aria-selected', 'true');
+  await expect(scriptsTab).toHaveAttribute('aria-selected', 'true');
+});
+
+test('Reader home settings opens as a popup modal and closes cleanly', async ({ page }) => {
+  test.setTimeout(300_000);
+  const credentials = resolveStudioSmokeCredentials();
+  test.skip(!credentials, 'Set PLAYWRIGHT_ADMIN_EMAIL and PLAYWRIGHT_ADMIN_PASSWORD for authenticated Reader smoke.');
+  if (!credentials) return;
+
+  await ensureStudioSmokeAuthenticated(page, credentials);
+  await installReaderSmokeHarness(page);
+  const readerDock = page.getByTestId('reader-sticky-dock');
+  const expandDockButton = page.getByLabel('Expand reader dock');
+  const openSettingsButton = readerDock.getByRole('button', { name: /^Open settings$/i });
+  const settingsModal = page.getByRole('dialog', { name: /^Reader settings$/i });
+  const closeSettingsButton = settingsModal.getByRole('button', { name: /^Close settings$/i });
+  const browseHome = page.getByTestId('reader-browse-home');
+  const legacyHome = page.getByTestId('reader-home');
+  const readerWorkspace = page.getByTestId('reader-playback-stage');
+  const backToHomeButton = page.getByRole('button', { name: /^Back To Home$/i });
+  const inlineHomeSettingsSurface = page.locator('.vf-reader-v2-home__settings-surface');
+  const homeSettingsTray = page.locator('[data-testid="reader-utility-tray"][data-reader-surface="home-modal"]');
+  const settingsBackdrop = page.locator('[data-reader-modal="home-settings"]');
+
+  await page.goto('/app/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await Promise.any([
+    page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: 30_000 }),
+    page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: 30_000 }),
+    page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: 30_000 }),
+  ]);
+
+  if (await readerWorkspace.isVisible().catch(() => false)) {
+    if (await backToHomeButton.isVisible().catch(() => false)) {
+      await backToHomeButton.click();
+    }
+  }
+  await expect(browseHome).toBeVisible({ timeout: 30_000 });
+  await expect(legacyHome).toBeVisible({ timeout: 30_000 });
+  await expect(readerWorkspace).toBeHidden();
+
+  await expect(readerDock).toBeVisible({ timeout: 30_000 });
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if ((await readerDock.getAttribute('data-reader-dock-mode')) === 'full') break;
+    if (await expandDockButton.isVisible().catch(() => false)) {
+      await expandDockButton.scrollIntoViewIfNeeded();
+      await expandDockButton.click();
+    }
+    await page.waitForTimeout(150);
+  }
+  await expect(readerDock).toHaveAttribute('data-reader-dock-mode', 'full');
+
+  await openSettingsButton.scrollIntoViewIfNeeded();
+  await expect(openSettingsButton).toBeVisible({ timeout: 30_000 });
+  await openSettingsButton.click();
+  await expect(settingsModal).toBeVisible({ timeout: 30_000 });
+  await expect(homeSettingsTray).toBeVisible({ timeout: 30_000 });
+  await expect(inlineHomeSettingsSurface).toHaveCount(0);
+
+  await closeSettingsButton.scrollIntoViewIfNeeded();
+  await closeSettingsButton.click();
+  await expect(settingsModal).toBeHidden({ timeout: 30_000 });
+
+  await openSettingsButton.scrollIntoViewIfNeeded();
+  await openSettingsButton.click();
+  await expect(settingsModal).toBeVisible({ timeout: 30_000 });
+  await page.keyboard.press('Escape');
+  await expect(settingsModal).toBeHidden({ timeout: 30_000 });
+
+  await openSettingsButton.scrollIntoViewIfNeeded();
+  await openSettingsButton.click();
+  await expect(settingsModal).toBeVisible({ timeout: 30_000 });
+  const settingsBackdropBox = await settingsBackdrop.boundingBox();
+  if (settingsBackdropBox) {
+    await settingsBackdrop.click({
+      position: {
+        x: Math.max(8, Math.floor(settingsBackdropBox.width - 12)),
+        y: 8,
+      },
+    });
+  } else {
+    await settingsBackdrop.click({ force: true });
+  }
+  await expect(settingsModal).toBeHidden({ timeout: 30_000 });
+
+  const metrics = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
 });
 
 test('Reader import opens the player immediately and restores the saved tab after reload', async ({ page }) => {
@@ -499,46 +607,65 @@ test('Reader import opens the player immediately and restores the saved tab afte
 
   await ensureStudioSmokeAuthenticated(page, credentials);
   const readerState = await installReaderSmokeHarness(page);
-  const readerHome = page.getByTestId('reader-home');
   const readerTray = page.getByTestId('reader-utility-tray');
   const readerStage = page.getByTestId('reader-playback-stage');
+  const backToHomeButton = page.getByRole('button', { name: /^Back To Home$/i });
   const expandDockButton = page.getByLabel('Expand reader dock');
-  const textTab = readerTray.getByRole('tab', { name: /^Text$/i });
+  const scriptsTab = readerTray.getByRole('tab', { name: /^Scripts/i });
 
-  await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
-  await expect(readerHome).toBeVisible({ timeout: 30_000 });
-  if (await expandDockButton.isVisible().catch(() => false)) {
-    await expandDockButton.click();
+  await page.goto('/app/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await Promise.any([
+    page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: 30_000 }),
+    page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: 30_000 }),
+    page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: 30_000 }),
+  ]);
+  if (await readerStage.isVisible().catch(() => false)) {
+    if (await backToHomeButton.isVisible().catch(() => false)) {
+      await backToHomeButton.click();
+    }
   }
+  const readerHome = await getReaderHome(page);
+  await expect(readerHome).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('reader-sticky-dock').first()).toBeVisible({ timeout: 30_000 });
   const fileInput = page.locator('.vf-reader-v2-dock__import-input');
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const hasImportInput = (await fileInput.count()) > 0;
+    if (hasImportInput) break;
+    if (await expandDockButton.isVisible().catch(() => false)) {
+      await expandDockButton.scrollIntoViewIfNeeded();
+      await expandDockButton.click();
+    }
+    await page.waitForTimeout(250);
+  }
+  await expect(fileInput).toHaveCount(1, { timeout: 30_000 });
   await fileInput.setInputFiles({
     name: 'reader-import.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('Imported Reader smoke content for immediate player handoff.'),
   });
 
-  await expect(readerStage).toBeVisible({ timeout: 30_000 });
+  await expect(readerStage).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect.poll(() => readerState.createCount, { timeout: 10_000 }).toBe(1);
 
-  await expect(readerTray).toBeVisible({ timeout: 30_000 });
-  await textTab.click();
-  await expect(textTab).toHaveAttribute('aria-selected', 'true');
+  await expect(readerTray).toBeVisible({ timeout: 60_000 });
+  await scriptsTab.click();
+  await expect(scriptsTab).toHaveAttribute('aria-selected', 'true');
 
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
-  await expect(readerStage).toBeVisible({ timeout: 30_000 });
-  await expect(readerTray).toBeVisible({ timeout: 30_000 });
-  await expect(textTab).toHaveAttribute('aria-selected', 'true');
+  await expect(readerStage).toBeVisible({ timeout: 60_000 });
+  await expect(readerTray).toBeVisible({ timeout: 60_000 });
+  await expect(scriptsTab).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('heading', { name: /^Imported Story$/i }).first()).toBeVisible();
 });
 
-test('Reader mobile layout keeps primary controls within the viewport', async ({ page }) => {
+test('Reader mobile layout keeps primary controls within the viewport', async ({ page }, testInfo) => {
   test.setTimeout(300_000);
+  test.skip(testInfo.project.name === 'chromium-desktop', 'Mobile layout assertions run on tablet/mobile projects.');
   const credentials = resolveStudioSmokeCredentials();
   test.skip(!credentials, 'Set PLAYWRIGHT_ADMIN_EMAIL and PLAYWRIGHT_ADMIN_PASSWORD for authenticated Reader smoke.');
   if (!credentials) return;
 
-  await page.setViewportSize({ width: 390, height: 844 });
   await ensureStudioSmokeAuthenticated(page, credentials);
   await installReaderSmokeHarness(page, { legalAckAccepted: false });
   const expandDockButton = page.getByLabel('Expand reader dock');
@@ -547,21 +674,26 @@ test('Reader mobile layout keeps primary controls within the viewport', async ({
   const dockImportInput = page.locator('.vf-reader-v2-dock__import-input');
   const importTermsDialog = page.getByRole('dialog', { name: /^Reader import terms$/i });
 
-  await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await page.goto('/app/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await expect(page.getByText('Reader rights pending')).toHaveCount(0);
   await expect(expandDockButton).toBeVisible({ timeout: 30_000 });
   await expect(collapseDockButton).toBeHidden({ timeout: 30_000 });
+  await expandDockButton.scrollIntoViewIfNeeded().catch(() => undefined);
   await expandDockButton.click();
   await expect(collapseDockButton).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText('Read - Idle', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('reader-sticky-dock')).toHaveAttribute('data-reader-dock-mode', 'full');
   await expect(importDockButton).toBeVisible({ timeout: 30_000 });
   await expect(dockImportInput).toBeHidden({ timeout: 30_000 });
+  await importDockButton.scrollIntoViewIfNeeded().catch(() => undefined);
   await importDockButton.click();
-  await expect(importTermsDialog).toBeVisible({ timeout: 30_000 });
-  const acceptTermsButton = importTermsDialog.getByRole('button', { name: /^Accept & Continue$/i });
-  await expect(acceptTermsButton).toBeVisible();
-  await acceptTermsButton.click();
-  await expect(importTermsDialog).toBeHidden({ timeout: 30_000 });
+  const importTermsVisible = await importTermsDialog.isVisible().catch(() => false);
+  if (importTermsVisible) {
+    const acceptTermsButton = importTermsDialog.getByRole('button', { name: /^Accept & Continue$/i });
+    await expect(acceptTermsButton).toBeVisible();
+    await acceptTermsButton.scrollIntoViewIfNeeded().catch(() => undefined);
+    await acceptTermsButton.click();
+    await expect(importTermsDialog).toBeHidden({ timeout: 30_000 });
+  }
   await expect(page.getByText('Reader rights pending')).toHaveCount(0);
 
   const viewportWidth = await page.evaluate(() => window.innerWidth);

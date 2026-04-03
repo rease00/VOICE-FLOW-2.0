@@ -291,6 +291,57 @@ def test_audio_metadata_admin_endpoints_require_audit_read_and_log_exports(monke
     assert "audio_metadata_export" in actions
 
 
+def test_audio_metadata_repair_migration_dry_run_apply_verify_logs_audit_events(monkeypatch) -> None:
+    _reset_phase2_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_require_permission",
+        lambda _request, _permission: ("audio_admin", {"role": backend_app.RBAC_ROLE_SUPER_ADMIN}),
+    )
+    monkeypatch.setattr(backend_app, "_require_admin_mutation_unlock", lambda _request, expected_uid=None: str(expected_uid or "audio_admin"))
+
+    backend_app._INMEMORY_AUDIO_GENERATION_AUDIT["audit_repair_1"] = {
+        "auditId": "audit_repair_1",
+        "uid": "user_audio_repair",
+        "submittedAt": "2026-03-29T00:00:00+00:00",
+        "status": "received",
+        "engine": "GEM PRO",
+        "requestId": "req_audio_repair_1",
+        "jobId": "job_audio_repair_1",
+        "traceId": "trace_audio_repair_1",
+        "inputText": "repair contract coverage",
+    }
+
+    client = TestClient(backend_app.app)
+
+    dry_run = client.post("/admin/engine-canonicalization/migrate", json={"mode": "dry_run"})
+    assert dry_run.status_code == 200
+    dry_payload = dry_run.json()
+    assert dry_payload["mode"] == "dry_run"
+    assert dry_payload["dryRun"] is True
+    assert dry_payload["collections"]["audio_generation_audit"]["changed"] == 1
+    assert backend_app._INMEMORY_AUDIO_GENERATION_AUDIT["audit_repair_1"]["engine"] == "GEM PRO"
+
+    apply_response = client.post("/admin/engine-canonicalization/migrate", json={"mode": "apply"})
+    assert apply_response.status_code == 200
+    apply_payload = apply_response.json()
+    assert apply_payload["mode"] == "apply"
+    assert apply_payload["applied"] is True
+    assert backend_app._INMEMORY_AUDIO_GENERATION_AUDIT["audit_repair_1"]["engine"] == "PRIME"
+
+    verify_response = client.post("/admin/engine-canonicalization/migrate", json={"mode": "verify"})
+    assert verify_response.status_code == 200
+    verify_payload = verify_response.json()
+    assert verify_payload["mode"] == "verify"
+    assert verify_payload["verified"] is True
+    assert verify_payload["ok"] is True
+
+    actions = [str(item.get("action") or "") for item in backend_app._INMEMORY_AUDIT_LEDGER_EVENTS.values()]
+    assert actions.count("engine_canonicalization_migrate") == 3
+
+
 def test_audio_metadata_retention_cleanup_removes_only_expired_records(monkeypatch) -> None:
     _reset_phase2_state()
     monkeypatch.setattr(backend_app, "VF_SCHEDULER_ENABLED", True)

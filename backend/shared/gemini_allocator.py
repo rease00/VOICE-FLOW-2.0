@@ -241,7 +241,14 @@ class GeminiRateAllocator:
             if key_rotation_burst is not None
             else None
         )
-        self._disable_rate_limits = bool(disable_rate_limits)
+        disable_limits = bool(disable_rate_limits)
+        if disable_limits and str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower() in {"prod", "production"}:
+            print(
+                "[gemini-allocator] disable_rate_limits ignored in production-like environments.",
+                flush=True,
+            )
+            disable_limits = False
+        self._disable_rate_limits = bool(disable_limits)
 
         self._lock = threading.Lock()
         self._lane_states: dict[tuple[str, str], _LaneState] = {}

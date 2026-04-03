@@ -45,7 +45,7 @@ describe('ttsVoiceRegistryService', () => {
     expect(byId.get('v21')?.isPlanRestricted).toBe(true);
   });
 
-  it('prefers backend displayName over runtime or legacy names for PRIME voices', async () => {
+  it('prefers public display labels while preserving runtime metadata', async () => {
     vi.mocked(fetchTtsEngineVoices).mockResolvedValueOnce({
       ok: true,
       engine: 'PRIME',

@@ -118,3 +118,53 @@ def test_reader_preferences_and_restore_state_round_trip(monkeypatch) -> None:
     reloaded = client.get(f"/reader/sessions/{session_id}", headers=headers)
     assert reloaded.status_code == 200
     assert reloaded.json()["session"]["restoreState"]["activeReaderTab"] == "text"
+
+
+def test_reader_savepoint_rejects_cast_over_eight_speakers(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_reader_require_legal_ack", lambda _uid: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_tts_v2_synthesize_chunk",
+        lambda payload, text, lane_id: backend_app.TtsV2SynthChunk(audio=_make_test_wav(), media_type="audio/wav", headers={"lane": str(lane_id)}),
+    )
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "reader_cast_cap_user"}
+
+    upload_response = client.post(
+        "/reader/uploads",
+        headers=headers,
+        data={
+            "title": "Cast Cap Story",
+            "contentType": "book",
+            "ownershipBasis": "user_responsible",
+            "regionId": "english",
+        },
+        files=[("files", ("story.txt", b"Cast cap validation text.", "text/plain"))],
+    )
+    assert upload_response.status_code == 200
+    upload_id = str(upload_response.json()["upload"]["id"])
+
+    created = client.post(
+        "/reader/sessions",
+        headers=headers,
+        json={
+            "uploadId": upload_id,
+            "audioEngine": "tts_hd",
+            "multiSpeakerEnabled": True,
+            "voiceMode": "multi",
+        },
+    )
+    assert created.status_code == 200
+    session_id = str(created.json()["session"]["id"])
+
+    cast_overrides = {f"Speaker {index}": f"v{index}" for index in range(1, 10)}
+    cast_overrides["Narrator"] = "v22"
+    savepoint_response = client.post(
+        f"/reader/sessions/{session_id}/savepoint",
+        headers=headers,
+        json={"castOverrides": cast_overrides},
+    )
+    assert savepoint_response.status_code == 400
+    assert "up to 8 speakers" in str(savepoint_response.json().get("detail") or "").lower()

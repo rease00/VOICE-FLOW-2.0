@@ -9,7 +9,7 @@ interface MorphingGenerateButtonProps {
   progress?: number;
   stage?: string;
   className?: string;
-  size?: 'default' | 'compact';
+  size?: 'default' | 'compact' | 'micro';
 }
 
 const clamp = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
@@ -31,18 +31,23 @@ export const MorphingGenerateButton: React.FC<MorphingGenerateButtonProps> = ({
   const [cancelCoolingDown, setCancelCoolingDown] = React.useState(false);
   const cancelResetTimerRef = React.useRef<number | null>(null);
   const progressWidth = Math.max(10, normalizedProgress);
-  const isCompact = size === 'compact';
-  const buttonSizeClass = isCompact ? 'px-3 py-2 text-[12px]' : 'px-4 py-3 text-sm';
-  const contentSizeClass = isCompact ? 'min-h-6 gap-1.5' : 'min-h-8 gap-2';
-  const contentEndPaddingClass = canCancel ? (isCompact ? 'pr-9' : 'pr-24') : '';
-  const iconSize = isCompact ? 15 : 16;
-  const progressTextClass = isCompact ? 'text-[10px]' : 'text-[11px]';
-  const stageClass = isCompact
-    ? `bottom-1 left-2.5 text-[9px] ${canCancel ? 'right-10' : 'right-2.5'}`
-    : `bottom-1.5 left-3 text-[10px] ${canCancel ? 'right-24' : 'right-3'}`;
-  const cancelButtonClass = isCompact
-    ? 'right-2 top-1/2 h-7 min-w-7 -translate-y-1/2 px-1.5'
-    : 'right-2 top-1/2 h-8 min-w-[5.9rem] -translate-y-1/2 px-2.5';
+  const isCompact = size === 'compact' || size === 'micro';
+  const isMicro = size === 'micro';
+  const buttonSizeClass = isMicro ? 'px-2.5 py-1.5 text-[10px]' : isCompact ? 'px-3 py-2 text-[12px]' : 'px-4 py-3 text-sm';
+  const contentSizeClass = isMicro ? 'min-h-5 gap-1' : isCompact ? 'min-h-6 gap-1.5' : 'min-h-8 gap-2';
+  const contentEndPaddingClass = canCancel ? (isMicro ? 'pr-8' : isCompact ? 'pr-9' : 'pr-24') : '';
+  const iconSize = isMicro ? 13 : isCompact ? 15 : 16;
+  const progressTextClass = isMicro ? 'text-[9px]' : isCompact ? 'text-[10px]' : 'text-[11px]';
+  const stageClass = isMicro
+    ? `bottom-0.5 left-2 text-[8px] ${canCancel ? 'right-8' : 'right-2'}`
+    : isCompact
+      ? `bottom-1 left-2.5 text-[9px] ${canCancel ? 'right-10' : 'right-2.5'}`
+      : `bottom-1.5 left-3 text-[10px] ${canCancel ? 'right-24' : 'right-3'}`;
+  const cancelButtonClass = isMicro
+    ? 'right-1.5 top-1/2 h-6 min-w-6 -translate-y-1/2 px-1'
+    : isCompact
+      ? 'right-2 top-1/2 h-7 min-w-7 -translate-y-1/2 px-1.5'
+      : 'right-2 top-1/2 h-8 min-w-[5.9rem] -translate-y-1/2 px-2.5';
   const showCancelHint = Boolean(canCancel && normalizedProgress < 10 && !cancelCoolingDown);
   const cancelLabel = cancelCoolingDown ? 'Canceling...' : 'Cancel';
   const cancelTitle = cancelCoolingDown ? 'Cancelling generation' : 'Cancel generation';
@@ -120,7 +125,7 @@ export const MorphingGenerateButton: React.FC<MorphingGenerateButtonProps> = ({
       {showCancelHint && (
         <span
           className={`vf-morph-cancel-hint absolute z-20 select-none rounded-full border border-white/20 bg-slate-950/55 px-2 py-0.5 font-medium text-white/75 backdrop-blur-sm ${
-            isCompact ? 'right-10 top-1/2 -translate-y-1/2 text-[9px]' : 'right-24 top-1/2 -translate-y-1/2 text-[10px]'
+            isMicro ? 'right-8 top-1/2 -translate-y-1/2 text-[8px]' : isCompact ? 'right-10 top-1/2 -translate-y-1/2 text-[9px]' : 'right-24 top-1/2 -translate-y-1/2 text-[10px]'
           }`}
         >
           Tap to cancel
@@ -136,7 +141,7 @@ export const MorphingGenerateButton: React.FC<MorphingGenerateButtonProps> = ({
           title={cancelTitle}
           className={`vf-morph-cancel absolute z-20 inline-flex items-center justify-center gap-1 rounded-full border border-rose-200/45 bg-slate-950/45 text-rose-100 shadow-[0_8px_16px_rgba(2,6,23,0.42)] backdrop-blur-sm transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] duration-200 hover:border-rose-200/70 hover:bg-rose-500/25 hover:text-rose-50 active:scale-95 disabled:cursor-wait disabled:opacity-90 ${cancelButtonClass}`}
         >
-          {cancelCoolingDown ? <Loader2 size={isCompact ? 12 : 13} className="animate-spin" strokeWidth={2.2} /> : <X size={isCompact ? 12 : 13} strokeWidth={2.3} />}
+          {cancelCoolingDown ? <Loader2 size={isMicro ? 10 : isCompact ? 12 : 13} className="animate-spin" strokeWidth={2.2} /> : <X size={isMicro ? 10 : isCompact ? 12 : 13} strokeWidth={2.3} />}
           {!isCompact ? <span className="text-[11px] font-semibold tracking-[0.01em]">{cancelLabel}</span> : null}
         </button>
       )}

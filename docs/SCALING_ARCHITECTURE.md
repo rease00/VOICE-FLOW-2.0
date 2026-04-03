@@ -2,7 +2,7 @@
 
 ## Target Model
 
-VoiceFlow scaling is queue-first and asynchronous:
+V FLOW AI scaling is queue-first and asynchronous:
 
 1. API layer accepts synthesis requests and writes jobs to Redis-backed queue.
 2. Worker layer consumes queued jobs and calls engine runtimes.

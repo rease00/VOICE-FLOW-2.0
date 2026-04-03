@@ -218,6 +218,7 @@ const CenterItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ it
 };
 
 export const NotificationUI: React.FC = () => {
+  const [isMounted, setIsMounted] = useState(false);
   const [filter, setFilter] = useState<'active' | 'all' | 'unread' | 'critical' | 'resolved'>('active');
   const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
   const [toastRightOffset, setToastRightOffset] = useState<string>('1rem');
@@ -233,6 +234,10 @@ export const NotificationUI: React.FC = () => {
     setCenterOpen,
     clearAll,
   } = useNotifications();
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   useEffect(() => {
     const syncUiState = () => {
@@ -333,7 +338,7 @@ export const NotificationUI: React.FC = () => {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isCenterOpen, setCenterOpen]);
 
-  return (
+  return isMounted ? (
     <>
       <div data-testid="notification-root" className="pointer-events-none fixed inset-0 z-[115]">
         <div
@@ -465,5 +470,5 @@ export const NotificationUI: React.FC = () => {
         </div>
       )}
     </>
-  );
+  ) : null;
 };

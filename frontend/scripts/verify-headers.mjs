@@ -22,6 +22,23 @@ const parseFirstScriptSrc = (html) => {
   return match ? String(match[1] || '').trim() : '';
 };
 
+const hasSafeNoCachePolicy = (cacheControl) => {
+  const lowered = String(cacheControl || '').toLowerCase();
+  return (
+    lowered.includes('no-cache')
+    || lowered.includes('no-store')
+    || lowered.includes('max-age=0')
+  );
+};
+
+const hasSafeImmutableAssetPolicy = (cacheControl) => {
+  const lowered = String(cacheControl || '').toLowerCase();
+  if (lowered.includes('immutable')) return true;
+  const maxAgeMatch = lowered.match(/(?:^|,)\s*max-age=(\d+)/);
+  const maxAge = maxAgeMatch ? Number(maxAgeMatch[1]) : 0;
+  return Number.isFinite(maxAge) && maxAge >= 31536000;
+};
+
 const main = async () => {
   const targetUrl = String(process.argv[2] || '').trim();
   if (!targetUrl) {
@@ -43,10 +60,10 @@ const main = async () => {
   }
 
   const htmlCacheControl = String(htmlResponse.headers.get('cache-control') || '').toLowerCase();
-  const htmlNoCache = htmlCacheControl.includes('no-cache') || htmlCacheControl.includes('max-age=0');
+  const htmlNoCache = hasSafeNoCachePolicy(htmlCacheControl);
   report.checks.push({ name: 'html_cache_policy', ok: htmlNoCache, cacheControl: htmlCacheControl });
   if (!htmlNoCache) {
-    report.failures.push('HTML cache-control is missing no-cache/max-age=0 policy.');
+    report.failures.push('HTML cache-control is missing no-cache/no-store/max-age=0 policy.');
   }
 
   for (const headerName of REQUIRED_SECURITY_HEADERS) {
@@ -69,7 +86,7 @@ const main = async () => {
     } else {
       const assetResponse = await fetch(assetUrl, { method: 'GET' });
       const assetCacheControl = String(assetResponse.headers.get('cache-control') || '').toLowerCase();
-      const immutable = assetCacheControl.includes('immutable');
+      const immutable = hasSafeImmutableAssetPolicy(assetCacheControl);
       report.checks.push({
         name: 'asset_cache_policy',
         ok: assetResponse.ok && immutable,
@@ -79,7 +96,7 @@ const main = async () => {
       if (!assetResponse.ok) {
         report.failures.push(`Asset response failed with status ${assetResponse.status}`);
       } else if (!immutable) {
-        report.failures.push('Asset cache-control is missing immutable policy.');
+        report.failures.push('Asset cache-control is missing immutable or long-lived max-age policy.');
       }
     }
   }

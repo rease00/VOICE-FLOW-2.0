@@ -44,14 +44,14 @@ def test_openvoice_artifact_endpoint_enforces_uid_scope(monkeypatch, tmp_path: P
     )
 
     owner_res = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": sig},
         headers={"x-dev-uid": owner_uid},
     )
     assert owner_res.status_code == 200
 
     other_res = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": sig},
         headers={"x-dev-uid": other_uid},
     )
@@ -75,7 +75,7 @@ def test_openvoice_artifact_endpoint_rejects_expired_signature(monkeypatch, tmp_
     )
 
     response = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": expired_sig},
         headers={"x-dev-uid": owner_uid},
     )
@@ -105,12 +105,14 @@ def test_openvoice_artifact_endpoint_allows_signed_link_without_auth_header_in_d
     )
     assert response.status_code == 200
     assert response.content == b"RIFFsample"
+    assert response.headers.get("x-voiceflow-deprecated-route") == "true"
+    assert response.headers.get("x-voiceflow-successor-route") == "/voice-lab/voice-clone/artifacts/" + artifact_id
 
 
 def test_openvoice_artifact_endpoint_rejects_signature_replay(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "OPENVOICE_ARTIFACT_ROOT", tmp_path.resolve())
-    monkeypatch.setattr(backend_app, "VF_OPENVOICE_ARTIFACT_ONE_TIME", True)
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_ARTIFACT_ONE_TIME", True)
     monkeypatch.setattr(openvoice_modal, "OPENVOICE_ARTIFACT_SECRET", "test-secret")
 
     owner_uid = "owner_uid_replay"
@@ -125,12 +127,12 @@ def test_openvoice_artifact_endpoint_rejects_signature_replay(monkeypatch, tmp_p
     )
 
     first = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": sig},
     )
     assert first.status_code == 200
     replay = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": sig},
     )
     assert replay.status_code == 403
@@ -154,14 +156,14 @@ def test_openvoice_artifact_endpoint_requires_auth_when_auth_enforced(monkeypatc
     )
 
     unauthenticated = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": sig},
     )
     assert unauthenticated.status_code == 401
 
     monkeypatch.setattr(backend_app, "_verify_firebase_id_token", lambda _token: {"uid": owner_uid})
     authenticated = client.get(
-        f"/voice-lab/openvoice/artifacts/{artifact_id}",
+        f"/voice-lab/voice-clone/artifacts/{artifact_id}",
         params={"sig": sig},
         headers={"Authorization": "Bearer test-token"},
     )
@@ -212,7 +214,7 @@ def test_voice_clone_openvoice_separate_returns_503_when_artifact_signing_is_mis
         backend_app.voice_clone_openvoice_separate(payload, request=types.SimpleNamespace())
 
     assert excinfo.value.status_code == 503
-    assert "VF_OPENVOICE_ARTIFACT_SECRET" in str(excinfo.value.detail)
+    assert "VF_VOICE_CLONE_ARTIFACT_SECRET" in str(excinfo.value.detail)
 
 
 def test_openvoice_artifact_secret_rejects_runtime_token_fallback_in_production(monkeypatch) -> None:

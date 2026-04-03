@@ -19,7 +19,7 @@ describe('reader tab model', () => {
       translationSupported: true,
       sourceLanguage: 'en',
       playbackLanguage: 'hi',
-    })).toEqual(['read', 'voices', 'cast', 'text', 'translate']);
+    })).toEqual(['read', 'settings', 'scripts', 'saved']);
 
     expect(getReaderTabs({
       mode: 'comic',
@@ -28,7 +28,7 @@ describe('reader tab model', () => {
       translationSupported: true,
       sourceLanguage: 'ja',
       playbackLanguage: 'en',
-    })).toEqual(['panels', 'voices', 'cast', 'text', 'translate']);
+    })).toEqual(['panels', 'settings', 'scripts', 'saved']);
   });
 
   it('gates cast tab by multi-speaker flag and speaker count', () => {
@@ -56,29 +56,32 @@ describe('reader tab model', () => {
   });
 
   it('falls back to available tabs and imported defaults', () => {
-    const tabs = ['read', 'voices', 'text'] as const;
-    expect(coerceReaderTab('cast', [...tabs], 'novel')).toBe('read');
+    const tabs = ['read', 'settings', 'scripts', 'saved'] as const;
+    expect(coerceReaderTab('cast', [...tabs], 'novel')).toBe('settings');
+    expect(coerceReaderTab('settings', [...tabs], 'novel')).toBe('settings');
+    expect(coerceReaderTab('text', ['panels', 'settings', 'scripts', 'saved'], 'comic')).toBe('scripts');
+    expect(coerceReaderTab('savedaudio', [...tabs], 'novel')).toBe('saved');
 
     expect(resolveImportedDefaultTab({
       mode: 'novel',
       imported: true,
       lowConfidence: false,
-      availableTabs: ['read', 'voices', 'text'],
+      availableTabs: ['read', 'settings', 'scripts', 'saved'],
     })).toBe('read');
 
     expect(resolveImportedDefaultTab({
       mode: 'novel',
       imported: true,
       lowConfidence: true,
-      availableTabs: ['read', 'voices', 'text'],
-    })).toBe('text');
+      availableTabs: ['read', 'settings', 'scripts', 'saved'],
+    })).toBe('scripts');
 
     expect(resolveImportedDefaultTab({
       mode: 'comic',
       imported: true,
       lowConfidence: false,
-      availableTabs: ['panels', 'voices', 'text'],
-    })).toBe('text');
+      availableTabs: ['panels', 'settings', 'scripts', 'saved'],
+    })).toBe('scripts');
   });
 
   it('normalizes reader home tabs and labels', () => {

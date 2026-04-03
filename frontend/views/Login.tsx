@@ -4,7 +4,7 @@ import { AlertCircle, ArrowRight, Check, Eye, EyeOff, Lock, Mail, User, X } from
 import { AppScreen } from '../types';
 import { useAuthSession } from '../src/features/auth/hooks/useAuthSession';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { removeStorageKey, readStorageString, writeStorageString } from '../src/shared/storage/localStore';
+import { removeStorageKey, readStorageString } from '../src/shared/storage/localStore';
 import { BrandLogo } from '../components/BrandLogo';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
@@ -37,7 +37,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   const { emit } = useNotifications();
   const [mode, setMode] = useState<AuthMode>(initialMode ?? 'login');
   const [displayName, setDisplayName] = useState('');
-  const [userId, setUserId] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -54,6 +53,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [termsErrorMsg, setTermsErrorMsg] = useState<string | null>(null);
   const [activeLegalPath, setActiveLegalPath] = useState<LegalPopupPath | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
   const activeLegalDocument = activeLegalPath ? resolveLegalDocument(activeLegalPath) : null;
   const firebaseIssue = !isFirebaseConfigured
     ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart frontend.')
@@ -65,6 +65,10 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     if (!initialMode) return;
     setMode(initialMode);
   }, [initialMode]);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
 
   useEffect(() => {
     if (initialMode) {
@@ -169,7 +173,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     setIsLoading(true);
     try {
       const result = mode === 'signup'
-        ? await signUpWithEmail(email, password, displayName, userId)
+        ? await signUpWithEmail(email, password, displayName)
         : await signInWithEmail(email, password);
       if (result.ok && mode === 'signup' && result.requiresEmailVerification) {
         const message = 'Account created. Verify your email before signing in.';
@@ -220,11 +224,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         message: mode === 'signup' ? 'Account created successfully.' : 'Signed in successfully.',
         category: 'security',
       });
-      if ('requiresUserIdSetup' in result && result.requiresUserIdSetup) {
-        writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
-        setScreen(AppScreen.USER_ID_SETUP);
-        return;
-      }
       if (safeNextPath) {
         if (navigateToPath) {
           navigateToPath(safeNextPath);
@@ -304,11 +303,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         message: mode === 'signup' ? 'Your account is ready with Google.' : 'Signed in with Google.',
         category: 'security',
       });
-      if (result.requiresUserIdSetup) {
-        writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
-        setScreen(AppScreen.USER_ID_SETUP);
-        return;
-      }
       if (safeNextPath) {
         if (navigateToPath) {
           navigateToPath(safeNextPath);
@@ -357,7 +351,11 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   };
 
   return (
-    <div className="vf-auth-shell min-h-[100dvh] w-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8" data-testid="auth-shell">
+    <div
+      className="vf-auth-shell min-h-[100dvh] w-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8"
+      data-testid="auth-shell"
+      data-auth-hydrated={isHydrated ? 'true' : 'false'}
+    >
       <div className="relative z-10 mx-auto w-full max-w-7xl py-4 lg:py-8">
       <div className="vf-auth-card vf-surface-card relative mx-auto w-full max-w-[36rem] rounded-[2.4rem] border p-5 shadow-2xl animate-in fade-in zoom-in duration-300 sm:p-6 lg:p-8" data-testid="auth-card">
         <div className="mb-8 text-center">
@@ -439,29 +437,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                   <User size={16} className="absolute left-3 top-3.5 text-[#7E92A8]" />
                 </div>
                 <p id="display-name-help" className="mt-1 text-[11px] text-[#9CB1C9]">Shown on your account profile inside the app.</p>
-              </div>
-              <div>
-                <label htmlFor="signup-user-id" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">User ID</label>
-                <div className="relative">
-                  <input
-                    id="signup-user-id"
-                    name="userId"
-                    type="text"
-                    value={userId}
-                    onChange={(event) => setUserId(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                    placeholder="artist_01"
-                    pattern="[a-z0-9_]{4,24}"
-                    title="Use lowercase letters, numbers, underscore. 4-24 chars."
-                    autoComplete="username"
-                    inputMode="text"
-                    spellCheck={false}
-                    aria-describedby="signup-user-id-help"
-                    className={`vf-auth-field w-full rounded-xl border py-3 pl-10 pr-3 text-sm outline-none ${authControlTransitionClass} ${authControlFocusClass}`}
-                    required
-                  />
-                  <User size={16} className="absolute left-3 top-3.5 text-[#7E92A8]" />
-                </div>
-                <p id="signup-user-id-help" className="mt-1 text-[11px] text-[#9CB1C9]">Lowercase only, 4-24 chars. This becomes your account handle and can be set only once.</p>
               </div>
             </>
           )}

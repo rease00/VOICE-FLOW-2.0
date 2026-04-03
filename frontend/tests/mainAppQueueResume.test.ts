@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findFirstRecoverableStudioQueueItem } from '../views/MainApp';
+import { findFirstRecoverableStudioQueueItem, hasRecoverableSingleInflightGenerationState } from '../views/MainApp';
 
 describe('MainApp queue resume helper', () => {
   it('selects the earliest cancelled item when resuming a queue with no active work', () => {
@@ -20,5 +20,11 @@ describe('MainApp queue resume helper', () => {
     ] as any);
 
     expect(candidate?.id).toBe('cancelled-1');
+  });
+
+  it('treats requestId-only inflight state as recoverable', () => {
+    expect(hasRecoverableSingleInflightGenerationState({ requestId: 'req-1', jobId: '' } as any)).toBe(true);
+    expect(hasRecoverableSingleInflightGenerationState({ requestId: '', jobId: 'job-1' } as any)).toBe(true);
+    expect(hasRecoverableSingleInflightGenerationState({ requestId: '', jobId: '' } as any)).toBe(false);
   });
 });

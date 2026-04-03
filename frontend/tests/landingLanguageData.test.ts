@@ -28,24 +28,28 @@ describe('landing multilingual data', () => {
   it('keeps the landing page tied to the real demo asset paths and canonical anchors', () => {
     const html = renderToStaticMarkup(React.createElement(MarketingLanding));
 
-    expect(html).toContain('href="#single-speaker"');
-    expect(html).toContain('href="#multi-speaker"');
-    expect(html).toContain('href="#voice-cloning"');
-    expect(html).toContain('href="#ai-director"');
-    expect(html).toContain('href="#reader-playback"');
+    expect(html).toContain('id="landing-home"');
+    expect(html).toContain('id="single-speaker"');
+    expect(html).toContain('id="multi-speaker"');
+    expect(html).toContain('id="voice-cloning"');
+    expect(html).toContain('id="ai-director"');
+    expect(html).toContain('id="reader-playback"');
     expect(html).toContain('/audio/vector-demo/en-us.wav');
-    expect(html).toContain('/audio/vector-multi-demo/en-roundtable.wav');
-    expect(html).toContain('/audio/vector-multi-demo/ar-documentary.wav');
+    expect(html).toContain('/audio/vector-multi-demo/en-weekend-plan.wav');
+    expect(html).toContain('/audio/vector-multi-demo/fr-city-tour.wav');
     expect(html).toContain('/audio/openvoice-demo/reference.wav');
     expect(html).toContain('/audio/openvoice-demo/rendered.wav');
     expect(html).toContain('Single-speaker system');
     expect(html).toContain('Prime multi-speaker scenes');
-    expect(html).toContain('Voice cloning proof');
+    expect(html).toContain('Voice Clone proof');
     expect(html).toContain('AI Director');
     expect(html).toContain('Live prompt contract');
     expect(html).toContain('Reader playback');
     expect(html).toContain('href="/billing"');
     expect(html).toContain('data-audio-player="vf-marketing"');
+    expect(html).toContain('vf-marketing-stat-grid--five-up');
+    expect(html).toContain('vf-marketing-audio-grid--five-up');
+    expect(html).toContain('vf-marketing-scene-grid--five-up');
   });
 
   it('keeps shared brand theme configuration deterministic', () => {
@@ -59,9 +63,13 @@ describe('landing multilingual data', () => {
       expect(theme.label).toEqual(expect.any(String));
       expect(theme.description).toEqual(expect.any(String));
       expect(theme.accent).toEqual(expect.any(String));
-      expect(theme.glow).toEqual(expect.any(String));
-      expect(theme.backdrop).toEqual(expect.any(String));
-      expect(theme.surface).toEqual(expect.any(String));
+      expect(theme.modes.dark.glow).toEqual(expect.any(String));
+      expect(theme.modes.dark.backdrop).toEqual(expect.any(String));
+      expect(theme.modes.dark.surface).toEqual(expect.any(String));
+      expect(theme.modes.light.glow).toEqual(expect.any(String));
+      expect(theme.modes.light.backdrop).toEqual(expect.any(String));
+      expect(theme.modes.light.surface).toEqual(expect.any(String));
     }
   });
 });
+

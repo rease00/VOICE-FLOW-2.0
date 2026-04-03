@@ -3,44 +3,63 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROOT = process.cwd();
-const NEXT_DIR = path.join(ROOT, '.next');
+const DIST_DIR_NAME = String(process.env.NEXT_DIST_DIR || process.env.VF_NEXT_DIST_DIR || '.next').trim() || '.next';
+const NEXT_DIR = path.join(ROOT, DIST_DIR_NAME);
 const STATIC_DIR = path.join(NEXT_DIR, 'static');
 const BUILD_MANIFEST_PATH = path.join(NEXT_DIR, 'build-manifest.json');
 const REACT_LOADABLE_MANIFEST_PATH = path.join(NEXT_DIR, 'react-loadable-manifest.json');
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts');
 const ARTIFACT_PATH = path.join(ARTIFACT_DIR, 'bundle-budget.json');
 
+const parseFiniteNumberEnv = (value) => {
+  const token = String(value ?? '').trim();
+  if (!token) return null;
+  const parsed = Number(token.replace(/_/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const resolveFiniteNumberEnv = (...values) => {
+  for (const value of values) {
+    const parsed = parseFiniteNumberEnv(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+};
+
 const MAX_EAGER_JS_BYTES = Math.max(
   64_000,
-  Number(process.env.VF_FRONTEND_EAGER_JS_MAX_BYTES || process.env.VF_FRONTEND_INDEX_BUNDLE_MAX_BYTES || 393_216),
+  resolveFiniteNumberEnv(
+    process.env.VF_FRONTEND_EAGER_JS_MAX_BYTES,
+    process.env.VF_FRONTEND_INDEX_BUNDLE_MAX_BYTES,
+  ) ?? 409_600,
 );
 const MAX_EAGER_CSS_BYTES = Math.max(
   16_000,
-  Number(process.env.VF_FRONTEND_EAGER_CSS_MAX_BYTES || 196_608),
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_EAGER_CSS_MAX_BYTES) ?? 229_376,
 );
 const MAX_EAGER_WASM_BYTES = Math.max(
   64_000,
-  Number(process.env.VF_FRONTEND_EAGER_WASM_MAX_BYTES || 5_242_880),
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_EAGER_WASM_MAX_BYTES) ?? 5_242_880,
 );
 const MAX_BROWSER_ML_CHUNK_BYTES = Math.max(
   128_000,
-  Number(process.env.VF_FRONTEND_BROWSER_ML_CHUNK_MAX_BYTES || 921_600),
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_BROWSER_ML_CHUNK_MAX_BYTES) ?? 921_600,
 );
 const MAIN_APP_CHUNK_SLACK_BYTES = Math.max(
   0,
-  Number(process.env.VF_FRONTEND_MAIN_APP_CHUNK_SLACK_BYTES || 1_024),
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_MAIN_APP_CHUNK_SLACK_BYTES) ?? 1_024,
 );
 const MAX_MAIN_APP_CHUNK_BYTES = Math.max(
   128_000,
-  Number(process.env.VF_FRONTEND_MAIN_APP_CHUNK_MAX_BYTES || 230_400) + MAIN_APP_CHUNK_SLACK_BYTES,
+  (resolveFiniteNumberEnv(process.env.VF_FRONTEND_MAIN_APP_CHUNK_MAX_BYTES) ?? 230_400) + MAIN_APP_CHUNK_SLACK_BYTES,
 );
 const MAX_DIST_TOTAL_BYTES = Math.max(
   1_000_000,
-  Number(process.env.VF_FRONTEND_DIST_TOTAL_MAX_BYTES || 62_914_560),
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_DIST_TOTAL_MAX_BYTES) ?? 62_914_560,
 );
 const MAX_DIST_SHIPPED_AUDIO_BYTES = Math.max(
   1_000_000,
-  Number(process.env.VF_FRONTEND_DIST_AUDIO_MAX_BYTES || 10_485_760),
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_DIST_AUDIO_MAX_BYTES) ?? 10_485_760,
 );
 
 const parseBoolean = (value) => {
@@ -80,6 +99,24 @@ const parseJson = async (filePath) => {
 const pushManifestFile = (target, filePath) => {
   const normalized = toStaticManifestPath(filePath);
   if (normalized) target.add(normalized);
+};
+
+const collectCriticalRootJsAssets = (buildManifest) => {
+  const critical = new Set();
+  if (!buildManifest || typeof buildManifest !== 'object') return critical;
+
+  const rootMainFiles = Array.isArray(buildManifest.rootMainFiles) ? buildManifest.rootMainFiles : [];
+  const appRootFiles = rootMainFiles.length > 0
+    ? rootMainFiles
+    : Array.isArray(buildManifest.pages?.['/_app'])
+      ? buildManifest.pages['/_app']
+      : [];
+
+  for (const filePath of appRootFiles) {
+    pushManifestFile(critical, filePath);
+  }
+
+  return critical;
 };
 
 const collectEagerManifestAssets = (buildManifest) => {
@@ -153,7 +190,6 @@ const resolveAssetKind = (assetPath) => {
 };
 
 const isBrowserMlChunk = (assetPath) => /(?:phonemizer|huggingface|transformers|ml)/i.test(assetPath);
-const isMainAppChunk = (assetPath) => /(?:^|\/)(?:app|main-app|layout)[^/]*\.js$/i.test(assetPath);
 
 const listNextStaticAssets = async () => {
   const entries = await fs.readdir(STATIC_DIR, { recursive: true }).catch(() => []);
@@ -182,10 +218,11 @@ const listAllStaticFiles = async () => {
 const main = async () => {
   const report = {
     generatedAt: new Date().toISOString(),
-    entryBuild: '.next/static',
+    entryBuild: `${DIST_DIR_NAME.replace(/\\/g, '/')}/static`,
     classification: {
       eagerSource: 'build-manifest + non-lazy fallback',
       lazySource: 'react-loadable-manifest + wasm refs from lazy chunks',
+      criticalRootJsSource: 'build-manifest.rootMainFiles (fallback: build-manifest.pages["/_app"])',
     },
     budgets: {
       eagerJsBytes: MAX_EAGER_JS_BYTES,
@@ -212,8 +249,16 @@ const main = async () => {
   const buildManifest = await parseJson(BUILD_MANIFEST_PATH);
   const reactLoadableManifest = await parseJson(REACT_LOADABLE_MANIFEST_PATH);
 
+  const criticalRootJsAssets = collectCriticalRootJsAssets(buildManifest);
   const eagerManifestAssets = collectEagerManifestAssets(buildManifest);
   const lazyManifestAssets = collectLazyManifestAssets(reactLoadableManifest);
+
+  if (criticalRootJsAssets.size === 0) {
+    report.advisories.push({
+      file: toPosixPath(path.relative(ROOT, BUILD_MANIFEST_PATH)),
+      detail: 'No critical root JS assets discovered from build-manifest; main-app chunk budget check was skipped.',
+    });
+  }
 
   const allStaticAssets = await listNextStaticAssets();
   const allStaticAssetSet = new Set(allStaticAssets);
@@ -259,6 +304,7 @@ const main = async () => {
     const manifestPath = toStaticManifestPath(assetPath);
     const inLazyManifest = lazyManifestAssets.has(manifestPath);
     const isLazyWasm = lazyWasmAssets.has(assetPath) && !eagerWasmAssets.has(assetPath);
+    const isCriticalRootJs = criticalRootJsAssets.has(manifestPath);
     const bucket = (inLazyManifest || isLazyWasm) ? 'lazy' : 'eager';
 
     if (bucket === 'eager') {
@@ -282,6 +328,7 @@ const main = async () => {
       bytes,
       maxBytes: bucket === 'eager' && Number.isFinite(maxBytes) ? maxBytes : null,
       withinBudget,
+      criticalRootJs: isCriticalRootJs,
       inEagerManifest: eagerManifestAssets.has(manifestPath),
       inLazyManifest,
       lazyWasmRef: isLazyWasm,
@@ -296,7 +343,7 @@ const main = async () => {
       });
     }
 
-    if (assetPath.endsWith('.js') && isMainAppChunk(assetPath) && bucket === 'eager' && bytes > MAX_MAIN_APP_CHUNK_BYTES) {
+    if (assetPath.endsWith('.js') && isCriticalRootJs && bucket === 'eager' && bytes > MAX_MAIN_APP_CHUNK_BYTES) {
       report.violations.push({
         file: toPosixPath(assetPath),
         bucket,
@@ -354,6 +401,7 @@ const main = async () => {
       eagerManifestAssetCount: eagerManifestAssets.size,
       lazyManifestAssetCount: lazyManifestAssets.size,
       lazyWasmRefCount: lazyWasmAssets.size,
+      criticalRootJsAssetCount: criticalRootJsAssets.size,
     },
     ...budgetSummary,
   };

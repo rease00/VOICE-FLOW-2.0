@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { ensureStudioSmokeAuthenticated, resolveStudioSmokeCredentials } from './smokeAuth';
 
 const ROUTE_TIMEOUT_MS = 20_000;
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
@@ -7,13 +8,15 @@ type RouteAssertion = {
   path: string;
   title: string;
   expect: (page: Page, testInfo: TestInfo) => Promise<void>;
+  trackRouteHealth?: boolean;
+  requiresAuth?: boolean;
 };
 
 const resolveWritingViewport = (projectName: string) => {
   const normalized = projectName.toLowerCase();
   if (normalized.includes('mobile')) return { width: 390, height: 844 };
   if (normalized.includes('tablet')) return { width: 820, height: 1180 };
-  return { width: 1440, height: 900 };
+  return { width: 1366, height: 768 };
 };
 
 const waitForAnyVisible = async (page: Page, labels: string[]): Promise<void> => {
@@ -50,6 +53,34 @@ const expectRailMetrics = async (page: Page, selector: string, requireOverflow =
   expect(metrics.overflowX).toMatch(/auto|scroll/);
 };
 
+const isKnownConsoleNoise = (message: string): boolean => {
+  const lowered = message.toLowerCase();
+
+  // Google telemetry calls are sometimes blocked by CSP in mobile smoke runs.
+  // Ignore only the explicit gen_204 noise so genuine CSP breaks still fail.
+  if (
+    lowered.includes('apis.google.com/js/gen_204') &&
+    (lowered.includes('content security policy') || lowered.includes('csp'))
+  ) {
+    return true;
+  }
+
+  if (
+    lowered.includes('failed to load resource') &&
+    (lowered.includes('err_connection_refused') || lowered.includes('status of 502'))
+  ) {
+    return true;
+  }
+
+  // The app falls back to offline mode when Firestore is temporarily unreachable during
+  // local smoke runs. That transient console error should not fail route rendering checks.
+  return (
+    lowered.includes('@firebase/firestore') &&
+    lowered.includes('could not reach cloud firestore backend') &&
+    lowered.includes('offline mode')
+  );
+};
+
 const trackRouteHealth = (page: Page) => {
   const consoleIssues: string[] = [];
   const pageErrors: string[] = [];
@@ -58,6 +89,7 @@ const trackRouteHealth = (page: Page) => {
     const text = message.text().trim();
     if (!text) return;
     const lowered = text.toLowerCase();
+    if (isKnownConsoleNoise(text)) return;
     if (message.type() === 'error' || lowered.includes('hydration failed') || lowered.includes('text content does not match server-rendered html')) {
       consoleIssues.push(`[console:${message.type()}] ${text}`);
     }
@@ -79,7 +111,6 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'billing public page',
     expect: async (page) => {
       await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText('Billing', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByRole('heading', { name: /Billing, credits, and checkout/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
@@ -112,10 +143,16 @@ const routeSmokeCases: RouteAssertion[] = [
   {
     path: '/app/writing',
     title: 'novel workspace responsive',
+    requiresAuth: true,
     expect: async (page, testInfo) => {
       const viewport = resolveWritingViewport(testInfo.project.name);
       await page.setViewportSize(viewport);
-      await waitForAnyVisible(page, ['Novel Workspace', 'Library']);
+      await Promise.any([
+        page.getByTestId('novel-workspace').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByPlaceholder('Novel name').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByRole('heading', { name: 'Novel Workspace', exact: true }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      ]);
+      await expect(page.getByTestId('novel-workspace')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByTestId('novel-workspace')).toHaveAttribute(
         'data-novel-layout',
         testInfo.project.name.includes('mobile')
@@ -126,8 +163,44 @@ const routeSmokeCases: RouteAssertion[] = [
       );
 
       if (testInfo.project.name.includes('mobile')) {
+        await expect(page.getByRole('button', { name: /^Novel$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByRole('button', { name: /^Chapter$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
         await expect(page.getByRole('button', { name: 'Create novel' })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByRole('button', { name: /Create chapter/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByRole('button', { name: /^Chapter$/i }).click();
+        await Promise.any([
+          page.getByRole('button', { name: /Create chapter/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+          page.getByPlaceholder('Chapter title').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+          page.getByText('Create a novel first to unlock chapter controls.', { exact: true }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        ]);
+        await expect(page.getByTestId('novel-tools-tabs')).toHaveCount(0);
+        await page.getByTestId('novel-tools-toggle').click();
+        await expect(page.getByTestId('novel-tools-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByTestId('novel-tools-tab-adapt').click();
+        await expect(page.getByPlaceholder('Target culture')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByTestId('novel-tools-tab-memory').click();
+        await expect(page.getByText('Run adaptation to generate chapter summary.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByTestId('novel-tools-tab-ledger').click();
+        await expect(page.getByPlaceholder('Filter')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByTestId('novel-tools-tab-drive').click();
+        await expect(page.getByRole('button', { name: /^Download$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      } else if (testInfo.project.name.includes('desktop')) {
+        await expect(page.getByRole('heading', { name: /^Library$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-library-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByRole('heading', { name: /^Inspector$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-tools-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-workspace-back')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-workspace-forward')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-editor-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-workspace-save')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByText('Browser cache autosave')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-tools-tab-adapt')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByPlaceholder('Target culture')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByPlaceholder('Novel name')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByRole('button', { name: /^Adapted$/i }).click();
+        await expect(page.getByPlaceholder('Adapted output...')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await page.getByRole('button', { name: /^Source$/i }).click();
+        await expect(page.getByPlaceholder('Source chapter...')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByTestId('novel-workspace-expand')).toHaveCount(0);
       } else {
         await expect(page.getByPlaceholder('Novel name')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       }
@@ -139,12 +212,15 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/app/reader',
     title: 'reader smoke',
     expect: async (page) => {
-      await page.setViewportSize(MOBILE_VIEWPORT);
+      await expect(page).toHaveURL(/\/app\/reader(?:\/|$|\?)/);
       await Promise.any([
         page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
         page.getByTestId('brand-logo').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByRole('heading', { name: /Sign in to open Reader/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
         page.getByRole('button', { name: /Get Started|Sign In|Create Account|Test Drive|Create Your First Scene|Listen to Live Demos/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      ]).catch(() => undefined);
+      ]);
       await expect(page.locator('body')).toBeVisible();
       const readerRail = page.locator('.vf-reader-v2-tray__tabs');
       if (await readerRail.count()) {
@@ -191,7 +267,12 @@ const routeSmokeCases: RouteAssertion[] = [
 
 for (const routeCase of routeSmokeCases) {
   test(routeCase.title, async ({ page }, testInfo) => {
-    const assertRouteHealth = trackRouteHealth(page);
+    const assertRouteHealth = routeCase.trackRouteHealth === false ? null : trackRouteHealth(page);
+    if (routeCase.requiresAuth) {
+      const credentials = resolveStudioSmokeCredentials();
+      test.skip(!credentials, 'Missing Playwright admin credentials for authenticated smoke coverage.');
+      await ensureStudioSmokeAuthenticated(page, credentials!);
+    }
 
     await page.goto(routeCase.path, {
       waitUntil: 'domcontentloaded',
@@ -200,6 +281,6 @@ for (const routeCase of routeSmokeCases) {
     await routeCase.expect(page, testInfo);
     await expect(page.locator('body')).toBeVisible();
 
-    assertRouteHealth();
+    assertRouteHealth?.();
   });
 }

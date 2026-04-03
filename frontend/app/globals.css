@@ -1,4 +1,7 @@
+@import "tailwindcss";
+@import "../src/styles/tokens.css";
 @import "../index.css";
+@plugin "tailwindcss-animate";
 
 @layer base {
   html,

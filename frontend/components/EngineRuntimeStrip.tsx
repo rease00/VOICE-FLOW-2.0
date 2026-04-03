@@ -3,7 +3,7 @@ import { GenerationSettings } from '../types';
 import { getEngineCompactLabel, getEngineDisplayName } from '../services/engineDisplay';
 import { EngineLogo } from './EngineLogo';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
-import { PRIME_ACCESS_LOCK_MESSAGE, resolveEngineToken } from '../views/mainAppHelpers';
+import { PRIME_ACCESS_LOCK_MESSAGE, resolveEngineToken } from '../src/shared/workspace/mainAppHelpers';
 
 type EngineRuntimeState = 'checking' | 'starting' | 'warming' | 'online' | 'offline' | 'not_configured' | 'standby';
 
@@ -153,13 +153,13 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
                 : 'bg-white/70 hover:bg-white'
             } ${indicatorClass} ${isActive ? 'vf-runtime-chip--active ring-2 ring-indigo-400/65' : ''} ${interactionLocked ? 'opacity-55 cursor-not-allowed' : ''} ${pending ? 'animate-pulse' : ''}`}
           >
-            <span className={`vf-runtime-chip__dot absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${dotClass}`} />
             <EngineLogo engine={engine} size="sm" variant="filled" withGlow={isActive || pending} />
             <span
-              className={`vf-runtime-chip__label ${dense ? 'text-[9px] tracking-[0.05em]' : 'text-[10px] tracking-[0.08em]'} font-black ${
+              className={`vf-runtime-chip__label inline-flex items-center gap-1 ${dense ? 'text-[9px] tracking-[0.05em]' : 'text-[10px] tracking-[0.08em]'} font-black ${
                 resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-700'
               }`}
             >
+              <span className={`vf-runtime-chip__dot h-1.5 w-1.5 rounded-full ${dotClass}`} aria-hidden="true" />
               <span className={compact ? '' : 'sm:hidden'}>{getEngineAbbrev(engine)}</span>
               <span className={compact ? 'hidden' : 'hidden sm:inline'}>{getEngineDisplayName(engine)}</span>
             </span>

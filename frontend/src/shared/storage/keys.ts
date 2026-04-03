@@ -24,6 +24,8 @@ export const STORAGE_KEYS = {
   novelWorkspaceMigration: 'vf_novel_workspace_migration',
   readerPreferences: 'vf_reader_preferences',
   readerRestoreState: 'vf_reader_restore_state',
+  readerOfflineAudioIndex: 'vf_reader_offline_audio_index',
+  readerUsageRecord: 'vf_reader_usage_record',
   regionHint: 'vf_region_hint',
   regionSource: 'vf_region_source',
   notifications: 'vf_notifications',

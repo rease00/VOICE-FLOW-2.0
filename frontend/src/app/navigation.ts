@@ -15,8 +15,15 @@ export const APP_ROUTE_PATHS = {
   profile: '/app/profile',
 } as const;
 
+export const PUBLIC_ROUTE_PATHS = {
+  landing: '/landing',
+  billing: '/billing',
+} as const;
+
 export type AppRoutePath = typeof APP_ROUTE_PATHS[keyof typeof APP_ROUTE_PATHS];
 export type AuthRouteMode = 'login' | 'signup';
+
+const READER_ALIAS_PATHNAME = '/reader';
 
 const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.main,
@@ -27,17 +34,30 @@ const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.runs,
   APP_ROUTE_PATHS.admin,
   APP_ROUTE_PATHS.billing,
+  PUBLIC_ROUTE_PATHS.billing,
   APP_ROUTE_PATHS.onboarding,
   APP_ROUTE_PATHS.profile,
   APP_ROUTE_PATHS.userIdSetup,
-  '/billing',
 ]);
 
 const INTERNAL_NEXT_ORIGIN = 'https://voiceflow.internal';
 
+const isReaderAliasPathname = (pathname: string): boolean => (
+  pathname === READER_ALIAS_PATHNAME || pathname.startsWith(`${READER_ALIAS_PATHNAME}/`)
+);
+
+const normalizeReaderAliasPathname = (pathname: string): string => {
+  if (pathname === READER_ALIAS_PATHNAME) return APP_ROUTE_PATHS.reader;
+  if (pathname.startsWith(`${READER_ALIAS_PATHNAME}/`)) {
+    return `${APP_ROUTE_PATHS.reader}${pathname.slice(READER_ALIAS_PATHNAME.length)}`;
+  }
+  return pathname;
+};
+
 const isAllowedInternalNextPathname = (pathname: string): boolean => {
   if (INTERNAL_NEXT_ALLOWLIST.has(pathname)) return true;
-  return pathname === '/reader' || pathname.startsWith('/reader/');
+  if (pathname.startsWith(`${APP_ROUTE_PATHS.reader}/`)) return true;
+  return isReaderAliasPathname(pathname);
 };
 
 const normalizeInternalPathname = (pathname: string): string => {
@@ -53,7 +73,7 @@ const parseInternalNextPath = (candidate?: string | null): string | null => {
     if (url.origin !== INTERNAL_NEXT_ORIGIN) return null;
     const pathname = normalizeInternalPathname(url.pathname);
     if (!isAllowedInternalNextPathname(pathname)) return null;
-    return `${pathname}${url.search}${url.hash}`;
+    return `${normalizeReaderAliasPathname(pathname)}${url.search}${url.hash}`;
   } catch {
     return null;
   }
@@ -79,7 +99,7 @@ export const resolveAppPath = (screen: AppScreen): AppRoutePath => {
     case AppScreen.ONBOARDING:
       return APP_ROUTE_PATHS.onboarding;
     case AppScreen.USER_ID_SETUP:
-      return APP_ROUTE_PATHS.userIdSetup;
+      return APP_ROUTE_PATHS.main;
     case AppScreen.PROFILE:
       return APP_ROUTE_PATHS.profile;
     case AppScreen.MAIN:
@@ -96,7 +116,7 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.onboarding:
       return AppScreen.ONBOARDING;
     case APP_ROUTE_PATHS.userIdSetup:
-      return AppScreen.USER_ID_SETUP;
+      return AppScreen.MAIN;
     case APP_ROUTE_PATHS.profile:
       return AppScreen.PROFILE;
     case APP_ROUTE_PATHS.studio:
@@ -110,6 +130,9 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.main:
       return AppScreen.MAIN;
     default:
+      if (isReaderAliasPathname(safePath) || safePath.startsWith(`${APP_ROUTE_PATHS.reader}/`)) {
+        return AppScreen.MAIN;
+      }
       return null;
   }
 };
@@ -121,16 +144,14 @@ export const shouldBootstrapAccountDataForPath = (pathname?: string | null): boo
   if (
     safePath === APP_ROUTE_PATHS.login
     || safePath === APP_ROUTE_PATHS.onboarding
-    || safePath === APP_ROUTE_PATHS.userIdSetup
   ) {
     return false;
   }
   return (
     safePath === APP_ROUTE_PATHS.profile
     || safePath === APP_ROUTE_PATHS.billing
-    || safePath === '/billing'
+    || safePath === PUBLIC_ROUTE_PATHS.billing
     || safePath.startsWith('/app')
-    || safePath === '/reader'
-    || safePath.startsWith('/reader/')
+    || isReaderAliasPathname(safePath)
   );
 };

@@ -1,4 +1,4 @@
-import { DEFAULT_UI_BRAND_THEME, resolveUiBrandThemeId, type UiBrandThemeId } from './brandThemes';
+import { DEFAULT_UI_BRAND_THEME, UI_BRAND_THEME_CONFIGS, resolveUiBrandThemeId, type UiBrandThemeId } from './brandThemes';
 
 export type UiThemeMode = 'light' | 'dark' | 'system';
 export type ResolvedUiThemeMode = 'light' | 'dark';
@@ -10,6 +10,57 @@ const setDatasetValue = (element: HTMLElement, key: string, value: string | null
     return;
   }
   delete element.dataset[key as keyof DOMStringMap];
+};
+
+const BRAND_STYLE_PROPS = [
+  '--vf-brand-accent-primary',
+  '--vf-brand-accent-secondary',
+  '--vf-brand-accent-tertiary',
+  '--vf-brand-glow-dark',
+  '--vf-brand-glow-light',
+  '--vf-brand-backdrop-dark',
+  '--vf-brand-backdrop-light',
+  '--vf-brand-surface-dark',
+  '--vf-brand-surface-light',
+  '--vf-brand-surface-strong-dark',
+  '--vf-brand-surface-strong-light',
+] as const;
+
+type BrandStyleProp = (typeof BRAND_STYLE_PROPS)[number];
+type BrandStyleSnapshot = Partial<Record<BrandStyleProp, string>>;
+
+const snapshotStyleProperties = (element: HTMLElement): BrandStyleSnapshot => {
+  const snapshot: BrandStyleSnapshot = {};
+  for (const property of BRAND_STYLE_PROPS) {
+    snapshot[property] = element.style.getPropertyValue(property);
+  }
+  return snapshot;
+};
+
+const restoreStyleProperties = (element: HTMLElement, snapshot: BrandStyleSnapshot): void => {
+  for (const property of BRAND_STYLE_PROPS) {
+    const value = snapshot[property];
+    if (value) {
+      element.style.setProperty(property, value);
+      continue;
+    }
+    element.style.removeProperty(property);
+  }
+};
+
+const applyBrandThemeStyles = (element: HTMLElement, themeId: UiBrandThemeId): void => {
+  const theme = UI_BRAND_THEME_CONFIGS[themeId];
+  element.style.setProperty('--vf-brand-accent-primary', theme.accent);
+  element.style.setProperty('--vf-brand-accent-secondary', theme.accent2);
+  element.style.setProperty('--vf-brand-accent-tertiary', theme.accent3);
+  element.style.setProperty('--vf-brand-glow-dark', theme.modes.dark.glow);
+  element.style.setProperty('--vf-brand-glow-light', theme.modes.light.glow);
+  element.style.setProperty('--vf-brand-backdrop-dark', theme.modes.dark.backdrop);
+  element.style.setProperty('--vf-brand-backdrop-light', theme.modes.light.backdrop);
+  element.style.setProperty('--vf-brand-surface-dark', theme.modes.dark.surface);
+  element.style.setProperty('--vf-brand-surface-light', theme.modes.light.surface);
+  element.style.setProperty('--vf-brand-surface-strong-dark', theme.modes.dark.surfaceStrong);
+  element.style.setProperty('--vf-brand-surface-strong-light', theme.modes.light.surfaceStrong);
 };
 
 const snapshotThemeState = (body: HTMLElement, root: HTMLElement) => ({
@@ -97,14 +148,20 @@ export const applyBrandThemeToDocument = (
   const body = doc.body;
   const root = doc.documentElement;
   const previous = snapshotThemeState(body, root);
+  const previousBodyStyles = snapshotStyleProperties(body);
+  const previousRootStyles = snapshotStyleProperties(root);
   const brandTheme = resolveUiBrandThemeId(themeId);
 
   setDatasetValue(body, 'vfBrandTheme', brandTheme);
   setDatasetValue(root, 'vfBrandTheme', brandTheme);
+  applyBrandThemeStyles(body, brandTheme);
+  applyBrandThemeStyles(root, brandTheme);
 
   return () => {
     setDatasetValue(body, 'vfBrandTheme', previous.bodyVfBrandTheme);
     setDatasetValue(root, 'vfBrandTheme', previous.rootVfBrandTheme);
+    restoreStyleProperties(body, previousBodyStyles);
+    restoreStyleProperties(root, previousRootStyles);
     if (!previous.bodyVfThemeDark) body.classList.remove('vf-theme-dark');
     if (!previous.bodyThemeDark) body.classList.remove('theme-dark');
     if (!previous.bodyVfThemeLight) body.classList.remove('vf-theme-light');

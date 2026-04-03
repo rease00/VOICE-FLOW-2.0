@@ -6,7 +6,7 @@ This folder contains Cloud Run production deployment assets for the split topolo
 - `voiceflow-worker` (internal ingress, authenticated, drained by Cloud Tasks, regional only)
 - `voiceflow-gemini-runtime` (internal ingress, authenticated, scale-to-zero, regional only)
 - DUNO runtime is provided by DeepInfra and configured via `VF_DUNO_RUNTIME_URL=https://api.deepinfra.com/v1`, `VF_DUNO_RUNTIME_MODEL=ResembleAI/chatterbox-turbo`, plus `VF_DUNO_RUNTIME_TOKEN` on the backend.
-- OpenVoice voice cloning is Modal-only in production and is configured via `VF_OPENVOICE_PROVIDER_DEFAULT=modal` plus `VF_OPENVOICE_MODAL_RUNTIME_URL` on the backend.
+- Voice Clone is Modal-only in production and is configured via `VF_VOICE_CLONE_PROVIDER_DEFAULT=modal` plus `VF_VOICE_CLONE_MODAL_RUNTIME_URL` on the backend.
 
 The API and worker use the same backend image with role-based startup:
 
@@ -34,8 +34,9 @@ The API and worker use the same backend image with role-based startup:
    - `vf-admin-unlock-signing-secret`
    - `gemini-runtime-admin-token`
    - `duno-runtime-token` (DeepInfra API token for the configured DUNO model, default `ResembleAI/chatterbox-turbo`)
-   - `openvoice-runtime-token`
-   - `openvoice-artifact-secret`
+   - `voice-clone-runtime-token`
+   - `voice-clone-artifact-secret`
+   - Legacy compatibility aliases: `openvoice-runtime-token`, `openvoice-artifact-secret`
 4. Optional but recommended:
    - Serverless VPC connector (`-VpcConnector`) for Memorystore access.
    - Memorystore Redis URL (`-RedisUrl`, mapped to `VF_REDIS_URL`).
@@ -53,7 +54,7 @@ For DeepInfra DUNO plus Modal VC, also set:
 ```powershell
 $env:VF_DUNO_RUNTIME_URL="https://api.deepinfra.com/v1"
 $env:VF_DUNO_RUNTIME_MODEL="ResembleAI/chatterbox-turbo"
-$env:VF_OPENVOICE_MODAL_RUNTIME_URL="https://your-openvoice-modal-endpoint"
+$env:VF_VOICE_CLONE_MODAL_RUNTIME_URL="https://your-voice-clone-modal-endpoint"
 ```
 
 Dry run:

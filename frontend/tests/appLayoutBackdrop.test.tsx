@@ -34,7 +34,7 @@ describe('app layout backdrop', () => {
     const wallpaperMatches = html.match(/vf-live-wallpaper/g) ?? [];
 
     expect(html).toContain('data-vf-app-shell');
-    expect(html).toContain('data-vf-brand-theme="neon"');
+    expect(html).toContain('data-vf-brand-theme="aurora"');
     expect(html).toContain('data-vf-theme-mode="dark"');
     expect(html).toContain('data-vf-resolved-theme="dark"');
     expect(html).toContain('data-testid="app-shell-child"');

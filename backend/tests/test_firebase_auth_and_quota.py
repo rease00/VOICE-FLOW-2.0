@@ -46,6 +46,7 @@ def _reset_inmemory_state() -> None:
         "_INMEMORY_COUPONS",
         "_INMEMORY_COUPON_REDEMPTIONS",
         "_INMEMORY_STRIPE_WEBHOOK_EVENTS",
+        "_INMEMORY_REQUEST_IDEMPOTENCY",
         "_INMEMORY_VC_USAGE_EVENTS",
     ):
         store = getattr(backend_app, name, None)
@@ -82,6 +83,35 @@ def _reset_inmemory_state() -> None:
     with backend_app._TTS_V2_SESSION_LOCK:
         backend_app._INMEMORY_TTS_V2_SESSIONS.clear()
         backend_app._INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.clear()
+
+
+def test_tts_v2_synthesize_chunk_forwards_request_identity(monkeypatch) -> None:
+    captured_payload: dict[str, object] = {}
+
+    def _fake_runtime_request(*args, **kwargs):
+        _ = args
+        captured_payload.update(dict(kwargs.get("json") or {}))
+        return _DummyRuntimeResponse()
+
+    monkeypatch.setattr(backend_app, "_runtime_url_for_engine", lambda _engine: "http://runtime")
+    monkeypatch.setattr(backend_app, "_runtime_synthesize_path_for_engine", lambda _engine: "/v1/synthesize")
+    monkeypatch.setattr(backend_app, "_runtime_tts_request_with_gemini_failover", _fake_runtime_request)
+
+    result = backend_app._tts_v2_synthesize_chunk(
+        {
+            "engine": "VECTOR",
+            "text": "identity check",
+            "requestId": "req_identity_123",
+            "idempotencyKey": "idem_identity_123",
+            "trace_id": "trace_identity_123",
+        }
+    )
+
+    assert result["audioBytes"]
+    assert str(captured_payload.get("requestId") or "") == "req_identity_123"
+    assert str(captured_payload.get("request_id") or "") == "req_identity_123"
+    assert str(captured_payload.get("idempotencyKey") or "") == "idem_identity_123"
+    assert str(captured_payload.get("idempotency_key") or "") == "idem_identity_123"
 
 
 def _submit_tts_and_wait_status(
@@ -194,13 +224,13 @@ def test_auth_enforcement_allows_unverified_admin_email_allowlist(monkeypatch) -
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     monkeypatch.setattr(backend_app, "VF_REQUIRE_EMAIL_VERIFIED", True)
     monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
-    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_EMAILS", frozenset({"admin1@voiceflow.local"}))
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_EMAILS", frozenset({"admin1@v-flow-ai.local"}))
     monkeypatch.setattr(
         backend_app,
         "_verify_firebase_id_token",
         lambda token: {
             "uid": "firebase_admin_user_unverified",
-            "email": "admin1@voiceflow.local",
+            "email": "admin1@v-flow-ai.local",
             "email_verified": False,
             "admin": False,
         },
@@ -257,29 +287,31 @@ def test_runtime_status_endpoint_requires_auth_when_enforced(monkeypatch) -> Non
     assert response.status_code == 401
 
 
-def test_protected_preflight_returns_cors_success(monkeypatch) -> None:
+@pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:43123"])
+def test_protected_preflight_returns_cors_success(monkeypatch, origin: str) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     client = TestClient(backend_app.app)
     headers = {
-        "Origin": "http://localhost:3000",
+        "Origin": origin,
         "Access-Control-Request-Method": "GET",
         "Access-Control-Request-Headers": "authorization,x-dev-uid",
     }
     response = client.options("/account/profile", headers=headers)
     assert response.status_code == 200
-    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert response.headers.get("access-control-allow-origin") == origin
     assert "GET" in str(response.headers.get("access-control-allow-methods") or "")
     assert "authorization" in str(response.headers.get("access-control-allow-headers") or "").lower()
 
 
-def test_auth_401_response_includes_cors_headers(monkeypatch) -> None:
+@pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:43123"])
+def test_auth_401_response_includes_cors_headers(monkeypatch, origin: str) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     client = TestClient(backend_app.app)
-    response = client.get("/account/profile", headers={"Origin": "http://localhost:3000"})
+    response = client.get("/account/profile", headers={"Origin": origin})
     assert response.status_code == 401
-    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert response.headers.get("access-control-allow-origin") == origin
 
 
 def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
@@ -393,7 +425,7 @@ def test_prime_is_allowed_for_paid_wallet_balance(monkeypatch) -> None:
         payload={"engine": "PRIME", "text": "paid balance unlocks prime"},
         headers=headers,
     )
-    assert response_code == 200
+    assert response_code in {200, 202}
 
 
 def test_prime_is_allowed_for_paid_plan_with_zero_balance(monkeypatch) -> None:
@@ -719,7 +751,7 @@ class _DummyStripe:
                         "id": "in_test_001",
                         "number": "VF-1001",
                         "status": "paid",
-                        "description": "VoiceFlow Pro monthly",
+                        "description": "V FLOW AI Pro monthly",
                         "currency": "inr",
                         "amount_due": 216000,
                         "amount_paid": 216000,
@@ -734,7 +766,7 @@ class _DummyStripe:
                         "id": "in_test_002",
                         "number": "VF-1000",
                         "status": "paid",
-                        "description": "VoiceFlow Pro monthly",
+                        "description": "V FLOW AI Pro monthly",
                         "currency": "inr",
                         "amount_due": 216000,
                         "amount_paid": 216000,
@@ -1094,6 +1126,13 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
         "userId": "summary_user",
         "displayName": "Summary User",
         "email": "summary@example.com",
+        "billingProfile": {
+            "companyName": "Summary User Studio",
+            "billingEmail": "billing@summary.example.com",
+            "addressLine1": "1 Residency Road",
+            "city": "Bengaluru",
+            "country": "India",
+        },
         "createdAt": "2026-01-01T00:00:00+00:00",
     }
 
@@ -1111,6 +1150,7 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     assert payload["subscription"]["active"] is True
     assert payload["subscription"]["latestInvoiceId"] == "in_test_001"
     assert payload["paymentMethod"]["last4"] == "4242"
+    assert payload["profile"]["billingProfile"]["companyName"] == "Summary User Studio"
     assert len(payload["invoices"]) == 2
     assert payload["invoices"][0]["amountPaidMinor"] == 216000
 
@@ -1667,6 +1707,87 @@ def test_process_tts_job_uses_payload_when_upstream_payload_missing(monkeypatch)
     assert captured_runtime_payload["text"] == "hello from payload"
     assert captured_runtime_payload["engine"] == "VECTOR"
     assert call_order[:4] == ["persist", "mark_completed", "attach_usage", "finalize"]
+
+
+def test_process_tts_job_updates_audio_audit_lifecycle_and_terminal_fields(monkeypatch) -> None:
+    _reset_inmemory_state()
+    audit_id = "audit_submit_123"
+    backend_app._audio_generation_audit_create(
+        {
+            "auditId": audit_id,
+            "uid": "submit_user",
+            "userId": "submit_user",
+            "submittedAt": backend_app._utc_now().isoformat(),
+            "status": "received",
+            "engine": "VECTOR",
+            "requestId": "req_submit_123",
+            "jobId": "job_submit_123",
+            "traceId": "trace_submit_123",
+            "inputText": "audio audit lifecycle",
+            "sourceIp": "203.0.113.9",
+        }
+    )
+
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "req_submit_123",
+            "traceId": "trace_submit_123",
+            "uid": "submit_user",
+            "engine": "VECTOR",
+            "status": "queued",
+            "text": "audio audit lifecycle",
+            "voiceId": "voice_1",
+            "voiceName": "Voice 1",
+            "planName": "Free",
+            "planKey": "free",
+            "payload": {"engine": "VECTOR", "text": "audio audit lifecycle"},
+            "audioAuditIds": [audit_id],
+        },
+    )
+    monkeypatch.setattr(backend_app, "_record_tts_job_started", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_runtime_url_for_engine", lambda _engine: "http://runtime")
+    monkeypatch.setattr(backend_app, "_runtime_synthesize_path_for_engine", lambda _engine: "/v1/synthesize")
+    monkeypatch.setattr(backend_app, "_post_tts_conversion_status_for_engine", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        backend_app,
+        "_runtime_tts_request_with_gemini_failover",
+        lambda *args, **kwargs: _DummyRuntimeResponse(content=_DummyRuntimeResponse().content),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_persist_tts_result_audio",
+        lambda *args, **kwargs: {"path": "result.wav"},
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_completed",
+        lambda *args, **kwargs: {
+            "jobId": "job_submit_123",
+            "requestId": "req_submit_123",
+            "audioAuditIds": [audit_id],
+        },
+    )
+    monkeypatch.setattr(backend_app, "_usage_event_attach_runtime_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_finalize_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_build_tts_history_item", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_notification_emit_tts_job_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_runtime_latency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_admin_usage_record_runtime_call", lambda *args, **kwargs: None)
+
+    backend_app._process_tts_job({"jobId": "job_submit_123"}, "worker-1")
+
+    row = backend_app._audio_generation_audit_get(audit_id)
+    assert isinstance(row, dict)
+    assert row["status"] == "completed"
+    assert row["jobId"] == "job_submit_123"
+    assert row["requestId"] == "req_submit_123"
+    assert row["traceId"] == "trace_submit_123"
+    assert str(row.get("audioCreatedAt") or "").strip()
+    assert str(row.get("terminalAt") or "").strip()
 
 
 def test_process_tts_job_commits_success_quota_reservation_on_success(monkeypatch) -> None:

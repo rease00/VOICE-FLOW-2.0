@@ -1,2 +1,2 @@
-export { WorkspaceScreen as default } from '../../../../src/app/workspace/WorkspaceScreen';
+export { VoicesRouteScreen as default } from '../../../../src/app/voices/VoicesRouteScreen';
 

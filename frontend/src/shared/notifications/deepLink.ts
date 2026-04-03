@@ -6,7 +6,7 @@ const resolveWorkspacePathForTab = (tabToken: string): string | null => {
   const token = String(tabToken || '').trim().toUpperCase();
   if (!token) return null;
   if (token === 'STUDIO') return '/app/studio';
-  if (token === 'READER') return '/reader';
+  if (token === 'READER') return '/app/reader';
   if (token === 'VOICE_CLONING' || token === 'CHARACTERS') return '/app/voices';
   if (token === 'NOVEL') return '/app/writing';
   if (token === 'HISTORY') return '/app/runs';

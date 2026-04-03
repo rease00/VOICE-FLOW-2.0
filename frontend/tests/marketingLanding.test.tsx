@@ -9,14 +9,12 @@ describe('marketing landing', () => {
 
     expect(html).toContain('data-testid="marketing-landing"');
     expect(html).toContain('data-vf-brand-theme="aurora"');
+    expect(html).toContain('data-testid="landing-home-hero"');
+    expect(html).toContain('data-testid="landing-home"');
     expect(html).toContain('data-testid="hero-primary-cta"');
     expect(html).toContain('Skip to main content');
     expect(html).toContain('href="/landing"');
-    expect(html).toContain('href="#single-speaker"');
-    expect(html).toContain('href="#multi-speaker"');
-    expect(html).toContain('href="#voice-cloning"');
-    expect(html).toContain('href="#ai-director"');
-    expect(html).toContain('href="#reader-playback"');
+    expect(html).toContain('>Home<');
     expect(html).toContain('id="single-speaker"');
     expect(html).toContain('id="multi-speaker"');
     expect(html).toContain('id="voice-cloning"');
@@ -25,7 +23,7 @@ describe('marketing landing', () => {
 
     expect(html).toContain('Single-speaker system');
     expect(html).toContain('Prime multi-speaker scenes');
-    expect(html).toContain('Voice cloning proof');
+    expect(html).toContain('Voice Clone proof');
     expect(html).toContain('AI Director');
     expect(html).toContain('Reader playback');
 
@@ -33,13 +31,25 @@ describe('marketing landing', () => {
     expect(html).toContain('View pricing');
     expect(html).toContain('href="/billing"');
     expect(html).toContain('href="/app/studio"');
+    expect(html).toContain('vf-marketing-stat-grid--five-up');
+    expect(html).toContain('vf-marketing-audio-grid--five-up');
+    expect(html).toContain('vf-marketing-scene-grid--five-up');
     expect(html).toContain('/audio/vector-demo/en-us.wav');
-    expect(html).toContain('/audio/vector-multi-demo/en-roundtable.wav');
-    expect(html).toContain('/audio/vector-multi-demo/ar-documentary.wav');
+    expect(html).toContain('/audio/vector-multi-demo/en-weekend-plan.wav');
+    expect(html).toContain('/audio/vector-multi-demo/fr-city-tour.wav');
     expect(html).toContain('/audio/openvoice-demo/reference.wav');
     expect(html).toContain('/audio/openvoice-demo/rendered.wav');
+    expect(html).toContain('Voice Clone comparison');
     expect(html).toContain('data-audio-player="vf-marketing"');
     expect(html).toContain('data-testid="landing-ai-director-prompt"');
+  });
+
+  it('keeps the homepage hero out of dedicated tab routes', () => {
+    const html = renderToStaticMarkup(<MarketingLanding activeTab="single-voice" />);
+
+    expect(html).not.toContain('data-testid="landing-home-hero"');
+    expect(html).toContain('data-active-tab="single-voice"');
+    expect(html).toContain('data-testid="landing-single-speaker"');
   });
 
   it('drops the brochure-style proof rail and marquee stack', () => {
@@ -59,3 +69,4 @@ describe('marketing landing', () => {
     expect(html).not.toContain('Canonical /landing');
   });
 });
+

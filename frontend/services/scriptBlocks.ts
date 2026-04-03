@@ -174,13 +174,13 @@ export const parseScriptToBlocks = (text: string): ScriptBlock[] => {
 const serializeDialogueBlock = (block: ScriptBlock): string => {
   const speaker = normalizeToken(block.speaker, DEFAULT_SPEAKER);
   const dialogue = String(block.text || '').trim();
+  if (!dialogue) return '';
   const tags = [normalizeToken(block.emotion?.primaryEmotion || '', DEFAULT_EMOTION)];
   const cues = Array.isArray(block.emotion?.cueTags)
     ? block.emotion.cueTags.map((item) => normalizeToken(item)).filter(Boolean)
     : [];
   if (cues.length > 0) tags.push(...cues);
   const tagText = tags.join(', ');
-  if (!dialogue) return `${speaker} (${tagText}):`;
   return `${speaker} (${tagText}): ${dialogue}`;
 };
 

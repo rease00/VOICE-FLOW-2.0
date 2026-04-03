@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState } from 'react';
+import React, { useId, useMemo, useRef, useState } from 'react';
 import { FileAudio, UploadCloud } from 'lucide-react';
 
 interface UploadDropzoneProps {
@@ -31,11 +31,19 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const [isDragActive, setIsDragActive] = useState(false);
   const inputId = useId();
   const hintId = useId();
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const selectedFiles = useMemo(() => {
     if (Array.isArray(files)) return files.filter(Boolean);
     if (file) return [file];
     return [];
   }, [file, files]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLLabelElement>): void => {
+    if (disabled) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    inputRef.current?.click();
+  };
 
   const handleFiles = (list: FileList | null): void => {
     if (!list || disabled) return;
@@ -52,7 +60,13 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   };
 
   return (
-    <div
+    <label
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={label}
+      aria-describedby={hintId}
+      aria-disabled={disabled}
+      onKeyDown={handleKeyDown}
       onDragOver={(event) => {
         if (disabled) return;
         event.preventDefault();
@@ -77,13 +91,14 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         setIsDragActive(false);
         handleFiles(event.dataTransfer?.files || null);
       }}
-      className={`vf-upload-dropzone relative overflow-hidden rounded-xl border-2 border-dashed px-4 py-4 text-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2 ${
+      className={`vf-upload-dropzone relative overflow-hidden rounded-xl border-2 border-dashed px-4 py-4 text-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 ${
         isDragActive
           ? 'vf-upload-dropzone--active border-indigo-400 bg-indigo-50/70'
           : 'border-gray-200 bg-gray-50'
       } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-gray-100/80'} ${className}`}
     >
       <input
+        ref={inputRef}
         id={inputId}
         type="file"
         accept={accept}
@@ -95,12 +110,14 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         aria-label={label}
         aria-describedby={hintId}
         aria-disabled={disabled}
-        className="absolute inset-0 cursor-pointer opacity-0 focus:outline-none"
+        tabIndex={-1}
+        className="sr-only"
         disabled={disabled}
       />
 
       {selectedFiles.length > 0 ? (
         <div className="space-y-1">
+          <span className="sr-only">{label}</span>
           <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-bold text-indigo-700 shadow-sm">
             <FileAudio size={14} />
             {selectedFiles.length === 1 ? selectedFiles[0]?.name || 'Selected file' : `${selectedFiles.length} files selected`}
@@ -125,6 +142,6 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           <p id={hintId} className="text-[11px] text-gray-400">{hint}</p>
         </div>
       )}
-    </div>
+    </label>
   );
 };

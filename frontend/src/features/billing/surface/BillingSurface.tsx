@@ -13,7 +13,7 @@ import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { readStorageJson } from '../../../shared/storage/localStore';
 import { useManagedTabs } from '../../../shared/ui/tabs';
 import { LegalLinks } from '../../legal/LegalLinks';
-import { resolveLoginPath, resolveSafeInternalNextPath } from '../../../app/navigation';
+import { resolveLoginPath, resolveSafeInternalNextPath, type AuthRouteMode } from '../../../app/navigation';
 import {
   consumeBillingCheckoutIntent,
   writeBillingCheckoutIntent,
@@ -86,10 +86,15 @@ const isAuthError = (error: unknown): boolean => {
   return message.includes('authentication required');
 };
 
+interface BillingAuthPromptState {
+  intentDraft: Omit<BillingCheckoutIntentDraft, 'authMode'>;
+  message: string;
+}
+
 export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   mode,
   returnPath,
-  appBuyUrl = '/app/billing',
+  appBuyUrl = '/billing',
   homeUrl = '/',
   authMode,
   isAuthenticated,
@@ -111,6 +116,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   const [error, setError] = useState('');
   const [banner, setBanner] = useState<BillingSurfaceBanner | null>(null);
   const [hasFirebaseSession, setHasFirebaseSession] = useState<boolean | null>(() => (firebaseAuth.currentUser ? true : null));
+  const [authPrompt, setAuthPrompt] = useState<BillingAuthPromptState | null>(null);
   const resumeAttemptedRef = useRef(false);
 
   const resolvedAuthMode = authMode || (mode === 'public' ? 'signup' : 'login');
@@ -208,26 +214,49 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     return `${url.pathname}${url.search}${url.hash}`;
   }, [returnPath]);
 
-  const redirectToAuthWithIntent = useCallback((intentDraft: BillingCheckoutIntentDraft): void => {
+  const redirectToAuthWithIntent = useCallback((
+    intentDraft: Omit<BillingCheckoutIntentDraft, 'authMode'>,
+    chosenMode: AuthRouteMode
+  ): void => {
     if (typeof window === 'undefined') return;
-    const intent = writeBillingCheckoutIntent(intentDraft);
+    const intent = writeBillingCheckoutIntent({
+      ...intentDraft,
+      authMode: chosenMode,
+    });
     const safeNext = resolveSafeInternalNextPath(intent?.resumePath, resolveResumePath(activeTab));
-    window.location.href = resolveLoginPath(resolvedAuthMode, safeNext);
-  }, [activeTab, resolveResumePath, resolvedAuthMode]);
+    window.location.href = resolveLoginPath(chosenMode, safeNext);
+  }, [activeTab, resolveResumePath]);
+
+  const promptForCheckoutAuth = useCallback((
+    intentDraft: Omit<BillingCheckoutIntentDraft, 'authMode'>,
+    selectionLabel: string
+  ): void => {
+    setError('');
+    setBanner(null);
+    if (mode === 'public') {
+      setAuthPrompt({
+        intentDraft,
+        message: `Choose sign up or log in to continue checkout for ${selectionLabel}. We will bring you back here and resume the flow.`,
+      });
+      return;
+    }
+    redirectToAuthWithIntent(intentDraft, resolvedAuthMode);
+  }, [mode, redirectToAuthWithIntent, resolvedAuthMode]);
 
   const runPlanCheckout = useCallback(async (planKey: BillingPlanKey): Promise<void> => {
     if (!hasActiveAuthSession) {
-      redirectToAuthWithIntent({
+      const planSummary = BILLING_PLAN_ROWS.find((item) => item.key === planKey);
+      promptForCheckoutAuth({
         kind: 'subscription',
         selection: { planKey },
-        authMode: resolvedAuthMode,
         resumePath: resolveResumePath('plans'),
-      });
+      }, `${planSummary?.name || 'your selected'} plan`);
       return;
     }
 
     setError('');
     setBanner(null);
+    setAuthPrompt(null);
     setLoadingKey(`plan:${planKey}`);
     try {
       const launch = await billingActions.startPlanCheckout(planKey);
@@ -241,33 +270,34 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       });
     } catch (checkoutError: any) {
       if (isAuthError(checkoutError)) {
-        redirectToAuthWithIntent({
+        const planSummary = BILLING_PLAN_ROWS.find((item) => item.key === planKey);
+        promptForCheckoutAuth({
           kind: 'subscription',
           selection: { planKey },
-          authMode: resolvedAuthMode,
           resumePath: resolveResumePath('plans'),
-        });
+        }, `${planSummary?.name || 'your selected'} plan`);
         return;
       }
       setError(checkoutError?.message || 'Could not start subscription checkout.');
     } finally {
       setLoadingKey('');
     }
-  }, [billingActions, hasActiveAuthSession, redirectToAuthWithIntent, resolveResumePath, resolvedAuthMode, returnPath]);
+  }, [billingActions, hasActiveAuthSession, promptForCheckoutAuth, resolveResumePath, returnPath]);
 
   const runTokenCheckout = useCallback(async (packKey: TokenPackKey): Promise<void> => {
     if (!hasActiveAuthSession) {
-      redirectToAuthWithIntent({
+      const packSummary = BILLING_TOKEN_PACK_ROWS.find((item) => item.key === packKey);
+      promptForCheckoutAuth({
         kind: 'token-pack',
         selection: { packKey },
-        authMode: resolvedAuthMode,
         resumePath: resolveResumePath('token'),
-      });
+      }, `${packSummary?.label || 'your selected'} credit pack`);
       return;
     }
 
     setError('');
     setBanner(null);
+    setAuthPrompt(null);
     setLoadingKey(`token:${packKey}`);
     try {
       const launch = await billingActions.startTokenPackCheckout(packKey);
@@ -281,33 +311,34 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       });
     } catch (checkoutError: any) {
       if (isAuthError(checkoutError)) {
-        redirectToAuthWithIntent({
+        const packSummary = BILLING_TOKEN_PACK_ROWS.find((item) => item.key === packKey);
+        promptForCheckoutAuth({
           kind: 'token-pack',
           selection: { packKey },
-          authMode: resolvedAuthMode,
           resumePath: resolveResumePath('token'),
-        });
+        }, `${packSummary?.label || 'your selected'} credit pack`);
         return;
       }
       setError(checkoutError?.message || 'Could not start credit-pack checkout.');
     } finally {
       setLoadingKey('');
     }
-  }, [billingActions, hasActiveAuthSession, redirectToAuthWithIntent, resolveResumePath, resolvedAuthMode, returnPath]);
+  }, [billingActions, hasActiveAuthSession, promptForCheckoutAuth, resolveResumePath, returnPath]);
 
   const runVcCheckout = useCallback(async (packKey: BillingVcPackKey): Promise<void> => {
     if (!hasActiveAuthSession) {
-      redirectToAuthWithIntent({
+      const packSummary = BILLING_VC_PACK_ROWS.find((item) => item.key === packKey);
+      promptForCheckoutAuth({
         kind: 'vc-token-pack',
         selection: { vcPackKey: packKey },
-        authMode: resolvedAuthMode,
         resumePath: resolveResumePath('vc'),
-      });
+      }, `${packSummary?.label || 'your selected'} VC pack`);
       return;
     }
 
     setError('');
     setBanner(null);
+    setAuthPrompt(null);
     setLoadingKey(`vc:${packKey}`);
     try {
       const launch = await billingActions.startVcTokenPackCheckout(packKey);
@@ -321,19 +352,19 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       });
     } catch (checkoutError: any) {
       if (isAuthError(checkoutError)) {
-        redirectToAuthWithIntent({
+        const packSummary = BILLING_VC_PACK_ROWS.find((item) => item.key === packKey);
+        promptForCheckoutAuth({
           kind: 'vc-token-pack',
           selection: { vcPackKey: packKey },
-          authMode: resolvedAuthMode,
           resumePath: resolveResumePath('vc'),
-        });
+        }, `${packSummary?.label || 'your selected'} VC pack`);
         return;
       }
       setError(checkoutError?.message || 'Could not start VC pack checkout.');
     } finally {
       setLoadingKey('');
     }
-  }, [billingActions, hasActiveAuthSession, redirectToAuthWithIntent, resolveResumePath, resolvedAuthMode, returnPath]);
+  }, [billingActions, hasActiveAuthSession, promptForCheckoutAuth, resolveResumePath, returnPath]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -376,6 +407,11 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     }
   }, [hasActiveAuthSession, runPlanCheckout, runTokenCheckout, runVcCheckout, setTab]);
 
+  useEffect(() => {
+    if (!hasActiveAuthSession) return;
+    setAuthPrompt(null);
+  }, [hasActiveAuthSession]);
+
   const handlePlanCheckout = async (planKey: BillingPlanKey) => {
     await runPlanCheckout(planKey);
   };
@@ -393,16 +429,16 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       : banner?.tone === 'warning'
       ? (mode === 'app' ? 'border-amber-300/35 bg-amber-500/12 text-amber-100' : 'border-amber-300/30 bg-amber-500/12 text-amber-100')
       : (mode === 'app' ? 'border-cyan-300/35 bg-cyan-500/12 text-cyan-100' : 'border-cyan-300/30 bg-cyan-500/12 text-cyan-100');
-  const authContinueLabel = resolvedAuthMode === 'signup' ? 'Sign up to continue' : 'Sign in to continue';
+  const showOpenBillingAction = String(appBuyUrl || '').trim() !== String(returnPath || '').trim();
 
   return (
     <div className={`vf-billing-surface min-h-screen overflow-x-hidden ${
       mode === 'app'
-        ? 'bg-[radial-gradient(82%_68%_at_12%_10%,rgba(14,165,233,0.16),transparent_62%),radial-gradient(76%_64%_at_92%_12%,rgba(6,182,212,0.12),transparent_62%),linear-gradient(160deg,#020617_0%,#0b1a3a_56%,#08142e_100%)] text-slate-100'
-        : 'bg-[radial-gradient(84%_72%_at_8%_8%,rgba(34,211,238,0.18),transparent_60%),radial-gradient(74%_70%_at_92%_12%,rgba(139,92,246,0.16),transparent_62%),radial-gradient(82%_74%_at_52%_100%,rgba(16,185,129,0.10),transparent_72%),linear-gradient(165deg,#040813_0%,#081121_48%,#060b15_100%)] text-slate-100'
+        ? 'bg-[radial-gradient(86%_72%_at_8%_8%,rgba(71,214,202,0.18),transparent_60%),radial-gradient(74%_68%_at_90%_12%,rgba(243,184,107,0.14),transparent_62%),radial-gradient(80%_72%_at_52%_100%,rgba(47,128,237,0.12),transparent_70%),linear-gradient(165deg,#041321_0%,#071f39_48%,#0b1730_74%,#17161f_100%)] text-slate-100'
+        : 'bg-[radial-gradient(86%_72%_at_8%_8%,rgba(71,214,202,0.2),transparent_60%),radial-gradient(74%_70%_at_92%_12%,rgba(243,184,107,0.16),transparent_62%),radial-gradient(82%_74%_at_52%_100%,rgba(47,128,237,0.12),transparent_72%),linear-gradient(165deg,#041321_0%,#071f39_48%,#0b1730_74%,#17161f_100%)] text-slate-100'
     }`}>
       {mode === 'public' ? (
-        <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(78%_72%_at_6%_8%,rgba(34,211,238,0.14),transparent_62%),radial-gradient(72%_68%_at_92%_10%,rgba(139,92,246,0.12),transparent_64%),radial-gradient(80%_72%_at_50%_95%,rgba(37,99,235,0.10),transparent_72%)]" />
+        <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(78%_72%_at_6%_8%,rgba(71,214,202,0.16),transparent_62%),radial-gradient(72%_68%_at_92%_10%,rgba(243,184,107,0.12),transparent_64%),radial-gradient(80%_72%_at_50%_95%,rgba(47,128,237,0.12),transparent_72%)]" />
       ) : null}
 
       <div className={`relative z-10 mx-auto w-full ${mode === 'app' ? 'max-w-7xl px-4 pb-8 pt-4 sm:px-6 sm:pt-6' : 'max-w-6xl px-4 pb-8 pt-4 sm:px-6 sm:pt-7'}`}>
@@ -423,7 +459,12 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   Workspace
                 </button>
               ) : null}
-              <BrandLogo size="sm" tone="light" />
+              <div className="flex min-w-0 items-center gap-2">
+                <BrandLogo size="sm" tone="light" />
+                <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-200/90">
+                  Billing
+                </span>
+              </div>
             </div>
 
             {mode === 'public' ? (
@@ -434,12 +475,14 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 >
                   Home
                 </a>
-                <a
-                  href={appBuyUrl}
-                  className="inline-flex min-h-10 items-center rounded-full bg-gradient-to-r from-cyan-400 via-sky-500 to-indigo-500 px-4 py-2 text-[12px] font-semibold text-slate-950 shadow-[0_16px_36px_rgba(34,211,238,0.22)] transition hover:translate-y-[-1px] hover:brightness-105"
-                >
-                  Open Billing
-                </a>
+                {showOpenBillingAction ? (
+                  <a
+                    href={appBuyUrl}
+                    className="inline-flex min-h-10 items-center rounded-full bg-gradient-to-r from-[#47d6ca] via-[#2f80ed] to-[#f3b86b] px-4 py-2 text-[12px] font-semibold text-slate-950 shadow-[0_16px_36px_rgba(71,214,202,0.24)] transition hover:translate-y-[-1px] hover:brightness-105"
+                  >
+                    Open Billing
+                  </a>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -459,7 +502,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               <p className={`mt-1.5 text-[13px] leading-5 ${
                 mode === 'app' ? 'text-slate-300' : 'text-slate-300'
               }`}>
-                Choose the plan that fits your workflow, add credits when you need extra volume, and confirm pricing before checkout.
+                Choose the plan that fits your workflow, compare month-one and renewal pricing, and confirm the exact checkout path before you pay.
               </p>
             </div>
 
@@ -494,6 +537,12 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         {banner ? (
           <div className={`mt-3 rounded-xl border px-3.5 py-2.5 text-[13px] ${bannerToneClass}`}>
             {banner.message}
+          </div>
+        ) : null}
+
+        {mode === 'public' && !hasActiveAuthSession ? (
+          <div className="mt-3 rounded-xl border border-cyan-300/20 bg-cyan-500/8 px-3.5 py-2.5 text-[13px] text-cyan-50">
+            Browse pricing first. Sign up or log in only when you are ready to start secure checkout.
           </div>
         ) : null}
 
@@ -550,7 +599,11 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               </div>
               <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-5">
                 {BILLING_PLAN_ROWS.map((plan) => {
-                  const effectiveRate = Math.round((plan.priceInr / Math.max(1, plan.vfCredits)) * 10000);
+                  const recurringDiscountPercent = Math.max(
+                    0,
+                    Math.round(((plan.firstCycleInr - plan.recurringInr) / Math.max(plan.firstCycleInr, 1)) * 100)
+                  );
+                  const effectiveRecurringRate = Math.round((plan.recurringInr / Math.max(1, plan.vfCredits)) * 10000);
                   return (
                     <article key={plan.key} className={`rounded-xl border p-2.5 ${
                       mode === 'app'
@@ -568,13 +621,36 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                             {formatNumber(plan.vfCredits)} VF
                           </div>
                         </div>
-                        <div className={`text-[13px] font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>
-                          {formatInr(plan.priceInr)}
+                        <div className="text-right">
+                          <div className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                            mode === 'app' ? 'text-slate-400' : 'text-slate-400'
+                          }`}>
+                            Month 1
+                          </div>
+                          <div className={`mt-1 text-[16px] font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>
+                            {formatInr(plan.firstCycleInr)}
+                          </div>
+                          <div className={`mt-1 text-[10px] font-semibold ${
+                            mode === 'app' ? 'text-cyan-200' : 'text-cyan-100'
+                          }`}>
+                            {formatInr(plan.recurringInr)} / month after
+                          </div>
                         </div>
                       </div>
 
-                      <div className={`mt-1.5 text-[10px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
-                        Effective: {formatInr(effectiveRate)} / 10k VF
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                        <div className={`text-[10px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
+                          Effective renewal rate: {formatInr(effectiveRecurringRate)} / 10k VF
+                        </div>
+                        {recurringDiscountPercent > 0 ? (
+                          <div className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                            mode === 'app'
+                              ? 'border-emerald-400/35 bg-emerald-500/12 text-emerald-100'
+                              : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
+                          }`}>
+                            {recurringDiscountPercent}% lower on renewal
+                          </div>
+                        ) : null}
                       </div>
 
                       <button
@@ -587,7 +663,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                             : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
                         }`}
                       >
-                        {loadingKey === `plan:${plan.key}` ? 'Starting...' : hasActiveAuthSession ? 'Checkout' : authContinueLabel}
+                        {loadingKey === `plan:${plan.key}` ? 'Starting...' : 'Checkout'}
                         <ArrowRight size={13} />
                       </button>
                     </article>
@@ -659,9 +735,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 >
                   {loadingKey === `token:${selectedPack}`
                     ? 'Starting checkout...'
-                    : hasActiveAuthSession
-                      ? `Checkout ${selectedPackSummary.label} credit pack`
-                      : authContinueLabel}
+                    : `Checkout ${selectedPackSummary.label} credit pack`}
                   <ArrowRight size={14} />
                 </button>
               </div>
@@ -737,9 +811,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 >
                   {loadingKey === `vc:${selectedVcPack}`
                     ? 'Starting checkout...'
-                    : hasActiveAuthSession
-                      ? `Checkout ${selectedVcPackSummary.label} VC pack`
-                      : authContinueLabel}
+                    : `Checkout ${selectedVcPackSummary.label} VC pack`}
                   <ArrowRight size={14} />
                 </button>
               </div>
@@ -754,6 +826,59 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           ) : null}
         </main>
       </div>
+
+      {authPrompt ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm">
+          <div
+            className="w-full max-w-md rounded-[1.75rem] border border-cyan-300/20 bg-[linear-gradient(180deg,rgba(8,17,33,0.96),rgba(9,14,27,0.98))] p-5 shadow-[0_24px_70px_rgba(2,6,23,0.52)]"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Continue to checkout"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-200/80">Secure checkout</p>
+                <h2 className="mt-1 text-xl font-semibold tracking-tight text-white">Choose how to continue</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthPrompt(null)}
+                className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-full border border-white/12 bg-white/5 px-3 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+                aria-label="Close checkout auth dialog"
+              >
+                Close
+              </button>
+            </div>
+
+            <p className="mt-3 text-sm leading-6 text-slate-300">
+              {authPrompt.message}
+            </p>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => redirectToAuthWithIntent(authPrompt.intentDraft, 'signup')}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#47d6ca] via-[#2f80ed] to-[#f3b86b] px-4 py-2 text-sm font-semibold text-slate-950 shadow-[0_16px_36px_rgba(71,214,202,0.24)] transition hover:translate-y-[-1px] hover:brightness-105"
+              >
+                Sign up
+                <ArrowRight size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => redirectToAuthWithIntent(authPrompt.intentDraft, 'login')}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/14 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-white/10"
+              >
+                Log in
+                <ArrowRight size={15} />
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs text-slate-400">
+              Your plan or pack selection stays saved and resumes as soon as you return to billing.
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {mode === 'public' ? (
         <footer className="relative z-10 border-t border-white/10 bg-slate-950/78">

@@ -94,6 +94,11 @@ def test_delete_user_account_cleanup_returns_per_collection_summary(monkeypatch)
     backend_app._INMEMORY_SUPPORT_MESSAGES["msg_1"] = {"uid": uid}
     backend_app._INMEMORY_READER_LEGAL_ACK[uid] = {"uid": uid}
     backend_app._INMEMORY_READER_PREFERENCES[uid] = {"uid": uid}
+    backend_app._INMEMORY_READER_OFFLINE_METADATA["offline_meta_1"] = {
+        "uid": uid,
+        "entryId": "offline_meta_1",
+        "contentId": "book_1",
+    }
     backend_app._INMEMORY_READER_UPLOADS["upload_1"] = {"uid": uid}
     backend_app._INMEMORY_READER_PROGRESS[f"{uid}_progress_1"] = {"uid": uid}
     backend_app._INMEMORY_READER_CAST_MEMORY[f"{uid}_cast_1"] = {"uid": uid}
@@ -120,6 +125,7 @@ def test_delete_user_account_cleanup_returns_per_collection_summary(monkeypatch)
     assert summary["collections"]["support_messages"]["deletedCount"] == 1
     assert summary["collections"]["reader_legal_ack"]["deletedCount"] == 1
     assert summary["collections"]["reader_preferences"]["deletedCount"] == 1
+    assert summary["collections"]["reader_offline_metadata"]["deletedCount"] == 1
     assert summary["collections"]["reader_uploads"]["deletedCount"] == 1
     assert summary["collections"]["reader_progress"]["deletedCount"] == 1
     assert summary["collections"]["reader_cast_memory"]["deletedCount"] == 1
@@ -137,4 +143,5 @@ def test_delete_user_account_cleanup_returns_per_collection_summary(monkeypatch)
     assert uid not in backend_app._INMEMORY_USER_PROFILES
     assert uid not in backend_app._INMEMORY_NOTIFICATION_INBOX
     assert uid not in backend_app._INMEMORY_NOTIFICATION_PREFERENCES
+    assert not backend_app._INMEMORY_READER_OFFLINE_METADATA
     assert uid not in backend_app._INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID

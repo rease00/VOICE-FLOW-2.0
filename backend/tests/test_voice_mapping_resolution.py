@@ -70,9 +70,9 @@ def test_resolve_mapped_profile_keeps_alias_gender_pairs_consistent() -> None:
     expected = {
         "Kore": ("Meera India Female", "Female"),
         "Achird": ("Adi India Boy", "Male"),
-        "Schedar": ("Claire France Female", "Female"),
-        "Umbriel": ("Leila UAE Female", "Female"),
-        "Zubenelgenubi": ("Alina Russia Female", "Female"),
+        "Schedar": ("Schedar France Male", "Male"),
+        "Umbriel": ("Umbriel UAE Male", "Male"),
+        "Zubenelgenubi": ("Zubenelgenubi Russia Male", "Male"),
     }
 
     for voice_name, (display_name, gender) in expected.items():
@@ -156,6 +156,7 @@ def test_runtime_voice_catalog_matches_profile_bank_genders() -> None:
         ).strip()
         profile = profiles.get(profile_id)
         if not profile:
+            mismatches.append(f"{voice_id or voice_name}:missing-profile")
             continue
         declared_gender = str(row.get("gender") or "").strip().lower()
         profile_gender = str(profile.get("gender") or "").strip().lower()
@@ -163,3 +164,63 @@ def test_runtime_voice_catalog_matches_profile_bank_genders() -> None:
             mismatches.append(voice_id)
 
     assert mismatches == []
+
+
+def test_gem_runtime_voice_catalog_fallback_genders_are_consistent(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "_load_voice_id_map", lambda: {"version": "0", "engines": {}})
+    catalog = backend_app._gem_runtime_voice_catalog()
+
+    by_voice = {str(row.get("voice_id") or ""): row for row in catalog if isinstance(row, dict)}
+    assert str(by_voice.get("Fenrir", {}).get("gender") or "").lower() == "male"
+    assert str(by_voice.get("Kore", {}).get("gender") or "").lower() == "female"
+    assert str(by_voice.get("Achernar", {}).get("gender") or "").lower() == "female"
+    assert str(by_voice.get("Charon", {}).get("gender") or "").lower() == "male"
+
+
+def test_prime_runtime_voice_genders_match_official_gcp_catalog() -> None:
+    # Google Cloud Gemini TTS voice-gender mapping (official docs table).
+    expected = {
+        "Achernar": "female",
+        "Achird": "male",
+        "Algenib": "male",
+        "Algieba": "male",
+        "Alnilam": "male",
+        "Aoede": "female",
+        "Autonoe": "female",
+        "Callirrhoe": "female",
+        "Charon": "male",
+        "Despina": "female",
+        "Enceladus": "male",
+        "Erinome": "female",
+        "Fenrir": "male",
+        "Gacrux": "female",
+        "Iapetus": "male",
+        "Kore": "female",
+        "Laomedeia": "female",
+        "Leda": "female",
+        "Orus": "male",
+        "Pulcherrima": "female",
+        "Puck": "male",
+        "Rasalgethi": "male",
+        "Sadachbia": "male",
+        "Sadaltager": "male",
+        "Schedar": "male",
+        "Sulafat": "female",
+        "Umbriel": "male",
+        "Vindemiatrix": "female",
+        "Zephyr": "female",
+        "Zubenelgenubi": "male",
+    }
+
+    root = Path(__file__).resolve().parents[1]
+    voice_map = _read_json(root / "config" / "voice_id_map.v1.json")
+    rows = list(voice_map.get("engines", {}).get("PRIME", {}).get("runtimeVoices") or [])
+    by_voice = {
+        str(row.get("voice") or "").strip(): str(row.get("gender") or "").strip().lower()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("voice") or "").strip()
+    }
+
+    for voice_name, expected_gender in expected.items():
+        assert voice_name in by_voice
+        assert by_voice[voice_name] == expected_gender

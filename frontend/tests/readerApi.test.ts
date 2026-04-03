@@ -9,7 +9,16 @@ vi.mock('../services/authHttpClient', () => ({
   authFetch: authFetchMock,
 }));
 
-import { getReaderDashboard, primeReaderQueue, resolveReaderQueuePrimeMode } from '../src/features/reader/api/readerApi';
+vi.mock('../services/authHttpClient.js', () => ({
+  authFetch: authFetchMock,
+}));
+
+import {
+  getReaderDashboard,
+  primeReaderQueue,
+  resolveReaderQueuePrimeMode,
+  syncReaderOfflineLibrarySnapshot,
+} from '../src/features/reader/api/readerApi';
 import { buildReaderDashboardPayloadFromLibrary } from '../src/features/reader/model/dashboard';
 
 const makeItem = (overrides: Partial<ReaderCatalogItem>): ReaderCatalogItem => ({
@@ -226,5 +235,65 @@ describe('reader queue priming', () => {
     })).resolves.toBeNull();
 
     expect(authFetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reader offline metadata sync', () => {
+  it('syncs chapter metadata to server and deletes stale entries for the same session', async () => {
+    authFetchMock.mockReset();
+    authFetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: true,
+        metadata: [
+          { entryId: 'stale-entry', contentId: 'reader-session-1' },
+          { entryId: 'other-session-entry', contentId: 'reader-session-2' },
+        ],
+      })
+    );
+    authFetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, metadata: { entryId: 'chapter-1' } }));
+    authFetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, deleted: true }));
+
+    const result = await syncReaderOfflineLibrarySnapshot('http://backend.test', {
+      sessionId: 'reader-session-1',
+      reason: 'chapter-save',
+      updatedAtMs: Date.now(),
+      entries: [
+        {
+          id: 'chapter-1',
+          saveScope: 'chapter',
+          title: 'Chapter 1',
+          unitLabel: 'Chapter 1',
+          sessionId: 'reader-session-1',
+          unitId: 'unit-1',
+          sourceJobId: 'job-1',
+          speakerMode: 'single-speaker',
+          mediaType: 'audio/wav',
+          sizeBytes: 2048,
+          watermarkId: 'wm-1',
+          watermarkMetadata: { watermarkVersion: 'v1' },
+          createdAtMs: Date.now(),
+        },
+      ],
+    });
+
+    expect(result?.entries).toHaveLength(1);
+    expect(authFetchMock).toHaveBeenCalledTimes(3);
+    expect(String(authFetchMock.mock.calls[0]?.[0] || '')).toContain('/reader/offline/metadata');
+    expect(authFetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'PUT' });
+    expect(String(authFetchMock.mock.calls[1]?.[0] || '')).toContain('/reader/offline/metadata/chapter-1');
+    expect(authFetchMock.mock.calls[2]?.[1]).toMatchObject({ method: 'DELETE' });
+    expect(String(authFetchMock.mock.calls[2]?.[0] || '')).toContain('/reader/offline/metadata/stale-entry');
+  });
+
+  it.each([404, 501])('returns null when offline metadata sync endpoints are unavailable (%s)', async (status) => {
+    authFetchMock.mockReset();
+    authFetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Not found' }, status));
+
+    await expect(syncReaderOfflineLibrarySnapshot('http://backend.test', {
+      sessionId: 'reader-session-1',
+      reason: 'bootstrap',
+      updatedAtMs: Date.now(),
+      entries: [],
+    })).resolves.toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, Download, RefreshCw, SkipBack, SkipForward, Loader2 } from 'lucide-react';
+import { Play, Pause, Download, RefreshCw, Rewind, FastForward, Loader2 } from 'lucide-react';
 import { Visualizer } from './Visualizer';
 import { shouldAutoplayFirstLiveChunk } from './audioPlayerAutoplay';
 import {
@@ -79,6 +79,8 @@ const isAutoplayBlockedError = (error: unknown): boolean => {
     message.includes('not allowed by the user agent')
   );
 };
+
+const TRANSPORT_SKIP_SECONDS = 10;
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   audioUrl,
@@ -330,7 +332,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setDuration(0);
     setIsBuffering(shouldResumePlayback);
     setPlayError(null);
-  }, [activeSourceType, activeSourceUrl, audioUrl, markIntentionalSourceSwitch]);
+  }, [activeSourceType, activeSourceUrl, audioUrl, isLiveStreaming, markIntentionalSourceSwitch]);
 
   useEffect(() => {
     if (!hasPlayableAudio) {
@@ -690,13 +692,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                     type="button"
                     onClick={() => {
                       if (!audioRef.current || !seekEnabled) return;
-                      audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 5);
+                      audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - TRANSPORT_SKIP_SECONDS);
                     }}
                     disabled={!seekEnabled}
-                    aria-label="Skip back 5 seconds"
+                    aria-label={`Skip back ${TRANSPORT_SKIP_SECONDS} seconds`}
                     className="vf-live-player__step p-2 text-gray-400 hover:text-indigo-600 transition-colors disabled:opacity-40"
                 >
-                    <SkipBack size={20} />
+                    <Rewind size={20} />
                 </button>
 
                 <button
@@ -721,13 +723,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                     type="button"
                     onClick={() => {
                       if (!audioRef.current || !seekEnabled) return;
-                      audioRef.current.currentTime = Math.min(duration || audioRef.current.currentTime + 5, audioRef.current.currentTime + 5);
+                      audioRef.current.currentTime = Math.min(duration || audioRef.current.currentTime + TRANSPORT_SKIP_SECONDS, audioRef.current.currentTime + TRANSPORT_SKIP_SECONDS);
                     }}
                     disabled={!seekEnabled}
-                    aria-label="Skip forward 5 seconds"
+                    aria-label={`Skip forward ${TRANSPORT_SKIP_SECONDS} seconds`}
                     className="vf-live-player__step p-2 text-gray-400 hover:text-indigo-600 transition-colors disabled:opacity-40"
                 >
-                    <SkipForward size={20} />
+                    <FastForward size={20} />
                 </button>
             </div>
 

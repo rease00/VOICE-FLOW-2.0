@@ -105,4 +105,24 @@ describe('reader dashboard model', () => {
     expect(viewModel.sections[0]?.id).toBe('continueReading');
     expect(viewModel.sections[0]?.items[0]?.id).toBe('resume-1');
   });
+
+  it('keeps continue reading inside the library tab and filters empty sections out of home rails', () => {
+    const dashboard = buildReaderDashboardPayloadFromLibrary(createLibrary());
+    const novelsView = resolveReaderHomeViewModel(dashboard, 'novels', '');
+    const libraryView = resolveReaderHomeViewModel(dashboard, 'library', '');
+    const emptyDashboard = buildReaderDashboardPayloadFromLibrary({
+      ...createLibrary(),
+      shelves: {
+        continueReading: [],
+        trending: [],
+        newArrivals: [],
+        recentlyImported: [],
+      },
+    });
+    const emptyView = resolveReaderHomeViewModel(emptyDashboard, 'novels', '');
+
+    expect(novelsView.sections.map((section) => section.id)).toEqual(['trending', 'newArrivals']);
+    expect(libraryView.sections.map((section) => section.id)).toContain('continueReading');
+    expect(emptyView.sections).toEqual([]);
+  });
 });

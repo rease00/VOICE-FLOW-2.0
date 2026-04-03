@@ -39,6 +39,7 @@ describe('reader sticky dock', () => {
     expect(html).toContain('aria-label="Open settings"');
     expect(html).toContain('accept=".txt,.pdf"');
     expect(html).toContain('Collapse dock to compact circle');
+    expect(html).toContain('data-reader-dock-controls="expanded"');
   });
 
   it('shows ready-state queue stats in full mode', () => {
@@ -68,6 +69,7 @@ describe('reader sticky dock', () => {
     expect(html).toContain('2 pending');
     expect(html).toContain('queue 66%');
     expect(html).toContain('Collapse dock to compact circle');
+    expect(html).toContain('data-reader-dock-controls="expanded"');
   });
 
   it('collapses into a compact circle in mini mode', () => {
@@ -93,5 +95,6 @@ describe('reader sticky dock', () => {
 
     expect(html).toContain('aria-label="Expand reader dock"');
     expect(html).toContain('1 ready chunks, 0 pending, queue 20%');
+    expect(html).toContain('data-reader-dock-controls="compact"');
   });
 });

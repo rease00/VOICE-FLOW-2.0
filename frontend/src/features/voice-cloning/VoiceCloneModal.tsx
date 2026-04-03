@@ -6,7 +6,7 @@ import { getEngineDisplayName } from '../../../services/engineDisplay';
 import { fileToBase64, fetchUrlToBase64, base64ToArrayBuffer } from '../../shared/audio/base64';
 import { getSharedAudioContext } from '../../shared/audio/audioContext';
 import { buildDunoClonePreviewUrl } from './dunoPreview';
-import { cloneVoiceWithDunoNative, cloneVoiceWithOpenVoice } from './api';
+import { cloneVoiceWithDunoNative, renderVoiceClone } from './api';
 
 export interface VoiceCloneModalResult {
   cloneMode: 'modal_reference' | 'duno_native';
@@ -326,7 +326,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `modal_clone_${Date.now()}`;
-      const response = await cloneVoiceWithOpenVoice(
+      const response = await renderVoiceClone(
         {
           durationSec,
           language: 'EN',

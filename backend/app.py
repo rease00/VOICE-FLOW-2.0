@@ -12,9 +12,11 @@ import math
 import mimetypes
 import os
 import calendar
+import random
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -201,6 +203,51 @@ SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() 
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
 SEPARATION_SAMPLE_RATE = max(16000, int((os.getenv("VF_SOURCE_SEPARATION_SAMPLE_RATE") or "44100").strip() or "44100"))
 SEPARATION_CACHE_DIR = ARTIFACTS_DIR / "source-separation-cache"
+VF_OPENVOICE_ARTIFACT_TTL_MS = max(
+    60_000,
+    int((os.getenv("VF_OPENVOICE_ARTIFACT_TTL_MS") or str(24 * 60 * 60 * 1000)).strip() or str(24 * 60 * 60 * 1000)),
+)
+VF_SOURCE_SEPARATION_CACHE_TTL_MS = max(
+    60_000,
+    int((os.getenv("VF_SOURCE_SEPARATION_CACHE_TTL_MS") or str(24 * 60 * 60 * 1000)).strip() or str(24 * 60 * 60 * 1000)),
+)
+VF_SOURCE_SEPARATION_CACHE_MAX_BYTES = max(
+    0,
+    int((os.getenv("VF_SOURCE_SEPARATION_CACHE_MAX_BYTES") or "0").strip() or "0"),
+)
+VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED = (
+    (os.getenv("VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED") or ("0" if "pytest" in sys.modules else "1")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+if "pytest" in sys.modules:
+    VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED = False
+VF_VOICE_CLONE_SEPARATION_MODAL_ALLOW_LOCAL_FALLBACK = (
+    (os.getenv("VF_VOICE_CLONE_SEPARATION_MODAL_ALLOW_LOCAL_FALLBACK") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_VOICE_CLONE_SEPARATION_MODAL_TIMEOUT_SEC = max(
+    5.0,
+    float((os.getenv("VF_VOICE_CLONE_SEPARATION_MODAL_TIMEOUT_SEC") or "45").strip() or "45"),
+)
+VF_VOICE_CLONE_SEPARATION_BILLING_ENABLED = (
+    (
+        os.getenv("VF_VOICE_CLONE_SEPARATION_BILLING_ENABLED")
+        or ("0" if "pytest" in sys.modules else "1")
+    ).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_VOICE_CLONE_SEPARATION_INR_PER_MIN = max(
+    0.0,
+    float((os.getenv("VF_VOICE_CLONE_SEPARATION_INR_PER_MIN") or "1.2").strip() or "1.2"),
+)
+VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN = max(
+    0.0,
+    float((os.getenv("VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN") or "1.0").strip() or "1.0"),
+)
+VF_VOICE_CLONE_SEPARATION_BILLING_MIN_SECONDS = max(
+    0.0,
+    float((os.getenv("VF_VOICE_CLONE_SEPARATION_BILLING_MIN_SECONDS") or "0").strip() or "0"),
+)
 
 
 def _parse_comma_env_tokens(raw_value: object) -> set[str]:
@@ -428,6 +475,9 @@ VF_READER_SESSION_PERSIST_BACKOFF_MS = max(
     5,
     int((os.getenv("VF_READER_SESSION_PERSIST_BACKOFF_MS") or "35").strip() or "35"),
 )
+MULTI_SPEAKER_HARD_CAP = 8
+MULTI_SPEAKER_HARD_CAP_ERROR = f"Multi-speaker supports up to {MULTI_SPEAKER_HARD_CAP} speakers."
+READER_CAST_HARD_CAP_ERROR = f"Cast & Crew supports up to {MULTI_SPEAKER_HARD_CAP} speakers."
 ENABLE_SOURCE_SEPARATION = (
     (os.getenv("VF_ENABLE_SOURCE_SEPARATION") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -458,10 +508,16 @@ DUNO_RUNTIME_URL = (os.getenv("VF_DUNO_RUNTIME_URL") or "").strip().rstrip("/")
 DUNO_RUNTIME_TOKEN = (os.getenv("VF_DUNO_RUNTIME_TOKEN") or "").strip()
 LLVC_RUNTIME_URL = (os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
 GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
-VF_OPENVOICE_ARTIFACT_ONE_TIME = (
-    (os.getenv("VF_OPENVOICE_ARTIFACT_ONE_TIME") or "0").strip().lower()
+VF_VOICE_CLONE_ARTIFACT_ONE_TIME = (
+    (
+        os.getenv("VF_VOICE_CLONE_ARTIFACT_ONE_TIME")
+        or os.getenv("VF_OPENVOICE_ARTIFACT_ONE_TIME")
+        or "0"
+    ).strip().lower()
     in {"1", "true", "yes", "on"}
 )
+# Legacy alias kept for compatibility with tests and older code paths.
+VF_OPENVOICE_ARTIFACT_ONE_TIME = VF_VOICE_CLONE_ARTIFACT_ONE_TIME
 VF_LLVC_PRESET_DEFAULT = (
     str(os.getenv("VF_VOICE_TRANSFER_PRESET_DEFAULT") or "voice_transfer_hq_cpu").strip()
     or "voice_transfer_hq_cpu"
@@ -569,6 +625,7 @@ VOICE_ID_MAP_FILE = Path(
 APP_BUILD_TIME = datetime.now(timezone.utc).isoformat()
 API_VERSION = "1.2.0"
 REQUEST_ID_CONFLICT = "REQUEST_ID_CONFLICT"
+QUEUE_WAIT_TIMEOUT = "QUEUE_WAIT_TIMEOUT"
 VF_AUTH_ENFORCE = (
     (os.getenv("VF_AUTH_ENFORCE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -663,6 +720,23 @@ VF_BILLING_WEBHOOK_MAX_BODY_BYTES = max(
     1024,
     int((os.getenv("VF_BILLING_WEBHOOK_MAX_BODY_BYTES") or str(512 * 1024)).strip() or str(512 * 1024)),
 )
+VF_CHECKOUT_IDEMPOTENCY_TTL_SEC = max(
+    60,
+    int((os.getenv("VF_CHECKOUT_IDEMPOTENCY_TTL_SEC") or "1800").strip() or "1800"),
+)
+VF_VOICE_CLONE_IDEMPOTENCY_TTL_SEC = max(
+    60,
+    int(
+        (
+            os.getenv("VF_VOICE_CLONE_IDEMPOTENCY_TTL_SEC")
+            or os.getenv("VF_OPENVOICE_IDEMPOTENCY_TTL_SEC")
+            or "1800"
+        ).strip()
+        or "1800"
+    ),
+)
+# Legacy compatibility alias used by older test/contracts.
+VF_OPENVOICE_IDEMPOTENCY_TTL_SEC = VF_VOICE_CLONE_IDEMPOTENCY_TTL_SEC
 ACCOUNTING_DISPLAY_CURRENCY = (os.getenv("VF_ACCOUNTING_CURRENCY") or "INR").strip().upper() or "INR"
 ACCOUNTING_TIMEZONE = (os.getenv("VF_ACCOUNTING_TIMEZONE") or "Asia/Kolkata").strip() or "Asia/Kolkata"
 try:
@@ -1217,6 +1291,14 @@ VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS = max(
     500,
     int((os.getenv("VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS") or "9000").strip() or "9000"),
 )
+VF_TTS_QUEUE_ADMISSION_WAIT_TIMEOUT_MS = max(
+    1_000,
+    int((os.getenv("VF_TTS_QUEUE_ADMISSION_WAIT_TIMEOUT_MS") or "90000").strip() or "90000"),
+)
+VF_TTS_QUEUE_ADMISSION_RETRY_MS = max(
+    100,
+    int((os.getenv("VF_TTS_QUEUE_ADMISSION_RETRY_MS") or "250").strip() or "250"),
+)
 VF_TTS_QUEUE_ENABLED = (
     (os.getenv("VF_TTS_QUEUE_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -1256,23 +1338,94 @@ VF_TTS_QUEUE_BACKOFF_BASE_MS = max(
     100,
     int((os.getenv("VF_TTS_QUEUE_BACKOFF_BASE_MS") or "450").strip() or "450"),
 )
+VF_TTS_QUEUE_BACKOFF_MAX_MS = max(
+    VF_TTS_QUEUE_BACKOFF_BASE_MS,
+    int((os.getenv("VF_TTS_QUEUE_BACKOFF_MAX_MS") or "10000").strip() or "10000"),
+)
+VF_TTS_QUEUE_BACKOFF_JITTER_PCT = max(
+    0.0,
+    min(0.8, float((os.getenv("VF_TTS_QUEUE_BACKOFF_JITTER_PCT") or "0.2").strip() or "0.2")),
+)
 _vf_tts_worker_count_raw = str(os.getenv("VF_TTS_QUEUE_WORKER_COUNT") or "").strip()
 if _vf_tts_worker_count_raw:
     _vf_tts_worker_count = int(_vf_tts_worker_count_raw or "0")
 else:
     _vf_tts_worker_count = 8 if VF_SERVICE_IS_WORKER else 0
 VF_TTS_QUEUE_WORKER_COUNT = max(0, int(_vf_tts_worker_count))
-VF_TTS_ENGINE_CONCURRENCY_VECTOR = max(
-    1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_VECTOR") or "16").strip() or "16"),
+
+def _resolve_engine_concurrency_env(primary_env: str, *, default_value: str, aliases: tuple[str, ...] = ()) -> tuple[int, str]:
+    primary_raw = str(os.getenv(primary_env) or "").strip()
+    if primary_raw:
+        return max(1, int(primary_raw or default_value)), primary_env
+    for alias in aliases:
+        alias_raw = str(os.getenv(alias) or "").strip()
+        if alias_raw:
+            return max(1, int(alias_raw or default_value)), alias
+    return max(1, int(default_value or "1")), ""
+
+
+VF_TTS_ENGINE_CONCURRENCY_VECTOR, _VF_TTS_ENGINE_CONCURRENCY_VECTOR_SOURCE = _resolve_engine_concurrency_env(
+    "VF_TTS_ENGINE_CONCURRENCY_VECTOR",
+    default_value="16",
+    aliases=("VF_TTS_ENGINE_CONCURRENCY_GEM",),
 )
-VF_TTS_ENGINE_CONCURRENCY_PRIME = max(
-    1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_PRIME") or "16").strip() or "16"),
+VF_TTS_ENGINE_CONCURRENCY_PRIME, _VF_TTS_ENGINE_CONCURRENCY_PRIME_SOURCE = _resolve_engine_concurrency_env(
+    "VF_TTS_ENGINE_CONCURRENCY_PRIME",
+    default_value="16",
+    aliases=("VF_TTS_ENGINE_CONCURRENCY_GEM",),
 )
 VF_TTS_ENGINE_CONCURRENCY_DUNO = max(
     1,
     int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_DUNO") or "12").strip() or "12"),
+)
+for _engine_name, _source_name in {
+    "VECTOR": _VF_TTS_ENGINE_CONCURRENCY_VECTOR_SOURCE,
+    "PRIME": _VF_TTS_ENGINE_CONCURRENCY_PRIME_SOURCE,
+}.items():
+    if _source_name == "VF_TTS_ENGINE_CONCURRENCY_GEM":
+        print(
+            (
+                "[config] VF_TTS_ENGINE_CONCURRENCY_GEM is deprecated and was used as a fallback for "
+                f"{_engine_name}; set VF_TTS_ENGINE_CONCURRENCY_{_engine_name} instead."
+            ),
+            flush=True,
+        )
+
+VF_TTS_ENGINE_RETRY_LIMIT_VECTOR = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_VECTOR") or str(VF_TTS_QUEUE_MAX_ATTEMPTS)).strip() or str(VF_TTS_QUEUE_MAX_ATTEMPTS)),
+)
+VF_TTS_ENGINE_RETRY_LIMIT_PRIME = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_PRIME") or str(VF_TTS_QUEUE_MAX_ATTEMPTS)).strip() or str(VF_TTS_QUEUE_MAX_ATTEMPTS)),
+)
+VF_TTS_ENGINE_RETRY_LIMIT_DUNO = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_DUNO") or str(VF_TTS_QUEUE_MAX_ATTEMPTS)).strip() or str(VF_TTS_QUEUE_MAX_ATTEMPTS)),
+)
+VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_VECTOR = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_VECTOR") or "8").strip() or "8"),
+)
+VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_PRIME = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_PRIME") or "8").strip() or "8"),
+)
+VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_DUNO = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_DUNO") or "8").strip() or "8"),
+)
+VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR = max(
+    500,
+    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR") or "15000").strip() or "15000"),
+)
+VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_PRIME = max(
+    500,
+    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_PRIME") or "15000").strip() or "15000"),
+)
+VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_DUNO = max(
+    500,
+    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_DUNO") or "10000").strip() or "10000"),
 )
 VF_TTS_QUEUE_METRICS_WINDOW = max(
     20,
@@ -1395,8 +1548,8 @@ VF_NOTIFICATIONS_EMAIL_ENABLED = (
     in {"1", "true", "yes", "on"}
 )
 VF_NOTIFICATIONS_EMAIL_FROM = str(
-    os.getenv("VF_NOTIFICATIONS_EMAIL_FROM") or "VoiceFlow <notifications@voiceflow.local>"
-).strip() or "VoiceFlow <notifications@voiceflow.local>"
+    os.getenv("VF_NOTIFICATIONS_EMAIL_FROM") or "V FLOW AI <notifications@v-flow-ai.local>"
+).strip() or "V FLOW AI <notifications@v-flow-ai.local>"
 VF_NOTIFICATIONS_EMAIL_REPLY_TO = str(os.getenv("VF_NOTIFICATIONS_EMAIL_REPLY_TO") or "").strip()
 VF_NOTIFICATIONS_JOB_EMAIL_MIN_DURATION_MS = max(
     0,
@@ -1534,6 +1687,7 @@ ACCOUNTING_MONITOR_RUNS_COLLECTION = "accounting_monitor_runs"
 USER_PROFILES_COLLECTION = "user_profiles"
 USER_ID_INDEX_COLLECTION = "user_id_index"
 STRIPE_WEBHOOK_EVENTS_COLLECTION = "stripe_webhook_events"
+REQUEST_IDEMPOTENCY_COLLECTION = "request_idempotency"
 TEAMS_COLLECTION = "teams"
 TEAM_MEMBERS_COLLECTION = "team_members"
 TEAM_INVITES_COLLECTION = "team_invites"
@@ -1549,6 +1703,7 @@ NOTIFICATION_EMAIL_OUTBOX_COLLECTION = "notification_email_outbox"
 NOTIFICATION_INBOX_ITEMS_SUBCOLLECTION = "items"
 READER_LEGAL_ACK_COLLECTION = "reader_legal_ack"
 READER_PREFERENCES_COLLECTION = "reader_preferences"
+READER_OFFLINE_METADATA_COLLECTION = "reader_offline_metadata"
 READER_UPLOADS_COLLECTION = "reader_uploads"
 READER_PROGRESS_COLLECTION = "reader_progress"
 READER_CAST_MEMORY_COLLECTION = "reader_cast_memory"
@@ -1556,6 +1711,22 @@ READER_TRANSLATION_COLLECTION = "reader_translation_cache"
 READER_ADMIN_CATALOG_COLLECTION = "reader_admin_catalog"
 AUDIT_HASH_ALGO = "sha256"
 AUDIT_GENESIS_HASH = "GENESIS"
+PROVENANCE_VERSION_DEFAULT = "v1"
+AUDIO_WATERMARK_MODE_DEFAULT = "audible_latent"
+AUDIO_WATERMARK_VERSION_DEFAULT = "seed_v1"
+AUDIO_C2PA_STATUS_DEFAULT = "phased"
+AUDIO_DOWNLOAD_WATERMARK_ENABLED = (
+    (os.getenv("VF_AUDIO_DOWNLOAD_WATERMARK_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+AUDIO_DOWNLOAD_AUDIBLE_LABEL_SECONDS = max(
+    0.2,
+    min(3.0, float((os.getenv("VF_AUDIO_DOWNLOAD_AUDIBLE_LABEL_SECONDS") or "1.5").strip() or "1.5")),
+)
+AUDIO_DOWNLOAD_AUDIBLE_LABEL_LEVEL_DB = max(
+    -30.0,
+    min(-3.0, float((os.getenv("VF_AUDIO_DOWNLOAD_AUDIBLE_LABEL_LEVEL_DB") or "-10").strip() or "-10")),
+)
 ALERT_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
 ALERT_STATUSES = {"open", "ack", "resolved"}
 SCHEDULER_TASK_TYPES = {
@@ -1749,7 +1920,7 @@ NOVEL_IDEA_ALLOWED_HOSTS = {
 }
 NOVEL_IDEA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 VoiceFlow/1.0"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 VFlowAI/1.0"
 )
 
 
@@ -1775,7 +1946,9 @@ def _is_cors_origin_allowed(origin: str) -> bool:
     allowed_origins = _resolved_cors_origins()
     if "*" in allowed_origins:
         return True
-    return safe_origin in allowed_origins
+    if safe_origin in allowed_origins:
+        return True
+    return bool(re.match(LOCALHOST_CORS_ORIGIN_REGEX, safe_origin))
 
 
 def _is_cors_preflight_request(request: Request) -> bool:
@@ -2462,7 +2635,7 @@ def _duno_create_voice_via_runtime(
             reference_audio_bytes = b""
         if not reference_audio_bytes:
             return ""
-        speaker_label = str(speaker or source_voice_name or source_voice_id or "VoiceFlow DUNO Clone").strip() or "VoiceFlow DUNO Clone"
+        speaker_label = str(speaker or source_voice_name or source_voice_id or "V FLOW AI DUNO Clone").strip() or "V FLOW AI DUNO Clone"
         source_label = str(source_voice_name or source_voice_id or speaker_label).strip() or speaker_label
         audio_name = str(reference_audio_name or "reference.wav").strip() or "reference.wav"
         audio_mime_type = _duno_reference_audio_mime_type(
@@ -4445,7 +4618,7 @@ async def _app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="VoiceFlow Media Backend",
+    title="V FLOW AI Media Backend",
     version="1.0.0",
     openapi_url="/openapi.json" if VF_DOCS_ENABLE else None,
     docs_url="/docs" if VF_DOCS_ENABLE else None,
@@ -4485,6 +4658,7 @@ _INMEMORY_COUPONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPON_CODE_INDEX: dict[str, str] = {}
 _INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_STRIPE_WEBHOOK_EVENTS: dict[str, dict[str, Any]] = {}
+_INMEMORY_REQUEST_IDEMPOTENCY: dict[str, dict[str, Any]] = {}
 _INMEMORY_GENERATION_HISTORY: dict[str, dict[str, Any]] = {}
 _INMEMORY_AUDIO_GENERATION_AUDIT: dict[str, dict[str, Any]] = {}
 _INMEMORY_DAILY_USAGE_RESET_STATUS: dict[str, Any] = {}
@@ -4518,6 +4692,7 @@ _INMEMORY_NOTIFICATION_PREFERENCES: dict[str, dict[str, Any]] = {}
 _INMEMORY_NOTIFICATION_EMAIL_OUTBOX: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_LEGAL_ACK: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_PREFERENCES: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_OFFLINE_METADATA: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_UPLOADS: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_PROGRESS: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_CAST_MEMORY: dict[str, dict[str, Any]] = {}
@@ -4551,13 +4726,35 @@ def _tts_v2_terminal_usage_finalize(job: Any) -> None:
     request_id = str(getattr(job, "request_id", "") or "").strip()
     if not safe_uid or not request_id:
         return
+    job_id = str(getattr(job, "id", "") or request_id).strip() or request_id
+    trace_id = str(getattr(job, "trace_id", "") or request_id).strip() or request_id
+    audit_ids = _audio_generation_audit_ids_from_job(job)
     status = str(getattr(job, "status", "") or "").strip().lower()
     if status == "completed":
         _finalize_usage(safe_uid, request_id, success=True)
+        for audit_id in audit_ids:
+            _audio_generation_audit_mark_terminal(
+                audit_id,
+                status="completed",
+                job_id=job_id,
+                request_id=request_id,
+                trace_id=trace_id,
+                audio_created_at=_safe_now_iso(),
+            )
         return
     if status in {"failed", "cancelled"}:
         detail = getattr(job, "error", "")
         _finalize_usage(safe_uid, request_id, success=False, error_detail=str(detail or status))
+        for audit_id in audit_ids:
+            _audio_generation_audit_mark_terminal(
+                audit_id,
+                status=status,
+                failure_code=str(status or "failed"),
+                failure_detail=str(detail or status),
+                job_id=job_id,
+                request_id=request_id,
+                trace_id=trace_id,
+            )
 
 
 _TTS_JOB_QUEUE = TtsJobQueue(
@@ -4586,11 +4783,28 @@ _TTS_ENGINE_CONCURRENCY_LIMITS: dict[str, int] = {
     "PRIME": int(VF_TTS_ENGINE_CONCURRENCY_PRIME),
     "DUNO": int(VF_TTS_ENGINE_CONCURRENCY_DUNO),
 }
+_TTS_ENGINE_RETRY_LIMITS: dict[str, int] = {
+    "VECTOR": int(VF_TTS_ENGINE_RETRY_LIMIT_VECTOR),
+    "PRIME": int(VF_TTS_ENGINE_RETRY_LIMIT_PRIME),
+    "DUNO": int(VF_TTS_ENGINE_RETRY_LIMIT_DUNO),
+}
+_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLDS: dict[str, int] = {
+    "VECTOR": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_VECTOR),
+    "PRIME": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_PRIME),
+    "DUNO": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_DUNO),
+}
+_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS: dict[str, int] = {
+    "VECTOR": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR),
+    "PRIME": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_PRIME),
+    "DUNO": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_DUNO),
+}
 _TTS_ENGINE_SEMAPHORES: dict[str, threading.Semaphore] = {
     engine: threading.Semaphore(max(1, int(limit)))
     for engine, limit in _TTS_ENGINE_CONCURRENCY_LIMITS.items()
 }
 _TTS_ENGINE_ACTIVE_COUNTS: dict[str, int] = {engine: 0 for engine in _TTS_ENGINE_CONCURRENCY_LIMITS}
+_TTS_ENGINE_CONSECUTIVE_FAILURES: dict[str, int] = {engine: 0 for engine in _TTS_ENGINE_CONCURRENCY_LIMITS}
+_TTS_ENGINE_CIRCUIT_OPEN_UNTIL_MS: dict[str, int] = {engine: 0 for engine in _TTS_ENGINE_CONCURRENCY_LIMITS}
 _TTS_ENGINE_QUEUE_COUNTS: dict[str, dict[str, int]] = {
     engine: {"queued": 0, "running": 0}
     for engine in _TTS_ENGINE_CONCURRENCY_LIMITS
@@ -4623,6 +4837,21 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
         "PRIME": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
         "DUNO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
+    "apiLatencyByOperation": {
+        "sessionCreate": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "jobCreate": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "jobStatus": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "jobCancel": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "sessionCancel": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    },
+    "apiLatencyByStage": {
+        "sessionProbe": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "submitAudit": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "submitQuota": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "submitUsage": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "submitQueueAdmit": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "sessionCancelFanout": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    },
 }
 _REQUESTS_GET_BASE = requests.get
 _REQUESTS_POST_BASE = requests.post
@@ -4633,10 +4862,21 @@ _RUNTIME_HTTP_CLIENT = RuntimeHttpClient(pool_connections=64, pool_maxsize=64)
 DUNO_MODAL_CLIENT = DunoModalClient()
 OPENVOICE_PROVIDER_MODAL = "modal"
 OPENVOICE_PROVIDER_VALUES = frozenset({OPENVOICE_PROVIDER_MODAL})
-OPENVOICE_PROVIDER_DEFAULT = OPENVOICE_PROVIDER_MODAL
+OPENVOICE_PROVIDER_DEFAULT = str(
+    os.getenv("VF_VOICE_CLONE_PROVIDER_DEFAULT")
+    or os.getenv("VF_OPENVOICE_PROVIDER_DEFAULT")
+    or OPENVOICE_PROVIDER_MODAL
+).strip().lower() or OPENVOICE_PROVIDER_MODAL
 OPENVOICE_EXPECTED_GPU_CONCURRENCY = max(
     1,
-    int((os.getenv("VF_OPENVOICE_MODAL_EXPECTED_GPU_CONCURRENCY") or "2").strip() or "2"),
+    int(
+        (
+            os.getenv("VF_VOICE_CLONE_MODAL_EXPECTED_GPU_CONCURRENCY")
+            or os.getenv("VF_OPENVOICE_MODAL_EXPECTED_GPU_CONCURRENCY")
+            or "2"
+        ).strip()
+        or "2"
+    ),
 )
 
 
@@ -4666,15 +4906,35 @@ def _openvoice_provider_default() -> str:
 
 def _openvoice_provider_env_url(provider: str) -> str:
     return (
-        str(os.getenv("VF_OPENVOICE_MODAL_RUNTIME_URL") or "").strip().rstrip("/")
-        or str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
+        str(
+            os.getenv("VF_VOICE_CLONE_MODAL_RUNTIME_URL")
+            or os.getenv("VF_OPENVOICE_MODAL_RUNTIME_URL")
+            or ""
+        )
+        .strip()
+        .rstrip("/")
+        or str(
+            os.getenv("VF_VOICE_CLONE_RUNTIME_URL")
+            or os.getenv("VF_OPENVOICE_RUNTIME_URL")
+            or ""
+        )
+        .strip()
+        .rstrip("/")
     )
 
 
 def _openvoice_provider_env_token(provider: str) -> str:
     return (
-        str(os.getenv("VF_OPENVOICE_MODAL_RUNTIME_TOKEN") or "").strip()
-        or str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
+        str(
+            os.getenv("VF_VOICE_CLONE_MODAL_RUNTIME_TOKEN")
+            or os.getenv("VF_OPENVOICE_MODAL_RUNTIME_TOKEN")
+            or ""
+        ).strip()
+        or str(
+            os.getenv("VF_VOICE_CLONE_RUNTIME_TOKEN")
+            or os.getenv("VF_OPENVOICE_RUNTIME_TOKEN")
+            or ""
+        ).strip()
     )
 
 
@@ -4688,6 +4948,16 @@ def _openvoice_client_for_provider(provider: str) -> OpenVoiceModalClient:
 OPENVOICE_MODAL_CLIENT = _openvoice_client_for_provider(OPENVOICE_PROVIDER_MODAL)
 _OPENVOICE_ARTIFACT_SIGNATURE_LOCK = threading.Lock()
 _OPENVOICE_USED_ARTIFACT_SIGNATURES: dict[str, int] = {}
+_OPENVOICE_RETENTION_LOCK = threading.Lock()
+_OPENVOICE_RETENTION_LAST_RUN_MS = 0
+_VOICE_CLONE_JOB_LOCK = threading.RLock()
+_VOICE_CLONE_JOBS: dict[str, dict[str, Any]] = {}
+_VOICE_CLONE_JOB_REQUEST_INDEX: dict[str, str] = {}
+VOICE_CLONE_JOB_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+VOICE_CLONE_JOB_TTL_SEC = max(
+    300,
+    int((os.getenv("VF_VOICE_CLONE_JOB_TTL_SEC") or "3600").strip() or "3600"),
+)
 _VOICE_CLONE_STRESS_LOCK = threading.Lock()
 _VOICE_CLONE_STRESS_JOBS: dict[str, dict[str, Any]] = {}
 VOICE_CLONE_STRESS_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -4704,14 +4974,260 @@ VOICE_CLONE_STRESS_MAX_TOTAL_RUNTIME_SEC = max(
     int((os.getenv("VF_VOICE_CLONE_STRESS_MAX_TOTAL_RUNTIME_SEC") or "1800").strip() or "1800"),
 )
 VOICE_CLONE_STRESS_DEFAULT_PROMPT = (
-    str(os.getenv("VF_VOICE_CLONE_STRESS_DEFAULT_PROMPT") or "VoiceFlow stress test benchmark sample for Gemini Flash throughput.").strip()
-    or "VoiceFlow stress test benchmark sample for Gemini Flash throughput."
+    str(os.getenv("VF_VOICE_CLONE_STRESS_DEFAULT_PROMPT") or "V FLOW AI stress test benchmark sample for Gemini Flash throughput.").strip()
+    or "V FLOW AI stress test benchmark sample for Gemini Flash throughput."
 )
+
+_VOICE_CLONE_JOB_REDIS_PREFIX = "vf:voice-clone"
+
+
+def _voice_clone_job_key_token(value: object) -> str:
+    token = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(value or "").strip())
+    return token or "unknown"
+
+
+def _voice_clone_job_redis_client() -> Any:
+    return _tts_v2_session_redis_client()
+
+
+def _voice_clone_job_redis_job_key(job_id: str) -> str:
+    return f"{_VOICE_CLONE_JOB_REDIS_PREFIX}:job:{_voice_clone_job_key_token(job_id)}"
+
+
+def _voice_clone_job_redis_request_key(uid: str, kind: str, request_id: str) -> str:
+    return ":".join(
+        [
+            _VOICE_CLONE_JOB_REDIS_PREFIX,
+            "request",
+            _voice_clone_job_key_token(uid),
+            _voice_clone_job_kind_token(kind),
+            _voice_clone_job_key_token(request_id),
+        ]
+    )
+
+
+def _voice_clone_job_redis_request_pattern(uid: str, request_id: str, kind: Optional[str] = None) -> str:
+    kind_token = _voice_clone_job_kind_token(kind) if kind is not None else "*"
+    return ":".join(
+        [
+            _VOICE_CLONE_JOB_REDIS_PREFIX,
+            "request",
+            _voice_clone_job_key_token(uid),
+            kind_token,
+            _voice_clone_job_key_token(request_id),
+        ]
+    )
+
+
+def _voice_clone_job_redis_ttl_sec(job: dict[str, Any], *, now_unix: Optional[int] = None) -> int:
+    anchor = int(now_unix if now_unix is not None else int(time.time()))
+    expires_at_unix = int((job or {}).get("expiresAtUnix") or 0)
+    if expires_at_unix <= anchor:
+        expires_at_unix = anchor + int(VOICE_CLONE_JOB_TTL_SEC)
+    return max(60, expires_at_unix - anchor)
+
+
+def _voice_clone_job_matches(row: dict[str, Any], *, uid: str, request_id: str, kind: Optional[str] = None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("_uid") or "").strip() != str(uid or "").strip():
+        return False
+    if str(row.get("requestId") or "").strip() != str(request_id or "").strip():
+        return False
+    if kind is not None and _voice_clone_job_kind_token(row.get("kind")) != _voice_clone_job_kind_token(kind):
+        return False
+    return True
+
+
+def _voice_clone_job_row_from_redis(job_id: str, payload: object) -> Optional[dict[str, Any]]:
+    if not isinstance(payload, str) or not str(payload).strip():
+        return None
+    try:
+        decoded = json.loads(str(payload))
+    except Exception:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    row = dict(decoded)
+    safe_job_id = str(job_id or row.get("jobId") or "").strip()
+    if not safe_job_id:
+        return None
+    row["jobId"] = safe_job_id
+    return row
+
+
+def _voice_clone_job_cache_row_locked(row: dict[str, Any]) -> dict[str, Any]:
+    safe_row = dict(row or {})
+    safe_job_id = str(safe_row.get("jobId") or "").strip()
+    if not safe_job_id:
+        return safe_row
+    _VOICE_CLONE_JOBS[safe_job_id] = dict(safe_row)
+    request_key = _voice_clone_job_redis_request_key(
+        str(safe_row.get("_uid") or ""),
+        str(safe_row.get("kind") or ""),
+        str(safe_row.get("requestId") or ""),
+    )
+    if request_key:
+        _VOICE_CLONE_JOB_REQUEST_INDEX[request_key] = safe_job_id
+    return safe_row
+
+
+def _voice_clone_job_write_store_locked(
+    row: dict[str, Any],
+    *,
+    refresh_request_index: bool = True,
+) -> dict[str, Any]:
+    safe_row = dict(row or {})
+    safe_job_id = str(safe_row.get("jobId") or "").strip()
+    if not safe_job_id:
+        return safe_row
+    now_unix = int(time.time())
+    expires_at_unix = int(safe_row.get("expiresAtUnix") or 0)
+    if expires_at_unix <= now_unix:
+        expires_at_unix = now_unix + int(VOICE_CLONE_JOB_TTL_SEC)
+        safe_row["expiresAtUnix"] = expires_at_unix
+    snapshot = _voice_clone_job_snapshot(safe_row)
+    _voice_clone_job_cache_row_locked(safe_row)
+    client = _voice_clone_job_redis_client()
+    if client is not None:
+        ttl_sec = _voice_clone_job_redis_ttl_sec(safe_row, now_unix=now_unix)
+        request_key = _voice_clone_job_redis_request_key(
+            str(safe_row.get("_uid") or ""),
+            str(safe_row.get("kind") or ""),
+            str(safe_row.get("requestId") or ""),
+        )
+        try:
+            client.set(
+                _voice_clone_job_redis_job_key(safe_job_id),
+                json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+                ex=ttl_sec,
+            )
+            if refresh_request_index and request_key:
+                client.set(request_key, safe_job_id, ex=ttl_sec)
+        except Exception:
+            pass
+    return safe_row
+
+
+def _voice_clone_job_load_locked(job_id: str) -> Optional[dict[str, Any]]:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return None
+    with _VOICE_CLONE_JOB_LOCK:
+        _voice_clone_job_cleanup_locked()
+        cached = _VOICE_CLONE_JOBS.get(safe_job_id)
+        if isinstance(cached, dict):
+            return _voice_clone_job_snapshot(cached)
+        client = _voice_clone_job_redis_client()
+        if client is not None:
+            try:
+                payload = client.get(_voice_clone_job_redis_job_key(safe_job_id))
+            except Exception:
+                payload = None
+            row = _voice_clone_job_row_from_redis(safe_job_id, payload)
+            if isinstance(row, dict):
+                _voice_clone_job_cache_row_locked(row)
+                return _voice_clone_job_snapshot(row)
+    return None
+
+
+def _voice_clone_job_find_by_request_id(uid: str, request_id: str, *, kind: Optional[str] = None) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_request_id = str(request_id or "").strip()
+    if not safe_uid or not safe_request_id:
+        return None
+    with _VOICE_CLONE_JOB_LOCK:
+        _voice_clone_job_cleanup_locked()
+        for row in _VOICE_CLONE_JOBS.values():
+            if _voice_clone_job_matches(row, uid=safe_uid, request_id=safe_request_id, kind=kind):
+                return _voice_clone_job_snapshot(row)
+        client = _voice_clone_job_redis_client()
+        if client is None:
+            return None
+        scan_iter = getattr(client, "scan_iter", None)
+        try:
+            if callable(scan_iter):
+                pattern = _voice_clone_job_redis_request_pattern(safe_uid, safe_request_id, kind)
+                for key in scan_iter(match=pattern):
+                    job_id = str(client.get(str(key)) or "").strip()
+                    if job_id:
+                        row = _voice_clone_job_load_locked(job_id)
+                        if isinstance(row, dict) and _voice_clone_job_matches(row, uid=safe_uid, request_id=safe_request_id, kind=kind):
+                            return row
+                job_pattern = f"{_VOICE_CLONE_JOB_REDIS_PREFIX}:job:*"
+                for key in scan_iter(match=job_pattern):
+                    job_id = str(str(key).rsplit(":", 1)[-1]).strip()
+                    if not job_id:
+                        continue
+                    payload = client.get(str(key))
+                    row = _voice_clone_job_row_from_redis(job_id, payload)
+                    if isinstance(row, dict) and _voice_clone_job_matches(row, uid=safe_uid, request_id=safe_request_id, kind=kind):
+                        _voice_clone_job_cache_row_locked(row)
+                        return _voice_clone_job_snapshot(row)
+        except Exception:
+            return None
+    return None
+
+
+def _voice_clone_job_create_or_get_locked(row: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    safe_row = dict(row or {})
+    safe_job_id = str(safe_row.get("jobId") or "").strip()
+    safe_uid = str(safe_row.get("_uid") or "").strip()
+    safe_request_id = str(safe_row.get("requestId") or "").strip()
+    safe_kind = str(safe_row.get("kind") or "").strip()
+    if not safe_job_id or not safe_uid or not safe_request_id or not safe_kind:
+        return _voice_clone_job_write_store_locked(safe_row), True
+    existing = _voice_clone_job_find_by_request_id(safe_uid, safe_request_id, kind=safe_kind)
+    if isinstance(existing, dict):
+        return existing, False
+    client = _voice_clone_job_redis_client()
+    if client is not None:
+        now_unix = int(time.time())
+        ttl_sec = _voice_clone_job_redis_ttl_sec(safe_row, now_unix=now_unix)
+        request_key = _voice_clone_job_redis_request_key(safe_uid, safe_kind, safe_request_id)
+        job_key = _voice_clone_job_redis_job_key(safe_job_id)
+        try:
+            created = bool(client.set(request_key, safe_job_id, ex=ttl_sec, nx=True))
+        except Exception:
+            created = False
+        if not created:
+            existing_id = str(client.get(request_key) or "").strip()
+            if existing_id:
+                existing = _voice_clone_job_load_locked(existing_id)
+                if isinstance(existing, dict):
+                    return existing, False
+            try:
+                client.delete(request_key)
+            except Exception:
+                pass
+            try:
+                created = bool(client.set(request_key, safe_job_id, ex=ttl_sec, nx=True))
+            except Exception:
+                created = False
+            if not created:
+                existing_id = str(client.get(request_key) or "").strip()
+                if existing_id:
+                    existing = _voice_clone_job_load_locked(existing_id)
+                    if isinstance(existing, dict):
+                        return existing, False
+        try:
+            client.set(
+                job_key,
+                json.dumps(_voice_clone_job_snapshot(safe_row), sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+                ex=ttl_sec,
+            )
+        except Exception:
+            try:
+                client.delete(request_key)
+            except Exception:
+                pass
+            return _voice_clone_job_write_store_locked(safe_row), True
+    return _voice_clone_job_write_store_locked(safe_row), True
 
 
 def _openvoice_provider_vc_label(provider: str) -> str:
     _ = provider
-    return "openvoice-modal"
+    return "voice-clone-modal"
 
 
 def _openvoice_runtime_config_default_payload() -> dict[str, Any]:
@@ -4825,7 +5341,7 @@ def _openvoice_provider_runtime_probe(provider: str) -> dict[str, Any]:
         return {
             "configured": True,
             "ready": False,
-            "detail": _sanitize_openvoice_runtime_error_detail(exc, fallback="OpenVoice runtime is offline."),
+            "detail": _sanitize_openvoice_runtime_error_detail(exc, fallback="Voice Clone runtime is offline."),
             "device": "",
             "expectedGpuConcurrency": OPENVOICE_EXPECTED_GPU_CONCURRENCY,
             "runtimeGpuConcurrency": 0,
@@ -4901,7 +5417,7 @@ OPENVOICE_CPU_RATE_PER_SEC_USD = 0.00003
 
 
 def _sanitize_openvoice_runtime_error_detail(exc: Exception, *, fallback: str) -> str:
-    safe_fallback = str(fallback or "OpenVoice runtime is unavailable.").strip() or "OpenVoice runtime is unavailable."
+    safe_fallback = str(fallback or "Voice Clone runtime is unavailable.").strip() or "Voice Clone runtime is unavailable."
     raw = str(exc or "").strip()
     if not raw:
         return safe_fallback
@@ -4912,7 +5428,7 @@ def _sanitize_openvoice_runtime_error_detail(exc: Exception, *, fallback: str) -
 
 def _openvoice_artifact_payload(artifact: Any) -> dict[str, Any]:
     artifact_id = str(getattr(artifact, "artifact_id", "") or "").strip()
-    file_name = str(getattr(artifact, "file_name", "") or "").strip() or f"{artifact_id or 'openvoice'}.wav"
+    file_name = str(getattr(artifact, "file_name", "") or "").strip() or f"{artifact_id or 'voice-clone'}.wav"
     content_type = str(getattr(artifact, "content_type", "") or "audio/wav").strip() or "audio/wav"
     size_bytes = int(getattr(artifact, "size_bytes", 0) or 0)
     return {
@@ -4934,7 +5450,7 @@ def _openvoice_artifact_uid_prefix(uid: str) -> str:
 def _openvoice_scoped_artifact_id(uid: str, request_id: str) -> str:
     normalized_request_id = normalize_openvoice_artifact_id(
         request_id,
-        fallback=f"ov_{uuid.uuid4().hex[:12]}",
+        fallback=f"vc_{uuid.uuid4().hex[:12]}",
     )
     prefix = _openvoice_artifact_uid_prefix(uid)
     if not prefix:
@@ -4984,7 +5500,7 @@ def _openvoice_clone_voice_payload(
         "accent": str(cloned_voice.get("accent") or "Neutral").strip() or "Neutral",
         "geminiVoiceName": str(cloned_voice.get("geminiVoiceName") or source_label or request_id).strip() or request_id,
         "engine": str(cloned_voice.get("engine") or source_engine or "PRIME").strip() or "PRIME",
-        "source": str(cloned_voice.get("source") or "openvoice").strip() or "openvoice",
+        "source": str(cloned_voice.get("source") or "voice_clone").strip() or "voice_clone",
         "isDownloaded": bool(cloned_voice.get("isDownloaded", True)),
         "isCloned": True,
         "previewUrl": str(cloned_voice.get("previewUrl") or result_artifact_url or "").strip(),
@@ -5002,12 +5518,342 @@ def _openvoice_clone_voice_payload(
     }
 
 
-def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request: Request) -> dict[str, Any]:
-    uid = _require_request_uid(request)
+def _voice_clone_job_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _voice_clone_job_kind_token(value: object) -> str:
+    token = str(value or "").strip().lower()
+    if token in {"openvoice", "voice_clone", "voice-clone", "vc"}:
+        return "voice_clone"
+    if token in {"duno_native", "duno"}:
+        return "duno_native"
+    return token
+
+
+def _voice_clone_job_request_key(uid: str, kind: str, request_id: str) -> str:
+    return _voice_clone_job_redis_request_key(uid, kind, request_id)
+
+
+def _voice_clone_job_cleanup_locked(now_unix: Optional[int] = None) -> None:
+    now = int(now_unix or int(time.time()))
+    removed_job_ids: set[str] = set()
+    for job_id, row in list(_VOICE_CLONE_JOBS.items()):
+        if str((row or {}).get("status") or "").strip().lower() not in VOICE_CLONE_JOB_TERMINAL_STATUSES:
+            continue
+        expires_at_unix = int((row or {}).get("expiresAtUnix") or 0)
+        if expires_at_unix <= 0 or expires_at_unix > now:
+            continue
+        _VOICE_CLONE_JOBS.pop(job_id, None)
+        removed_job_ids.add(str(job_id or "").strip())
+    if not removed_job_ids:
+        return
+    for request_key, job_id in list(_VOICE_CLONE_JOB_REQUEST_INDEX.items()):
+        if str(job_id or "").strip() in removed_job_ids:
+            _VOICE_CLONE_JOB_REQUEST_INDEX.pop(request_key, None)
+
+
+def _voice_clone_job_public_result(result: object) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    safe_result = copy.deepcopy(result)
+    safe_result.pop("audioBase64", None)
+    return safe_result
+
+
+def _voice_clone_job_status_payload(job: dict[str, Any]) -> dict[str, Any]:
+    safe_job = _voice_clone_job_normalize_cancel_state(job)
+    return {
+        "ok": True,
+        "jobId": str(safe_job.get("jobId") or ""),
+        "requestId": str(safe_job.get("requestId") or ""),
+        "kind": str(safe_job.get("kind") or ""),
+        "status": str(safe_job.get("status") or "unknown"),
+        "createdAtMs": int(safe_job.get("createdAtMs") or 0),
+        "updatedAtMs": int(safe_job.get("updatedAtMs") or 0),
+        "startedAtMs": int(safe_job.get("startedAtMs") or 0),
+        "finishedAtMs": int(safe_job.get("finishedAtMs") or 0),
+        "createdAt": str(safe_job.get("createdAt") or ""),
+        "updatedAt": str(safe_job.get("updatedAt") or ""),
+        "startedAt": str(safe_job.get("startedAt") or ""),
+        "finishedAt": str(safe_job.get("finishedAt") or ""),
+        "progress": dict(safe_job.get("progress") or {}),
+        "result": _voice_clone_job_public_result(safe_job.get("result")),
+        "error": dict(safe_job.get("error") or {}),
+    }
+
+
+def _voice_clone_job_response_status(job: dict[str, Any]) -> int:
+    status = str(_voice_clone_job_normalize_cancel_state(job).get("status") or "").strip().lower()
+    return 200 if status in VOICE_CLONE_JOB_TERMINAL_STATUSES else 202
+
+
+def _voice_clone_job_normalize_cancel_state(job: dict[str, Any]) -> dict[str, Any]:
+    safe_job = dict(job or {})
+    status = str(safe_job.get("status") or "").strip().lower()
+    if status == "completed" and bool(safe_job.get("_cancelRequested")):
+        safe_job["status"] = "cancelled"
+        safe_job["result"] = {}
+        safe_job["error"] = {
+            "status": 499,
+            "message": "Voice clone job was cancelled.",
+            "detail": "Voice clone job was cancelled.",
+            "retryable": False,
+        }
+    return safe_job
+
+
+def _voice_clone_job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
+    safe_job = _voice_clone_job_normalize_cancel_state(job)
+    safe_job.pop("_thread", None)
+    safe_job.pop("_payload", None)
+    safe_job["progress"] = dict(safe_job.get("progress") or {})
+    safe_job["result"] = _voice_clone_job_public_result(safe_job.get("result"))
+    safe_job["error"] = dict(safe_job.get("error") or {})
+    return safe_job
+
+
+def _voice_clone_job_update_progress(
+    job_id: str,
+    *,
+    percent: float,
+    stage: str,
+    detail: str,
+) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    now_ms = int(time.time() * 1000)
+    now_iso = _voice_clone_job_now_iso()
+    with _VOICE_CLONE_JOB_LOCK:
+        row = _VOICE_CLONE_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            return
+        row["progress"] = {
+            "percent": max(0.0, min(100.0, float(percent or 0.0))),
+            "stage": str(stage or "").strip(),
+            "detail": str(detail or "").strip(),
+        }
+        row["updatedAtMs"] = now_ms
+        row["updatedAt"] = now_iso
+        _voice_clone_job_write_store_locked(row)
+
+
+def _voice_clone_job_finalize(
+    job_id: str,
+    *,
+    status: str,
+    result: Optional[dict[str, Any]] = None,
+    error: Optional[dict[str, Any]] = None,
+) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    now_ms = int(time.time() * 1000)
+    now_iso = _voice_clone_job_now_iso()
+    safe_status = str(status or "failed").strip().lower() or "failed"
+    with _VOICE_CLONE_JOB_LOCK:
+        row = _VOICE_CLONE_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            return
+        current_status = str(row.get("status") or "").strip().lower()
+        persisted = _voice_clone_job_load_locked(safe_job_id) or {}
+        cancel_requested = bool(row.get("_cancelRequested")) or bool(persisted.get("_cancelRequested"))
+        if current_status in VOICE_CLONE_JOB_TERMINAL_STATUSES:
+            if current_status == "completed" and cancel_requested:
+                row["status"] = "cancelled"
+                row["result"] = {}
+                row["error"] = {
+                    "status": 499,
+                    "message": "Voice clone job was cancelled.",
+                    "detail": "Voice clone job was cancelled.",
+                    "retryable": False,
+                }
+                row["finishedAtMs"] = now_ms
+                row["finishedAt"] = now_iso
+                row["updatedAtMs"] = now_ms
+                row["updatedAt"] = now_iso
+                row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_JOB_TTL_SEC)
+                row.pop("_payload", None)
+                row.pop("_thread", None)
+                _voice_clone_job_write_store_locked(row)
+            return
+        if safe_status == "completed" and cancel_requested:
+            safe_status = "cancelled"
+            result = {}
+            error = {
+                "status": 499,
+                "message": "Voice clone job was cancelled.",
+                "detail": "Voice clone job was cancelled.",
+                "retryable": False,
+            }
+        row["status"] = safe_status
+        row["result"] = _voice_clone_job_public_result(result)
+        row["error"] = dict(error or {})
+        row["finishedAtMs"] = now_ms
+        row["finishedAt"] = now_iso
+        row["updatedAtMs"] = now_ms
+        row["updatedAt"] = now_iso
+        row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_JOB_TTL_SEC)
+        row.pop("_payload", None)
+        row.pop("_thread", None)
+        _voice_clone_job_write_store_locked(row)
+        _voice_clone_job_cleanup_locked()
+
+
+def _voice_clone_job_build_running_progress(kind: str) -> dict[str, str | float]:
+    safe_kind = str(kind or "").strip().lower()
+    if safe_kind == "duno_native":
+        return {
+            "percent": 64.0,
+            "stage": "Creating reusable clone",
+            "detail": "The backend is creating the DUNO voice and preparing a reusable preview.",
+        }
+    return {
+        "percent": 56.0,
+        "stage": "Processing voice conversion",
+        "detail": "The backend is converting the target clip and packaging the resulting preview.",
+    }
+
+
+def _launch_voice_clone_job(job_id: str) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    thread = threading.Thread(
+        target=_run_voice_clone_job,
+        args=(safe_job_id,),
+        daemon=True,
+        name=f"voice-clone-{safe_job_id[:10]}",
+    )
+    thread.start()
+    with _VOICE_CLONE_JOB_LOCK:
+        row = _VOICE_CLONE_JOBS.get(safe_job_id)
+        if isinstance(row, dict):
+            row["_thread"] = thread
+
+
+def _run_voice_clone_job(job_id: str) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    started_ms = int(time.time() * 1000)
+    started_iso = _voice_clone_job_now_iso()
+    with _VOICE_CLONE_JOB_LOCK:
+        row = _VOICE_CLONE_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            return
+        if bool(row.get("_cancelRequested")):
+            row["status"] = "cancelled"
+            row["startedAtMs"] = started_ms
+            row["startedAt"] = started_iso
+            row["updatedAtMs"] = started_ms
+            row["updatedAt"] = started_iso
+            row["finishedAtMs"] = started_ms
+            row["finishedAt"] = started_iso
+            row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_JOB_TTL_SEC)
+            row["error"] = {}
+            row["result"] = {}
+            row.pop("_payload", None)
+            row.pop("_thread", None)
+            _voice_clone_job_write_store_locked(row)
+            _voice_clone_job_cleanup_locked()
+            return
+        row["status"] = "running"
+        row["startedAtMs"] = started_ms
+        row["startedAt"] = started_iso
+        row["updatedAtMs"] = started_ms
+        row["updatedAt"] = started_iso
+        progress = _voice_clone_job_build_running_progress(row.get("kind"))
+        row["progress"] = {
+            "percent": float(progress.get("percent") or 0.0),
+            "stage": str(progress.get("stage") or "").strip(),
+            "detail": str(progress.get("detail") or "").strip(),
+        }
+        _voice_clone_job_write_store_locked(row)
+        kind = _voice_clone_job_kind_token(row.get("kind"))
+        uid = str(row.get("_uid") or "").strip()
+        payload_data = dict(row.get("_payload") or {})
+    try:
+        if kind == "voice_clone":
+            result = _openvoice_benchmark_payload(
+                OpenVoiceBenchmarkRequest(**payload_data),
+                uid=uid,
+            )
+        elif kind == "duno_native":
+            result = _voice_clone_duno_payload(
+                uid=uid,
+                payload=DunoVoiceCloneRequest(**payload_data),
+            )
+        else:
+            raise RuntimeError(f"Unsupported voice clone job kind: {kind or 'unknown'}")
+    except HTTPException as exc:
+        detail = str(exc.detail or f"{exc.status_code} error").strip() or f"{exc.status_code} error"
+        _voice_clone_job_finalize(
+            safe_job_id,
+            status="failed",
+            error={
+                "status": int(exc.status_code or 500),
+                "message": detail,
+                "detail": detail,
+                "retryable": int(exc.status_code or 500) >= 500,
+            },
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc or "Voice clone job failed.").strip() or "Voice clone job failed."
+        _voice_clone_job_finalize(
+            safe_job_id,
+            status="failed",
+            error={
+                "status": 500,
+                "message": detail,
+                "detail": detail,
+                "retryable": True,
+            },
+        )
+        return
+
+    _voice_clone_job_update_progress(
+        safe_job_id,
+        percent=100.0,
+        stage="Completed",
+        detail="The finished voice clone is ready to reconnect and preview.",
+    )
+    with _VOICE_CLONE_JOB_LOCK:
+        row = _VOICE_CLONE_JOBS.get(safe_job_id)
+        was_cancel_requested = bool((row or {}).get("_cancelRequested"))
+    if was_cancel_requested:
+        _voice_clone_job_finalize(
+            safe_job_id,
+            status="cancelled",
+            error={
+                "status": 499,
+                "message": "Voice clone job was cancelled.",
+                "detail": "Voice clone job was cancelled.",
+                "retryable": False,
+            },
+        )
+        return
+    _voice_clone_job_finalize(safe_job_id, status="completed", result=result)
+
+
+def _openvoice_benchmark_payload(
+    payload: OpenVoiceBenchmarkRequest,
+    *,
+    request: Optional[Request] = None,
+    uid: str = "",
+) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        if request is None:
+            raise HTTPException(status_code=401, detail="Authentication is required.")
+        safe_uid = _require_request_uid(request)
+    uid = safe_uid
     safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     mode = normalize_openvoice_mode(safe_payload.get("mode") or payload.mode)
     run_kind = normalize_openvoice_run_kind(safe_payload.get("runKind") or payload.runKind)
-    request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"ov_{uuid.uuid4().hex[:12]}"
+    request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"vc_{uuid.uuid4().hex[:12]}"
     scoped_request_id = _openvoice_scoped_artifact_id(uid, request_id)
     trace_id = str(safe_payload.get("traceId") or payload.traceId or request_id).strip() or request_id
     language = normalize_openvoice_language(safe_payload.get("language") or payload.language or "EN")
@@ -5214,10 +6060,10 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
         vc_elapsed_ms = max(1, int((time.perf_counter() - vc_start) * 1000))
         final_audio_base64 = str(runtime_payload.get("audioBase64") or "").strip()
         if not final_audio_base64:
-            raise HTTPException(status_code=502, detail="OpenVoice runtime did not return audio.")
+            raise HTTPException(status_code=502, detail="Voice Clone runtime did not return audio.")
         final_audio_bytes = decode_openvoice_audio_base64(final_audio_base64)
         if not final_audio_bytes:
-            raise HTTPException(status_code=502, detail="OpenVoice runtime returned empty audio.")
+            raise HTTPException(status_code=502, detail="Voice Clone runtime returned empty audio.")
         runtime_timings = runtime_payload.get("timings") if isinstance(runtime_payload.get("timings"), dict) else {}
     else:
         runtime_payload = {
@@ -5313,7 +6159,7 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
                 "name": source_voice_name or text or request_id,
                 "geminiVoiceName": source_voice_name or text or request_id,
                 "engine": source_voice_engine or "PRIME",
-                "source": "openvoice",
+                "source": "voice_clone",
                 "isDownloaded": True,
                 "isCloned": True,
                 "previewUrl": result_download_url,
@@ -5360,11 +6206,34 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
     }
 
 
+def _voice_clone_alias_headers(request: Request) -> dict[str, str]:
+    raw_path = str(getattr(getattr(request, "url", None), "path", "") or "").strip()
+    if "/openvoice" not in raw_path:
+        return {}
+    successor_path = raw_path
+    if raw_path.startswith("/voice-clone/openvoice/status"):
+        successor_path = "/voice-clone/status"
+    elif raw_path.startswith("/voice-clone/openvoice/jobs"):
+        successor_path = "/voice-clone/jobs/render"
+    elif raw_path == "/voice-clone/openvoice":
+        successor_path = "/voice-clone/render"
+    elif raw_path.startswith("/voice-clone/openvoice/separate"):
+        successor_path = "/voice-clone/separate"
+    elif raw_path.startswith("/voice-lab/openvoice/artifacts/"):
+        successor_path = raw_path.replace("/voice-lab/openvoice/artifacts/", "/voice-lab/voice-clone/artifacts/", 1)
+    return {
+        "x-voiceflow-deprecated-route": "true",
+        "x-voiceflow-successor-route": successor_path,
+    }
+
+
+@app.get("/voice-clone/status")
 @app.get("/voice-clone/openvoice/status")
-async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
+async def voice_clone_status(request: Request) -> JSONResponse:
     _require_request_uid(request)
     active_provider, client = _resolve_openvoice_client()
     base_payload = _openvoice_provider_status_payload()
+    response_headers = _voice_clone_alias_headers(request)
     try:
         health = client.health()
     except Exception as exc:  # noqa: BLE001
@@ -5374,7 +6243,7 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
                 **base_payload,
                 "ok": False,
                 "state": "offline",
-                "detail": _sanitize_openvoice_runtime_error_detail(exc, fallback="OpenVoice runtime is offline."),
+                "detail": _sanitize_openvoice_runtime_error_detail(exc, fallback="Voice Clone runtime is offline."),
                 "device": "",
                 "warm": False,
                 "engine": "SEED_VC",
@@ -5387,6 +6256,7 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
                     "vcProvider": _openvoice_provider_vc_label(active_provider),
                 },
             },
+            headers=response_headers,
         )
     try:
         capabilities = client.capabilities()
@@ -5396,7 +6266,7 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
     ready = bool(health.get("ok", True)) and supports_vc
     runtime_detail = _sanitize_openvoice_runtime_error_detail(
         RuntimeError(str(health.get("detail") or capabilities.get("detail") or "")),
-        fallback="OpenVoice runtime ready.",
+        fallback="Voice Clone runtime ready.",
     )
     runtime_device = ""
     if not VF_IS_PRODUCTION:
@@ -5422,16 +6292,123 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
                 "device": runtime_device,
                 "vcProvider": _openvoice_provider_vc_label(active_provider),
             },
-        }
+        },
+        headers=response_headers,
     )
 
 
+voice_clone_openvoice_status = voice_clone_status
+
+
+@app.post("/voice-clone/render")
 @app.post("/voice-clone/openvoice")
-def voice_clone_openvoice(payload: OpenVoiceBenchmarkRequest, request: Request) -> JSONResponse:
+def voice_clone_render(payload: OpenVoiceBenchmarkRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    _maybe_run_openvoice_retention_cleanup()
     payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     payload_data.update({"mode": "vc", "runKind": "warm"})
+    request_id = str(payload_data.get("requestId") or payload.requestId or "").strip() or f"vc_{uuid.uuid4().hex[:12]}"
+    trace_id = str(payload_data.get("traceId") or payload.traceId or request_id).strip() or request_id
+    payload_data["requestId"] = request_id
+    payload_data["traceId"] = trace_id
+    raw_idempotency_key = _read_request_idempotency_key(request) or request_id
+    scoped_idempotency_key = _scoped_checkout_idempotency_key(
+        uid=uid,
+        subject="voice-clone:vc",
+        raw_key=raw_idempotency_key,
+    )
+    should_process, idempotency_row = _request_idempotency_begin_or_503(
+        uid=uid,
+        subject="voice-clone:vc",
+        scoped_key=scoped_idempotency_key,
+        ttl_seconds=VF_VOICE_CLONE_IDEMPOTENCY_TTL_SEC,
+        unavailable_detail="Voice Clone idempotency storage is temporarily unavailable.",
+    )
+    if not should_process:
+        cached_response = _idempotency_cached_json_response(idempotency_row)
+        if cached_response is not None:
+            cached_response.headers.update(_voice_clone_alias_headers(request))
+            return cached_response
+        raise HTTPException(status_code=409, detail="Voice Clone request is already in progress for this idempotency key.")
+    idempotency_id = str(idempotency_row.get("id") or "").strip()
     forced_payload = OpenVoiceBenchmarkRequest(**payload_data)
-    return JSONResponse(content=_openvoice_benchmark_payload(forced_payload, request=request))
+    try:
+        response_payload = _openvoice_benchmark_payload(forced_payload, request=request, uid=uid)
+        _request_idempotency_complete(
+            idempotency_id,
+            status_code=200,
+            response_payload=response_payload,
+        )
+        return JSONResponse(
+            content=response_payload,
+            headers=_voice_clone_alias_headers(request),
+        )
+    except HTTPException as exc:
+        _request_idempotency_fail(idempotency_id, error_detail=str(exc.detail or "voice_clone_failed"))
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _request_idempotency_fail(idempotency_id, error_detail=str(exc))
+        raise
+
+
+voice_clone_openvoice = voice_clone_render
+
+
+@app.post("/voice-clone/jobs/render")
+@app.post("/voice-clone/openvoice/jobs")
+def voice_clone_render_job_start(payload: OpenVoiceBenchmarkRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    payload_data.update({"mode": "vc", "runKind": "warm"})
+    request_id = str(payload_data.get("requestId") or "").strip() or f"vc_{uuid.uuid4().hex[:12]}"
+    trace_id = str(payload_data.get("traceId") or request_id).strip() or request_id
+    payload_data["requestId"] = request_id
+    payload_data["traceId"] = trace_id
+    forced_payload = OpenVoiceBenchmarkRequest(**payload_data)
+    safe_payload_data = forced_payload.model_dump(exclude_none=True) if hasattr(forced_payload, "model_dump") else forced_payload.dict(exclude_none=True)
+    response_headers = _voice_clone_alias_headers(request)
+    with _VOICE_CLONE_JOB_LOCK:
+        now_ms = int(time.time() * 1000)
+        now_iso = _voice_clone_job_now_iso()
+        job_id = f"vcjob_{uuid.uuid4().hex[:20]}"
+        row = {
+            "jobId": job_id,
+            "requestId": request_id,
+            "kind": "voice_clone",
+            "status": "queued",
+            "progress": {
+                "percent": 12.0,
+                "stage": "Queued for reconnect-safe processing",
+                "detail": "The backend accepted the voice conversion request and will keep it reconnectable.",
+            },
+            "createdAtMs": now_ms,
+            "updatedAtMs": now_ms,
+            "startedAtMs": 0,
+            "finishedAtMs": 0,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "startedAt": "",
+            "finishedAt": "",
+            "result": {},
+            "error": {},
+            "expiresAtUnix": 0,
+            "_uid": uid,
+            "_payload": safe_payload_data,
+            "_cancelRequested": False,
+        }
+        persisted, is_new = _voice_clone_job_create_or_get_locked(row)
+        payload_out = _voice_clone_job_status_payload(persisted)
+        if not is_new:
+            return JSONResponse(
+                payload_out,
+                status_code=_voice_clone_job_response_status(persisted),
+                headers=response_headers,
+            )
+    _launch_voice_clone_job(job_id)
+    return JSONResponse(payload_out, status_code=202, headers=response_headers)
+
+
+voice_clone_openvoice_job_start = voice_clone_render_job_start
 
 
 class DunoVoiceCloneRequest(BaseModel):
@@ -5448,10 +6425,10 @@ class DunoVoiceCloneRequest(BaseModel):
     traceId: str = Field(default="", max_length=128)
 
 
-@app.post("/voice-clone/duno")
-@app.post("/voice-clone/duno/native")
-def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...)) -> JSONResponse:
-    uid = _require_request_uid(request)
+def _voice_clone_duno_payload(*, uid: str, payload: DunoVoiceCloneRequest) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=401, detail="Authentication is required.")
     safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     source_voice_engine = str(safe_payload.get("sourceVoiceEngine") or payload.sourceVoiceEngine or "DUNO").strip().upper() or "DUNO"
     if source_voice_engine != "DUNO":
@@ -5474,7 +6451,7 @@ def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...
         reference_audio_base64=reference_audio_base64,
     )
     cached_voice_id = _duno_lookup_cached_voice_id(
-        uid=uid,
+        uid=safe_uid,
         speaker=speaker,
         reference_hash=reference_hash,
         model=model,
@@ -5494,7 +6471,7 @@ def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...
 
     if reference_hash:
         _duno_store_cached_voice_id(
-            uid=uid,
+            uid=safe_uid,
             speaker=speaker,
             reference_hash=reference_hash,
             model=model,
@@ -5530,21 +6507,298 @@ def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...
         "sourceVoiceName": source_label,
         "sourceVoiceEngine": "DUNO",
     }
-    return JSONResponse(
-        content={
-            "ok": True,
-            "engine": "DUNO",
-            "voiceId": voice_id,
-            "model": model,
-            "cached": bool(cached_voice_id),
-            "referenceHash": reference_hash,
-            "sourceVoiceId": source_voice_id,
-            "sourceVoiceName": source_label,
-            "sourceVoiceEngine": "DUNO",
-            "referenceAudioName": reference_audio_name,
-            "clonedVoice": cloned_voice,
+    return {
+        "ok": True,
+        "engine": "DUNO",
+        "voiceId": voice_id,
+        "model": model,
+        "cached": bool(cached_voice_id),
+        "referenceHash": reference_hash,
+        "sourceVoiceId": source_voice_id,
+        "sourceVoiceName": source_label,
+        "sourceVoiceEngine": "DUNO",
+        "referenceAudioName": reference_audio_name,
+        "clonedVoice": cloned_voice,
+    }
+
+
+@app.post("/voice-clone/duno")
+@app.post("/voice-clone/duno/native")
+def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...)) -> JSONResponse:
+    uid = _require_request_uid(request)
+    return JSONResponse(content=_voice_clone_duno_payload(uid=uid, payload=payload))
+
+
+@app.post("/voice-clone/duno/native/jobs")
+def voice_clone_duno_job_start(request: Request, payload: DunoVoiceCloneRequest = Body(...)) -> JSONResponse:
+    uid = _require_request_uid(request)
+    payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    request_id = str(payload_data.get("requestId") or "").strip() or f"duno_{uuid.uuid4().hex[:12]}"
+    trace_id = str(payload_data.get("traceId") or request_id).strip() or request_id
+    payload_data["requestId"] = request_id
+    payload_data["traceId"] = trace_id
+    normalized_payload = DunoVoiceCloneRequest(**payload_data)
+    safe_payload_data = normalized_payload.model_dump(exclude_none=True) if hasattr(normalized_payload, "model_dump") else normalized_payload.dict(exclude_none=True)
+    with _VOICE_CLONE_JOB_LOCK:
+        now_ms = int(time.time() * 1000)
+        now_iso = _voice_clone_job_now_iso()
+        job_id = f"vcjob_{uuid.uuid4().hex[:20]}"
+        row = {
+            "jobId": job_id,
+            "requestId": request_id,
+            "kind": "duno_native",
+            "status": "queued",
+            "progress": {
+                "percent": 12.0,
+                "stage": "Queued for reconnect-safe processing",
+                "detail": "The backend accepted the DUNO clone request and will keep it reconnectable.",
+            },
+            "createdAtMs": now_ms,
+            "updatedAtMs": now_ms,
+            "startedAtMs": 0,
+            "finishedAtMs": 0,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "startedAt": "",
+            "finishedAt": "",
+            "result": {},
+            "error": {},
+            "expiresAtUnix": 0,
+            "_uid": uid,
+            "_payload": safe_payload_data,
+            "_cancelRequested": False,
         }
+        persisted, is_new = _voice_clone_job_create_or_get_locked(row)
+        payload_out = _voice_clone_job_status_payload(persisted)
+        if not is_new:
+            return JSONResponse(payload_out, status_code=_voice_clone_job_response_status(persisted))
+    _launch_voice_clone_job(job_id)
+    return JSONResponse(payload_out, status_code=202)
+
+
+@app.get("/voice-clone/jobs/{job_id}")
+def voice_clone_job_status(job_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    safe_job_id = str(job_id or "").strip()
+    row = _voice_clone_job_load_locked(safe_job_id)
+    if not isinstance(row, dict) or str(row.get("_uid") or "").strip() != uid:
+        raise HTTPException(status_code=404, detail="Voice clone job not found.")
+    payload_out = _voice_clone_job_status_payload(row)
+    status_code = _voice_clone_job_response_status(row)
+    return JSONResponse(payload_out, status_code=status_code)
+
+
+@app.get("/voice-clone/jobs/by-request/{request_id}")
+def voice_clone_job_status_by_request(request_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    row = _voice_clone_job_find_by_request_id(uid, request_id)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=404, detail="Voice clone job not found.")
+    payload_out = _voice_clone_job_status_payload(row)
+    status_code = _voice_clone_job_response_status(row)
+    return JSONResponse(payload_out, status_code=status_code)
+
+
+def _voice_clone_job_cancel(job_id: str, *, uid: str, is_admin: bool) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_job_id = str(job_id or "").strip()
+    if not safe_uid or not safe_job_id:
+        raise HTTPException(status_code=404, detail="Voice clone job not found.")
+    with _VOICE_CLONE_JOB_LOCK:
+        _voice_clone_job_cleanup_locked()
+        row = _VOICE_CLONE_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            loaded = _voice_clone_job_load_locked(safe_job_id)
+            if isinstance(loaded, dict):
+                row = loaded
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="Voice clone job not found.")
+        owner_uid = str(row.get("_uid") or "").strip()
+        if not is_admin and owner_uid != safe_uid:
+            raise HTTPException(status_code=404, detail="Voice clone job not found.")
+        status = str(row.get("status") or "").strip().lower()
+        now_ms = int(time.time() * 1000)
+        now_iso = _voice_clone_job_now_iso()
+        row["_cancelRequested"] = True
+        row["updatedAtMs"] = now_ms
+        row["updatedAt"] = now_iso
+        if status in VOICE_CLONE_JOB_TERMINAL_STATUSES:
+            return _voice_clone_job_snapshot(row)
+        row["progress"] = {
+            "percent": max(90.0, float((row.get("progress") or {}).get("percent") or 90.0)),
+            "stage": "Cancelling request",
+            "detail": "Cancellation requested. Waiting for the backend worker to settle this clone safely.",
+        }
+        if status == "queued":
+            row["status"] = "cancelled"
+            row["finishedAtMs"] = now_ms
+            row["finishedAt"] = now_iso
+            row["error"] = {
+                "status": 409,
+                "message": "Voice clone job was cancelled.",
+                "detail": "Voice clone job was cancelled.",
+                "retryable": False,
+            }
+            row["result"] = {}
+            row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_JOB_TTL_SEC)
+            row.pop("_payload", None)
+            row.pop("_thread", None)
+            _voice_clone_job_write_store_locked(row)
+            _voice_clone_job_cleanup_locked()
+        else:
+            row["status"] = "cancelled"
+            row["finishedAtMs"] = now_ms
+            row["finishedAt"] = now_iso
+            row["error"] = {
+                "status": 409,
+                "message": "Voice clone cancellation requested.",
+                "detail": "Voice clone cancellation requested.",
+                "retryable": False,
+            }
+            row["result"] = {}
+            row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_JOB_TTL_SEC)
+            row.pop("_payload", None)
+            row.pop("_thread", None)
+            _voice_clone_job_write_store_locked(row)
+            _voice_clone_job_cleanup_locked()
+        return _voice_clone_job_snapshot(row)
+
+
+@app.post("/voice-clone/jobs/{job_id}/cancel")
+@app.post("/voice-clone/openvoice/jobs/{job_id}/cancel")
+@app.post("/voice-clone/duno/native/jobs/{job_id}/cancel")
+def voice_clone_job_cancel(job_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    row = _voice_clone_job_cancel(job_id, uid=uid, is_admin=is_admin)
+    payload_out = _voice_clone_job_status_payload(row)
+    status_code = _voice_clone_job_response_status(row)
+    return JSONResponse(
+        payload_out,
+        status_code=status_code,
+        headers=_voice_clone_alias_headers(request),
     )
+
+
+def _voice_clone_separation_vc_billing_quote(duration_sec: float) -> dict[str, Any]:
+    safe_duration = _as_positive_number(duration_sec)
+    minimum_billable = _as_positive_number(VF_VOICE_CLONE_SEPARATION_BILLING_MIN_SECONDS)
+    billable_duration = max(safe_duration, minimum_billable) if safe_duration > 0 else minimum_billable
+    enabled = bool(
+        VF_VOICE_CLONE_SEPARATION_BILLING_ENABLED
+        and _as_positive_number(VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN) > 0
+        and billable_duration > 0
+    )
+    consumed_units = (
+        _as_positive_number((billable_duration / 60.0) * _as_positive_number(VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN))
+        if enabled
+        else 0.0
+    )
+    charged_inr = (
+        _as_positive_number((billable_duration / 60.0) * _as_positive_number(VF_VOICE_CLONE_SEPARATION_INR_PER_MIN))
+        if enabled
+        else 0.0
+    )
+    return {
+        "enabled": enabled,
+        "durationSec": round(safe_duration, 6),
+        "billableDurationSec": round(billable_duration, 6),
+        "rateInrPerMin": round(_as_positive_number(VF_VOICE_CLONE_SEPARATION_INR_PER_MIN), 6),
+        "rateVcUnitsPerMin": round(_as_positive_number(VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN), 6),
+        "consumedUnits": round(consumed_units, 6),
+        "chargedInr": round(charged_inr, 6),
+        "rule": "duration_minutes_x_vc_rate",
+    }
+
+
+def _charge_voice_clone_separation_vc(
+    *,
+    uid: str,
+    request_id: str,
+    billing_key: str,
+    trace_id: str,
+    duration_sec: float,
+    source_audio_name: str,
+    source_separation_model: str,
+    source_separation_device: str,
+    provider_label: str,
+) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_request_id = str(request_id or "").strip()
+    safe_billing_key = str(billing_key or "").strip()
+    quote = _voice_clone_separation_vc_billing_quote(duration_sec)
+    if not quote.get("enabled"):
+        return {
+            **quote,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {
+                "vcFreeBalance": _as_positive_number(_load_entitlement(safe_uid).get("vcFreeBalance")) if safe_uid else 0.0,
+                "vcPaidBalance": _as_positive_number(_load_entitlement(safe_uid).get("vcPaidBalance")) if safe_uid else 0.0,
+            },
+            "idempotentReuse": False,
+        }
+
+    debit_amount = _as_positive_number(quote.get("consumedUnits"))
+    if not safe_uid or debit_amount <= 0:
+        return {
+            **quote,
+            "reservedUnits": round(debit_amount, 6),
+            "consumedUnits": round(debit_amount, 6),
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
+    tx_seed = safe_billing_key or safe_request_id or f"sep_{uuid.uuid4().hex[:12]}"
+    tx_id = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", f"vc_sep_{safe_uid}_{tx_seed}")[:180]
+    debited, idempotent_reuse, entitlement, breakdown = _debit_vc_wallet(
+        uid=safe_uid,
+        amount=debit_amount,
+        reason="voice_clone_separation",
+        transaction_id=tx_id,
+        metadata={
+            "requestId": safe_request_id,
+            "billingKey": tx_seed,
+            "traceId": str(trace_id or "").strip(),
+            "sourceAudioName": str(source_audio_name or "").strip(),
+            "sourceSeparationModel": str(source_separation_model or "").strip(),
+            "sourceSeparationDevice": str(source_separation_device or "").strip(),
+            "provider": str(provider_label or "").strip(),
+            "durationSec": round(_as_positive_number(duration_sec), 6),
+            "inrPerMin": round(_as_positive_number(VF_VOICE_CLONE_SEPARATION_INR_PER_MIN), 6),
+            "vcUnitsPerMin": round(_as_positive_number(VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN), 6),
+        },
+    )
+    if not debited:
+        available = _as_positive_number(
+            _as_positive_number(entitlement.get("vcFreeBalance")) + _as_positive_number(entitlement.get("vcPaidBalance"))
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Insufficient VC balance for source separation. "
+                f"Required {debit_amount:.3f} VC, available {available:.3f} VC."
+            ),
+        )
+
+    return {
+        **quote,
+        "reservedUnits": round(debit_amount, 6),
+        "consumedUnits": round(debit_amount, 6),
+        "breakdown": {
+            "vcFree": round(_as_positive_number(breakdown.get("vcFree")), 6),
+            "vcPaid": round(_as_positive_number(breakdown.get("vcPaid")), 6),
+        },
+        "remaining": {
+            "vcFreeBalance": round(_as_positive_number(entitlement.get("vcFreeBalance")), 6),
+            "vcPaidBalance": round(_as_positive_number(entitlement.get("vcPaidBalance")), 6),
+        },
+        "idempotentReuse": bool(idempotent_reuse),
+        "transactionId": tx_id,
+    }
 
 
 class OpenVoiceStemSeparationRequest(BaseModel):
@@ -5571,7 +6825,7 @@ class VoiceCloneStressConfig(BaseModel):
 
 
 class VoiceCloneStressStartRequest(BaseModel):
-    benchmarkTarget: str = Field(default="OPENVOICE_L4_VC", max_length=64)
+    benchmarkTarget: str = Field(default="VOICE_CLONE_L4_VC", max_length=64)
     config: VoiceCloneStressConfig = Field(default_factory=VoiceCloneStressConfig)
     referenceAudioBase64: str = Field(default="", max_length=20_000_000)
     referenceAudioName: str = Field(default="reference.wav", max_length=256)
@@ -5585,9 +6839,12 @@ class VoiceCloneProviderPatchRequest(BaseModel):
     activeProvider: str = Field(default=OPENVOICE_PROVIDER_DEFAULT, max_length=64)
 
 
+@app.post("/voice-clone/separate")
 @app.post("/voice-clone/openvoice/separate")
-def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, request: Request) -> JSONResponse:
+def voice_clone_separate(payload: OpenVoiceStemSeparationRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    _maybe_run_openvoice_retention_cleanup()
+    response_headers = _voice_clone_alias_headers(request)
     safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"sep_{uuid.uuid4().hex[:12]}"
     trace_id = str(safe_payload.get("traceId") or payload.traceId or request_id).strip() or request_id
@@ -5632,11 +6889,33 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
         start_sec_raw=safe_payload.get("sourceTrimStartSec") if "sourceTrimStartSec" in safe_payload else payload.sourceTrimStartSec,
         end_sec_raw=safe_payload.get("sourceTrimEndSec") if "sourceTrimEndSec" in safe_payload else payload.sourceTrimEndSec,
     )
+    raw_idempotency_key = _read_request_idempotency_key(request) or request_id
+    scoped_idempotency_key = _scoped_checkout_idempotency_key(
+        uid=uid,
+        subject="voice-clone:separate",
+        raw_key=raw_idempotency_key,
+    )
+    should_process, idempotency_row = _request_idempotency_begin_or_503(
+        uid=uid,
+        subject="voice-clone:separate",
+        scoped_key=scoped_idempotency_key,
+        ttl_seconds=VF_VOICE_CLONE_IDEMPOTENCY_TTL_SEC,
+        unavailable_detail="Voice Clone separation idempotency storage is temporarily unavailable.",
+    )
+    if not should_process:
+        cached_response = _idempotency_cached_json_response(idempotency_row)
+        if cached_response is not None:
+            cached_response.headers.update(response_headers)
+            return cached_response
+        raise HTTPException(status_code=409, detail="Voice Clone separation request is already in progress for this idempotency key.")
+    idempotency_id = str(idempotency_row.get("id") or "").strip()
+    billing_request_key = scoped_idempotency_key or request_id
 
     preflight_artifact_id = f"{scoped_request_id}_vocals"
     try:
         build_openvoice_artifact_url(preflight_artifact_id)
     except RuntimeError as exc:
+        _request_idempotency_fail(idempotency_id, error_detail=str(exc))
         raise HTTPException(
             status_code=503,
             detail=_sanitize_openvoice_runtime_error_detail(
@@ -5647,6 +6926,24 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
 
     temp_dir = tempfile.mkdtemp(prefix="vf_openvoice_sep_")
     separation_elapsed_ms = 0
+    runtime_source_separation: dict[str, Any] = {"enabled": False}
+    separation_notes: list[str] = []
+    cache_key = ""
+    source_duration_sec = 0.0
+    vc_billing: dict[str, Any] = {
+        "enabled": False,
+        "reservedUnits": 0.0,
+        "consumedUnits": 0.0,
+        "chargedInr": 0.0,
+        "rateInrPerMin": round(_as_positive_number(VF_VOICE_CLONE_SEPARATION_INR_PER_MIN), 6),
+        "rateVcUnitsPerMin": round(_as_positive_number(VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN), 6),
+        "durationSec": 0.0,
+        "billableDurationSec": 0.0,
+        "rule": "duration_minutes_x_vc_rate",
+        "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+        "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+        "idempotentReuse": False,
+    }
     try:
         source_suffix = Path(source_audio_name).suffix or ".wav"
         source_input_path = Path(temp_dir) / f"source_input{source_suffix}"
@@ -5661,16 +6958,84 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
                 end_ms=trim_end_ms,
             )
 
-        separation_started_at = time.perf_counter()
-        speech_path, background_path, cache_key = _ensure_source_separation(
-            source_path_for_separation,
-            source_separation_model,
-            device_preference=source_separation_device,
-            trim_window_key=trim_window_key,
+        vocals_bytes = b""
+        background_bytes = b""
+        modal_exc: Optional[Exception] = None
+        modal_source_audio_bytes = source_path_for_separation.read_bytes()
+        modal_source_audio_b64 = encode_openvoice_audio_base64(modal_source_audio_bytes)
+        modal_runtime_configured = _voice_clone_separation_modal_client() is not None
+        if VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED and modal_runtime_configured and modal_source_audio_b64:
+            try:
+                (
+                    vocals_bytes,
+                    background_bytes,
+                    runtime_source_separation,
+                    separation_elapsed_ms,
+                    separation_notes,
+                ) = _run_modal_source_separation(
+                    uid=uid,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    source_audio_base64=modal_source_audio_b64,
+                    source_audio_name=Path(source_path_for_separation).name,
+                    source_separation_model=source_separation_model,
+                    source_separation_device=source_separation_device,
+                    trim_requested=trim_requested,
+                    trim_start_sec=trim_start_sec,
+                    trim_end_sec=trim_end_sec,
+                )
+                cache_key = str(runtime_source_separation.get("cacheKey") or "").strip()
+                source_duration_sec = _as_positive_number(runtime_source_separation.get("durationSec"))
+            except Exception as exc:  # noqa: BLE001
+                modal_exc = exc
+
+        if not vocals_bytes or not background_bytes:
+            if modal_exc is not None and not VF_VOICE_CLONE_SEPARATION_MODAL_ALLOW_LOCAL_FALLBACK:
+                raise modal_exc
+            separation_started_at = time.perf_counter()
+            speech_path, background_path, cache_key = _ensure_source_separation(
+                source_path_for_separation,
+                source_separation_model,
+                device_preference=source_separation_device,
+                trim_window_key=trim_window_key,
+            )
+            separation_elapsed_ms = max(1, int((time.perf_counter() - separation_started_at) * 1000))
+            vocals_bytes = speech_path.read_bytes()
+            background_bytes = background_path.read_bytes()
+            runtime_source_separation = {
+                "enabled": True,
+                "pipeline": "demucs",
+                "model": source_separation_model,
+                "device": source_separation_device,
+                "cacheKey": cache_key,
+                "timeoutSec": int(SEPARATION_TIMEOUT_SEC),
+                "trimApplied": bool(trim_requested),
+                "provider": "local",
+                "providerLabel": "local-demucs",
+            }
+            if trim_requested:
+                runtime_source_separation.update(
+                    {
+                        "trimStartSec": trim_start_sec,
+                        "trimEndSec": trim_end_sec,
+                        "trimWindowKey": trim_window_key,
+                    }
+                )
+            if source_separation_device.lower() in {"cpu", "cpu_only"}:
+                separation_notes = ["source_audio_vocals_extracted_demucs_cpu_fast"]
+            else:
+                separation_notes = ["source_audio_vocals_extracted_demucs"]
+            if modal_exc is not None:
+                separation_notes.append("source_audio_vocals_extracted_demucs_modal_fallback_local")
+
+        source_duration_sec = max(
+            _as_positive_number(source_duration_sec),
+            _as_positive_number(_wav_duration_seconds_from_bytes(vocals_bytes)),
         )
-        separation_elapsed_ms = max(1, int((time.perf_counter() - separation_started_at) * 1000))
-        vocals_bytes = speech_path.read_bytes()
-        background_bytes = background_path.read_bytes()
+        if source_duration_sec <= 0 and trim_requested and trim_start_sec is not None and trim_end_sec is not None:
+            source_duration_sec = max(0.0, float(trim_end_sec) - float(trim_start_sec))
+        if source_duration_sec > 0:
+            runtime_source_separation["durationSec"] = round(source_duration_sec, 6)
 
         vocals_artifact = save_openvoice_artifact(vocals_bytes, f"{scoped_request_id}_vocals")
         background_artifact = save_openvoice_artifact(background_bytes, f"{scoped_request_id}_background")
@@ -5678,6 +7043,7 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
             vocals_artifact_payload = _openvoice_artifact_payload(vocals_artifact)
             background_artifact_payload = _openvoice_artifact_payload(background_artifact)
         except RuntimeError as exc:
+            _request_idempotency_fail(idempotency_id, error_detail=str(exc))
             raise HTTPException(
                 status_code=503,
                 detail=_sanitize_openvoice_runtime_error_detail(
@@ -5685,9 +7051,23 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
                     fallback="Artifact delivery is temporarily unavailable.",
                 ),
             ) from exc
+
+        vc_billing = _charge_voice_clone_separation_vc(
+            uid=uid,
+            request_id=request_id,
+            billing_key=billing_request_key,
+            trace_id=trace_id,
+            duration_sec=source_duration_sec,
+            source_audio_name=source_audio_name,
+            source_separation_model=source_separation_model,
+            source_separation_device=source_separation_device,
+            provider_label=str(runtime_source_separation.get("provider") or "local"),
+        )
     except HTTPException:
+        _request_idempotency_fail(idempotency_id, error_detail="openvoice_separation_http_error")
         raise
     except Exception as exc:  # noqa: BLE001
+        _request_idempotency_fail(idempotency_id, error_detail=str(exc))
         raise HTTPException(
             status_code=503,
             detail=_sanitize_openvoice_runtime_error_detail(
@@ -5698,46 +7078,42 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
     finally:
         _cleanup_paths(temp_dir)
 
-    runtime_source_separation = {
-        "enabled": True,
-        "pipeline": "demucs",
-        "model": source_separation_model,
-        "device": source_separation_device,
-        "cacheKey": cache_key,
-        "timeoutSec": int(SEPARATION_TIMEOUT_SEC),
-        "trimApplied": bool(trim_requested),
-    }
-    if trim_requested:
-        runtime_source_separation.update(
-            {
-                "trimStartSec": trim_start_sec,
-                "trimEndSec": trim_end_sec,
-                "trimWindowKey": trim_window_key,
-            }
-        )
-
-    return JSONResponse(
-        content={
-            "ok": True,
-            "status": "completed",
-            "requestId": request_id,
-            "traceId": trace_id,
-            "sourceAudioName": source_audio_name,
-            "timings": {
-                "sourceSeparationMs": separation_elapsed_ms,
-                "totalMs": separation_elapsed_ms,
-            },
-            "runtime": {
-                "sourceSeparation": runtime_source_separation,
-            },
-            "vocalsArtifact": vocals_artifact_payload,
-            "backgroundArtifact": background_artifact_payload,
-            "notes": ["source_audio_vocals_extracted_demucs_cpu_fast"]
+    response_payload = {
+        "ok": True,
+        "status": "completed",
+        "requestId": request_id,
+        "traceId": trace_id,
+        "sourceAudioName": source_audio_name,
+        "timings": {
+            "sourceSeparationMs": separation_elapsed_ms,
+            "totalMs": separation_elapsed_ms,
+        },
+        "runtime": {
+            "sourceSeparation": runtime_source_separation,
+        },
+        "vocalsArtifact": vocals_artifact_payload,
+        "backgroundArtifact": background_artifact_payload,
+        "vcBilling": vc_billing,
+        "consumedVcUnits": _as_positive_number(vc_billing.get("consumedUnits")),
+        "notes": separation_notes or (
+            ["source_audio_vocals_extracted_demucs_cpu_fast"]
             if source_separation_device.lower() in {"cpu", "cpu_only"}
-            else ["source_audio_vocals_extracted_demucs"],
-            "message": "",
-        }
+            else ["source_audio_vocals_extracted_demucs"]
+        ),
+        "message": "",
+    }
+    _request_idempotency_complete(
+        idempotency_id,
+        status_code=200,
+        response_payload=response_payload,
     )
+    return JSONResponse(
+        content=response_payload,
+        headers=response_headers,
+    )
+
+
+voice_clone_openvoice_separate = voice_clone_separate
 
 
 def _voice_clone_stress_now_iso() -> str:
@@ -5758,11 +7134,20 @@ def _voice_clone_stress_cleanup_locked(now_unix: Optional[int] = None) -> None:
 
 def _voice_clone_stress_normalize_target(raw_value: object) -> str:
     token = str(raw_value or "").strip().upper()
-    if token in {"OPENVOICE", "OPENVOICE_L4", "OPENVOICE_L4_VC", "L4", "VC"}:
-        return "OPENVOICE_L4_VC"
+    if token in {
+        "VOICE_CLONE",
+        "VOICE_CLONE_L4",
+        "VOICE_CLONE_L4_VC",
+        "OPENVOICE",
+        "OPENVOICE_L4",
+        "OPENVOICE_L4_VC",
+        "L4",
+        "VC",
+    }:
+        return "VOICE_CLONE_L4_VC"
     if token in {"GEMINI", "GEMINI_FLASH", "GEMINI_FLASH_TTS", "FLASH"}:
         return "GEMINI_FLASH_TTS"
-    raise HTTPException(status_code=400, detail="benchmarkTarget must be OPENVOICE_L4_VC or GEMINI_FLASH_TTS.")
+    raise HTTPException(status_code=400, detail="benchmarkTarget must be VOICE_CLONE_L4_VC or GEMINI_FLASH_TTS.")
 
 
 def _voice_clone_stress_percentile_ms(values: list[int], percentile: float) -> int:
@@ -5897,7 +7282,7 @@ def _voice_clone_stress_gemini_flash_call(
 
 def _voice_clone_stress_runtime_preflight(target: str, provider: Optional[str] = None) -> dict[str, Any]:
     safe_target = _voice_clone_stress_normalize_target(target)
-    if safe_target == "OPENVOICE_L4_VC":
+    if safe_target == "VOICE_CLONE_L4_VC":
         active_provider, client = _resolve_openvoice_client(provider)
         try:
             health = client.health()
@@ -6090,7 +7475,7 @@ def _run_voice_clone_stress_job(job_id: str) -> None:
             stop_reason = "cancel_requested"
             break
         warmup_request_id = f"{safe_job_id}_warmup_{warmup_index + 1}_{uuid.uuid4().hex[:6]}"
-        if target == "OPENVOICE_L4_VC":
+        if target == "VOICE_CLONE_L4_VC":
             warmup_result = _voice_clone_stress_openvoice_call(
                 request_payload=request_payload,
                 timeout_sec=request_timeout_sec,
@@ -6154,7 +7539,7 @@ def _run_voice_clone_stress_job(job_id: str) -> None:
                         continue
 
                     request_id = f"{safe_job_id}_s{step_index}_{dispatched + 1}_{uuid.uuid4().hex[:6]}"
-                    if target == "OPENVOICE_L4_VC":
+                    if target == "VOICE_CLONE_L4_VC":
                         future = executor.submit(
                             _voice_clone_stress_openvoice_call,
                             request_payload=request_payload,
@@ -6305,7 +7690,7 @@ def admin_voice_clone_stress_start(payload: VoiceCloneStressStartRequest, reques
         raise HTTPException(status_code=400, detail="stepRpm must be greater than 0.")
 
     request_payload: dict[str, Any] = {}
-    if target == "OPENVOICE_L4_VC":
+    if target == "VOICE_CLONE_L4_VC":
         try:
             reference_audio_bytes = decode_openvoice_audio_base64(payload.referenceAudioBase64 or "")
             source_audio_bytes = decode_openvoice_audio_base64(payload.sourceAudioBase64 or "")
@@ -6314,9 +7699,9 @@ def admin_voice_clone_stress_start(payload: VoiceCloneStressStartRequest, reques
                 raise HTTPException(status_code=413, detail="Stress-test audio payload exceeds the maximum allowed size.") from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not reference_audio_bytes:
-            raise HTTPException(status_code=400, detail="referenceAudioBase64 is required for OPENVOICE_L4_VC.")
+            raise HTTPException(status_code=400, detail="referenceAudioBase64 is required for VOICE_CLONE_L4_VC.")
         if not source_audio_bytes:
-            raise HTTPException(status_code=400, detail="sourceAudioBase64 is required for OPENVOICE_L4_VC.")
+            raise HTTPException(status_code=400, detail="sourceAudioBase64 is required for VOICE_CLONE_L4_VC.")
         request_payload = {
             "mode": "vc",
             "runKind": "warm",
@@ -6456,8 +7841,9 @@ def admin_patch_voice_clone_provider(payload: VoiceCloneProviderPatchRequest, re
     )
 
 
+@app.get("/voice-lab/voice-clone/artifacts/{artifact_id}")
 @app.get("/voice-lab/openvoice/artifacts/{artifact_id}")
-async def voice_lab_openvoice_artifact(
+async def voice_lab_voice_clone_artifact(
     artifact_id: str,
     request: Request,
     sig: str = Query(default=""),
@@ -6473,7 +7859,7 @@ async def voice_lab_openvoice_artifact(
             raise HTTPException(status_code=403, detail="Not authorized to access this artifact.")
     if not verify_openvoice_artifact_signature(safe_artifact_id, sig):
         raise HTTPException(status_code=403, detail="Invalid artifact signature.")
-    if VF_OPENVOICE_ARTIFACT_ONE_TIME and not _register_openvoice_artifact_signature_use(sig):
+    if (VF_VOICE_CLONE_ARTIFACT_ONE_TIME or VF_OPENVOICE_ARTIFACT_ONE_TIME) and not _register_openvoice_artifact_signature_use(sig):
         raise HTTPException(status_code=403, detail="Artifact signature already used.")
     artifact_path = (OPENVOICE_ARTIFACT_ROOT / f"{safe_artifact_id}.wav").resolve()
     try:
@@ -6482,7 +7868,13 @@ async def voice_lab_openvoice_artifact(
         raise HTTPException(status_code=404, detail="Artifact not found.")
     if not artifact_path.exists():
         raise HTTPException(status_code=404, detail="Artifact not found.")
-    return FileResponse(str(artifact_path), media_type="audio/wav", filename=artifact_path.name)
+    response = FileResponse(str(artifact_path), media_type="audio/wav", filename=artifact_path.name)
+    for key, value in _voice_clone_alias_headers(request).items():
+        response.headers[key] = value
+    return response
+
+
+voice_lab_openvoice_artifact = voice_lab_voice_clone_artifact
 
 
 def _runtime_http_session() -> requests.Session:
@@ -6664,7 +8056,7 @@ class _RazorpayBillingAdapter:
         safe_uid = str(kwargs.get("uid") or notes.get("uid") or "").strip()
         if safe_uid and "uid" not in notes:
             notes["uid"] = safe_uid
-        display_name = str(kwargs.get("name") or safe_uid or "VoiceFlow User").strip() or "VoiceFlow User"
+        display_name = str(kwargs.get("name") or safe_uid or "V FLOW AI User").strip() or "V FLOW AI User"
         return razorpay_sdk.create_customer(
             name=display_name,
             email=str(kwargs.get("email") or "").strip(),
@@ -7426,14 +8818,15 @@ def _enforce_tts_plan_guardrails(
     *,
     engine: str,
     bypass: bool = False,
+    entitlement: Optional[dict[str, Any]] = None,
 ) -> tuple[str, str, dict[str, int]]:
-    entitlement = _load_entitlement(uid)
-    plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
+    resolved_entitlement = entitlement if isinstance(entitlement, dict) else _load_entitlement(uid)
+    plan_name = _normalize_plan_name(str(resolved_entitlement.get("plan") or "Free"))
     plan_key, guardrails = _tts_guardrail_for_plan(plan_name)
     if bypass:
         return plan_name, plan_key, guardrails
     safe_engine = _resolve_internal_engine_token(engine) or _normalize_engine_name(engine)
-    allowed_engines = _allowed_engines_for_entitlement(entitlement)
+    allowed_engines = _allowed_engines_for_entitlement(resolved_entitlement)
     if safe_engine not in set(allowed_engines):
         raise HTTPException(
             status_code=403,
@@ -7730,17 +9123,22 @@ async def _user_id_requirement_middleware(request: Request, call_next: Any) -> R
         return await call_next(request)
     if _request_is_admin(request, uid):
         return await call_next(request)
-    profile = _user_profile_read(uid)
-    if isinstance(profile, dict):
-        user_id = str(profile.get("userId") or "").strip().lower()
-        if user_id:
-            request.state.user_id = user_id
-            return await call_next(request)
-    return _cors_json_response(
-        request,
-        status_code=428,
-        content={"detail": "Complete your userId before using this feature."},
-    )
+    try:
+        profile = _ensure_user_profile(
+            uid,
+            request=request,
+            allow_auto_backfill=True,
+            repair_user_id_collisions=True,
+            suppress_backfill_errors=True,
+        )
+        if isinstance(profile, dict):
+            user_id = str(profile.get("userId") or "").strip().lower()
+            if user_id:
+                request.state.user_id = user_id
+    except Exception:
+        # Do not block requests with manual user-id setup prompts.
+        pass
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -7882,7 +9280,40 @@ def _user_profile_backfill_candidates(uid: str, email: str = "", display_name: s
 def _sanitize_user_profile_row(row: dict[str, Any]) -> dict[str, Any]:
     payload = dict(row or {})
     payload.pop(_USER_PROFILE_LOCAL_FALLBACK_FLAG, None)
+    billing_profile = _normalize_account_billing_profile(payload.get("billingProfile"))
+    if billing_profile:
+        payload["billingProfile"] = billing_profile
+    else:
+        payload.pop("billingProfile", None)
     return payload
+
+
+def _normalize_account_billing_profile(value: Any) -> Optional[dict[str, str]]:
+    if value is None:
+        return None
+    data = value if isinstance(value, dict) else {}
+
+    def _clean(field: str, max_len: int, *, lower: bool = False) -> str:
+        token = str(data.get(field) or "").strip()
+        token = re.sub(r"\s+", " ", token)
+        if lower:
+            token = token.lower()
+        return token[:max_len]
+
+    profile = {
+        "companyName": _clean("companyName", 160),
+        "billingEmail": _clean("billingEmail", 240, lower=True),
+        "phone": _clean("phone", 40),
+        "taxId": _clean("taxId", 64),
+        "addressLine1": _clean("addressLine1", 160),
+        "addressLine2": _clean("addressLine2", 160),
+        "city": _clean("city", 80),
+        "state": _clean("state", 80),
+        "postalCode": _clean("postalCode", 32),
+        "country": _clean("country", 80),
+    }
+    normalized = {key: value for key, value in profile.items() if value}
+    return normalized or None
 
 
 def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
@@ -7911,7 +9342,7 @@ def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
         return _read_inmemory_fallback(require_local_fallback_marker=True)
     payload = doc.to_dict() or {}
     payload["uid"] = safe_uid
-    return payload
+    return _sanitize_user_profile_row(payload)
 
 
 def _user_profile_find_by_user_id(user_id: str) -> Optional[dict[str, Any]]:
@@ -8017,6 +9448,7 @@ def _user_profile_upsert(
     user_id: Optional[str] = None,
     display_name: Optional[str] = None,
     email: Optional[str] = None,
+    billing_profile: Optional[dict[str, Any]] = None,
     created_by: str = "",
     updated_by: str = "",
     force_change: bool = False,
@@ -8040,12 +9472,18 @@ def _user_profile_upsert(
         else current.get("displayName") or current.get("name") or ""
     ).strip()[:120]
     next_email = str(email if email is not None else current.get("email") or "").strip().lower()[:240]
+    next_billing_profile = (
+        _normalize_account_billing_profile(current.get("billingProfile"))
+        if billing_profile is None
+        else _normalize_account_billing_profile(billing_profile)
+    )
     created_at = str(current.get("createdAt") or now_iso)
     row = {
         "uid": safe_uid,
         "userId": next_user_id,
         "displayName": next_display_name,
         "email": next_email,
+        "billingProfile": next_billing_profile,
         "status": str(current.get("status") or "active"),
         "createdAt": created_at,
         "updatedAt": now_iso,
@@ -8116,6 +9554,7 @@ def _user_profile_upsert(
             "userId": next_user_id,
             "displayName": next_display_name,
             "email": next_email,
+            "billingProfile": next_billing_profile,
             "status": str((existing_profile or {}).get("status") or "active"),
             "createdAt": str((existing_profile or {}).get("createdAt") or now_iso),
             "updatedAt": now_iso,
@@ -8248,16 +9687,27 @@ def _ensure_user_profile(
     if not safe_uid:
         return None
     existing = _user_profile_read(safe_uid)
-    if isinstance(existing, dict):
+    existing_email = str((existing or {}).get("email") or "").strip().lower() if isinstance(existing, dict) else ""
+    existing_display_name = (
+        str((existing or {}).get("displayName") or (existing or {}).get("name") or "").strip()
+        if isinstance(existing, dict)
+        else ""
+    )
+    existing_user_id = str((existing or {}).get("userId") or "").strip().lower() if isinstance(existing, dict) else ""
+    if isinstance(existing, dict) and existing_user_id:
+        return existing
+    if isinstance(existing, dict) and not allow_auto_backfill:
         return existing
     if not allow_auto_backfill:
         return None
-    email = _request_claim_email(request) or str(seed_email or "").strip().lower()
-    display_name = str(seed_display_name or "").strip()
+    email = existing_email or _request_claim_email(request) or str(seed_email or "").strip().lower()
+    display_name = existing_display_name or str(seed_display_name or "").strip()
     if fetch_firebase_identity and _firebase_ready() and firebase_auth is not None:
         try:
             record = firebase_auth.get_user(safe_uid)  # type: ignore[attr-defined]
-            display_name = str(getattr(record, "display_name", "") or "").strip()
+            firebase_display_name = str(getattr(record, "display_name", "") or "").strip()
+            if firebase_display_name:
+                display_name = firebase_display_name
             if not email:
                 email = str(getattr(record, "email", "") or "").strip().lower()
         except Exception:
@@ -8311,13 +9761,15 @@ def _resolve_request_user_id(request: Optional[Request], uid: str) -> str:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         return ""
-    allow_auto_backfill = (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE)
+    allow_auto_backfill = True
     if request is not None and _request_is_admin(request, safe_uid):
         allow_auto_backfill = False
     profile = _ensure_user_profile(
         safe_uid,
         request=request,
         allow_auto_backfill=allow_auto_backfill,
+        repair_user_id_collisions=True,
+        suppress_backfill_errors=True,
     )
     if isinstance(profile, dict):
         return str(profile.get("userId") or "").strip().lower()
@@ -8343,13 +9795,18 @@ def _require_user_id_ready(request: Request, uid: str) -> Optional[dict[str, Any
     profile = _user_profile_read(safe_uid)
     if isinstance(profile, dict) and str(profile.get("userId") or "").strip():
         return profile
-    if not VF_USER_ID_REQUIRED:
-        return _ensure_user_profile(safe_uid, request=request, allow_auto_backfill=True)
-    if not VF_AUTH_ENFORCE:
-        return _ensure_user_profile(safe_uid, request=request, allow_auto_backfill=True)
+    profile = _ensure_user_profile(
+        safe_uid,
+        request=request,
+        allow_auto_backfill=True,
+        repair_user_id_collisions=True,
+        suppress_backfill_errors=True,
+    )
+    if isinstance(profile, dict) and str(profile.get("userId") or "").strip():
+        return profile
     raise HTTPException(
-        status_code=428,
-        detail="Complete your userId before using this feature.",
+        status_code=503,
+        detail="Account profile setup is temporarily unavailable. Please retry.",
     )
 
 
@@ -8578,7 +10035,13 @@ def _issue_tts_v2_session(uid: str, *, probe_all_slot_regions: bool = False) -> 
         "expiresAtMs": expires_at_ms,
         "ttlSeconds": ttl_seconds,
     }
+    probe_started_at = time.perf_counter()
     probe_metadata = _tts_v2_session_probe_slot_pins(enabled=bool(probe_all_slot_regions))
+    if probe_all_slot_regions:
+        _record_tts_api_stage_latency(
+            stage="sessionProbe",
+            elapsed_ms=max(1, int((time.perf_counter() - probe_started_at) * 1000)),
+        )
     if probe_metadata:
         payload.update(
             {
@@ -9222,6 +10685,20 @@ def _require_permission(request: Request, permission: str) -> tuple[str, dict[st
     raise HTTPException(status_code=403, detail=f"Missing permission: {permission}")
 
 
+def _require_super_admin_mutation(request: Request, permission: str) -> tuple[str, dict[str, Any]]:
+    actor_uid, actor = _require_permission(request, permission)
+    if _rbac_normalize_role(str(actor.get("role") or "")) != RBAC_ROLE_SUPER_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Super admin role required.",
+                "errorCode": "rbac_super_admin_required",
+            },
+        )
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    return actor_uid, actor
+
+
 def _rbac_roles_payload() -> dict[str, Any]:
     return {
         "ok": True,
@@ -9285,6 +10762,96 @@ def _rbac_list_assignments(limit: int = 100, cursor: str = "", q: str = "") -> t
     if len(rows) == safe_limit:
         next_cursor = str(rows[-1].get("uid") or "")
     return rows, next_cursor
+
+
+def _rbac_actor_is_super_admin(actor: dict[str, Any]) -> bool:
+    return _rbac_normalize_role(str((actor or {}).get("role") or "")) == RBAC_ROLE_SUPER_ADMIN
+
+
+def _rbac_uid_assignment(uid: str) -> dict[str, Any]:
+    row = _rbac_load_assignment(str(uid or "").strip()) or {}
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def _rbac_uid_is_super_admin(uid: str) -> bool:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return False
+    row = _rbac_uid_assignment(safe_uid)
+    if _rbac_normalize_role(str(row.get("role") or "")) == RBAC_ROLE_SUPER_ADMIN:
+        return True
+    if safe_uid in VF_ADMIN_APPROVER_UIDS:
+        return True
+    return False
+
+
+def _rbac_active_super_admin_uids() -> set[str]:
+    active: set[str] = set()
+    rows, _ = _rbac_list_assignments(limit=1000, cursor="", q="")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        uid = str(row.get("uid") or "").strip()
+        role = _rbac_normalize_role(str(row.get("role") or ""))
+        status = _rbac_normalize_status(str(row.get("status") or "active"))
+        if uid and role == RBAC_ROLE_SUPER_ADMIN and status == "active":
+            active.add(uid)
+    for uid in VF_ADMIN_APPROVER_UIDS:
+        safe_uid = str(uid or "").strip()
+        if safe_uid:
+            active.add(safe_uid)
+    return active
+
+
+def _rbac_guard_error(error_code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=403, detail={"error": message, "errorCode": error_code})
+
+
+def _rbac_assert_mutation_allowed(
+    *,
+    actor_uid: str,
+    actor: dict[str, Any],
+    target_uid: str,
+    current_role: str,
+    current_status: str,
+    next_role: str,
+    next_status: str,
+) -> None:
+    safe_actor_uid = str(actor_uid or "").strip()
+    safe_target_uid = str(target_uid or "").strip()
+    safe_current_role = _rbac_normalize_role(current_role)
+    safe_next_role = _rbac_normalize_role(next_role)
+    safe_next_status = _rbac_normalize_status(next_status)
+    actor_is_super = _rbac_actor_is_super_admin(actor)
+    target_is_super = safe_current_role == RBAC_ROLE_SUPER_ADMIN or _rbac_uid_is_super_admin(safe_target_uid)
+
+    if target_is_super and not actor_is_super:
+        raise _rbac_guard_error(
+            "rbac_target_super_admin_forbidden",
+            "Only super_admin can modify super_admin assignments.",
+        )
+    if safe_actor_uid and safe_actor_uid == safe_target_uid:
+        if safe_next_status == "disabled":
+            raise _rbac_guard_error(
+                "rbac_self_lockout_forbidden",
+                "You cannot disable your own admin assignment.",
+            )
+        if safe_current_role == RBAC_ROLE_SUPER_ADMIN and safe_next_role != RBAC_ROLE_SUPER_ADMIN:
+            raise _rbac_guard_error(
+                "rbac_self_lockout_forbidden",
+                "You cannot demote your own super_admin role.",
+            )
+    demoting_or_disabling_super = (
+        safe_current_role == RBAC_ROLE_SUPER_ADMIN
+        and (safe_next_role != RBAC_ROLE_SUPER_ADMIN or safe_next_status == "disabled")
+    )
+    if demoting_or_disabling_super:
+        active_supers = _rbac_active_super_admin_uids()
+        if safe_target_uid in active_supers and len(active_supers) <= 1:
+            raise _rbac_guard_error(
+                "rbac_last_super_admin_forbidden",
+                "Cannot disable or demote the last active super_admin.",
+            )
 
 
 def _firestore_collection(name: str) -> Any:
@@ -9651,9 +11218,9 @@ def _notification_email_subject(item: dict[str, Any]) -> str:
     if not title:
         title = "Notification"
     if not message:
-        return f"VoiceFlow: {title}"
+        return f"V FLOW AI: {title}"
     compact_message = message if len(message) <= 90 else f"{message[:87].rstrip()}..."
-    return f"VoiceFlow: {title} - {compact_message}"
+    return f"V FLOW AI: {title} - {compact_message}"
 
 
 def _notification_email_text(item: dict[str, Any], *, recipient_role: str = "") -> str:
@@ -9699,8 +11266,8 @@ def _notification_send_email_via_resend(
     payload: dict[str, Any] = {
         "from": VF_NOTIFICATIONS_EMAIL_FROM,
         "to": [str(to_email or "").strip()],
-        "subject": str(subject or "VoiceFlow notification").strip() or "VoiceFlow notification",
-        "text": str(text_body or "").strip() or "VoiceFlow notification",
+        "subject": str(subject or "V FLOW AI notification").strip() or "V FLOW AI notification",
+        "text": str(text_body or "").strip() or "V FLOW AI notification",
     }
     if VF_NOTIFICATIONS_EMAIL_REPLY_TO:
         payload["reply_to"] = VF_NOTIFICATIONS_EMAIL_REPLY_TO
@@ -10083,7 +11650,7 @@ def _notification_sync_account_usage(uid: str, entitlements: dict[str, Any]) -> 
             safe_uid,
             event_code="wallet.low_balance",
             title="Low Balance",
-            message="Your remaining VoiceFlow balance is running low.",
+            message="Your remaining V FLOW AI balance is running low.",
             severity="warning",
             category="activity",
             entity_key=period_key,
@@ -11646,9 +13213,23 @@ class AdminRoleStatusRequest(BaseModel):
     note: Optional[str] = None
 
 
+class AccountBillingProfileRequest(BaseModel):
+    companyName: Optional[str] = None
+    billingEmail: Optional[str] = None
+    phone: Optional[str] = None
+    taxId: Optional[str] = None
+    addressLine1: Optional[str] = None
+    addressLine2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postalCode: Optional[str] = None
+    country: Optional[str] = None
+
+
 class UserProfileUpsertRequest(BaseModel):
-    userId: str
+    userId: Optional[str] = None
     displayName: Optional[str] = None
+    billingProfile: Optional[AccountBillingProfileRequest] = None
 
 
 class AdminForceUserIdChangeRequest(BaseModel):
@@ -11723,6 +13304,22 @@ class EngineCanonicalizationMigrationRequest(BaseModel):
 
 class EntitlementAllowedEnginesReconcileRequest(BaseModel):
     dryRun: bool = True
+
+
+class AudioMetadataRepairRequest(BaseModel):
+    mode: str = "dry_run"
+    uid: str = ""
+    userId: str = ""
+    identityValue: str = ""
+    paymentRef: str = ""
+    status: str = ""
+    engine: str = ""
+    outputSha256: str = ""
+    watermarkId: str = ""
+    c2paStatus: str = ""
+    fromIso: str = Field(default="", alias="from")
+    toIso: str = Field(default="", alias="to")
+    limit: int = 500
 
 
 class AlertPolicyCreateRequest(BaseModel):
@@ -15421,6 +17018,12 @@ def _audio_generation_identity_snapshot(uid: str, request: Optional[Request]) ->
     }
 
 
+def _audio_generation_default_watermark_id(*, uid: str, request_id: str, audit_id: str) -> str:
+    seed = f"{str(uid or '').strip()}:{str(request_id or '').strip()}:{str(audit_id or '').strip()}".encode("utf-8")
+    # 16-bit marker represented as 4-hex digits.
+    return hashlib.sha256(seed).hexdigest()[:4]
+
+
 def _audio_generation_wallet_payment_ref(transaction_row: dict[str, Any]) -> tuple[str, str]:
     if not isinstance(transaction_row, dict):
         return "", ""
@@ -15478,15 +17081,19 @@ def _latest_wallet_payment_ref(uid: str) -> tuple[str, str]:
     return "", ""
 
 
-def _resolve_audio_generation_payment_ref(uid: str) -> tuple[str, str]:
+def _resolve_audio_generation_payment_ref(
+    uid: str,
+    *,
+    entitlement: Optional[dict[str, Any]] = None,
+) -> tuple[str, str]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         return "", ""
-    entitlement = _load_entitlement(safe_uid)
-    latest_invoice_id = str(entitlement.get("latestInvoiceId") or "").strip()
+    resolved_entitlement = entitlement if isinstance(entitlement, dict) else _load_entitlement(safe_uid)
+    latest_invoice_id = str(resolved_entitlement.get("latestInvoiceId") or "").strip()
     if latest_invoice_id:
         return "invoice", latest_invoice_id
-    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    subscription_id = str(resolved_entitlement.get("subscriptionId") or "").strip()
     if subscription_id:
         return "subscription", subscription_id
     return _latest_wallet_payment_ref(safe_uid)
@@ -15525,9 +17132,50 @@ def _audio_generation_audit_sanitize_row(row: dict[str, Any]) -> dict[str, Any]:
         elif email:
             identity_type = "email"
             identity_value = email
+    safe_audit_id = str(safe.get("auditId") or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    safe_uid = str(safe.get("uid") or "").strip()
+    safe_request_id = _truncate_text(request_id, 160)
+    output_sha256 = _truncate_text(str(safe.get("outputSha256") or "").strip().lower(), 128)
+    audible_label_applied = (
+        bool(safe.get("audibleLabelApplied"))
+        if safe.get("audibleLabelApplied") is not None
+        else True
+    )
+    watermark_mode = _truncate_text(
+        str(safe.get("watermarkMode") or AUDIO_WATERMARK_MODE_DEFAULT).strip().lower(),
+        64,
+    )
+    watermark_id = _truncate_text(
+        str(safe.get("watermarkId") or "").strip().lower()
+        or _audio_generation_default_watermark_id(
+            uid=safe_uid,
+            request_id=safe_request_id,
+            audit_id=safe_audit_id,
+        ),
+        64,
+    )
+    watermark_version = _truncate_text(
+        str(safe.get("watermarkVersion") or AUDIO_WATERMARK_VERSION_DEFAULT).strip(),
+        64,
+    )
+    watermark_detectable = (
+        bool(safe.get("watermarkDetectable"))
+        if safe.get("watermarkDetectable") is not None
+        else True
+    )
+    c2pa_status = _truncate_text(
+        str(safe.get("c2paStatus") or AUDIO_C2PA_STATUS_DEFAULT).strip().lower(),
+        64,
+    )
+    c2pa_manifest_ref = _truncate_text(str(safe.get("c2paManifestRef") or "").strip(), 512)
+    provenance_version = _truncate_text(
+        str(safe.get("provenanceVersion") or PROVENANCE_VERSION_DEFAULT).strip(),
+        64,
+    )
+    provenance_error = _truncate_text(str(safe.get("provenanceError") or "").strip(), 500)
     return {
-        "auditId": str(safe.get("auditId") or uuid.uuid4().hex).strip() or uuid.uuid4().hex,
-        "uid": str(safe.get("uid") or "").strip(),
+        "auditId": safe_audit_id,
+        "uid": safe_uid,
         "userId": str(safe.get("userId") or "").strip().lower(),
         "identityType": identity_type,
         "identityValue": identity_value,
@@ -15543,7 +17191,7 @@ def _audio_generation_audit_sanitize_row(row: dict[str, Any]) -> dict[str, Any]:
         "voiceId": _truncate_text(str(safe.get("voiceId") or "").strip(), 160),
         "voiceName": _truncate_text(str(safe.get("voiceName") or "").strip(), 160),
         "language": _truncate_text(str(safe.get("language") or "").strip(), 64),
-        "requestId": _truncate_text(request_id, 160),
+        "requestId": safe_request_id,
         "jobId": _truncate_text(job_id, 160),
         "traceId": _truncate_text(str(safe.get("traceId") or "").strip(), 160),
         "inputText": input_text,
@@ -15552,6 +17200,16 @@ def _audio_generation_audit_sanitize_row(row: dict[str, Any]) -> dict[str, Any]:
         "ipHash": str(safe.get("ipHash") or (_hash_sha256_hex(source_ip) if source_ip else "")).strip(),
         "paymentRefType": _truncate_text(str(safe.get("paymentRefType") or "").strip().lower(), 64),
         "paymentRef": _truncate_text(str(safe.get("paymentRef") or "").strip(), 160),
+        "outputSha256": output_sha256,
+        "audibleLabelApplied": audible_label_applied,
+        "watermarkMode": watermark_mode,
+        "watermarkId": watermark_id,
+        "watermarkVersion": watermark_version,
+        "watermarkDetectable": watermark_detectable,
+        "c2paStatus": c2pa_status,
+        "c2paManifestRef": c2pa_manifest_ref,
+        "provenanceVersion": provenance_version,
+        "provenanceError": provenance_error,
         "retentionDeleteAfter": str(
             safe.get("retentionDeleteAfter")
             or _audio_generation_audit_retention_delete_after(
@@ -15646,6 +17304,8 @@ def _audio_generation_audit_mark_terminal(
     request_id: str = "",
     trace_id: str = "",
     audio_created_at: str = "",
+    output_sha256: str = "",
+    provenance_error: str = "",
 ) -> Optional[dict[str, Any]]:
     patch: dict[str, Any] = {
         "status": str(status or "failed").strip().lower() or "failed",
@@ -15665,16 +17325,32 @@ def _audio_generation_audit_mark_terminal(
             str((_audio_generation_audit_get(audit_id) or {}).get("submittedAt") or _safe_now_iso()),
             str(audio_created_at or "").strip(),
         )
+    if output_sha256:
+        patch["outputSha256"] = str(output_sha256 or "").strip().lower()
+    if provenance_error:
+        patch["provenanceError"] = _truncate_text(str(provenance_error or "").strip(), 500)
     return _audio_generation_audit_update(audit_id, patch)
 
 
 def _audio_generation_audit_ids_from_job(job: Any) -> list[str]:
-    if not isinstance(job, dict):
+    if job is None:
         return []
+    if not isinstance(job, dict):
+        payload = getattr(job, "payload", None)
+        job = {
+            "audioAuditIds": getattr(job, "audioAuditIds", None),
+            "audioAuditId": getattr(job, "audioAuditId", None),
+            "payload": payload if isinstance(payload, dict) else {},
+        }
     seen: set[str] = set()
     items = list(job.get("audioAuditIds") or [])
-    if not items and job.get("audioAuditId"):
-        items = [job.get("audioAuditId")]
+    if job.get("audioAuditId"):
+        items.append(job.get("audioAuditId"))
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    nested = list(payload.get("audioAuditIds") or [])
+    if payload.get("audioAuditId"):
+        nested.append(payload.get("audioAuditId"))
+    items.extend(nested)
     out: list[str] = []
     for item in items:
         safe_item = str(item or "").strip()
@@ -15709,6 +17385,9 @@ def _audio_generation_audit_matches_filters(
     payment_ref: str = "",
     status: str = "",
     engine: str = "",
+    output_sha256: str = "",
+    watermark_id: str = "",
+    c2pa_status: str = "",
     from_iso: str = "",
     to_iso: str = "",
 ) -> bool:
@@ -15718,6 +17397,9 @@ def _audio_generation_audit_matches_filters(
     safe_payment_ref = str(payment_ref or "").strip().lower()
     safe_status = str(status or "").strip().lower()
     safe_engine = str(engine or "").strip().upper()
+    safe_output_sha256 = str(output_sha256 or "").strip().lower()
+    safe_watermark_id = str(watermark_id or "").strip().lower()
+    safe_c2pa_status = str(c2pa_status or "").strip().lower()
     if safe_uid and str(row.get("uid") or "").strip() != safe_uid:
         return False
     if safe_user_id and str(row.get("userId") or "").strip().lower() != safe_user_id:
@@ -15729,6 +17411,12 @@ def _audio_generation_audit_matches_filters(
     if safe_status and str(row.get("status") or "").strip().lower() != safe_status:
         return False
     if safe_engine and str(row.get("engine") or "").strip().upper() != safe_engine:
+        return False
+    if safe_output_sha256 and safe_output_sha256 not in str(row.get("outputSha256") or "").strip().lower():
+        return False
+    if safe_watermark_id and safe_watermark_id not in str(row.get("watermarkId") or "").strip().lower():
+        return False
+    if safe_c2pa_status and str(row.get("c2paStatus") or "").strip().lower() != safe_c2pa_status:
         return False
     submitted_at = _parse_optional_datetime(str(row.get("submittedAt") or ""))
     from_dt = _parse_optional_datetime(from_iso) if from_iso else None
@@ -15748,6 +17436,9 @@ def _audio_generation_audit_list(
     payment_ref: str = "",
     status: str = "",
     engine: str = "",
+    output_sha256: str = "",
+    watermark_id: str = "",
+    c2pa_status: str = "",
     from_iso: str = "",
     to_iso: str = "",
     cursor: str = "",
@@ -15765,6 +17456,9 @@ def _audio_generation_audit_list(
             payment_ref=payment_ref,
             status=status,
             engine=engine,
+            output_sha256=output_sha256,
+            watermark_id=watermark_id,
+            c2pa_status=c2pa_status,
             from_iso=from_iso,
             to_iso=to_iso,
         )
@@ -15788,6 +17482,316 @@ def _audio_generation_audit_list(
     if len(rows) > safe_limit and items:
         next_cursor = str(items[-1].get("auditId") or "")
     return items, next_cursor
+
+
+def _audio_generation_watermark_int16(watermark_id: str) -> int:
+    token = str(watermark_id or "").strip().lower()
+    if token:
+        for prefix in ("wm_", "0x"):
+            if token.startswith(prefix):
+                token = token[len(prefix):]
+        if token and all(ch in "0123456789abcdef" for ch in token):
+            return int(token[-4:].rjust(4, "0"), 16) & 0xFFFF
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return int(digest[-4:], 16) & 0xFFFF
+
+
+def _audio_generation_build_audible_label_frames(*, sample_rate: int, channels: int) -> bytes:
+    safe_sample_rate = max(8000, int(sample_rate or 16000))
+    safe_channels = max(1, min(2, int(channels or 1)))
+    duration_seconds = float(AUDIO_DOWNLOAD_AUDIBLE_LABEL_SECONDS)
+    if duration_seconds <= 0:
+        return b""
+    total_samples = max(1, int(round(safe_sample_rate * duration_seconds)))
+    segment = max(1, total_samples // 3)
+    amplitude = int(32767.0 * pow(10.0, float(AUDIO_DOWNLOAD_AUDIBLE_LABEL_LEVEL_DB) / 20.0))
+    amplitude = max(256, min(16000, amplitude))
+    frame_bytes = bytearray()
+    for index in range(total_samples):
+        if index < segment:
+            freq = 640.0
+            gain = 0.85
+        elif index < (2 * segment):
+            freq = 960.0
+            gain = 0.70
+        else:
+            freq = 780.0
+            gain = 0.80
+        phase = 2.0 * math.pi * freq * (float(index) / float(safe_sample_rate))
+        sample = int(max(-32768, min(32767, round(math.sin(phase) * amplitude * gain))))
+        packed = struct.pack("<h", sample)
+        for _ in range(safe_channels):
+            frame_bytes.extend(packed)
+    return bytes(frame_bytes)
+
+
+def _audio_generation_embed_lsb_watermark_pcm16(
+    frames: bytes,
+    *,
+    watermark_value: int,
+) -> bytes:
+    payload = bytearray(bytes(frames or b""))
+    sample_count = len(payload) // 2
+    if sample_count <= 0:
+        return bytes(payload)
+    bits = [(watermark_value >> (15 - idx)) & 1 for idx in range(16)]
+    stride = max(1, sample_count // (len(bits) * 64))
+    max_slots = sample_count // stride
+    repeats = max(1, min(64, max_slots // len(bits)))
+    for repeat in range(repeats):
+        for bit_index, bit in enumerate(bits):
+            sample_index = ((repeat * len(bits)) + bit_index) * stride
+            if sample_index >= sample_count:
+                break
+            offset = sample_index * 2
+            sample = int.from_bytes(payload[offset : offset + 2], "little", signed=True)
+            sample = (sample & ~1) | int(bit)
+            payload[offset : offset + 2] = int(sample).to_bytes(2, "little", signed=True)
+    return bytes(payload)
+
+
+def _audio_generation_apply_download_watermark(
+    audio_bytes: bytes,
+    *,
+    watermark_id: str,
+) -> tuple[bytes, str]:
+    payload = bytes(audio_bytes or b"")
+    if not payload:
+        return payload, ""
+    if not AUDIO_DOWNLOAD_WATERMARK_ENABLED:
+        return payload, ""
+    try:
+        with wave.open(BytesIO(payload), "rb") as source:
+            sample_width = int(source.getsampwidth() or 0)
+            if sample_width != 2:
+                return payload, f"unsupported_sample_width_{sample_width}"
+            sample_rate = int(source.getframerate() or 16000)
+            channels = int(source.getnchannels() or 1)
+            raw_frames = source.readframes(int(source.getnframes() or 0))
+        watermark_value = _audio_generation_watermark_int16(watermark_id)
+        embedded_frames = _audio_generation_embed_lsb_watermark_pcm16(
+            raw_frames,
+            watermark_value=watermark_value,
+        )
+        label_frames = _audio_generation_build_audible_label_frames(
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        merged_frames = b"".join([label_frames, embedded_frames, label_frames]) if label_frames else embedded_frames
+        out_buffer = BytesIO()
+        with wave.open(out_buffer, "wb") as target:
+            target.setnchannels(max(1, channels))
+            target.setsampwidth(2)
+            target.setframerate(max(8000, sample_rate))
+            target.writeframes(merged_frames)
+        return out_buffer.getvalue(), ""
+    except Exception as exc:
+        return payload, _truncate_text(str(exc), 500)
+
+
+def _audio_generation_audit_download_patch(
+    row: dict[str, Any],
+    *,
+    audio_bytes: bytes = b"",
+    provenance_error: str = "",
+) -> dict[str, Any]:
+    safe_row = _audio_generation_audit_sanitize_row(row)
+    payload: dict[str, Any] = {
+        "audibleLabelApplied": True,
+        "watermarkMode": str(safe_row.get("watermarkMode") or AUDIO_WATERMARK_MODE_DEFAULT).strip().lower(),
+        "watermarkVersion": str(safe_row.get("watermarkVersion") or AUDIO_WATERMARK_VERSION_DEFAULT).strip(),
+        "watermarkDetectable": True,
+        "c2paStatus": str(safe_row.get("c2paStatus") or AUDIO_C2PA_STATUS_DEFAULT).strip().lower(),
+        "provenanceVersion": str(safe_row.get("provenanceVersion") or PROVENANCE_VERSION_DEFAULT).strip(),
+        "provenanceError": _truncate_text(str(provenance_error or "").strip(), 500),
+    }
+    if audio_bytes:
+        payload["outputSha256"] = hashlib.sha256(bytes(audio_bytes)).hexdigest().lower()
+    if not str(safe_row.get("watermarkId") or "").strip():
+        payload["watermarkId"] = _audio_generation_default_watermark_id(
+            uid=str(safe_row.get("uid") or ""),
+            request_id=str(safe_row.get("requestId") or ""),
+            audit_id=str(safe_row.get("auditId") or ""),
+        )
+    return payload
+
+
+def _audio_generation_finalize_download_for_job(
+    *,
+    uid: str,
+    is_admin: bool,
+    job_id: str,
+    audio_bytes: bytes,
+) -> dict[str, Any]:
+    safe_job_id = str(job_id or "").strip()
+    safe_uid = str(uid or "").strip()
+    original_audio = bytes(audio_bytes or b"")
+    if not safe_job_id or not safe_uid:
+        return {
+            "audioBytes": original_audio,
+            "watermarkId": "",
+            "outputSha256": hashlib.sha256(original_audio).hexdigest().lower() if original_audio else "",
+            "provenanceError": "",
+        }
+    try:
+        job = _TTS_V2_ENGINE.get_job(uid=safe_uid, is_admin=is_admin, job_id=safe_job_id)
+    except Exception:
+        return {
+            "audioBytes": original_audio,
+            "watermarkId": "",
+            "outputSha256": hashlib.sha256(original_audio).hexdigest().lower() if original_audio else "",
+            "provenanceError": "",
+        }
+    audit_ids = _audio_generation_audit_ids_from_job(job)
+    if not audit_ids:
+        return {
+            "audioBytes": original_audio,
+            "watermarkId": "",
+            "outputSha256": hashlib.sha256(original_audio).hexdigest().lower() if original_audio else "",
+            "provenanceError": "",
+        }
+    first_row = _audio_generation_audit_sanitize_row(_audio_generation_audit_get(audit_ids[0]) or {})
+    watermark_id = str(first_row.get("watermarkId") or "").strip().lower() or _audio_generation_default_watermark_id(
+        uid=safe_uid,
+        request_id=str(first_row.get("requestId") or safe_job_id),
+        audit_id=str(first_row.get("auditId") or audit_ids[0]),
+    )
+    processed_audio, provenance_error = _audio_generation_apply_download_watermark(
+        original_audio,
+        watermark_id=watermark_id,
+    )
+    for audit_id in audit_ids:
+        existing = _audio_generation_audit_sanitize_row(_audio_generation_audit_get(audit_id) or {})
+        row_watermark_id = str(existing.get("watermarkId") or "").strip().lower() or watermark_id
+        patch = _audio_generation_audit_download_patch(
+            existing,
+            audio_bytes=processed_audio,
+            provenance_error=provenance_error,
+        )
+        patch["watermarkId"] = row_watermark_id
+        _audio_generation_audit_update(audit_id, patch)
+    return {
+        "audioBytes": processed_audio,
+        "watermarkId": watermark_id,
+        "outputSha256": hashlib.sha256(processed_audio).hexdigest().lower() if processed_audio else "",
+        "provenanceError": provenance_error,
+    }
+
+
+def _audio_generation_audit_missing_provenance_fields(row: dict[str, Any]) -> list[str]:
+    safe_row = _audio_generation_audit_sanitize_row(row)
+    missing: list[str] = []
+    required_keys = [
+        "watermarkMode",
+        "watermarkId",
+        "watermarkVersion",
+        "c2paStatus",
+        "provenanceVersion",
+    ]
+    if str(safe_row.get("status") or "").strip().lower() == "completed":
+        required_keys.insert(0, "outputSha256")
+    for key in required_keys:
+        if not str(safe_row.get(key) or "").strip():
+            missing.append(key)
+    return missing
+
+
+def _audio_generation_audit_repair(
+    *,
+    mode: str,
+    uid: str = "",
+    user_id: str = "",
+    identity_value: str = "",
+    payment_ref: str = "",
+    status: str = "",
+    engine: str = "",
+    output_sha256: str = "",
+    watermark_id: str = "",
+    c2pa_status: str = "",
+    from_iso: str = "",
+    to_iso: str = "",
+    limit: int = 500,
+) -> dict[str, Any]:
+    safe_mode = str(mode or "dry_run").strip().lower()
+    if safe_mode not in {"dry_run", "apply", "verify"}:
+        raise ValueError("Invalid repair mode. Use dry_run, apply, or verify.")
+    safe_limit = max(1, min(5000, int(limit or 500)))
+    rows = [
+        row for row in _audio_generation_audit_rows()
+        if _audio_generation_audit_matches_filters(
+            row,
+            uid=uid,
+            user_id=user_id,
+            identity_value=identity_value,
+            payment_ref=payment_ref,
+            status=status,
+            engine=engine,
+            output_sha256=output_sha256,
+            watermark_id=watermark_id,
+            c2pa_status=c2pa_status,
+            from_iso=from_iso,
+            to_iso=to_iso,
+        )
+    ]
+    rows.sort(
+        key=lambda item: (
+            str(item.get("submittedAt") or ""),
+            str(item.get("auditId") or ""),
+        ),
+        reverse=True,
+    )
+    rows = rows[:safe_limit]
+
+    repaired_count = 0
+    compliant_count = 0
+    non_compliant_count = 0
+    sample_repaired_ids: list[str] = []
+    sample_non_compliant_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    for row in rows:
+        safe_row = _audio_generation_audit_sanitize_row(row)
+        audit_id = str(safe_row.get("auditId") or "").strip()
+        missing_before = _audio_generation_audit_missing_provenance_fields(safe_row)
+        patch = _audio_generation_audit_download_patch(safe_row, audio_bytes=b"")
+        if "outputSha256" in missing_before:
+            safe_job_id = str(safe_row.get("jobId") or "").strip()
+            safe_uid = str(safe_row.get("uid") or "").strip()
+            if safe_job_id and safe_uid:
+                try:
+                    audio_bytes, _ = _TTS_V2_ENGINE.get_result_audio(
+                        uid=safe_uid,
+                        is_admin=True,
+                        job_id=safe_job_id,
+                    )
+                    patch = _audio_generation_audit_download_patch(safe_row, audio_bytes=bytes(audio_bytes or b""))
+                except Exception as exc:
+                    patch["provenanceError"] = _truncate_text(str(exc), 500)
+                    errors.append({"auditId": audit_id, "error": _truncate_text(str(exc), 280)})
+        merged_candidate = _audio_generation_audit_sanitize_row({**safe_row, **patch})
+        missing_after = _audio_generation_audit_missing_provenance_fields(merged_candidate)
+        if not missing_after:
+            compliant_count += 1
+            if safe_mode == "apply" and missing_before and _audio_generation_audit_update(audit_id, patch):
+                repaired_count += 1
+                if len(sample_repaired_ids) < 25:
+                    sample_repaired_ids.append(audit_id)
+            continue
+        non_compliant_count += 1
+        if len(sample_non_compliant_ids) < 25:
+            sample_non_compliant_ids.append(audit_id)
+
+    return {
+        "ok": True,
+        "mode": safe_mode,
+        "scannedCount": len(rows),
+        "compliantCount": compliant_count,
+        "nonCompliantCount": non_compliant_count,
+        "repairedCount": repaired_count,
+        "sampleRepairedIds": sample_repaired_ids,
+        "sampleNonCompliantIds": sample_non_compliant_ids,
+        "errors": errors[:50],
+    }
 
 
 def _audio_generation_audit_csv(rows: list[dict[str, Any]]) -> str:
@@ -15821,6 +17825,16 @@ def _audio_generation_audit_csv(rows: list[dict[str, Any]]) -> str:
             "ipHash",
             "paymentRefType",
             "paymentRef",
+            "outputSha256",
+            "audibleLabelApplied",
+            "watermarkMode",
+            "watermarkId",
+            "watermarkVersion",
+            "watermarkDetectable",
+            "c2paStatus",
+            "c2paManifestRef",
+            "provenanceVersion",
+            "provenanceError",
             "retentionDeleteAfter",
         ]
     )
@@ -15853,6 +17867,16 @@ def _audio_generation_audit_csv(rows: list[dict[str, Any]]) -> str:
                 str(row.get("ipHash") or ""),
                 str(row.get("paymentRefType") or ""),
                 str(row.get("paymentRef") or ""),
+                str(row.get("outputSha256") or ""),
+                str(row.get("audibleLabelApplied") or ""),
+                str(row.get("watermarkMode") or ""),
+                str(row.get("watermarkId") or ""),
+                str(row.get("watermarkVersion") or ""),
+                str(row.get("watermarkDetectable") or ""),
+                str(row.get("c2paStatus") or ""),
+                str(row.get("c2paManifestRef") or ""),
+                str(row.get("provenanceVersion") or ""),
+                str(row.get("provenanceError") or ""),
                 str(row.get("retentionDeleteAfter") or ""),
             ]
         )
@@ -17243,6 +19267,139 @@ def _credit_paid_vc(
     return _apply(transaction)
 
 
+def _vc_wallet_breakdown_from_tx_metadata(raw_metadata: Any) -> dict[str, float]:
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_breakdown = metadata.get("breakdown") if isinstance(metadata.get("breakdown"), dict) else {}
+    vc_free = _as_positive_number(raw_breakdown.get("vcFree"))
+    vc_paid = _as_positive_number(raw_breakdown.get("vcPaid"))
+    return {
+        "vcFree": vc_free,
+        "vcPaid": vc_paid,
+    }
+
+
+def _debit_vc_wallet(
+    *,
+    uid: str,
+    amount: float,
+    reason: str,
+    transaction_id: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> tuple[bool, bool, dict[str, Any], dict[str, float]]:
+    safe_uid = str(uid or "").strip()
+    debit_amount = _as_positive_number(amount)
+    if not safe_uid:
+        return False, False, _load_entitlement(""), {"vcFree": 0.0, "vcPaid": 0.0}
+    if debit_amount <= 0:
+        return True, False, _load_entitlement(safe_uid), {"vcFree": 0.0, "vcPaid": 0.0}
+
+    now = _utc_now()
+    tx_id = str(transaction_id or "").strip()
+    safe_reason = str(reason or "debit").strip() or "debit"
+    base_metadata = metadata if isinstance(metadata, dict) else {}
+
+    transactions = _firestore_collection("wallet_transactions")
+    entitlements = _firestore_collection("entitlements")
+    if transactions is None or entitlements is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            if tx_id:
+                existing_tx = _INMEMORY_WALLET_TRANSACTIONS.get(tx_id)
+                if isinstance(existing_tx, dict):
+                    current = _normalize_entitlement_wallet(
+                        _INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid),
+                        now,
+                    )
+                    return True, True, current, _vc_wallet_breakdown_from_tx_metadata(existing_tx.get("metadata"))
+            entitlement = _normalize_entitlement_wallet(
+                _INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid),
+                now,
+            )
+            current_free = _as_positive_number(entitlement.get("vcFreeBalance"))
+            current_paid = _as_positive_number(entitlement.get("vcPaidBalance"))
+            use_free = min(current_free, debit_amount)
+            remaining = _as_positive_number(debit_amount - use_free)
+            use_paid = min(current_paid, remaining)
+            shortfall = _as_positive_number(debit_amount - use_free - use_paid)
+            if shortfall > VF_EPSILON:
+                return False, False, entitlement, {"vcFree": use_free, "vcPaid": use_paid}
+            entitlement["vcFreeBalance"] = _as_positive_number(current_free - use_free)
+            entitlement["vcPaidBalance"] = _as_positive_number(current_paid - use_paid)
+            entitlement["updatedAt"] = now.isoformat()
+            _INMEMORY_ENTITLEMENTS[safe_uid] = entitlement
+            if tx_id:
+                tx_payload = {
+                    "id": tx_id,
+                    "uid": safe_uid,
+                    "kind": "debit",
+                    "bucket": "vc",
+                    "amount": debit_amount,
+                    "reason": safe_reason,
+                    "metadata": {
+                        **base_metadata,
+                        "breakdown": {"vcFree": use_free, "vcPaid": use_paid},
+                    },
+                    "createdAt": now.isoformat(),
+                }
+                _INMEMORY_WALLET_TRANSACTIONS[tx_id] = tx_payload
+            return True, False, entitlement, {"vcFree": use_free, "vcPaid": use_paid}
+
+    ent_ref = _FIRESTORE_DB.collection("entitlements").document(safe_uid)
+    tx_ref = _FIRESTORE_DB.collection("wallet_transactions").document(tx_id or f"wallet_{uuid.uuid4().hex}")
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> tuple[bool, bool, dict[str, Any], dict[str, float]]:
+        if tx_id:
+            existing_tx = tx_ref.get(transaction=transaction_obj)
+            if existing_tx.exists:
+                current_doc = ent_ref.get(transaction=transaction_obj)
+                current_entitlement = _normalize_entitlement_wallet(
+                    current_doc.to_dict() if current_doc.exists else _default_entitlement(safe_uid),
+                    now,
+                )
+                existing_payload = existing_tx.to_dict() or {}
+                return True, True, current_entitlement, _vc_wallet_breakdown_from_tx_metadata(existing_payload.get("metadata"))
+
+        ent_doc = ent_ref.get(transaction=transaction_obj)
+        entitlement = _normalize_entitlement_wallet(
+            ent_doc.to_dict() if ent_doc.exists else _default_entitlement(safe_uid),
+            now,
+        )
+        current_free = _as_positive_number(entitlement.get("vcFreeBalance"))
+        current_paid = _as_positive_number(entitlement.get("vcPaidBalance"))
+        use_free = min(current_free, debit_amount)
+        remaining = _as_positive_number(debit_amount - use_free)
+        use_paid = min(current_paid, remaining)
+        shortfall = _as_positive_number(debit_amount - use_free - use_paid)
+        if shortfall > VF_EPSILON:
+            return False, False, entitlement, {"vcFree": use_free, "vcPaid": use_paid}
+
+        entitlement["vcFreeBalance"] = _as_positive_number(current_free - use_free)
+        entitlement["vcPaidBalance"] = _as_positive_number(current_paid - use_paid)
+        entitlement["updatedAt"] = now.isoformat()
+        transaction_obj.set(ent_ref, entitlement, merge=True)
+        transaction_obj.set(
+            tx_ref,
+            {
+                "id": tx_ref.id,
+                "uid": safe_uid,
+                "kind": "debit",
+                "bucket": "vc",
+                "amount": debit_amount,
+                "reason": safe_reason,
+                "metadata": {
+                    **base_metadata,
+                    "breakdown": {"vcFree": use_free, "vcPaid": use_paid},
+                },
+                "createdAt": now.isoformat(),
+            },
+            merge=True,
+        )
+        return True, False, entitlement, {"vcFree": use_free, "vcPaid": use_paid}
+
+    return _apply(transaction)
+
+
 def _normalize_dubbing_processing_profile(raw_profile: str, default: str = "cpu_quality") -> str:
     token = str(raw_profile or "").strip().lower().replace("-", "_")
     if token not in {"cpu_quality", "cpu_balanced", "cpu_fast"}:
@@ -17872,6 +20029,277 @@ def _probe_runtime_capabilities(engine: str, timeout_sec: float = 3.0) -> dict[s
     return fallback
 
 
+def _path_tree_size_bytes(path: Path) -> int:
+    target = Path(path)
+    if not target.exists():
+        return 0
+    if target.is_file():
+        try:
+            return max(0, int(target.stat().st_size))
+        except Exception:
+            return 0
+    total = 0
+    for child in target.rglob("*"):
+        if not child.is_file():
+            continue
+        try:
+            total += max(0, int(child.stat().st_size))
+        except Exception:
+            continue
+    return max(0, int(total))
+
+
+def _cleanup_expired_openvoice_artifacts() -> None:
+    ttl_ms = max(60_000, int(VF_OPENVOICE_ARTIFACT_TTL_MS))
+    now_ms = int(time.time() * 1000)
+    root = OPENVOICE_ARTIFACT_ROOT.resolve()
+    if not root.exists():
+        return
+    for child in list(root.glob("*.wav")):
+        try:
+            resolved = child.resolve()
+            resolved.relative_to(root)
+            mtime_ms = int(resolved.stat().st_mtime * 1000)
+        except Exception:
+            continue
+        if mtime_ms <= 0 or (now_ms - mtime_ms) < ttl_ms:
+            continue
+        _cleanup_paths(str(resolved))
+
+
+def _cleanup_source_separation_cache() -> None:
+    ttl_ms = max(60_000, int(VF_SOURCE_SEPARATION_CACHE_TTL_MS))
+    now_ms = int(time.time() * 1000)
+    root = SEPARATION_CACHE_DIR.resolve()
+    if not root.exists():
+        return
+    candidates: list[tuple[Path, int, int]] = []
+    for child in list(root.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            resolved = child.resolve()
+            resolved.relative_to(root)
+            mtime_ms = int(resolved.stat().st_mtime * 1000)
+        except Exception:
+            continue
+        if mtime_ms > 0 and (now_ms - mtime_ms) >= ttl_ms:
+            _cleanup_paths(str(resolved))
+            continue
+        size_bytes = _path_tree_size_bytes(resolved)
+        candidates.append((resolved, max(0, int(mtime_ms)), max(0, int(size_bytes))))
+
+    max_bytes = max(0, int(VF_SOURCE_SEPARATION_CACHE_MAX_BYTES))
+    if max_bytes <= 0:
+        return
+    total_bytes = sum(size for _, _, size in candidates)
+    if total_bytes <= max_bytes:
+        return
+    candidates.sort(key=lambda item: (int(item[1]), str(item[0])))
+    for path, _mtime_ms, size in candidates:
+        if total_bytes <= max_bytes:
+            break
+        _cleanup_paths(str(path))
+        total_bytes = max(0, total_bytes - max(0, int(size)))
+
+
+def _maybe_run_openvoice_retention_cleanup(*, force: bool = False) -> None:
+    global _OPENVOICE_RETENTION_LAST_RUN_MS
+    now_ms = int(time.time() * 1000)
+    interval_ms = 60_000
+    if not force and (now_ms - int(_OPENVOICE_RETENTION_LAST_RUN_MS or 0)) < interval_ms:
+        return
+    with _OPENVOICE_RETENTION_LOCK:
+        now_ms = int(time.time() * 1000)
+        if not force and (now_ms - int(_OPENVOICE_RETENTION_LAST_RUN_MS or 0)) < interval_ms:
+            return
+        _cleanup_expired_openvoice_artifacts()
+        _cleanup_source_separation_cache()
+        _OPENVOICE_RETENTION_LAST_RUN_MS = now_ms
+
+
+def _voice_clone_separation_modal_runtime_url() -> str:
+    return (
+        str(
+            os.getenv("VF_VOICE_CLONE_SEPARATION_MODAL_RUNTIME_URL")
+            or os.getenv("VF_OPENVOICE_SEPARATION_MODAL_RUNTIME_URL")
+            or os.getenv("VF_VOICE_CLONE_SEPARATION_RUNTIME_URL")
+            or os.getenv("VF_OPENVOICE_SEPARATION_RUNTIME_URL")
+            or ""
+        ).strip().rstrip("/")
+        or _openvoice_provider_env_url(OPENVOICE_PROVIDER_MODAL)
+    )
+
+
+def _voice_clone_separation_modal_runtime_token() -> str:
+    return (
+        str(
+            os.getenv("VF_VOICE_CLONE_SEPARATION_MODAL_RUNTIME_TOKEN")
+            or os.getenv("VF_OPENVOICE_SEPARATION_MODAL_RUNTIME_TOKEN")
+            or os.getenv("VF_VOICE_CLONE_SEPARATION_RUNTIME_TOKEN")
+            or os.getenv("VF_OPENVOICE_SEPARATION_RUNTIME_TOKEN")
+            or ""
+        ).strip()
+        or _openvoice_provider_env_token(OPENVOICE_PROVIDER_MODAL)
+    )
+
+
+def _voice_clone_separation_modal_client() -> Optional[OpenVoiceModalClient]:
+    if not VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED:
+        return None
+    runtime_url = _voice_clone_separation_modal_runtime_url()
+    if not runtime_url:
+        return None
+    runtime_token = _voice_clone_separation_modal_runtime_token()
+    timeout_sec = max(5.0, float(VF_VOICE_CLONE_SEPARATION_MODAL_TIMEOUT_SEC))
+    return OpenVoiceModalClient(
+        base_url=runtime_url,
+        token=runtime_token,
+        timeout_sec=timeout_sec,
+    )
+
+
+def _extract_runtime_audio_base64(
+    payload: dict[str, Any],
+    *,
+    direct_keys: list[str],
+    nested_keys: list[str],
+) -> str:
+    for key in direct_keys:
+        token = str(payload.get(key) or "").strip()
+        if token:
+            return token
+    for key in nested_keys:
+        nested = payload.get(key)
+        if not isinstance(nested, dict):
+            continue
+        token = str(
+            nested.get("audioBase64")
+            or nested.get("base64")
+            or nested.get("audio")
+            or ""
+        ).strip()
+        if token:
+            return token
+    return ""
+
+
+def _wav_duration_seconds_from_bytes(wav_bytes: bytes) -> float:
+    try:
+        info = _read_wav_info(wav_bytes)
+    except Exception:
+        return 0.0
+    duration_ms = max(0, int(info.get("durationMs") or 0))
+    return round(float(duration_ms) / 1000.0, 6) if duration_ms > 0 else 0.0
+
+
+def _run_modal_source_separation(
+    *,
+    uid: str,
+    request_id: str,
+    trace_id: str,
+    source_audio_base64: str,
+    source_audio_name: str,
+    source_separation_model: str,
+    source_separation_device: str,
+    trim_requested: bool,
+    trim_start_sec: Optional[float],
+    trim_end_sec: Optional[float],
+) -> tuple[bytes, bytes, dict[str, Any], int, list[str]]:
+    client = _voice_clone_separation_modal_client()
+    if client is None:
+        raise RuntimeError("Voice Clone separation modal runtime is not configured.")
+
+    request_payload: dict[str, Any] = {
+        "requestId": str(request_id or "").strip(),
+        "traceId": str(trace_id or "").strip() or str(request_id or "").strip(),
+        "uid": str(uid or "").strip(),
+        "sourceAudioBase64": str(source_audio_base64 or "").strip(),
+        "sourceAudioName": str(source_audio_name or "source.wav").strip() or "source.wav",
+        "sourceSeparationModel": str(source_separation_model or "").strip() or SEPARATION_MODEL,
+        "sourceSeparationDevice": str(source_separation_device or "").strip() or SEPARATION_DEVICE,
+    }
+    if trim_requested:
+        if trim_start_sec is not None:
+            request_payload["sourceTrimStartSec"] = float(trim_start_sec)
+        if trim_end_sec is not None:
+            request_payload["sourceTrimEndSec"] = float(trim_end_sec)
+
+    started_at = time.perf_counter()
+    runtime_payload = client.separate(
+        request_payload,
+        timeout_sec=max(float(VF_VOICE_CLONE_SEPARATION_MODAL_TIMEOUT_SEC), float(getattr(client, "timeout_sec", VF_VOICE_CLONE_SEPARATION_MODAL_TIMEOUT_SEC))),
+    )
+    elapsed_ms = max(1, int((time.perf_counter() - started_at) * 1000))
+    if not isinstance(runtime_payload, dict):
+        raise RuntimeError("Voice Clone separation runtime returned an invalid payload.")
+
+    vocals_audio_b64 = _extract_runtime_audio_base64(
+        runtime_payload,
+        direct_keys=["vocalsAudioBase64", "speechAudioBase64", "voiceAudioBase64"],
+        nested_keys=["vocals", "speech", "voice"],
+    )
+    background_audio_b64 = _extract_runtime_audio_base64(
+        runtime_payload,
+        direct_keys=["backgroundAudioBase64", "accompanimentAudioBase64", "musicAudioBase64", "bgAudioBase64"],
+        nested_keys=["background", "accompaniment", "music", "bg"],
+    )
+    vocals_bytes = decode_openvoice_audio_base64(vocals_audio_b64) if vocals_audio_b64 else b""
+    background_bytes = decode_openvoice_audio_base64(background_audio_b64) if background_audio_b64 else b""
+    if not vocals_bytes or not background_bytes:
+        raise RuntimeError("Voice Clone separation runtime did not return vocals/background stems.")
+
+    runtime_timings = runtime_payload.get("timings") if isinstance(runtime_payload.get("timings"), dict) else {}
+    runtime_source = (
+        (runtime_payload.get("runtime") if isinstance(runtime_payload.get("runtime"), dict) else {}).get("sourceSeparation")
+        if isinstance((runtime_payload.get("runtime") if isinstance(runtime_payload.get("runtime"), dict) else {}), dict)
+        else {}
+    )
+    runtime_source_payload = runtime_source if isinstance(runtime_source, dict) else {}
+    duration_sec = _as_positive_number(
+        runtime_source_payload.get("durationSec")
+        or runtime_payload.get("durationSec")
+        or (_wav_duration_seconds_from_bytes(vocals_bytes) or 0.0)
+    )
+    separation_ms = max(
+        1,
+        int(
+            runtime_timings.get("sourceSeparationMs")
+            or runtime_timings.get("totalMs")
+            or elapsed_ms
+        ),
+    )
+    normalized_runtime_source = {
+        "enabled": True,
+        "pipeline": str(runtime_source_payload.get("pipeline") or "demucs").strip() or "demucs",
+        "model": str(runtime_source_payload.get("model") or source_separation_model).strip() or source_separation_model,
+        "device": str(runtime_source_payload.get("device") or source_separation_device).strip() or source_separation_device,
+        "cacheKey": str(runtime_source_payload.get("cacheKey") or "").strip(),
+        "timeoutSec": int(runtime_source_payload.get("timeoutSec") or SEPARATION_TIMEOUT_SEC),
+        "trimApplied": bool(runtime_source_payload.get("trimApplied", trim_requested)),
+        "durationSec": round(duration_sec, 6) if duration_sec > 0 else 0.0,
+        "provider": "modal",
+        "providerLabel": "modal-runtime",
+    }
+    if normalized_runtime_source["trimApplied"]:
+        normalized_runtime_source["trimStartSec"] = (
+            runtime_source_payload.get("trimStartSec")
+            if runtime_source_payload.get("trimStartSec") is not None
+            else trim_start_sec
+        )
+        normalized_runtime_source["trimEndSec"] = (
+            runtime_source_payload.get("trimEndSec")
+            if runtime_source_payload.get("trimEndSec") is not None
+            else trim_end_sec
+        )
+        if str(runtime_source_payload.get("trimWindowKey") or "").strip():
+            normalized_runtime_source["trimWindowKey"] = str(runtime_source_payload.get("trimWindowKey") or "").strip()
+    notes = [str(item).strip() for item in list(runtime_payload.get("notes") or []) if str(item).strip()]
+    if not notes:
+        notes = ["source_audio_vocals_extracted_demucs_modal"]
+    return vocals_bytes, background_bytes, normalized_runtime_source, separation_ms, notes
+
+
 def _build_source_separation_cache_key(
     source_path: Path,
     model_name: str,
@@ -17894,6 +20322,7 @@ def _ensure_source_separation(
     device_preference: Optional[str] = None,
     trim_window_key: str = "",
 ) -> tuple[Path, Path, str]:
+    _maybe_run_openvoice_retention_cleanup()
     if not source_separation_runtime.ensure_available():
         raise RuntimeError(source_separation_runtime.import_error or "Demucs runtime unavailable.")
 
@@ -19212,6 +21641,25 @@ class ReaderAdminCatalogPatchRequest(BaseModel):
     publishState: Optional[str] = None
 
 
+class ReaderOfflineMetadataUpsertRequest(BaseModel):
+    contentId: Optional[str] = None
+    bookId: Optional[str] = None
+    chapterId: Optional[str] = None
+    chapterIndex: Optional[int] = None
+    chapterTitle: Optional[str] = None
+    speakerMode: Optional[str] = None
+    watermarkId: Optional[str] = None
+    watermarkVersion: Optional[str] = None
+    sizeBytes: Optional[int] = None
+    hash: Optional[str] = None
+    contentHash: Optional[str] = None
+    durationMs: Optional[int] = None
+    deviceId: Optional[str] = None
+    deviceType: Optional[str] = None
+    deviceLabel: Optional[str] = None
+    deviceMarker: Optional[str] = None
+
+
 def _reader_safe_id(value: str, fallback: str) -> str:
     token = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(value or "").strip())
     return token or fallback
@@ -19939,7 +22387,7 @@ def _reader_now_ms() -> int:
 
 
 def _reader_public_user_agent() -> str:
-    return "VoiceFlow Reader/1.0 (+https://voiceflow.local)"
+    return "VFlowAI-Reader/1.0 (+https://v-flow-ai.local)"
 
 
 def _reader_progress_doc_id(uid: str, work_key: str) -> str:
@@ -20322,6 +22770,204 @@ def _reader_preferences_patch(uid: str, patch: dict[str, Any]) -> dict[str, Any]
         return normalized
     collection.document(safe_uid).set(normalized, merge=True)
     return normalized
+
+
+def _reader_offline_metadata_doc_id(uid: str, entry_id: str) -> str:
+    payload = f"{str(uid or '').strip()}:{str(entry_id or '').strip()}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _reader_normalize_offline_speaker_mode(raw_value: object) -> str:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"single", "single_speaker"}:
+        return "single"
+    if token in {"multi", "multi_speaker"}:
+        return "multi"
+    if token in {"line_map", "line"}:
+        return "line_map"
+    if token in {"studio_pair_groups", "studio_pair", "pair_groups"}:
+        return "studio_pair_groups"
+    return "single"
+
+
+def _reader_offline_metadata_int(raw_value: object, *, default: int = 0) -> int:
+    if raw_value is None:
+        return max(0, int(default))
+    try:
+        return max(0, int(raw_value))
+    except Exception:
+        try:
+            return max(0, int(float(str(raw_value).strip())))
+        except Exception:
+            return max(0, int(default))
+
+
+def _reader_offline_metadata_normalize(payload: dict[str, Any], uid: str, entry_id: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_entry_id = collapse_whitespace(str(entry_id or "").strip())
+    safe_content_id = collapse_whitespace(str(payload.get("contentId") or "").strip())
+    safe_book_id = collapse_whitespace(str(payload.get("bookId") or "").strip())
+    if safe_content_id and not safe_book_id:
+        safe_book_id = safe_content_id
+    if safe_book_id and not safe_content_id:
+        safe_content_id = safe_book_id
+    safe_chapter_id = collapse_whitespace(str(payload.get("chapterId") or "").strip())
+    safe_chapter_title = collapse_whitespace(str(payload.get("chapterTitle") or "").strip())
+    safe_device_id = collapse_whitespace(str(payload.get("deviceId") or "").strip())
+    safe_device_type = str(payload.get("deviceType") or "").strip().lower()
+    safe_device_label = collapse_whitespace(str(payload.get("deviceLabel") or "").strip())
+    safe_device_marker = collapse_whitespace(str(payload.get("deviceMarker") or "").strip())
+    safe_hash = str(payload.get("hash") or payload.get("contentHash") or "").strip().lower()
+    safe_watermark_id = str(payload.get("watermarkId") or "").strip().lower()
+    safe_watermark_version = str(payload.get("watermarkVersion") or "").strip().lower()
+    safe_updated_at = str(payload.get("updatedAt") or _safe_now_iso()).strip() or _safe_now_iso()
+    return {
+        "uid": safe_uid,
+        "entryId": safe_entry_id,
+        "contentId": safe_content_id,
+        "bookId": safe_book_id,
+        "chapterId": safe_chapter_id,
+        "chapterIndex": _reader_offline_metadata_int(payload.get("chapterIndex"), default=0),
+        "chapterTitle": safe_chapter_title,
+        "speakerMode": _reader_normalize_offline_speaker_mode(payload.get("speakerMode")),
+        "watermarkId": safe_watermark_id,
+        "watermarkVersion": safe_watermark_version,
+        "sizeBytes": _reader_offline_metadata_int(payload.get("sizeBytes"), default=0),
+        "hash": safe_hash,
+        "durationMs": _reader_offline_metadata_int(payload.get("durationMs"), default=0),
+        "deviceId": safe_device_id,
+        "deviceType": safe_device_type,
+        "deviceLabel": safe_device_label,
+        "deviceMarker": safe_device_marker,
+        "updatedAt": safe_updated_at,
+    }
+
+
+def _reader_offline_metadata_get(uid: str, entry_id: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_entry_id = collapse_whitespace(str(entry_id or "").strip())
+    if not safe_uid or not safe_entry_id:
+        return None
+    doc_id = _reader_offline_metadata_doc_id(safe_uid, safe_entry_id)
+    with _INMEMORY_LOCK:
+        cached = dict(_INMEMORY_READER_OFFLINE_METADATA.get(doc_id) or {})
+    if cached and str(cached.get("uid") or "").strip() == safe_uid and str(cached.get("entryId") or "").strip() == safe_entry_id:
+        return cached
+    collection = _firestore_collection(READER_OFFLINE_METADATA_COLLECTION)
+    if collection is None:
+        return None
+    try:
+        doc = collection.document(doc_id).get()
+    except Exception:
+        return None
+    if doc is None or not getattr(doc, "exists", False):
+        return None
+    payload = dict(doc.to_dict() or {})
+    if str(payload.get("uid") or "").strip() != safe_uid:
+        return None
+    normalized = _reader_offline_metadata_normalize(payload, safe_uid, safe_entry_id)
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_OFFLINE_METADATA[doc_id] = dict(normalized)
+    return normalized
+
+
+def _reader_offline_metadata_list(uid: str) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return []
+    with _INMEMORY_LOCK:
+        memory_items = [
+            dict(item)
+            for item in _INMEMORY_READER_OFFLINE_METADATA.values()
+            if str((item or {}).get("uid") or "").strip() == safe_uid
+        ]
+    if not VF_READER_FIRESTORE_LISTS_ENABLED:
+        memory_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return memory_items
+    collection = _firestore_collection(READER_OFFLINE_METADATA_COLLECTION)
+    if collection is None:
+        memory_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return memory_items
+
+    def _load_firestore_offline_metadata() -> list[dict[str, Any]]:
+        docs = collection.where("uid", "==", safe_uid).stream()
+        return [dict(doc.to_dict() or {}) for doc in docs]
+
+    items = _reader_firestore_docs_with_timeout(_load_firestore_offline_metadata)
+    for row in items:
+        entry_id = str(row.get("entryId") or "").strip()
+        if not entry_id:
+            continue
+        doc_id = _reader_offline_metadata_doc_id(safe_uid, entry_id)
+        normalized = _reader_offline_metadata_normalize(row, safe_uid, entry_id)
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_OFFLINE_METADATA[doc_id] = dict(normalized)
+    items = [
+        _reader_offline_metadata_normalize(item, safe_uid, str(item.get("entryId") or ""))
+        for item in items
+        if str(item.get("entryId") or "").strip()
+    ]
+    items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+    return items
+
+
+def _reader_offline_metadata_set(uid: str, entry_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_entry_id = collapse_whitespace(str(entry_id or "").strip())
+    if not safe_uid or not safe_entry_id:
+        raise HTTPException(status_code=400, detail="Missing reader offline metadata entry.")
+    current = _reader_offline_metadata_get(safe_uid, safe_entry_id) or {}
+    next_payload = dict(current)
+    for field in (
+        "contentId",
+        "bookId",
+        "chapterId",
+        "chapterIndex",
+        "chapterTitle",
+        "speakerMode",
+        "watermarkId",
+        "watermarkVersion",
+        "sizeBytes",
+        "hash",
+        "contentHash",
+        "durationMs",
+        "deviceId",
+        "deviceType",
+        "deviceLabel",
+        "deviceMarker",
+        "updatedAt",
+    ):
+        if field in patch and patch.get(field) is not None:
+            next_payload[field] = patch.get(field)
+    next_payload["uid"] = safe_uid
+    next_payload["entryId"] = safe_entry_id
+    next_payload["updatedAt"] = _safe_now_iso()
+    normalized = _reader_offline_metadata_normalize(next_payload, safe_uid, safe_entry_id)
+    doc_id = _reader_offline_metadata_doc_id(safe_uid, safe_entry_id)
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_OFFLINE_METADATA[doc_id] = dict(normalized)
+    collection = _firestore_collection(READER_OFFLINE_METADATA_COLLECTION)
+    if collection is None:
+        return normalized
+    collection.document(doc_id).set(normalized, merge=True)
+    return normalized
+
+
+def _reader_offline_metadata_delete(uid: str, entry_id: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_entry_id = collapse_whitespace(str(entry_id or "").strip())
+    if not safe_uid or not safe_entry_id:
+        return None
+    existing = _reader_offline_metadata_get(safe_uid, safe_entry_id)
+    if not existing:
+        return None
+    doc_id = _reader_offline_metadata_doc_id(safe_uid, safe_entry_id)
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_OFFLINE_METADATA.pop(doc_id, None)
+    collection = _firestore_collection(READER_OFFLINE_METADATA_COLLECTION)
+    if collection is not None:
+        collection.document(doc_id).delete()
+    return existing
 
 
 def _reader_upload_write(uid: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -22861,6 +25507,48 @@ def _reader_catalog_book_text(item: dict[str, Any]) -> str:
     return ""
 
 
+def _normalize_speaker_identifier(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _count_unique_speaker_labels(rows: Any, *, speaker_key: str = "speaker") -> int:
+    if not isinstance(rows, list):
+        return 0
+    seen: set[str] = set()
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        speaker_name = _normalize_speaker_identifier(item.get(speaker_key))
+        if not speaker_name:
+            continue
+        seen.add(speaker_name.lower())
+    return len(seen)
+
+
+def _enforce_multi_speaker_hard_cap(
+    rows: Any,
+    *,
+    speaker_key: str = "speaker",
+    detail: str = MULTI_SPEAKER_HARD_CAP_ERROR,
+) -> None:
+    if _count_unique_speaker_labels(rows, speaker_key=speaker_key) > MULTI_SPEAKER_HARD_CAP:
+        raise HTTPException(status_code=400, detail=detail)
+
+
+def _enforce_reader_cast_memory_hard_cap(cast_memory: dict[str, Any]) -> None:
+    if not isinstance(cast_memory, dict):
+        return
+    seen: set[str] = set()
+    for raw_speaker, raw_voice_id in cast_memory.items():
+        speaker_name = _normalize_speaker_identifier(raw_speaker)
+        voice_id = str(raw_voice_id or "").strip()
+        if not speaker_name or not voice_id:
+            continue
+        seen.add(speaker_name.lower())
+    if len(seen) > MULTI_SPEAKER_HARD_CAP:
+        raise HTTPException(status_code=400, detail=READER_CAST_HARD_CAP_ERROR)
+
+
 def _reader_default_cast_for_speaker(speaker: str, index: int) -> str:
     safe_speaker = str(speaker or "").strip().lower()
     if safe_speaker in {"narrator", "default"}:
@@ -22928,6 +25616,8 @@ def _reader_resolve_multi_speaker_payload(
             continue
         seen_speakers.add(speaker_key)
         speaker_order.append(speaker_name)
+    if len(speaker_order) > MULTI_SPEAKER_HARD_CAP:
+        raise HTTPException(status_code=400, detail=READER_CAST_HARD_CAP_ERROR)
 
     default_runtime_voice_name = _resolve_gem_runtime_voice_name(default_voice_id or "Fenrir", fallback="Fenrir")
     resolved_speaker_voices: list[dict[str, Any]] = []
@@ -22985,13 +25675,29 @@ def _reader_job_status_summary(uid: str, job_id: str) -> dict[str, Any]:
         return {"status": "missing", "jobId": safe_job_id}
 
 
-def _reader_tts_job_result_audio_bytes(uid: str, job_id: str, *, is_admin: bool) -> Optional[bytes]:
+def _reader_tts_job_result_audio_bytes(
+    uid: str,
+    job_id: str,
+    *,
+    is_admin: bool,
+    apply_download_provenance: bool = False,
+) -> Optional[bytes]:
     safe_job_id = str(job_id or "").strip()
     if not safe_job_id:
         return None
     try:
         audio, _ = _TTS_V2_ENGINE.get_result_audio(uid=uid, is_admin=is_admin, job_id=safe_job_id)
-        return bytes(audio or b"")
+        payload = bytes(audio or b"")
+        if payload:
+            finalized = _audio_generation_finalize_download_for_job(
+                uid=uid,
+                is_admin=is_admin,
+                job_id=safe_job_id,
+                audio_bytes=payload,
+            )
+            if apply_download_provenance:
+                payload = bytes((finalized or {}).get("audioBytes") or payload)
+        return payload
     except Exception:
         return None
 
@@ -23892,6 +26598,7 @@ def _reader_create_tts_job(
         "multi_speaker_mode": multi_speaker_mode,
         "multi_speaker_line_map": line_map or None,
         "speaker_voices": speaker_voice_rows or None,
+        "workerCategory": "APP_LOCAL",
     }
     response = _create_tts_v2_job_response(request, payload, require_session=False)
     job_id = _reader_extract_job_id_from_response(response)
@@ -24241,10 +26948,10 @@ def reader_legal_ack_status(request: Request) -> JSONResponse:
             "ack": {
                 "accepted": bool(payload.get("accepted")),
                 "acceptedAt": str(payload.get("acceptedAt") or ""),
-                "title": "VoiceFlow Reader upload rights",
+                "title": "V FLOW AI Reader upload rights",
                 "message": (
                     "Upload only work you created, have permission to use, or that is openly licensed. "
-                    "VoiceFlow does not claim ownership of your files, and you remain responsible for rights and misuse."
+                    "V FLOW AI does not claim ownership of your files, and you remain responsible for rights and misuse."
                 ),
             },
             "billing": {
@@ -24282,6 +26989,29 @@ def reader_preferences_patch(payload: ReaderPreferencesPatchRequest, request: Re
     uid = _require_request_uid(request)
     saved = _reader_preferences_patch(uid, payload.model_dump(exclude_none=True))
     return JSONResponse({"ok": True, "preferences": saved})
+
+
+@app.get("/reader/offline/metadata")
+def reader_offline_metadata_list(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    metadata = _reader_offline_metadata_list(uid)
+    return JSONResponse({"ok": True, "metadata": metadata, "count": len(metadata)})
+
+
+@app.put("/reader/offline/metadata/{entry_id}")
+def reader_offline_metadata_put(entry_id: str, payload: ReaderOfflineMetadataUpsertRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    saved = _reader_offline_metadata_set(uid, entry_id, payload.model_dump(exclude_none=True))
+    return JSONResponse({"ok": True, "metadata": saved})
+
+
+@app.delete("/reader/offline/metadata/{entry_id}")
+def reader_offline_metadata_delete(entry_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    deleted = _reader_offline_metadata_delete(uid, entry_id)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Reader offline metadata entry not found.")
+    return JSONResponse({"ok": True, "deleted": True, "metadata": deleted})
 
 
 @app.get("/reader/catalog/regions")
@@ -25401,6 +28131,7 @@ def reader_session_savepoint(session_id: str, payload: ReaderSessionSavepointReq
                 cast_memory[safe_key] = safe_value
     if str(payload.narratorVoiceId or "").strip():
         cast_memory["Narrator"] = str(payload.narratorVoiceId or "").strip()
+    _enforce_reader_cast_memory_hard_cap(cast_memory)
     safe_session["castMemory"] = cast_memory
     safe_session["defaultVoiceId"] = str(cast_memory.get("Narrator") or safe_session.get("defaultVoiceId") or "v22").strip() or "v22"
     if str(payload.readingModeOverride or payload.directionOverride or "").strip():
@@ -25606,7 +28337,21 @@ def reader_session_export(session_id: str, request: Request) -> FileResponse:
         job_id = str(item.get("jobId") or "").strip()
         if not job_id:
             continue
-        audio_bytes = _reader_tts_job_result_audio_bytes(uid, job_id, is_admin=is_admin)
+        try:
+            audio_bytes = _reader_tts_job_result_audio_bytes(
+                uid,
+                job_id,
+                is_admin=is_admin,
+                apply_download_provenance=True,
+            )
+        except TypeError:
+            # Backward compatibility for tests/patches that monkeypatch the helper
+            # with the previous (uid, job_id, *, is_admin) signature.
+            audio_bytes = _reader_tts_job_result_audio_bytes(
+                uid,
+                job_id,
+                is_admin=is_admin,
+            )
         if audio_bytes is None:
             continue
         export_chunks.append(audio_bytes)
@@ -25622,7 +28367,21 @@ def reader_session_export(session_id: str, request: Request) -> FileResponse:
         job_id = str(item.get("audioJobId") or "").strip()
         if not job_id:
             continue
-        audio_bytes = _reader_tts_job_result_audio_bytes(uid, job_id, is_admin=is_admin)
+        try:
+            audio_bytes = _reader_tts_job_result_audio_bytes(
+                uid,
+                job_id,
+                is_admin=is_admin,
+                apply_download_provenance=True,
+            )
+        except TypeError:
+            # Backward compatibility for tests/patches that monkeypatch the helper
+            # with the previous (uid, job_id, *, is_admin) signature.
+            audio_bytes = _reader_tts_job_result_audio_bytes(
+                uid,
+                job_id,
+                is_admin=is_admin,
+            )
         if audio_bytes is None:
             continue
         export_chunks.append(audio_bytes)
@@ -26475,6 +29234,7 @@ def _serialize_payment_method(payment_method: Any) -> Optional[dict[str, Any]]:
 def _build_billing_account_summary(uid: str) -> dict[str, Any]:
     entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
     profile = _user_profile_read(uid) or {"uid": uid}
+    profile_billing = _normalize_account_billing_profile(profile.get("billingProfile"))
     plan_key = _plan_key_from_name(str(entitlement.get("plan") or "free"))
     success_bucket = _tts_success_bucket_for_plan(plan_key)
     tts_success_rpm = _TTS_SUCCESS_LIMITER.quota_for_plan(success_bucket)
@@ -26674,6 +29434,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             "userId": str(profile.get("userId") or "").strip() or None,
             "displayName": str(profile.get("displayName") or "").strip() or None,
             "email": str(profile.get("email") or "").strip() or None,
+            "billingProfile": profile_billing,
             "status": str(profile.get("status") or "").strip() or None,
             "createdAt": str(profile.get("createdAt") or "").strip() or None,
             "updatedAt": str(profile.get("updatedAt") or "").strip() or None,
@@ -27640,16 +30401,20 @@ def _admin_revoke_user_sessions(uid: str) -> None:
 def account_profile(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
     is_admin = _request_is_admin(request, uid)
-    profile = _user_profile_read(uid)
-    if profile is None and not is_admin and (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE):
-        profile = _ensure_user_profile(uid, request=request, allow_auto_backfill=True)
-    required = bool(
-        (not is_admin)
-        and VF_USER_ID_REQUIRED
-        and VF_AUTH_ENFORCE
-        and not str((profile or {}).get("userId") or "").strip()
+    profile = _user_profile_read(uid) if is_admin else _ensure_user_profile(
+        uid,
+        request=request,
+        allow_auto_backfill=True,
+        repair_user_id_collisions=True,
+        suppress_backfill_errors=True,
     )
-    suggested = "" if is_admin else _user_profile_backfill_candidate(uid, _request_claim_email(request), "")
+    required = False
+    suggested = (
+        ""
+        if is_admin
+        else str((profile or {}).get("userId") or "").strip().lower()
+        or _user_profile_backfill_candidate(uid, _request_claim_email(request), "")
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -27666,11 +30431,18 @@ def account_profile_upsert(payload: UserProfileUpsertRequest, request: Request) 
     if _request_is_admin(request, uid):
         raise HTTPException(status_code=403, detail="Admin accounts do not use userId.")
     before = _user_profile_read(uid) or {}
+    billing_profile_payload = None
+    if payload.billingProfile is not None:
+        if hasattr(payload.billingProfile, "model_dump"):
+            billing_profile_payload = payload.billingProfile.model_dump(exclude_none=True)
+        else:
+            billing_profile_payload = payload.billingProfile.dict(exclude_none=True)
     row = _user_profile_upsert(
         uid,
         user_id=payload.userId,
         display_name=payload.displayName,
         email=_request_claim_email(request) or str(before.get("email") or ""),
+        billing_profile=billing_profile_payload,
         created_by=uid,
         updated_by=uid,
         force_change=False,
@@ -27696,7 +30468,13 @@ def account_profile_bootstrap(request: Request) -> JSONResponse:
     if _request_is_admin(request, uid):
         profile = _user_profile_read(uid)
         return JSONResponse({"ok": True, "profile": profile or {"uid": uid, "userId": "", "status": "admin"}})
-    profile = _ensure_user_profile(uid, request=request, allow_auto_backfill=True)
+    profile = _ensure_user_profile(
+        uid,
+        request=request,
+        allow_auto_backfill=True,
+        repair_user_id_collisions=True,
+        suppress_backfill_errors=True,
+    )
     return JSONResponse({"ok": True, "profile": profile or {"uid": uid, "userId": ""}})
 
 
@@ -28705,8 +31483,7 @@ def admin_daily_usage_reset_status(request: Request) -> JSONResponse:
 
 @app.post("/admin/usage/reset-daily-all")
 def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONResponse:
-    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    admin_uid, actor = _require_super_admin_mutation(request, PERM_OPS_MUTATE)
     summary = _reset_daily_usage_all(dry_run=bool(dryRun), requested_by=admin_uid)
     _audit_append_event(
         action="daily_usage_reset",
@@ -28723,8 +31500,7 @@ def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONR
 
 @app.post("/admin/entitlements/cleanup-daily-generation-limit")
 def admin_cleanup_entitlements_daily_generation_limit(request: Request, dryRun: bool = False) -> JSONResponse:
-    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    admin_uid, actor = _require_super_admin_mutation(request, PERM_OPS_MUTATE)
     summary = _cleanup_entitlements_daily_generation_limit(dry_run=bool(dryRun), requested_by=admin_uid)
     _audit_append_event(
         action="entitlements_cleanup_daily_generation_limit",
@@ -28744,8 +31520,7 @@ def admin_reconcile_entitlement_allowed_engines(
     payload: EntitlementAllowedEnginesReconcileRequest,
     request: Request,
 ) -> JSONResponse:
-    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    admin_uid, actor = _require_super_admin_mutation(request, PERM_OPS_MUTATE)
     summary = _reconcile_entitlement_allowed_engines(dry_run=bool(payload.dryRun), requested_by=admin_uid)
     _audit_append_event(
         action="entitlements_reconcile_allowed_engines",
@@ -28765,8 +31540,7 @@ def admin_engine_canonicalization_migrate(
     payload: EngineCanonicalizationMigrationRequest,
     request: Request,
 ) -> JSONResponse:
-    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    admin_uid, actor = _require_super_admin_mutation(request, PERM_OPS_MUTATE)
     try:
         summary = _engine_canonicalization_migration(mode=payload.mode, requested_by=admin_uid)
     except ValueError as exc:
@@ -28951,8 +31725,7 @@ def admin_force_change_user_id(
     payload: AdminForceUserIdChangeRequest,
     request: Request,
 ) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    actor_uid, actor = _require_super_admin_mutation(request, PERM_USERS_WRITE)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -29003,6 +31776,7 @@ def _delete_user_account_cleanup(uid: str, *, delete_auth_user: bool = True) -> 
         "support_messages",
         "reader_legal_ack",
         "reader_preferences",
+        "reader_offline_metadata",
         "reader_uploads",
         "reader_progress",
         "reader_cast_memory",
@@ -29052,6 +31826,7 @@ def _delete_user_account_cleanup(uid: str, *, delete_auth_user: bool = True) -> 
             ("support_messages", "support_messages", "query"),
             ("reader_legal_ack", READER_LEGAL_ACK_COLLECTION, "doc"),
             ("reader_preferences", READER_PREFERENCES_COLLECTION, "doc"),
+            ("reader_offline_metadata", READER_OFFLINE_METADATA_COLLECTION, "query"),
             ("reader_uploads", READER_UPLOADS_COLLECTION, "query"),
             ("reader_progress", READER_PROGRESS_COLLECTION, "query"),
             ("reader_cast_memory", READER_CAST_MEMORY_COLLECTION, "query"),
@@ -29103,6 +31878,11 @@ def _delete_user_account_cleanup(uid: str, *, delete_auth_user: bool = True) -> 
         if safe_uid in _INMEMORY_READER_PREFERENCES:
             _INMEMORY_READER_PREFERENCES.pop(safe_uid, None)
             _record_deleted("reader_preferences", 1)
+        for key, row in list(_INMEMORY_READER_OFFLINE_METADATA.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_READER_OFFLINE_METADATA.pop(key, None)
+            _record_deleted("reader_offline_metadata", 1)
 
         if user_id_before and user_id_before in _INMEMORY_USER_ID_INDEX:
             _INMEMORY_USER_ID_INDEX.pop(user_id_before, None)
@@ -29916,6 +32696,18 @@ def admin_rbac_assign_user(target_uid: str, payload: AdminRoleAssignmentRequest,
     if safe_role not in RBAC_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role.")
     before = _rbac_load_assignment(safe_target_uid) or {}
+    current_role = str(before.get("role") or (RBAC_ROLE_SUPER_ADMIN if _rbac_uid_is_super_admin(safe_target_uid) else RBAC_ROLE_READ_ONLY_OPS))
+    current_status = str(before.get("status") or "active")
+    next_status = str(payload.status or before.get("status") or "active")
+    _rbac_assert_mutation_allowed(
+        actor_uid=actor_uid,
+        actor=actor,
+        target_uid=safe_target_uid,
+        current_role=current_role,
+        current_status=current_status,
+        next_role=safe_role,
+        next_status=next_status,
+    )
     row = _rbac_write_assignment(
         safe_target_uid,
         {
@@ -29974,6 +32766,15 @@ def admin_rbac_disable_user(target_uid: str, payload: AdminRoleStatusRequest, re
             "status": "active",
             "version": 0,
         }
+    _rbac_assert_mutation_allowed(
+        actor_uid=actor_uid,
+        actor=actor,
+        target_uid=safe_target_uid,
+        current_role=str(current.get("role") or RBAC_ROLE_READ_ONLY_OPS),
+        current_status=str(current.get("status") or "active"),
+        next_role=str(current.get("role") or RBAC_ROLE_READ_ONLY_OPS),
+        next_status="disabled",
+    )
     row = _rbac_write_assignment(
         safe_target_uid,
         {
@@ -30030,6 +32831,15 @@ def admin_rbac_enable_user(target_uid: str, payload: AdminRoleStatusRequest, req
             "status": "disabled",
             "version": 0,
         }
+    _rbac_assert_mutation_allowed(
+        actor_uid=actor_uid,
+        actor=actor,
+        target_uid=safe_target_uid,
+        current_role=str(current.get("role") or RBAC_ROLE_READ_ONLY_OPS),
+        current_status=str(current.get("status") or "disabled"),
+        next_role=str(current.get("role") or RBAC_ROLE_READ_ONLY_OPS),
+        next_status="active",
+    )
     row = _rbac_write_assignment(
         safe_target_uid,
         {
@@ -30166,6 +32976,9 @@ def admin_audio_metadata_records(
     paymentRef: str = "",
     status: str = "",
     engine: str = "",
+    outputSha256: str = "",
+    watermarkId: str = "",
+    c2paStatus: str = "",
     fromIso: str = Query("", alias="from"),
     toIso: str = Query("", alias="to"),
     cursor: str = "",
@@ -30179,6 +32992,9 @@ def admin_audio_metadata_records(
         payment_ref=paymentRef,
         status=status,
         engine=engine,
+        output_sha256=outputSha256,
+        watermark_id=watermarkId,
+        c2pa_status=c2paStatus,
         from_iso=fromIso,
         to_iso=toIso,
         cursor=cursor,
@@ -30227,6 +33043,9 @@ def admin_audio_metadata_export_csv(
     paymentRef: str = "",
     status: str = "",
     engine: str = "",
+    outputSha256: str = "",
+    watermarkId: str = "",
+    c2paStatus: str = "",
     fromIso: str = Query("", alias="from"),
     toIso: str = Query("", alias="to"),
 ) -> Response:
@@ -30241,6 +33060,9 @@ def admin_audio_metadata_export_csv(
             payment_ref=paymentRef,
             status=status,
             engine=engine,
+            output_sha256=outputSha256,
+            watermark_id=watermarkId,
+            c2pa_status=c2paStatus,
             from_iso=fromIso,
             to_iso=toIso,
         )
@@ -30265,6 +33087,9 @@ def admin_audio_metadata_export_csv(
                 "paymentRef": str(paymentRef or "").strip(),
                 "status": str(status or "").strip().lower(),
                 "engine": str(engine or "").strip().upper(),
+                "outputSha256": str(outputSha256 or "").strip().lower(),
+                "watermarkId": str(watermarkId or "").strip().lower(),
+                "c2paStatus": str(c2paStatus or "").strip().lower(),
                 "from": str(fromIso or "").strip(),
                 "to": str(toIso or "").strip(),
             },
@@ -30280,6 +33105,56 @@ def admin_audio_metadata_export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="audio-metadata-{int(time.time())}.csv"'},
     )
+
+
+@app.post("/admin/audio-metadata/repair")
+def admin_audio_metadata_repair(payload: AudioMetadataRepairRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_super_admin_mutation(request, PERM_AUDIT_READ)
+    try:
+        summary = _audio_generation_audit_repair(
+            mode=payload.mode,
+            uid=payload.uid,
+            user_id=payload.userId,
+            identity_value=payload.identityValue,
+            payment_ref=payload.paymentRef,
+            status=payload.status,
+            engine=payload.engine,
+            output_sha256=payload.outputSha256,
+            watermark_id=payload.watermarkId,
+            c2pa_status=payload.c2paStatus,
+            from_iso=payload.fromIso,
+            to_iso=payload.toIso,
+            limit=payload.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit_append_event(
+        action="audio_metadata_repair",
+        resource_type="audio_metadata",
+        resource_id="repair",
+        after=summary if isinstance(summary, dict) else {},
+        meta={
+            "mode": str(payload.mode or "dry_run").strip().lower(),
+            "filters": {
+                "uid": str(payload.uid or "").strip(),
+                "userId": str(payload.userId or "").strip().lower(),
+                "identityValue": str(payload.identityValue or "").strip(),
+                "paymentRef": str(payload.paymentRef or "").strip(),
+                "status": str(payload.status or "").strip().lower(),
+                "engine": str(payload.engine or "").strip().upper(),
+                "outputSha256": str(payload.outputSha256 or "").strip().lower(),
+                "watermarkId": str(payload.watermarkId or "").strip().lower(),
+                "c2paStatus": str(payload.c2paStatus or "").strip().lower(),
+                "from": str(payload.fromIso or "").strip(),
+                "to": str(payload.toIso or "").strip(),
+                "limit": int(payload.limit or 500),
+            },
+        },
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(summary)
 
 
 @app.post("/admin/coupons")
@@ -31465,8 +34340,7 @@ def admin_usage_events_settlement_migration(
     payload: BillingUsageEventsSettlementMigrationRequest,
     request: Request,
 ) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_BILLING_WRITE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    actor_uid, actor = _require_super_admin_mutation(request, PERM_BILLING_WRITE)
     dry_run = bool(payload.dryRun)
     limit = max(1, min(5000, int(payload.limit or 500)))
 
@@ -31551,8 +34425,7 @@ def admin_recalculate_token_pack_expiry(
     request: Request,
     dryRun: bool = True,
 ) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_BILLING_WRITE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    actor_uid, actor = _require_super_admin_mutation(request, PERM_BILLING_WRITE)
     summary = _recalculate_token_pack_expiry_migration(
         dry_run=bool(dryRun),
         requested_by=actor_uid,
@@ -32131,7 +35004,13 @@ def billing_account_summary(request: Request) -> JSONResponse:
 
 
 def _read_request_idempotency_key(request: Request) -> str:
-    return str(request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key") or "").strip()
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return ""
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return ""
+    return str(getter("Idempotency-Key") or getter("idempotency-key") or "").strip()
 
 
 def _resolve_billing_management_provider(entitlement: dict[str, Any]) -> str:
@@ -32167,6 +35046,205 @@ def _scoped_checkout_idempotency_key(*, uid: str, subject: str, raw_key: str = "
     return f"vf:{uid_hash}:{safe_subject}:{normalized_seed}:{digest}"[:255]
 
 
+def _request_idempotency_doc_id(*, uid: str, subject: str, scoped_key: str) -> str:
+    safe_uid = str(uid or "").strip() or "anonymous"
+    safe_subject = re.sub(r"[^a-z0-9:_-]+", "-", str(subject or "").strip().lower()).strip("-") or "request"
+    safe_scoped_key = str(scoped_key or "").strip()
+    if not safe_scoped_key:
+        safe_scoped_key = _scoped_checkout_idempotency_key(uid=safe_uid, subject=safe_subject, raw_key="")
+    digest = hashlib.sha256(f"{safe_uid}:{safe_subject}:{safe_scoped_key}".encode("utf-8")).hexdigest()
+    return f"idem_{digest[:48]}"
+
+
+def _request_idempotency_begin(
+    *,
+    uid: str,
+    subject: str,
+    scoped_key: str,
+    ttl_seconds: int,
+) -> tuple[bool, dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_subject = re.sub(r"[^a-z0-9:_-]+", "-", str(subject or "").strip().lower()).strip("-") or "request"
+    safe_scoped_key = str(scoped_key or "").strip()
+    if not safe_uid:
+        return True, {}
+    now_iso = _utc_now().isoformat()
+    now_unix = int(time.time())
+    ttl_sec = max(60, int(ttl_seconds or 60))
+    expires_at_unix = now_unix + ttl_sec
+    doc_id = _request_idempotency_doc_id(uid=safe_uid, subject=safe_subject, scoped_key=safe_scoped_key)
+    base_row = {
+        "id": doc_id,
+        "uid": safe_uid,
+        "subject": safe_subject,
+        "scopedKey": safe_scoped_key,
+        "state": "processing",
+        "attemptCount": 1,
+        "statusCode": 0,
+        "response": {},
+        "receivedAt": now_iso,
+        "updatedAt": now_iso,
+        "expiresAtUnix": int(expires_at_unix),
+        "lastError": "",
+    }
+
+    collection = _firestore_collection(REQUEST_IDEMPOTENCY_COLLECTION)
+    if collection is not None:
+        try:
+            doc_ref = collection.document(doc_id)
+            doc_ref.create(dict(base_row))
+            with _INMEMORY_LOCK:
+                _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(base_row)
+            return True, dict(base_row)
+        except Exception as exc:
+            if _firestore_already_exists_error(exc):
+                try:
+                    existing_doc = collection.document(doc_id).get()
+                    current = existing_doc.to_dict() or {}
+                except Exception:
+                    current = {
+                        **dict(base_row),
+                        "state": "processing",
+                    }
+                    with _INMEMORY_LOCK:
+                        _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(current)
+                    return False, dict(current)
+                state = str(current.get("state") or "processing").strip().lower()
+                expires_at = int(current.get("expiresAtUnix") or 0)
+                attempt = max(1, _as_positive_int(current.get("attemptCount") or 1))
+                if expires_at > now_unix and state in {"succeeded", "processing"}:
+                    current["updatedAt"] = now_iso
+                    try:
+                        collection.document(doc_id).set({"updatedAt": now_iso}, merge=True)
+                    except Exception:
+                        pass
+                    with _INMEMORY_LOCK:
+                        _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(current)
+                    return False, dict(current)
+                retry_row = {
+                    **dict(current),
+                    **base_row,
+                    "attemptCount": attempt + 1,
+                }
+                try:
+                    collection.document(doc_id).set(dict(retry_row), merge=True)
+                except Exception:
+                    pass
+                with _INMEMORY_LOCK:
+                    _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(retry_row)
+                return True, dict(retry_row)
+            raise RuntimeError("Request idempotency storage is unavailable.") from exc
+
+    with _INMEMORY_LOCK:
+        for key, row in list(_INMEMORY_REQUEST_IDEMPOTENCY.items()):
+            if int((row or {}).get("expiresAtUnix") or 0) <= now_unix:
+                _INMEMORY_REQUEST_IDEMPOTENCY.pop(key, None)
+        current = dict(_INMEMORY_REQUEST_IDEMPOTENCY.get(doc_id) or {})
+        if not current:
+            _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(base_row)
+            return True, dict(base_row)
+        state = str(current.get("state") or "processing").strip().lower()
+        expires_at = int(current.get("expiresAtUnix") or 0)
+        attempt = max(1, _as_positive_int(current.get("attemptCount") or 1))
+        if expires_at > now_unix and state in {"succeeded", "processing"}:
+            current["updatedAt"] = now_iso
+            _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(current)
+            return False, dict(current)
+        retry_row = {
+            **dict(current),
+            **base_row,
+            "attemptCount": attempt + 1,
+        }
+        _INMEMORY_REQUEST_IDEMPOTENCY[doc_id] = dict(retry_row)
+        return True, dict(retry_row)
+
+
+def _request_idempotency_begin_or_503(
+    *,
+    uid: str,
+    subject: str,
+    scoped_key: str,
+    ttl_seconds: int,
+    unavailable_detail: str = "Request idempotency storage is temporarily unavailable.",
+) -> tuple[bool, dict[str, Any]]:
+    try:
+        return _request_idempotency_begin(
+            uid=uid,
+            subject=subject,
+            scoped_key=scoped_key,
+            ttl_seconds=ttl_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(unavailable_detail or "Request idempotency storage is unavailable."),
+        ) from exc
+
+
+def _request_idempotency_complete(
+    idempotency_id: str,
+    *,
+    status_code: int,
+    response_payload: dict[str, Any],
+) -> dict[str, Any]:
+    safe_id = str(idempotency_id or "").strip()
+    if not safe_id:
+        return {}
+    now_iso = _utc_now().isoformat()
+    row = {
+        "id": safe_id,
+        "state": "succeeded",
+        "statusCode": int(status_code or 200),
+        "response": dict(response_payload or {}),
+        "updatedAt": now_iso,
+        "lastError": "",
+    }
+    collection = _firestore_collection(REQUEST_IDEMPOTENCY_COLLECTION)
+    if collection is not None:
+        try:
+            collection.document(safe_id).set(dict(row), merge=True)
+        except Exception:
+            pass
+    with _INMEMORY_LOCK:
+        current = dict(_INMEMORY_REQUEST_IDEMPOTENCY.get(safe_id) or {})
+        merged = {**current, **row}
+        _INMEMORY_REQUEST_IDEMPOTENCY[safe_id] = dict(merged)
+    return row
+
+
+def _request_idempotency_fail(idempotency_id: str, *, error_detail: str) -> dict[str, Any]:
+    safe_id = str(idempotency_id or "").strip()
+    if not safe_id:
+        return {}
+    now_iso = _utc_now().isoformat()
+    row = {
+        "id": safe_id,
+        "state": "failed",
+        "statusCode": 0,
+        "updatedAt": now_iso,
+        "lastError": str(error_detail or "").strip(),
+    }
+    collection = _firestore_collection(REQUEST_IDEMPOTENCY_COLLECTION)
+    if collection is not None:
+        try:
+            collection.document(safe_id).set(dict(row), merge=True)
+        except Exception:
+            pass
+    with _INMEMORY_LOCK:
+        current = dict(_INMEMORY_REQUEST_IDEMPOTENCY.get(safe_id) or {})
+        merged = {**current, **row}
+        _INMEMORY_REQUEST_IDEMPOTENCY[safe_id] = dict(merged)
+    return row
+
+
+def _idempotency_cached_json_response(row: dict[str, Any]) -> Optional[JSONResponse]:
+    state = str((row or {}).get("state") or "").strip().lower()
+    payload = (row or {}).get("response")
+    if state != "succeeded" or not isinstance(payload, dict) or not payload:
+        return None
+    return JSONResponse(payload, status_code=max(200, int((row or {}).get("statusCode") or 200)))
+
+
 @app.post("/billing/checkout-session")
 def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
@@ -32174,26 +35252,43 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
         plan_token = _plan_key_from_name(str(payload.plan or "").strip().lower())
         if plan_token not in set(PAID_PLAN_KEYS):
             raise HTTPException(status_code=400, detail="Unsupported plan. Use launcher, starter, creator, pro, or scale.")
-        entitlement = _load_entitlement(uid)
-        customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
-        if not customer_id:
-            created = razorpay_billing.create_customer(uid=uid, metadata={"uid": uid})
-            customer_id = str(created.get("customer_id") or created.get("id") or "").strip()
-            if not customer_id:
-                raise HTTPException(status_code=502, detail="Failed to create Razorpay customer.")
-            _write_entitlement(uid, {"razorpayCustomerId": customer_id})
-        coupon_code = _normalize_coupon_code(str(payload.couponCode or ""))
-        subscription = razorpay_billing.create_subscription(
-            customer_id=customer_id,
-            plan_id=_razorpay_plan_id_for_plan(plan_token, phase="recurring"),
-            notes={"uid": uid, "plan": plan_token, "couponCode": coupon_code},
+        scoped_idempotency_key = _scoped_checkout_idempotency_key(
+            uid=uid,
+            subject=f"razorpay:subscription:{plan_token}",
+            raw_key=_read_request_idempotency_key(request),
         )
-        subscription_id = str(subscription.get("subscription_id") or subscription.get("id") or "").strip()
-        if not subscription_id:
-            raise HTTPException(status_code=502, detail="Failed to create Razorpay subscription.")
-        _write_entitlement(uid, {"subscriptionId": subscription_id})
-        return JSONResponse(
-            {
+        should_process, idempotency_row = _request_idempotency_begin_or_503(
+            uid=uid,
+            subject=f"billing:checkout-session:razorpay:subscription:{plan_token}",
+            scoped_key=scoped_idempotency_key,
+            ttl_seconds=VF_CHECKOUT_IDEMPOTENCY_TTL_SEC,
+            unavailable_detail="Checkout idempotency storage is temporarily unavailable.",
+        )
+        if not should_process:
+            cached_response = _idempotency_cached_json_response(idempotency_row)
+            if cached_response is not None:
+                return cached_response
+            raise HTTPException(status_code=409, detail="Checkout request is already in progress for this idempotency key.")
+        idempotency_id = str(idempotency_row.get("id") or "").strip()
+        try:
+            entitlement = _load_entitlement(uid)
+            customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+            if not customer_id:
+                created = razorpay_billing.create_customer(uid=uid, metadata={"uid": uid})
+                customer_id = str(created.get("customer_id") or created.get("id") or "").strip()
+                if not customer_id:
+                    raise HTTPException(status_code=502, detail="Failed to create Razorpay customer.")
+                _write_entitlement(uid, {"razorpayCustomerId": customer_id})
+            coupon_code = _normalize_coupon_code(str(payload.couponCode or ""))
+            subscription = razorpay_billing.create_subscription(
+                customer_id=customer_id,
+                plan_id=_razorpay_plan_id_for_plan(plan_token, phase="recurring"),
+                notes={"uid": uid, "plan": plan_token, "couponCode": coupon_code},
+            )
+            subscription_id = str(subscription.get("subscription_id") or subscription.get("id") or "").strip()
+            if not subscription_id:
+                raise HTTPException(status_code=502, detail="Failed to create Razorpay subscription.")
+            response_payload = {
                 "ok": True,
                 "provider": "razorpay",
                 "kind": "subscription",
@@ -32208,7 +35303,25 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
                     },
                 },
             }
-        )
+            _request_idempotency_complete(
+                idempotency_id,
+                status_code=200,
+                response_payload=response_payload,
+            )
+            try:
+                _write_entitlement(uid, {"subscriptionId": subscription_id})
+            except Exception as entitlement_exc:  # noqa: BLE001
+                print(
+                    "[billing] failed to persist Razorpay subscription after checkout idempotent completion: "
+                    f"{entitlement_exc}"
+                )
+            return JSONResponse(response_payload)
+        except HTTPException as exc:
+            _request_idempotency_fail(idempotency_id, error_detail=str(exc.detail or "checkout_failed"))
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _request_idempotency_fail(idempotency_id, error_detail=str(exc))
+            raise
 
     _require_stripe_ready()
     plan_token = _plan_key_from_name(str(payload.plan or "").strip().lower())
@@ -32254,7 +35367,7 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
         try:
             customer = stripe.Customer.create(  # type: ignore[attr-defined]
                 metadata={"uid": uid},
-                description=f"VoiceFlow user {uid}",
+                description=f"V FLOW AI user {uid}",
             )
             customer_id = str(customer.get("id") or "")
         except Exception as exc:  # noqa: BLE001
@@ -32356,7 +35469,7 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
         try:
             customer = stripe.Customer.create(  # type: ignore[attr-defined]
                 metadata={"uid": uid},
-                description=f"VoiceFlow user {uid}",
+                description=f"V FLOW AI user {uid}",
             )
             customer_id = str(customer.get("id") or "")
         except Exception as exc:  # noqa: BLE001
@@ -32379,7 +35492,7 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
                 {
                     "price_data": {
                         "currency": "inr",
-                        "product_data": {"name": f"VoiceFlow {pack_vf:,} paid VF pack ({pack_key})"},
+                        "product_data": {"name": f"V FLOW AI {pack_vf:,} paid credit pack ({pack_key})"},
                         "unit_amount": final_amount_inr * 100,
                     },
                     "quantity": 1,
@@ -32440,15 +35553,33 @@ def billing_vc_token_pack_checkout_session(payload: BillingTokenPackCheckoutSess
         "packVc": str(pack_vc),
         "finalAmountInr": str(final_amount_inr),
     }
-    order = razorpay_billing.create_one_time_order(
-        amount_minor=int(final_amount_inr * 100),
-        currency="INR",
-        receipt=f"vc_{uid}_{pack_key}_{uuid.uuid4().hex[:8]}",
-        notes=notes,
+    scoped_idempotency_key = _scoped_checkout_idempotency_key(
+        uid=uid,
+        subject=f"razorpay:vc-token-pack:{pack_key}",
+        raw_key=_read_request_idempotency_key(request),
     )
-    order_id = str(order.get("order_id") or order.get("id") or "").strip()
-    return JSONResponse(
-        {
+    should_process, idempotency_row = _request_idempotency_begin_or_503(
+        uid=uid,
+        subject=f"billing:vc-token-pack:razorpay:{pack_key}",
+        scoped_key=scoped_idempotency_key,
+        ttl_seconds=VF_CHECKOUT_IDEMPOTENCY_TTL_SEC,
+        unavailable_detail="VC token-pack idempotency storage is temporarily unavailable.",
+    )
+    if not should_process:
+        cached_response = _idempotency_cached_json_response(idempotency_row)
+        if cached_response is not None:
+            return cached_response
+        raise HTTPException(status_code=409, detail="VC token-pack checkout is already in progress for this idempotency key.")
+    idempotency_id = str(idempotency_row.get("id") or "").strip()
+    try:
+        order = razorpay_billing.create_one_time_order(
+            amount_minor=int(final_amount_inr * 100),
+            currency="INR",
+            receipt=f"vc_{uid}_{pack_key}_{uuid.uuid4().hex[:8]}",
+            notes=notes,
+        )
+        order_id = str(order.get("order_id") or order.get("id") or "").strip()
+        response_payload = {
             "ok": True,
             "provider": "razorpay",
             "kind": "vc_token_pack",
@@ -32462,7 +35593,18 @@ def billing_vc_token_pack_checkout_session(payload: BillingTokenPackCheckoutSess
                 "notes": notes,
             },
         }
-    )
+        _request_idempotency_complete(
+            idempotency_id,
+            status_code=200,
+            response_payload=response_payload,
+        )
+        return JSONResponse(response_payload)
+    except HTTPException as exc:
+        _request_idempotency_fail(idempotency_id, error_detail=str(exc.detail or "vc_checkout_failed"))
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _request_idempotency_fail(idempotency_id, error_detail=str(exc))
+        raise
 
 
 @app.post("/wallet/vc/convert")
@@ -33806,7 +36948,17 @@ def _tts_job_lane_for_plan(
 
 def _tts_job_retry_backoff_ms(attempt: int) -> int:
     bounded_attempt = max(1, int(attempt))
-    return min(10_000, int(VF_TTS_QUEUE_BACKOFF_BASE_MS * (2 ** max(0, bounded_attempt - 1))))
+    base_backoff = min(
+        int(VF_TTS_QUEUE_BACKOFF_MAX_MS),
+        int(VF_TTS_QUEUE_BACKOFF_BASE_MS * (2 ** max(0, bounded_attempt - 1))),
+    )
+    jitter_fraction = float(VF_TTS_QUEUE_BACKOFF_JITTER_PCT)
+    if jitter_fraction <= 0:
+        return max(0, int(base_backoff))
+    jitter_delta = int(round(base_backoff * jitter_fraction))
+    if jitter_delta <= 0:
+        return max(0, int(base_backoff))
+    return max(0, int(base_backoff + random.randint(-jitter_delta, jitter_delta)))
 
 
 def _safe_tts_engine_name(engine: str) -> str:
@@ -33996,6 +37148,72 @@ def _record_tts_engine_active(*, engine: str, delta: int) -> None:
         _TTS_ENGINE_ACTIVE_COUNTS[safe_engine] = max(0, current + int(delta))
 
 
+def _record_tts_api_latency(*, operation: str, elapsed_ms: int) -> None:
+    safe_operation = str(operation or "").strip()
+    if not safe_operation:
+        return
+    safe_elapsed = max(0, int(elapsed_ms))
+    with _TTS_ENGINE_METRICS_LOCK:
+        source = _TTS_QUEUE_TELEMETRY.get("apiLatencyByOperation")
+        if isinstance(source, dict):
+            source.setdefault(safe_operation, deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW)).append(safe_elapsed)
+
+
+def _record_tts_api_stage_latency(*, stage: str, elapsed_ms: int) -> None:
+    safe_stage = str(stage or "").strip()
+    if not safe_stage:
+        return
+    safe_elapsed = max(0, int(elapsed_ms))
+    with _TTS_ENGINE_METRICS_LOCK:
+        source = _TTS_QUEUE_TELEMETRY.get("apiLatencyByStage")
+        if isinstance(source, dict):
+            source.setdefault(safe_stage, deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW)).append(safe_elapsed)
+
+
+def _tts_engine_retry_limit(engine: str) -> int:
+    safe_engine = _safe_tts_engine_name(engine)
+    fallback = max(1, int(VF_TTS_QUEUE_MAX_ATTEMPTS))
+    return max(1, int(_TTS_ENGINE_RETRY_LIMITS.get(safe_engine) or fallback))
+
+
+def _tts_engine_circuit_open_remaining_ms(engine: str) -> int:
+    safe_engine = _safe_tts_engine_name(engine)
+    now_ms = int(time.time() * 1000)
+    with _TTS_ENGINE_METRICS_LOCK:
+        open_until_ms = int(_TTS_ENGINE_CIRCUIT_OPEN_UNTIL_MS.get(safe_engine) or 0)
+    return max(0, open_until_ms - now_ms)
+
+
+def _tts_engine_circuit_record_failure(engine: str) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    threshold = max(1, int(_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLDS.get(safe_engine) or 1))
+    open_window_ms = max(500, int(_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS.get(safe_engine) or 500))
+    now_ms = int(time.time() * 1000)
+    with _TTS_ENGINE_METRICS_LOCK:
+        next_failures = max(0, int(_TTS_ENGINE_CONSECUTIVE_FAILURES.get(safe_engine) or 0)) + 1
+        _TTS_ENGINE_CONSECUTIVE_FAILURES[safe_engine] = next_failures
+        if next_failures >= threshold:
+            _TTS_ENGINE_CIRCUIT_OPEN_UNTIL_MS[safe_engine] = now_ms + open_window_ms
+            _TTS_ENGINE_CONSECUTIVE_FAILURES[safe_engine] = 0
+
+
+def _tts_engine_circuit_record_success(engine: str) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    with _TTS_ENGINE_METRICS_LOCK:
+        _TTS_ENGINE_CONSECUTIVE_FAILURES[safe_engine] = 0
+        _TTS_ENGINE_CIRCUIT_OPEN_UNTIL_MS[safe_engine] = 0
+
+
+def _tts_live_chunk_synth_concurrency(*, engine: str, desired: int) -> int:
+    safe_engine = _safe_tts_engine_name(engine)
+    configured = max(1, int(desired or 1))
+    engine_limit = max(1, int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(safe_engine) or 1))
+    with _TTS_ENGINE_METRICS_LOCK:
+        active_jobs = max(1, int(_TTS_ENGINE_ACTIVE_COUNTS.get(safe_engine) or 1))
+    per_job_cap = max(1, int(engine_limit // active_jobs))
+    return max(1, min(configured, per_job_cap))
+
+
 def _oldest_tts_queue_age_ms() -> int:
     now_ms = int(time.time() * 1000)
     with _TTS_ENGINE_METRICS_LOCK:
@@ -34055,6 +37273,8 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
         terminal_events = list(_TTS_QUEUE_TELEMETRY["terminalEvents"])
         runtime_by_engine = _TTS_QUEUE_TELEMETRY.get("runtimeLatencyByEngine")
         waits_by_engine = _TTS_QUEUE_TELEMETRY.get("semaphoreWaitByEngine")
+        api_by_operation = _TTS_QUEUE_TELEMETRY.get("apiLatencyByOperation")
+        api_by_stage = _TTS_QUEUE_TELEMETRY.get("apiLatencyByStage")
         engine_counts = json.loads(json.dumps(_TTS_ENGINE_QUEUE_COUNTS))
         engine_active = dict(_TTS_ENGINE_ACTIVE_COUNTS)
 
@@ -34103,6 +37323,16 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
             for thread in worker_threads
         ],
     }
+    api_latency_payload = {
+        str(operation): _sample_stats([max(0, int(value)) for value in list(source)])
+        for operation, source in dict(api_by_operation or {}).items()
+        if isinstance(source, deque)
+    }
+    api_stage_payload = {
+        str(stage): _sample_stats([max(0, int(value)) for value in list(source)])
+        for stage, source in dict(api_by_stage or {}).items()
+        if isinstance(source, deque)
+    }
 
     return {
         "ok": True,
@@ -34118,6 +37348,8 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
             "liveFirstChunkLatencyMs": _sample_stats(live_first_chunk_samples),
             "liveChunkCount": _sample_stats(live_chunk_count_samples),
             "liveChunkLlvcLatencyMs": _sample_stats(live_chunk_llvc_samples),
+            "apiLatencyMs": api_latency_payload,
+            "apiStageLatencyMs": api_stage_payload,
             "terminalStatusesByReason": {
                 "byStatus": dict(terminal_by_status),
                 "byReason": dict(terminal_by_reason),
@@ -34839,12 +38071,33 @@ def _tts_v2_synthesize_chunk(
     upstream_payload["text"] = safe_text
     upstream_payload.pop("apiKey", None)
     upstream_payload.pop("api_key", None)
-    upstream_payload.pop("request_id", None)
-    upstream_payload.pop("requestId", None)
-    upstream_payload.pop("idempotencyKey", None)
-    upstream_payload.pop("idempotency_key", None)
+    request_identity = str(
+        upstream_payload.get("request_id")
+        or upstream_payload.get("requestId")
+        or payload_base.get("request_id")
+        or payload_base.get("requestId")
+        or ""
+    ).strip()
+    idempotency_identity = str(
+        upstream_payload.get("idempotency_key")
+        or upstream_payload.get("idempotencyKey")
+        or payload_base.get("idempotency_key")
+        or payload_base.get("idempotencyKey")
+        or request_identity
+    ).strip()
+    if request_identity:
+        upstream_payload["request_id"] = request_identity
+        upstream_payload["requestId"] = request_identity
+    if idempotency_identity:
+        upstream_payload["idempotency_key"] = idempotency_identity
+        upstream_payload["idempotencyKey"] = idempotency_identity
     upstream_payload.pop("stream", None)
-    trace_id = str(upstream_payload.get("trace_id") or upstream_payload.get("traceId") or "").strip()
+    trace_id = str(
+        upstream_payload.get("trace_id")
+        or upstream_payload.get("traceId")
+        or request_identity
+        or ""
+    ).strip()
 
     try:
         response = _runtime_tts_request_with_gemini_failover(
@@ -35001,6 +38254,7 @@ def _persist_tts_result_audio(job_id: str, audio_bytes: bytes, media_type: str) 
         "kind": "file",
         "path": str(path.resolve()),
         "sizeBytes": len(content),
+        "outputSha256": hashlib.sha256(content).hexdigest().lower() if content else "",
     }
 
 
@@ -35353,6 +38607,50 @@ def _resolve_tts_job_chunk(job: dict[str, Any], chunk_index: int) -> Optional[di
     return None
 
 
+def _requeue_tts_job_for_retry(
+    *,
+    job_id: str,
+    lane: str,
+    current: dict[str, Any],
+    worker_id: str,
+    attempts_used: int,
+    status_code: int,
+    detail: Any,
+    engine: str,
+) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    requeue_payload = dict(current or {})
+    requeue_payload["attempts"] = int(attempts_used)
+    requeue_payload["status"] = "queued"
+    requeue_payload["lastError"] = detail
+    requeue_payload["lastStatusCode"] = int(status_code)
+    requeue_payload["workerId"] = ""
+    if callable(getattr(_TTS_JOB_QUEUE, "requeue", None)):
+        requeued = _TTS_JOB_QUEUE.requeue(
+            safe_job_id,
+            worker_id=str(worker_id or "").strip() or "worker",
+            payload=requeue_payload,
+            bypass_depth_check=True,
+            recovery=False,
+        )
+        if requeued is not None:
+            _record_tts_job_requeued(job_id=safe_job_id, engine=engine)
+            return
+    _TTS_JOB_QUEUE.update(
+        safe_job_id,
+        {
+            "status": "queued",
+            "lastError": detail,
+            "lastStatusCode": int(status_code),
+            "attempts": int(attempts_used),
+        },
+    )
+    _record_tts_job_requeued(job_id=safe_job_id, engine=engine)
+    _TTS_JOB_QUEUE.enqueue(lane=lane, payload=requeue_payload)
+
+
 def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     job_id = str(job.get("jobId") or "").strip()
     if not job_id:
@@ -35422,14 +38720,46 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     plan_name = str(current.get("planName") or "Free").strip() or "Free"
     plan_key = str(current.get("planKey") or "free").strip().lower() or "free"
     admin_limit_bypass = bool(current.get("adminLimitBypass"))
-    idempotency_key = str(current.get("idempotencyKey") or "").strip()
+    idempotency_key = str(
+        current.get("idempotencyKey")
+        or current.get("idempotency_key")
+        or queued_payload.get("idempotencyKey")
+        or queued_payload.get("idempotency_key")
+        or request_id
+    ).strip()
     deadline_ms = int(current.get("deadlineAtMs") or 0)
     max_attempts = max(1, int(current.get("maxAttempts") or VF_TTS_QUEUE_MAX_ATTEMPTS))
+    max_attempts = max(1, min(max_attempts, _tts_engine_retry_limit(engine)))
     attempts_used = max(1, int(current.get("attempts") or 1))
+    safe_engine = _safe_tts_engine_name(engine)
     lane = _tts_job_lane_for_plan(
         plan_key,
         live_stream=bool(current.get("liveStream")),
     )
+
+    def _mark_standard_cancelled() -> None:
+        _release_tts_success_quota_reservation(quota_reservation_payload)
+        _finalize_usage(uid, request_id, success=False, error_detail="cancelled")
+        _record_tts_terminal_event(
+            job_id=job_id,
+            engine=safe_engine,
+            status="cancelled",
+            reason="cancelled_by_user",
+            status_code=409,
+        )
+        for audit_id in audio_audit_ids:
+            _audio_generation_audit_mark_terminal(
+                audit_id,
+                status="cancelled",
+                failure_code="cancelled_by_user",
+                failure_detail="TTS job was cancelled by the user.",
+                job_id=job_id,
+                request_id=request_id,
+                trace_id=trace_id,
+            )
+        latest_job = _TTS_JOB_QUEUE.get(job_id)
+        if isinstance(latest_job, dict):
+            _notification_emit_tts_job_terminal(latest_job, status="cancelled")
 
     if deadline_ms > 0 and int(time.time() * 1000) >= deadline_ms:
         detail = {
@@ -35450,11 +38780,50 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
         )
         return
 
+    circuit_open_remaining_ms = _tts_engine_circuit_open_remaining_ms(safe_engine)
+    if circuit_open_remaining_ms > 0:
+        detail = {
+            "error": "TTS runtime circuit breaker is open after repeated failures.",
+            "errorCode": ENGINE_OVERLOADED,
+            "reason": "engine_circuit_open",
+            "trace_id": trace_id,
+            "jobId": job_id,
+            "retryAfterMs": int(circuit_open_remaining_ms),
+        }
+        can_retry = attempts_used < max_attempts and (deadline_ms <= 0 or int(time.time() * 1000) < deadline_ms)
+        if can_retry:
+            backoff_ms = max(_tts_job_retry_backoff_ms(attempts_used), int(circuit_open_remaining_ms))
+            _requeue_tts_job_for_retry(
+                job_id=job_id,
+                lane=lane,
+                current=current,
+                worker_id=worker_id,
+                attempts_used=attempts_used,
+                status_code=503,
+                detail=detail,
+                engine=safe_engine,
+            )
+            time.sleep(backoff_ms / 1000.0)
+            return
+        _mark_job_failed_and_revert_usage(
+            job_id=job_id,
+            uid=uid,
+            request_id=request_id,
+            status_code=503,
+            detail=detail,
+            error_tag="engine_circuit_open",
+        )
+        return
+
     runtime_base = str(current.get("runtimeBase") or _runtime_url_for_engine(engine)).strip().rstrip("/")
     runtime_path = str(current.get("runtimePath") or _runtime_synthesize_path_for_engine(engine)).strip()
     upstream_url = f"{runtime_base}{runtime_path}"
     upstream_payload = dict(current.get("upstreamPayload") or queued_payload or {})
-    safe_engine = _safe_tts_engine_name(engine)
+    upstream_payload.setdefault("request_id", request_id)
+    upstream_payload.setdefault("requestId", request_id)
+    if idempotency_key:
+        upstream_payload.setdefault("idempotency_key", idempotency_key)
+        upstream_payload.setdefault("idempotencyKey", idempotency_key)
     semaphore = _TTS_ENGINE_SEMAPHORES.get(safe_engine)
     acquired_slot = False
     runtime_response: Optional[requests.Response] = None
@@ -35585,12 +38954,16 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             runtime_usage_totals: dict[str, int] = {"promptTokens": 0, "outputTokens": 0, "totalTokens": 0}
             media_type = "audio/wav"
 
+            configured_synth_concurrency = max(1, min(int(VF_TTS_LIVE_SYNTH_CONCURRENCY), len(live_chunks)))
+            synth_concurrency = _tts_live_chunk_synth_concurrency(
+                engine=safe_engine,
+                desired=configured_synth_concurrency,
+            )
             pipeline_enabled = (
                 VF_TTS_LIVE_PIPELINE_ENABLED
                 and len(live_chunks) > 1
-                and VF_TTS_LIVE_SYNTH_CONCURRENCY > 1
+                and synth_concurrency > 1
             )
-            synth_concurrency = max(1, min(int(VF_TTS_LIVE_SYNTH_CONCURRENCY), len(live_chunks)))
             live_chunks_state = list(live_state.get("chunks") or [])
 
             def _live_job_cancelled() -> bool:
@@ -35900,6 +39273,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 if bool(result.get("cancelled")):
                     _mark_live_cancelled()
                     return False
+                _tts_engine_circuit_record_failure(safe_engine)
                 _mark_live_failed(
                     status_code=int(result.get("status_code") or 500),
                     detail=result.get("detail") or {
@@ -36019,6 +39393,9 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 synthesized_audio_bytes,
                 str(media_type or "audio/wav"),
             )
+            if _live_job_cancelled():
+                _mark_live_cancelled()
+                return
 
             completed_job = _TTS_JOB_QUEUE.mark_completed(
                 job_id,
@@ -36027,6 +39404,9 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 headers=completed_headers,
                 result_ref=result_ref,
             )
+            if str((completed_job or {}).get("status") or "").strip().lower() == "cancelled":
+                _mark_live_cancelled()
+                return
 
             quota_headers: dict[str, str] = {}
             if not admin_limit_bypass:
@@ -36106,6 +39486,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     request_id=str((completed_job or {}).get("requestId") or request_id),
                     trace_id=response_trace_id or trace_id,
                     audio_created_at=audio_created_at,
+                    output_sha256=str((result_ref or {}).get("outputSha256") or ""),
                 )
             _record_tts_terminal_event(
                 job_id=job_id,
@@ -36114,6 +39495,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 reason="completed",
                 status_code=200,
             )
+            _tts_engine_circuit_record_success(safe_engine)
             if isinstance(completed_job, dict):
                 _notification_emit_tts_job_terminal(completed_job, status="completed")
             return
@@ -36145,23 +39527,21 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 status_code=int(status_code),
                 elapsed_ms=runtime_elapsed,
             )
+            _tts_engine_circuit_record_failure(safe_engine)
             can_retry = attempts_used < max_attempts and (deadline_ms <= 0 or int(time.time() * 1000) < deadline_ms)
             if can_retry:
                 backoff_ms = _tts_job_retry_backoff_ms(attempts_used)
-                _TTS_JOB_QUEUE.update(
-                    job_id,
-                    {
-                        "status": "queued",
-                        "lastError": detail,
-                        "lastStatusCode": int(status_code),
-                        "attempts": attempts_used,
-                    },
+                _requeue_tts_job_for_retry(
+                    job_id=job_id,
+                    lane=lane,
+                    current=current,
+                    worker_id=worker_id,
+                    attempts_used=attempts_used,
+                    status_code=int(status_code),
+                    detail=detail,
+                    engine=safe_engine,
                 )
-                _record_tts_job_requeued(job_id=job_id, engine=safe_engine)
                 time.sleep(backoff_ms / 1000.0)
-                next_payload = dict(current)
-                next_payload["attempts"] = attempts_used
-                _TTS_JOB_QUEUE.enqueue(lane=lane, payload=next_payload)
                 return
             _mark_job_failed_and_revert_usage(
                 job_id=job_id,
@@ -36188,6 +39568,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 status_code=int(status_code),
                 elapsed_ms=runtime_elapsed,
             )
+            _tts_engine_circuit_record_failure(safe_engine)
             _mark_job_failed_and_revert_usage(
                 job_id=job_id,
                 uid=uid,
@@ -36214,24 +39595,22 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             mapped_status = _map_runtime_failure_status(engine, int(runtime_response.status_code), detail)
             if isinstance(detail, dict) and response_trace_id and not detail.get("trace_id"):
                 detail = {**detail, "trace_id": response_trace_id}
+            _tts_engine_circuit_record_failure(safe_engine)
             retryable = _is_retryable_runtime_failure(engine, mapped_status, detail)
             can_retry = retryable and attempts_used < max_attempts and (deadline_ms <= 0 or int(time.time() * 1000) < deadline_ms)
             if can_retry:
                 backoff_ms = _tts_job_retry_backoff_ms(attempts_used)
-                _TTS_JOB_QUEUE.update(
-                    job_id,
-                    {
-                        "status": "queued",
-                        "lastError": detail,
-                        "lastStatusCode": mapped_status,
-                        "attempts": attempts_used,
-                    },
+                _requeue_tts_job_for_retry(
+                    job_id=job_id,
+                    lane=lane,
+                    current=current,
+                    worker_id=worker_id,
+                    attempts_used=attempts_used,
+                    status_code=int(mapped_status),
+                    detail=detail,
+                    engine=safe_engine,
                 )
-                _record_tts_job_requeued(job_id=job_id, engine=safe_engine)
                 time.sleep(backoff_ms / 1000.0)
-                next_payload = dict(current)
-                next_payload["attempts"] = attempts_used
-                _TTS_JOB_QUEUE.enqueue(lane=lane, payload=next_payload)
                 return
 
             _mark_job_failed_and_revert_usage(
@@ -36271,6 +39650,10 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             synthesized_audio_bytes,
             media_type,
         )
+        latest_before_completion = _TTS_JOB_QUEUE.get(job_id) or {}
+        if str(latest_before_completion.get("status") or "").strip().lower() == "cancelled":
+            _mark_standard_cancelled()
+            return
 
         completed_job = _TTS_JOB_QUEUE.mark_completed(
             job_id,
@@ -36279,6 +39662,9 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             headers=completed_headers,
             result_ref=result_ref,
         )
+        if str((completed_job or {}).get("status") or "").strip().lower() == "cancelled":
+            _mark_standard_cancelled()
+            return
 
         quota_headers: dict[str, str] = {}
         if not admin_limit_bypass:
@@ -36359,6 +39745,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 request_id=str((completed_job or {}).get("requestId") or request_id),
                 trace_id=response_trace_id or trace_id,
                 audio_created_at=audio_created_at,
+                output_sha256=str((result_ref or {}).get("outputSha256") or ""),
             )
         _record_tts_terminal_event(
             job_id=job_id,
@@ -36367,6 +39754,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             reason="completed",
             status_code=200,
         )
+        _tts_engine_circuit_record_success(safe_engine)
         if isinstance(completed_job, dict):
             _notification_emit_tts_job_terminal(completed_job, status="completed")
     finally:
@@ -36415,7 +39803,222 @@ def _sanitize_tts_v2_create_payload(payload: dict[str, Any] | TtsV2CreateJobRequ
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     safe_payload["text"] = str(safe_payload.get("text") or "").strip()
     safe_payload["mode"] = str(safe_payload.get("mode") or "single_speaker").strip().lower() or "single_speaker"
+    _enforce_multi_speaker_hard_cap(safe_payload.get("speaker_voices"), detail=MULTI_SPEAKER_HARD_CAP_ERROR)
+    if "multi_speaker_line_map" in safe_payload:
+        normalized_line_map = normalize_multi_speaker_line_map_shared(safe_payload.get("multi_speaker_line_map"))
+        _enforce_multi_speaker_hard_cap(normalized_line_map, detail=MULTI_SPEAKER_HARD_CAP_ERROR)
+        safe_payload["multi_speaker_line_map"] = normalized_line_map
     return safe_payload
+
+
+_TTS_QUEUE_ADMISSION_RETRY_ERROR_MARKERS = (
+    "Per-user queued cap exceeded",
+    "Per-lane queued cap exceeded",
+    "Per-category queued cap exceeded",
+    "Redis queue depth limit exceeded",
+)
+
+
+def _is_tts_queue_admission_retryable_error(error: Exception) -> bool:
+    detail = str(error or "").strip().lower()
+    if not detail:
+        return False
+    return any(marker.lower() in detail for marker in _TTS_QUEUE_ADMISSION_RETRY_ERROR_MARKERS)
+
+
+def _tts_queue_wait_timeout_detail(*, wait_timeout_ms: int, last_error: str = "") -> dict[str, Any]:
+    message = "Network connection issue. Please retry."
+    payload: dict[str, Any] = {
+        "error": message,
+        "message": message,
+        "errorCode": QUEUE_WAIT_TIMEOUT,
+        "reason": "queue_wait_timeout",
+        "retryAfterMs": 1_000,
+        "waitTimeoutMs": max(0, int(wait_timeout_ms)),
+    }
+    safe_last_error = str(last_error or "").strip()
+    if safe_last_error:
+        payload["detail"] = safe_last_error[:220]
+    return payload
+
+
+def _tts_job_session_key(job: dict[str, Any]) -> str:
+    safe_job = dict(job or {})
+    payload = safe_job.get("payload") if isinstance(safe_job.get("payload"), dict) else {}
+    return str(
+        safe_job.get("sessionKey")
+        or safe_job.get("_sessionKey")
+        or payload.get("sessionKey")
+        or payload.get("_sessionKey")
+        or ""
+    ).strip()
+
+
+def _tts_v2_cancel_session_jobs(*, uid: str, is_admin: bool, session_key: str) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_session_key = str(session_key or "").strip()
+    if not safe_uid or not safe_session_key:
+        return []
+
+    queue_records: list[dict[str, Any]] = []
+    seen_records: set[str] = set()
+
+    def _append_record(row: Any) -> None:
+        if not isinstance(row, dict):
+            return
+        safe_row = dict(row)
+        job_id = str(safe_row.get("jobId") or safe_row.get("requestId") or "").strip()
+        if not job_id or job_id in seen_records:
+            return
+        seen_records.add(job_id)
+        queue_records.append(safe_row)
+
+    iter_records = getattr(_TTS_JOB_QUEUE, "_iter_records", None)
+    if callable(iter_records):
+        try:
+            for item in list(iter_records()):
+                _append_record(item)
+        except Exception:
+            pass
+
+    queue_jobs = getattr(_TTS_JOB_QUEUE, "_jobs", None)
+    if isinstance(queue_jobs, dict):
+        for item in list(queue_jobs.values()):
+            _append_record(item)
+
+    jobs_lock = getattr(_TTS_V2_ENGINE, "_jobs_lock", None)
+    engine_jobs = getattr(_TTS_V2_ENGINE, "_jobs", None)
+    if isinstance(engine_jobs, dict):
+        try:
+            iterable = list(engine_jobs.values()) if jobs_lock is None else None
+            if jobs_lock is not None:
+                with jobs_lock:
+                    iterable = list(engine_jobs.values())
+            for job in iterable or []:
+                payload = getattr(job, "payload", None)
+                _append_record(
+                    {
+                        "jobId": str(getattr(job, "id", "") or getattr(job, "request_id", "")).strip(),
+                        "requestId": str(getattr(job, "request_id", "") or getattr(job, "id", "")).strip(),
+                        "uid": str(getattr(job, "uid", "")).strip(),
+                        "status": str(getattr(job, "status", "")).strip().lower(),
+                        "sessionKey": str(
+                            (payload.get("_sessionKey") or payload.get("sessionKey"))
+                            if isinstance(payload, dict)
+                            else ""
+                        ).strip(),
+                        "payload": dict(payload) if isinstance(payload, dict) else {},
+                    }
+                )
+        except Exception:
+            pass
+
+    if not queue_records:
+        candidate_job_ids: set[str] = set()
+        request_to_job = getattr(_TTS_V2_ENGINE, "_request_to_job", None)
+        if isinstance(request_to_job, dict):
+            try:
+                if jobs_lock is not None:
+                    with jobs_lock:
+                        candidate_job_ids.update(
+                            str(job_id or "").strip()
+                            for job_id in request_to_job.values()
+                            if str(job_id or "").strip()
+                        )
+                else:
+                    candidate_job_ids.update(
+                        str(job_id or "").strip()
+                        for job_id in request_to_job.values()
+                        if str(job_id or "").strip()
+                    )
+            except Exception:
+                candidate_job_ids.update(
+                    str(job_id or "").strip()
+                    for job_id in request_to_job.values()
+                    if str(job_id or "").strip()
+                )
+        for job_id in candidate_job_ids:
+            _append_record(_TTS_JOB_QUEUE.get(job_id))
+
+    cancelled_jobs: list[dict[str, Any]] = []
+    seen_job_ids: set[str] = set()
+    for row in queue_records:
+        row_session_key = _tts_job_session_key(row)
+        if row_session_key != safe_session_key:
+            continue
+        row_status = str(row.get("status") or "").strip().lower()
+        if row_status in {"completed", "failed", "cancelled"}:
+            continue
+        row_uid = str(row.get("uid") or "").strip()
+        if not is_admin and row_uid != safe_uid:
+            continue
+        job_id = str(row.get("jobId") or row.get("requestId") or "").strip()
+        if not job_id or job_id in seen_job_ids:
+            continue
+        seen_job_ids.add(job_id)
+        try:
+            cancelled = _TTS_V2_ENGINE.cancel_job(uid=safe_uid, is_admin=is_admin, job_id=job_id)
+        except Exception:
+            continue
+        payload = _TTS_V2_ENGINE.status_payload(job=cancelled, include_chunks=False, include_result=False)
+        cancelled_jobs.append(payload)
+    return cancelled_jobs
+
+
+def _mark_tts_job_cancel_audits(
+    payload: dict[str, Any],
+    audit_source: Any = None,
+    *,
+    failure_code: str = "cancelled_by_user",
+    failure_detail: str = "TTS job was cancelled by user request.",
+) -> None:
+    safe_payload = dict(payload or {})
+    if str(safe_payload.get("status") or "").strip().lower() != "cancelled":
+        return
+    safe_job_id = str(safe_payload.get("jobId") or safe_payload.get("requestId") or "").strip()
+    source = audit_source
+    if safe_job_id:
+        source = _TTS_JOB_QUEUE.get(safe_job_id) or source or safe_payload
+    else:
+        source = source or safe_payload
+    for audit_id in _audio_generation_audit_ids_from_job(source):
+        _audio_generation_audit_mark_terminal(
+            audit_id,
+            status="cancelled",
+            failure_code=failure_code,
+            failure_detail=failure_detail,
+            job_id=str(safe_payload.get("jobId") or safe_job_id),
+            request_id=str(safe_payload.get("requestId") or safe_job_id),
+            trace_id=str(safe_payload.get("traceId") or safe_payload.get("requestId") or safe_job_id),
+        )
+
+
+def _mark_tts_session_cancel_audits(cancelled_jobs: list[dict[str, Any]]) -> None:
+    for payload in list(cancelled_jobs or []):
+        if isinstance(payload, dict):
+            _mark_tts_job_cancel_audits(
+                payload,
+                failure_code="cancelled_by_session",
+                failure_detail="TTS session cancel request cancelled queued/running job.",
+            )
+
+
+def _tts_v2_session_owned_by_uid(*, uid: str, session_key: str) -> bool:
+    safe_uid = str(uid or "").strip()
+    safe_session_key = str(session_key or "").strip()
+    if not safe_uid or not safe_session_key:
+        return False
+    redis_client = _tts_v2_session_redis_client()
+    if redis_client is not None:
+        try:
+            active = str(redis_client.get(_tts_v2_session_uid_key(safe_uid)) or "").strip()
+            return bool(active and active == safe_session_key)
+        except Exception:
+            pass
+    with _TTS_V2_SESSION_LOCK:
+        _tts_v2_prune_local_sessions_locked(int(time.time() * 1000))
+        active = str(_INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.get(safe_uid) or "").strip()
+        return bool(active and active == safe_session_key)
 
 
 def _create_tts_v2_job_response(
@@ -36424,6 +40027,7 @@ def _create_tts_v2_job_response(
     *,
     require_session: bool = True,
 ) -> JSONResponse:
+    request_started_at = time.perf_counter()
     uid = _require_request_uid(request)
     is_admin = _request_is_admin(request, uid)
     session_row: dict[str, Any] = {}
@@ -36439,25 +40043,112 @@ def _create_tts_v2_job_response(
     else:
         raw_payload.pop("_sessionPinnedLaneId", None)
         raw_payload.pop("_sessionPinnedVertexSlotId", None)
+    if require_session:
+        raw_payload["_sessionKey"] = str(session_row.get("sessionKey") or "").strip()
+    worker_category = str(raw_payload.get("workerCategory") or ("GLOBAL_API" if require_session else "APP_LOCAL")).strip().upper()
+    if worker_category not in {"APP_LOCAL", "GLOBAL_API"}:
+        worker_category = "GLOBAL_API"
+    raw_payload["workerCategory"] = worker_category
     raw_payload["uid"] = str(uid or "").strip()
-    trace_id = str(raw_payload.get("trace_id") or raw_payload.get("request_id") or "").strip()
-    plan_name, plan_key, _ = _enforce_tts_plan_guardrails(
-        uid,
-        len(str(raw_payload.get("text") or "")),
-        trace_id,
-        engine=str(raw_payload.get("engine") or "PRIME"),
-        bypass=is_admin,
-    )
     request_id = str(raw_payload.get("request_id") or "").strip()
     if not request_id:
         raise HTTPException(status_code=400, detail={"error": "request_id is required."})
+    trace_id = str(raw_payload.get("trace_id") or raw_payload.get("request_id") or "").strip()
+    if not trace_id:
+        trace_id = request_id
+        raw_payload["trace_id"] = trace_id
 
-    reservation, reserve_headers = _reserve_tts_success_quota(
-        uid,
-        plan_name,
-        plan_key,
-        trace_id or request_id,
-        request_fingerprint=request_id,
+    entitlement_stage_started_at = time.perf_counter()
+    entitlement = _load_entitlement(uid)
+    _record_tts_api_stage_latency(
+        stage="submitEntitlement",
+        elapsed_ms=max(1, int((time.perf_counter() - entitlement_stage_started_at) * 1000)),
+    )
+
+    audit_stage_started_at = time.perf_counter()
+    identity_snapshot = _audio_generation_identity_snapshot(uid, request)
+    payment_ref_type, payment_ref = _resolve_audio_generation_payment_ref(uid, entitlement=entitlement)
+    source_ip = _request_source_ip(request)
+    audit_row = _audio_generation_audit_create(
+        {
+            "uid": str(uid or "").strip(),
+            "userId": _resolve_request_user_id_read_only(uid),
+            "identityType": str(identity_snapshot.get("identityType") or ""),
+            "identityValue": str(identity_snapshot.get("identityValue") or ""),
+            "email": str(identity_snapshot.get("email") or ""),
+            "phoneNumber": str(identity_snapshot.get("phoneNumber") or ""),
+            "submittedAt": _safe_now_iso(),
+            "status": "received",
+            "engine": str(raw_payload.get("engine") or "PRIME"),
+            "voiceId": str(raw_payload.get("voiceId") or raw_payload.get("voice_id") or ""),
+            "voiceName": str(raw_payload.get("voiceName") or ""),
+            "language": str(raw_payload.get("language") or ""),
+            "requestId": request_id,
+            "jobId": request_id,
+            "traceId": trace_id,
+            "inputText": str(raw_payload.get("text") or ""),
+            "sourceIp": source_ip,
+            "paymentRefType": payment_ref_type,
+            "paymentRef": payment_ref,
+            "audibleLabelApplied": True,
+            "watermarkMode": AUDIO_WATERMARK_MODE_DEFAULT,
+            "watermarkId": _audio_generation_default_watermark_id(uid=uid, request_id=request_id, audit_id=request_id),
+            "watermarkVersion": AUDIO_WATERMARK_VERSION_DEFAULT,
+            "watermarkDetectable": True,
+            "c2paStatus": AUDIO_C2PA_STATUS_DEFAULT,
+            "provenanceVersion": PROVENANCE_VERSION_DEFAULT,
+        }
+    )
+    audit_id = str(audit_row.get("auditId") or "").strip()
+    if audit_id:
+        raw_payload["audioAuditId"] = audit_id
+        raw_payload["audioAuditIds"] = [audit_id]
+    _record_tts_api_stage_latency(
+        stage="submitAudit",
+        elapsed_ms=max(1, int((time.perf_counter() - audit_stage_started_at) * 1000)),
+    )
+
+    def _mark_submit_audit_failed(*, failure_code: str, failure_detail: Any) -> None:
+        if not audit_id:
+            return
+        _audio_generation_audit_mark_terminal(
+            audit_id,
+            status="failed",
+            failure_code=failure_code,
+            failure_detail=failure_detail,
+            job_id=request_id,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+
+    try:
+        plan_name, plan_key, _ = _enforce_tts_plan_guardrails(
+            uid,
+            len(str(raw_payload.get("text") or "")),
+            trace_id,
+            engine=str(raw_payload.get("engine") or "PRIME"),
+            bypass=is_admin,
+            entitlement=entitlement,
+        )
+    except Exception as exc:
+        _mark_submit_audit_failed(failure_code="plan_guardrail_blocked", failure_detail=str(exc))
+        raise
+
+    quota_stage_started_at = time.perf_counter()
+    try:
+        reservation, reserve_headers = _reserve_tts_success_quota(
+            uid,
+            plan_name,
+            plan_key,
+            trace_id or request_id,
+            request_fingerprint=request_id,
+        )
+    except Exception as exc:
+        _mark_submit_audit_failed(failure_code="success_quota_reserve_failed", failure_detail=str(exc))
+        raise
+    _record_tts_api_stage_latency(
+        stage="submitQuota",
+        elapsed_ms=max(1, int((time.perf_counter() - quota_stage_started_at) * 1000)),
     )
     reservation_payload = _serialize_tts_success_quota_reservation(
         reservation,
@@ -36469,6 +40160,7 @@ def _create_tts_v2_job_response(
     )
     raw_payload["successQuotaReservation"] = reservation_payload
     raw_payload["successQuotaReservationToken"] = str(reservation_payload.get("reservationId") or "")
+    usage_stage_started_at = time.perf_counter()
     try:
         _reserve_usage(
             uid,
@@ -36478,30 +40170,86 @@ def _create_tts_v2_job_response(
             bypass_limits=is_admin,
             bypass_reason="admin_request" if is_admin else "",
         )
-    except Exception:
+    except Exception as exc:
         _release_tts_success_quota_reservation(reservation_payload)
+        _mark_submit_audit_failed(failure_code="reserve_usage_failed", failure_detail=str(exc))
         raise
+    _record_tts_api_stage_latency(
+        stage="submitUsage",
+        elapsed_ms=max(1, int((time.perf_counter() - usage_stage_started_at) * 1000)),
+    )
 
+    admission_wait_deadline_ms = int(time.time() * 1000) + int(VF_TTS_QUEUE_ADMISSION_WAIT_TIMEOUT_MS)
+    last_admission_error = ""
+    queue_admit_started_at = time.perf_counter()
     try:
-        job = _TTS_V2_ENGINE.create_job(
-            uid=uid,
-            is_admin=is_admin,
-            payload=raw_payload,
-            plan_key=str(plan_key or "free").strip().lower() or "free",
-        )
-        status_payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
+        while True:
+            try:
+                job = _TTS_V2_ENGINE.create_job(
+                    uid=uid,
+                    is_admin=is_admin,
+                    payload=raw_payload,
+                    plan_key=str(plan_key or "free").strip().lower() or "free",
+                )
+                status_payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
+                if audit_id:
+                    _audio_generation_audit_update(
+                        audit_id,
+                        {
+                            "status": str(status_payload.get("status") or "queued").strip().lower() or "queued",
+                            "jobId": str(status_payload.get("jobId") or request_id),
+                            "requestId": str(status_payload.get("requestId") or request_id),
+                            "traceId": str(status_payload.get("traceId") or trace_id),
+                        },
+                    )
+                break
+            except Exception as exc:
+                if not _is_tts_queue_admission_retryable_error(exc):
+                    raise
+                last_admission_error = str(exc or "").strip()
+                now_ms = int(time.time() * 1000)
+                if now_ms >= admission_wait_deadline_ms:
+                    timeout_detail = _tts_queue_wait_timeout_detail(
+                        wait_timeout_ms=int(VF_TTS_QUEUE_ADMISSION_WAIT_TIMEOUT_MS),
+                        last_error=last_admission_error,
+                    )
+                    _release_tts_success_quota_reservation(reservation_payload)
+                    _finalize_usage(uid, request_id, success=False, error_detail=QUEUE_WAIT_TIMEOUT)
+                    _mark_submit_audit_failed(
+                        failure_code=QUEUE_WAIT_TIMEOUT,
+                        failure_detail=timeout_detail,
+                    )
+                    raise HTTPException(status_code=503, detail=timeout_detail) from exc
+                sleep_ms = min(
+                    int(VF_TTS_QUEUE_ADMISSION_RETRY_MS),
+                    max(100, admission_wait_deadline_ms - now_ms),
+                )
+                time.sleep(max(0.1, sleep_ms / 1000.0))
     except V2ValidationError as exc:
         _release_tts_success_quota_reservation(reservation_payload)
         _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
+        _mark_submit_audit_failed(failure_code="validation_error", failure_detail=str(exc))
         raise HTTPException(status_code=400, detail={"error": str(exc)})
     except TtsV2RequestConflictError as exc:
         _release_tts_success_quota_reservation(reservation_payload)
         _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
+        _mark_submit_audit_failed(failure_code=REQUEST_ID_CONFLICT, failure_detail=str(exc))
         raise HTTPException(status_code=409, detail={"error": str(exc), "errorCode": REQUEST_ID_CONFLICT})
-    except Exception:
+    except HTTPException:
+        raise
+    except Exception as exc:
         _release_tts_success_quota_reservation(reservation_payload)
         _finalize_usage(uid, request_id, success=False, error_detail="tts_v2_create_failed")
+        _mark_submit_audit_failed(
+            failure_code="tts_v2_create_failed",
+            failure_detail=last_admission_error or str(exc),
+        )
         raise
+    finally:
+        _record_tts_api_stage_latency(
+            stage="submitQueueAdmit",
+            elapsed_ms=max(1, int((time.perf_counter() - queue_admit_started_at) * 1000)),
+        )
 
     headers = {
         "x-vf-request-id": str(status_payload.get("requestId") or ""),
@@ -36514,7 +40262,13 @@ def _create_tts_v2_job_response(
     payload_out = dict(status_payload)
     accepted = str(status_payload.get("status") or "").strip().lower() in {"queued", "running"}
     payload_out["accepted"] = bool(accepted)
-    return JSONResponse(payload_out, status_code=202 if accepted else 200, headers=headers)
+    try:
+        return JSONResponse(payload_out, status_code=202 if accepted else 200, headers=headers)
+    finally:
+        _record_tts_api_latency(
+            operation="jobCreate",
+            elapsed_ms=max(1, int((time.perf_counter() - request_started_at) * 1000)),
+        )
 
 
 @app.post("/tts/v2/jobs")
@@ -36527,27 +40281,80 @@ def tts_v2_session_create(
     request: Request,
     payload: Optional[TtsV2SessionCreateRequest] = None,
 ) -> JSONResponse:
-    uid = _require_request_uid(request)
-    session_payload = _issue_tts_v2_session(
-        uid,
-        probe_all_slot_regions=bool(getattr(payload, "probeAllSlotRegions", False)) if payload is not None else False,
-    )
-    return JSONResponse(
-        {
-            "ok": True,
-            "sessionKey": str(session_payload.get("sessionKey") or ""),
-            "ttlSeconds": int(session_payload.get("ttlSeconds") or VF_TTS_V2_SESSION_TTL_SECONDS),
-            "createdAtMs": int(session_payload.get("createdAtMs") or 0),
-            "expiresAtMs": int(session_payload.get("expiresAtMs") or 0),
-            "selectedRegion": str(session_payload.get("selectedRegion") or ""),
-            "pinnedVertexSlotId": str(session_payload.get("pinnedVertexSlotId") or ""),
-            "pinnedLaneId": str(session_payload.get("pinnedLaneId") or ""),
-            "latencyMs": max(0, int(session_payload.get("latencyMs") or 0)),
-            "pinSource": str(session_payload.get("pinSource") or ""),
-        },
-        status_code=201,
-        headers={"x-vf-tts-v2": "1"},
-    )
+    started_at = time.perf_counter()
+    try:
+        uid = _require_request_uid(request)
+        session_payload = _issue_tts_v2_session(
+            uid,
+            probe_all_slot_regions=bool(getattr(payload, "probeAllSlotRegions", False)) if payload is not None else False,
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "sessionKey": str(session_payload.get("sessionKey") or ""),
+                "ttlSeconds": int(session_payload.get("ttlSeconds") or VF_TTS_V2_SESSION_TTL_SECONDS),
+                "createdAtMs": int(session_payload.get("createdAtMs") or 0),
+                "expiresAtMs": int(session_payload.get("expiresAtMs") or 0),
+                "selectedRegion": str(session_payload.get("selectedRegion") or ""),
+                "pinnedVertexSlotId": str(session_payload.get("pinnedVertexSlotId") or ""),
+                "pinnedLaneId": str(session_payload.get("pinnedLaneId") or ""),
+                "latencyMs": max(0, int(session_payload.get("latencyMs") or 0)),
+                "pinSource": str(session_payload.get("pinSource") or ""),
+            },
+            status_code=201,
+            headers={"x-vf-tts-v2": "1"},
+        )
+    finally:
+        _record_tts_api_latency(
+            operation="sessionCreate",
+            elapsed_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+        )
+
+
+@app.post("/tts/v2/sessions/{session_id}/cancel")
+def tts_v2_session_cancel(session_id: str, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    started_at = time.perf_counter()
+    try:
+        uid = _require_request_uid(request)
+        is_admin = _request_is_admin(request, uid)
+        safe_session_id = str(session_id or "").strip()
+        if not safe_session_id:
+            raise HTTPException(status_code=400, detail="session_id is required.")
+        if not is_admin and not _tts_v2_session_owned_by_uid(uid=uid, session_key=safe_session_id):
+            raise HTTPException(status_code=403, detail="Not authorized to cancel this session.")
+
+        cancel_fanout_started_at = time.perf_counter()
+        cancelled_jobs = _tts_v2_cancel_session_jobs(
+            uid=uid,
+            is_admin=is_admin,
+            session_key=safe_session_id,
+        )
+        _record_tts_api_stage_latency(
+            stage="sessionCancelFanout",
+            elapsed_ms=max(1, int((time.perf_counter() - cancel_fanout_started_at) * 1000)),
+        )
+        actually_cancelled_jobs = [
+            payload
+            for payload in cancelled_jobs
+            if str((payload or {}).get("status") or "").strip().lower() == "cancelled"
+        ]
+        if actually_cancelled_jobs:
+            background_tasks.add_task(_mark_tts_session_cancel_audits, actually_cancelled_jobs)
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "sessionKey": safe_session_id,
+                "cancelledCount": len(actually_cancelled_jobs),
+                "jobs": cancelled_jobs,
+            },
+            headers={"x-vf-tts-v2": "1"},
+        )
+    finally:
+        _record_tts_api_latency(
+            operation="sessionCancel",
+            elapsed_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+        )
 
 
 @app.get("/tts/v2/jobs/{job_id}")
@@ -36560,42 +40367,66 @@ def tts_v2_job_status(
     chunkLimit: int = Query(default=2, ge=1, le=32),
     includeChunkAudio: bool = False,
 ) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    include_chunk_audio = bool(includeChunkAudio) if is_admin else False
+    started_at = time.perf_counter()
     try:
-        job = _TTS_V2_ENGINE.get_job(
-            uid=uid,
-            is_admin=is_admin,
-            job_id=job_id,
+        uid = _require_request_uid(request)
+        is_admin = _request_is_admin(request, uid)
+        include_chunk_audio = bool(includeChunkAudio) if is_admin else False
+        try:
+            job = _TTS_V2_ENGINE.get_job(
+                uid=uid,
+                is_admin=is_admin,
+                job_id=job_id,
+            )
+            payload = _TTS_V2_ENGINE.status_payload(
+                job=job,
+                include_chunks=bool(includeChunks),
+                chunk_cursor=max(0, int(chunkCursor or 0)),
+                chunk_limit=int(chunkLimit),
+                include_chunk_audio=include_chunk_audio,
+                include_result=bool(includeResult),
+            )
+        except TtsV2JobNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        except TtsV2AuthorizationError:
+            raise HTTPException(status_code=403, detail="Not authorized to access this job.")
+        safe_status = str(payload.get("status") or "").strip().lower()
+        accepted = safe_status in {"queued", "running"}
+        payload_out = dict(payload)
+        payload_out["accepted"] = bool(accepted)
+        return JSONResponse(
+            payload_out,
+            status_code=202 if accepted else 200,
+            headers={"x-vf-tts-v2": "1"},
         )
-        payload = _TTS_V2_ENGINE.status_payload(
-            job=job,
-            include_chunks=bool(includeChunks),
-            chunk_cursor=max(0, int(chunkCursor or 0)),
-            chunk_limit=int(chunkLimit),
-            include_chunk_audio=include_chunk_audio,
-            include_result=bool(includeResult),
+    finally:
+        _record_tts_api_latency(
+            operation="jobStatus",
+            elapsed_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
         )
-    except TtsV2JobNotFoundError:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    except TtsV2AuthorizationError:
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    return JSONResponse(payload, headers={"x-vf-tts-v2": "1"})
 
 
 @app.post("/tts/v2/jobs/{job_id}/cancel")
-def tts_v2_job_cancel(job_id: str, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
+def tts_v2_job_cancel(job_id: str, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    started_at = time.perf_counter()
     try:
-        job = _TTS_V2_ENGINE.cancel_job(uid=uid, is_admin=is_admin, job_id=job_id)
-        payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
-    except TtsV2JobNotFoundError:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    except TtsV2AuthorizationError:
-        raise HTTPException(status_code=403, detail="Not authorized to cancel this job.")
-    return JSONResponse(payload, headers={"x-vf-tts-v2": "1"})
+        uid = _require_request_uid(request)
+        is_admin = _request_is_admin(request, uid)
+        try:
+            job = _TTS_V2_ENGINE.cancel_job(uid=uid, is_admin=is_admin, job_id=job_id)
+            payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
+            if str(payload.get("status") or "").strip().lower() == "cancelled":
+                background_tasks.add_task(_mark_tts_job_cancel_audits, payload, job)
+        except TtsV2JobNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        except TtsV2AuthorizationError:
+            raise HTTPException(status_code=403, detail="Not authorized to cancel this job.")
+        return JSONResponse(payload, headers={"x-vf-tts-v2": "1"})
+    finally:
+        _record_tts_api_latency(
+            operation="jobCancel",
+            elapsed_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+        )
 
 
 @app.get("/tts/v2/jobs/{job_id}/chunks/{chunk_index}/audio")
@@ -36624,6 +40455,27 @@ def tts_v2_job_result_audio(job_id: str, request: Request) -> Response:
     is_admin = _request_is_admin(request, uid)
     try:
         audio, media_type = _TTS_V2_ENGINE.get_result_audio(uid=uid, is_admin=is_admin, job_id=job_id)
+        payload = bytes(audio or b"")
+        response_headers = {"Cache-Control": "no-store", "x-vf-tts-v2": "1"}
+        if payload:
+            finalized = _audio_generation_finalize_download_for_job(
+                uid=uid,
+                is_admin=is_admin,
+                job_id=job_id,
+                audio_bytes=payload,
+            )
+            payload = bytes((finalized or {}).get("audioBytes") or payload)
+            output_sha = str((finalized or {}).get("outputSha256") or "").strip().lower()
+            watermark_id = str((finalized or {}).get("watermarkId") or "").strip().lower()
+            provenance_error = str((finalized or {}).get("provenanceError") or "").strip()
+            if output_sha:
+                response_headers["x-vf-output-sha256"] = output_sha
+            if watermark_id:
+                response_headers["x-vf-watermark-id"] = watermark_id
+            response_headers["x-vf-c2pa-status"] = AUDIO_C2PA_STATUS_DEFAULT
+            response_headers["x-vf-audible-label"] = "applied"
+            if provenance_error:
+                response_headers["x-vf-provenance-error"] = _truncate_text(provenance_error, 160)
     except TtsV2JobNotFoundError:
         raise HTTPException(status_code=404, detail="Result not found.")
     except TtsV2AuthorizationError:
@@ -36633,7 +40485,7 @@ def tts_v2_job_result_audio(job_id: str, request: Request) -> Response:
         if "cancelled" in message:
             raise HTTPException(status_code=409, detail="TTS job was cancelled.")
         raise HTTPException(status_code=max(400, int(exc.status_code or 409)), detail=str(exc))
-    return Response(content=audio, media_type=str(media_type or "audio/wav"), headers={"Cache-Control": "no-store", "x-vf-tts-v2": "1"})
+    return Response(content=payload, media_type=str(media_type or "audio/wav"), headers=response_headers)
 
 
 @app.post("/tts/synthesize")

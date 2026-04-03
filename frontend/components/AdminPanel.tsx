@@ -3,6 +3,7 @@ import { Activity, BookOpen, Key, Loader2, MessageSquareText, RefreshCw, Shield,
 import { useUser } from '../contexts/UserContext';
 import { useAdminCoupons } from '../src/features/admin/hooks/useAdminCoupons';
 import { useAdminUsers } from '../src/features/admin/hooks/useAdminUsers';
+import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { getEngineDisplayName } from '../services/engineDisplay';
 import {
   type AdminPermission,
@@ -114,6 +115,11 @@ import {
   type OpsTab,
 } from '../src/features/admin/model/loadPlan';
 import { AdminReaderLibraryPanel } from '../src/features/admin/components/AdminReaderLibraryPanel';
+import {
+  getAudioMetadataProvenanceEntries,
+  isRbacGuardError,
+  renderBooleanLabel,
+} from './adminPanelHelpers';
 
 type ToastKind = 'success' | 'error' | 'info';
 type CouponKind = 'wallet_credit' | 'subscription_discount';
@@ -125,6 +131,7 @@ type CouponPlanDraftRow = {
   percentOff: string;
   amountOffInr: string;
 };
+type ProtectedRbacRowState = Record<string, string>;
 
 interface AdminPanelProps {
   mediaBackendUrl: string;
@@ -292,7 +299,7 @@ const normalizeType = (couponType?: string): CouponKind =>
 const csvEscape = (value: unknown): string => {
   const text = String(value ?? '');
   if (!text.includes(',') && !text.includes('"') && !text.includes('\n')) return text;
-  return `"${text.replaceAll('"', '""')}"`;
+  return `"${text.split('"').join('""')}"`;
 };
 
 type GeminiSlotStatusTone = 'ok' | 'warn' | 'bad' | 'neutral';
@@ -390,6 +397,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       clearAdminUnlockToken();
     }
   }, [user?.uid]);
+  useEffect(() => {
+    setProtectedRbacRows({});
+  }, [user?.uid]);
   const {
     sortedUsers,
     isLoadingUsers,
@@ -426,6 +436,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [rbacCatalog, setRbacCatalog] = useState<AdminRoleCatalogPayload | null>(null);
   const [rbacAssignments, setRbacAssignments] = useState<AdminRoleAssignment[]>([]);
   const [rbacDrafts, setRbacDrafts] = useState<Record<string, RbacDraft>>({});
+  const [protectedRbacRows, setProtectedRbacRows] = useState<ProtectedRbacRowState>({});
   const [rbacSearch, setRbacSearch] = useState('');
   const [isLoadingRbac, setIsLoadingRbac] = useState(false);
 
@@ -509,6 +520,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [audioMetadataPaymentRef, setAudioMetadataPaymentRef] = useState('');
   const [audioMetadataStatus, setAudioMetadataStatus] = useState('');
   const [audioMetadataEngine, setAudioMetadataEngine] = useState('');
+  const [audioMetadataOutputSha256, setAudioMetadataOutputSha256] = useState('');
+  const [audioMetadataWatermarkId, setAudioMetadataWatermarkId] = useState('');
+  const [audioMetadataC2paStatus, setAudioMetadataC2paStatus] = useState('');
   const [audioMetadataFrom, setAudioMetadataFrom] = useState('');
   const [audioMetadataTo, setAudioMetadataTo] = useState('');
   const audioMetadataEngineOptions = useMemo(() => ([
@@ -519,6 +533,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     value: engine,
     label: getEngineDisplayName(engine),
   })), []);
+  const selectedAudioMetadataProvenanceEntries = useMemo(
+    () => getAudioMetadataProvenanceEntries(selectedAudioMetadataRecord),
+    [selectedAudioMetadataRecord]
+  );
+  const selectedAudioMetadataIntegritySummary = useMemo(() => {
+    if (!selectedAudioMetadataRecord) return [] as Array<{ label: string; value: string }>;
+    return [
+      { label: 'Output SHA-256', value: selectedAudioMetadataRecord.outputSha256 || '-' },
+      { label: 'Audible label applied', value: renderBooleanLabel(selectedAudioMetadataRecord.audibleLabelApplied) || '-' },
+      { label: 'Watermark mode', value: selectedAudioMetadataRecord.watermarkMode || '-' },
+      { label: 'Watermark ID', value: selectedAudioMetadataRecord.watermarkId || '-' },
+      { label: 'Watermark version', value: selectedAudioMetadataRecord.watermarkVersion || '-' },
+      { label: 'Watermark detectable', value: renderBooleanLabel(selectedAudioMetadataRecord.watermarkDetectable) || '-' },
+      { label: 'C2PA status', value: selectedAudioMetadataRecord.c2paStatus || '-' },
+      { label: 'C2PA manifest ref', value: selectedAudioMetadataRecord.c2paManifestRef || '-' },
+      { label: 'Provenance version', value: selectedAudioMetadataRecord.provenanceVersion || '-' },
+      { label: 'Provenance error', value: selectedAudioMetadataRecord.provenanceError || '-' },
+    ];
+  }, [selectedAudioMetadataRecord]);
 
   const now = new Date();
   const [analyticsFrom, setAnalyticsFrom] = useState(toDateInput(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000)));
@@ -832,6 +865,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         paymentRef?: string;
         status?: string;
         engine?: string;
+        outputSha256?: string;
+        watermarkId?: string;
+        c2paStatus?: string;
         from?: string;
         to?: string;
         limit: number;
@@ -842,6 +878,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (audioMetadataPaymentRef.trim()) options.paymentRef = audioMetadataPaymentRef.trim();
       if (audioMetadataStatus.trim()) options.status = audioMetadataStatus.trim();
       if (audioMetadataEngine.trim()) options.engine = audioMetadataEngine.trim();
+      if (audioMetadataOutputSha256.trim()) options.outputSha256 = audioMetadataOutputSha256.trim();
+      if (audioMetadataWatermarkId.trim()) options.watermarkId = audioMetadataWatermarkId.trim();
+      if (audioMetadataC2paStatus.trim()) options.c2paStatus = audioMetadataC2paStatus.trim();
       if (audioMetadataFrom.trim()) options.from = audioMetadataFrom.trim();
       if (audioMetadataTo.trim()) options.to = audioMetadataTo.trim();
       const payload = await fetchAdminAudioMetadata(mediaBackendUrl, options);
@@ -884,6 +923,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         ...(audioMetadataPaymentRef.trim() ? { paymentRef: audioMetadataPaymentRef.trim() } : {}),
         ...(audioMetadataStatus.trim() ? { status: audioMetadataStatus.trim() } : {}),
         ...(audioMetadataEngine.trim() ? { engine: audioMetadataEngine.trim() } : {}),
+        ...(audioMetadataOutputSha256.trim() ? { outputSha256: audioMetadataOutputSha256.trim() } : {}),
+        ...(audioMetadataWatermarkId.trim() ? { watermarkId: audioMetadataWatermarkId.trim() } : {}),
+        ...(audioMetadataC2paStatus.trim() ? { c2paStatus: audioMetadataC2paStatus.trim() } : {}),
         ...(audioMetadataFrom.trim() ? { from: audioMetadataFrom.trim() } : {}),
         ...(audioMetadataTo.trim() ? { to: audioMetadataTo.trim() } : {}),
       });
@@ -1297,37 +1339,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [initialOpsTab]);
 
   const currentActorAssignment = useMemo(() => {
-    if (user?.adminActor) {
+    const uid = String(user?.uid || '').trim();
+    if (!uid) return null;
+    const serverAssignment = rbacAssignments.find((item) => String(item.uid || '').trim() === uid) || null;
+    if (serverAssignment) return serverAssignment;
+    const adminActor = user?.adminActor;
+    if (adminActor && String(adminActor.source || '').trim().toLowerCase() === 'server' && hasActiveAdminActor(adminActor)) {
       return {
-        uid: String(user.adminActor.uid || user.uid || '').trim(),
-        userId: user.adminActor.userId,
-        role: String(user.adminActor.role || 'super_admin'),
-        status: String(user.adminActor.status || 'active'),
+        uid: String(adminActor.uid || uid).trim() || uid,
+        userId: adminActor.userId,
+        role: String(adminActor.role || 'super_admin'),
+        status: String(adminActor.status || 'active'),
         allowOverrides: [],
         denyOverrides: [],
       } as AdminRoleAssignment;
     }
-    const uid = String(user?.uid || '').trim();
-    if (!uid) return null;
-    return rbacAssignments.find((item) => String(item.uid || '').trim() === uid) || null;
+    return null;
   }, [rbacAssignments, user?.adminActor, user?.uid]);
 
   const currentPermissions = useMemo(() => {
-    if (user?.adminActor && Array.isArray(user.adminActor.permissions)) {
-      const direct = new Set<AdminPermission>();
-      user.adminActor.permissions.forEach((permission) => {
-        if (allPermissions.includes(permission as AdminPermission)) {
-          direct.add(permission as AdminPermission);
-        }
-      });
-      if (String(user.adminActor.status || '').toLowerCase() === 'disabled') {
-        direct.clear();
-      }
-      return direct;
-    }
-    const fallbackRole = user?.isAdmin ? 'super_admin' : 'read_only_ops';
-    const role = String(currentActorAssignment?.role || fallbackRole);
+    const role = String(currentActorAssignment?.role || 'read_only_ops');
     const next = new Set<AdminPermission>();
+    if (!currentActorAssignment) return next;
     const matrix = rbacCatalog?.matrix || {};
     const rolePerms = matrix[role];
     if (Array.isArray(rolePerms)) {
@@ -1342,14 +1375,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (String(currentActorAssignment?.status || '').toLowerCase() === 'disabled') {
       next.clear();
     }
+    const serverActor = user?.adminActor;
+    if (serverActor && String(serverActor.source || '').trim().toLowerCase() === 'server' && hasActiveAdminActor(serverActor)) {
+      for (const permission of serverActor.permissions || []) {
+        if (allPermissions.includes(permission as AdminPermission)) {
+          next.add(permission as AdminPermission);
+        }
+      }
+    }
     return next;
-  }, [currentActorAssignment, rbacCatalog, user?.adminActor, user?.isAdmin]);
+  }, [currentActorAssignment, rbacCatalog, user?.adminActor]);
 
   const can = (permission: AdminPermission): boolean => {
-    const actorRole = String(currentActorAssignment?.role || (user?.isAdmin ? 'super_admin' : 'read_only_ops'));
-    if (!rbacCatalog) {
-      return actorRole === 'super_admin' || currentPermissions.has(permission);
+    const actorRole = String(currentActorAssignment?.role || 'read_only_ops');
+    const actorResolved = Boolean(currentActorAssignment);
+    const actorStatus = String(currentActorAssignment?.status || '').trim().toLowerCase();
+    if (actorStatus === 'disabled') {
+      return false;
     }
+    if (!actorResolved) return currentPermissions.has(permission);
     if (actorRole === 'super_admin') return true;
     return currentPermissions.has(permission);
   };
@@ -1554,6 +1598,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const adminUnlockActive = Boolean(adminUnlockStatus?.isUnlocked) && adminUnlockTokenPresent;
   const canMutateBroadcastNotices = canSupportReply && (!adminUnlockRequired || adminUnlockTokenPresent);
   const canManageReaderLibrary = canUseAdminUnlock && (!adminUnlockRequired || adminUnlockTokenPresent);
+  const currentActorUid = String(currentActorAssignment?.uid || user?.uid || '').trim();
+  const activeSuperAdminCount = useMemo(
+    () => rbacAssignments.filter((assignment) => String(assignment.role || '').trim().toLowerCase() === 'super_admin' && String(assignment.status || '').trim().toLowerCase() === 'active').length,
+    [rbacAssignments]
+  );
+  const isProtectedRbacAssignment = (assignment: AdminRoleAssignment): boolean => {
+    const uid = String(assignment.uid || '').trim();
+    if (!uid) return false;
+    if (protectedRbacRows[uid]) return true;
+    const role = String(assignment.role || '').trim().toLowerCase();
+    const status = String(assignment.status || '').trim().toLowerCase();
+    if (role === 'super_admin') return true;
+    if (uid === currentActorUid && String(currentActorAssignment?.role || '').trim().toLowerCase() === 'super_admin') return true;
+    if (role === 'super_admin' && status === 'active' && activeSuperAdminCount <= 1) return true;
+    return false;
+  };
+  const markProtectedRbacAssignment = (uid: string, error: unknown): void => {
+    if (!isRbacGuardError(error)) return;
+    const safeUid = String(uid || '').trim();
+    if (!safeUid) return;
+    const reason = getErrorMessage(
+      error,
+      'This RBAC row is protected by server policy.'
+    );
+    setProtectedRbacRows((previous) => (previous[safeUid] === reason ? previous : { ...previous, [safeUid]: reason }));
+  };
   const sanitizePlanToken = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const updateCouponPlanRow = (rowId: string, patch: Partial<Omit<CouponPlanDraftRow, 'id'>>) => {
     setCouponPlanRows((previous) => previous.map((row) => (row.id === rowId ? { ...row, ...patch } : row)));
@@ -2489,17 +2559,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       role: String(assignment.role || 'support_ops'),
                       status: String(assignment.status || 'active'),
                     };
+                    const isProtected = isProtectedRbacAssignment(assignment);
+                    const protectionReason = protectedRbacRows[String(assignment.uid || '').trim()] || '';
                     return (
                       <tr key={assignment.uid} className="border-t border-gray-100">
                         <td className="px-2 py-2">
                           <div className="font-semibold text-gray-800">{assignment.uid}</div>
                           <div className="text-[10px] text-gray-500">v{Number(assignment.version || 0)}</div>
+                          {isProtected && (
+                            <div className="mt-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                              Protected by server policy
+                            </div>
+                          )}
                         </td>
                         <td className="px-2 py-2">
                           <select
                             value={draft.role}
                             onChange={(event) => setRbacDraft(assignment.uid, (previous) => ({ ...previous, role: event.target.value }))}
-                            disabled={!canRbacWrite}
+                            disabled={!canRbacWrite || isProtected}
                             className="h-8 rounded border border-gray-200 px-2 text-xs"
                           >
                             {(rbacCatalog?.roles || []).map((roleName) => (
@@ -2511,7 +2588,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <select
                             value={draft.status}
                             onChange={(event) => setRbacDraft(assignment.uid, (previous) => ({ ...previous, status: event.target.value }))}
-                            disabled={!canRbacWrite}
+                            disabled={!canRbacWrite || isProtected}
                             className="h-8 rounded border border-gray-200 px-2 text-xs"
                           >
                             <option value="active">active</option>
@@ -2521,14 +2598,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <td className="px-2 py-2">
                           {!canRbacWrite ? (
                             <span className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-500">read-only</span>
+                          ) : isProtected ? (
+                            <div className="max-w-[14rem] rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-800">
+                              {protectionReason || 'Protected by server policy'}
+                            </div>
                           ) : (
                             <div className="flex flex-wrap gap-1">
                               <button
                                 onClick={() => {
                                   void withSaving(`rbac_save_${assignment.uid}`, async () => {
-                                    await assignAdminRbacUser(assignment.uid, { role: draft.role, status: draft.status }, mediaBackendUrl);
-                                    await reloadRbacSafely(rbacSearch);
-                                    onToast('Role updated.', 'success');
+                                    try {
+                                      await assignAdminRbacUser(assignment.uid, { role: draft.role, status: draft.status }, mediaBackendUrl);
+                                      await reloadRbacSafely(rbacSearch);
+                                      onToast('Role updated.', 'success');
+                                    } catch (error) {
+                                      markProtectedRbacAssignment(assignment.uid, error);
+                                      throw error;
+                                    }
                                   });
                                 }}
                                 className="rounded border border-indigo-200 px-2 py-1 text-[10px] font-semibold text-indigo-700"
@@ -2540,8 +2626,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   onClick={() => {
                                     const note = window.prompt('Enable note (optional)') || '';
                                     void withSaving(`rbac_enable_${assignment.uid}`, async () => {
-                                      await enableAdminRbacUser(assignment.uid, note, mediaBackendUrl);
-                                      await reloadRbacSafely(rbacSearch);
+                                      try {
+                                        await enableAdminRbacUser(assignment.uid, note, mediaBackendUrl);
+                                        await reloadRbacSafely(rbacSearch);
+                                      } catch (error) {
+                                        markProtectedRbacAssignment(assignment.uid, error);
+                                        throw error;
+                                      }
                                     });
                                   }}
                                   className="rounded border border-emerald-200 px-2 py-1 text-[10px] font-semibold text-emerald-700"
@@ -2553,8 +2644,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   onClick={() => {
                                     const note = window.prompt('Disable note (optional)') || '';
                                     void withSaving(`rbac_disable_${assignment.uid}`, async () => {
-                                      await disableAdminRbacUser(assignment.uid, note, mediaBackendUrl);
-                                      await reloadRbacSafely(rbacSearch);
+                                      try {
+                                        await disableAdminRbacUser(assignment.uid, note, mediaBackendUrl);
+                                        await reloadRbacSafely(rbacSearch);
+                                      } catch (error) {
+                                        markProtectedRbacAssignment(assignment.uid, error);
+                                        throw error;
+                                      }
                                     });
                                   }}
                                   className="rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700"
@@ -3259,6 +3355,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <input type="date" value={audioMetadataFrom} onChange={(event) => setAudioMetadataFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
                 <input type="date" value={audioMetadataTo} onChange={(event) => setAudioMetadataTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
               </div>
+                <div className="mt-2 grid gap-2 md:grid-cols-3">
+                <input value={audioMetadataOutputSha256} onChange={(event) => setAudioMetadataOutputSha256(event.target.value)} placeholder="outputSha256" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input value={audioMetadataWatermarkId} onChange={(event) => setAudioMetadataWatermarkId(event.target.value)} placeholder="watermarkId" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <select value={audioMetadataC2paStatus} onChange={(event) => setAudioMetadataC2paStatus(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs">
+                  <option value="">All C2PA states</option>
+                  <option value="pending">pending</option>
+                  <option value="applied">applied</option>
+                  <option value="unsupported">unsupported</option>
+                  <option value="error">error</option>
+                </select>
+              </div>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button onClick={() => { void reloadAudioMetadataSafely(); }} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">Search</button>
                 <button onClick={() => { void handleExportAudioMetadataCsv(); }} disabled={isExportingAudioMetadata} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700 disabled:opacity-60">{isExportingAudioMetadata ? 'Exporting...' : 'Export CSV'}</button>
@@ -3273,6 +3380,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <th className="px-2 py-2 text-left">Identity</th>
                       <th className="px-2 py-2 text-left">Status</th>
                       <th className="px-2 py-2 text-left">Engine</th>
+                      <th className="px-2 py-2 text-left">Integrity</th>
                       <th className="px-2 py-2 text-left">IP</th>
                       <th className="px-2 py-2 text-left">Payment</th>
                       <th className="px-2 py-2 text-left">Text</th>
@@ -3282,7 +3390,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <tbody>
                     {audioMetadataRecords.length === 0 && (
                       <tr>
-                        <td className="px-2 py-3 text-gray-500" colSpan={8}>No audio metadata records found.</td>
+                        <td className="px-2 py-3 text-gray-500" colSpan={9}>No audio metadata records found.</td>
                       </tr>
                     )}
                     {audioMetadataRecords.map((record) => (
@@ -3294,6 +3402,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </td>
                         <td className="px-2 py-2">{record.status || '-'}</td>
                         <td className="px-2 py-2">{record.engine || '-'}</td>
+                        <td className="px-2 py-2">
+                          <div className="max-w-[16rem] space-y-1 whitespace-pre-wrap break-words text-[10px] text-gray-700">
+                            <div><span className="font-semibold text-gray-500">SHA:</span> {record.outputSha256 || '-'}</div>
+                            <div><span className="font-semibold text-gray-500">Label:</span> {record.audibleLabelApplied ? 'yes' : 'no'}</div>
+                            <div><span className="font-semibold text-gray-500">WM:</span> {record.watermarkId || '-'} {record.watermarkMode ? `(${record.watermarkMode})` : ''}</div>
+                            <div><span className="font-semibold text-gray-500">WM ver:</span> {record.watermarkVersion || '-'}</div>
+                            <div><span className="font-semibold text-gray-500">Detectable:</span> {renderBooleanLabel(record.watermarkDetectable) || '-'}</div>
+                            <div><span className="font-semibold text-gray-500">C2PA:</span> {record.c2paStatus || '-'} {record.c2paManifestRef ? `• ${record.c2paManifestRef}` : ''}</div>
+                            <div><span className="font-semibold text-gray-500">Prov:</span> {record.provenanceVersion || '-'}{record.provenanceError ? ` • ${record.provenanceError}` : ''}</div>
+                          </div>
+                        </td>
                         <td className="px-2 py-2 font-mono text-[10px]">{record.sourceIp || '-'}</td>
                         <td className="px-2 py-2">{record.paymentRef || '-'}</td>
                         <td className="px-2 py-2">
@@ -3314,6 +3433,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] text-gray-700">{selectedAudioMetadataRecord.inputText || ''}</pre>
                   </div>
                   <div className="rounded-xl border border-gray-100 bg-white p-3">
+                    <div className="mb-2 font-semibold text-gray-800">Integrity metadata</div>
+                    {selectedAudioMetadataIntegritySummary.length > 0 && (
+                      <dl className="mb-3 grid gap-2 text-[11px] text-gray-700 md:grid-cols-2">
+                        {selectedAudioMetadataIntegritySummary.map((entry) => (
+                          <div key={`${entry.label}:${entry.value}`} className="grid gap-0.5">
+                            <dt className="font-medium text-gray-500">{entry.label}</dt>
+                            <dd className="break-words text-gray-800">{entry.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                    {selectedAudioMetadataProvenanceEntries.length > 0 ? (
+                      <dl className="grid gap-2 text-[11px] text-gray-700">
+                        {selectedAudioMetadataProvenanceEntries.map((entry) => (
+                          <div key={`${entry.label}:${entry.value}`} className="grid gap-0.5">
+                            <dt className="font-medium text-gray-500">{entry.label}</dt>
+                            <dd className="break-words text-gray-800">{entry.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : (
+                      <div className="text-[11px] text-gray-500">No provenance fields available.</div>
+                    )}
+                  </div>
+                  <div className="rounded-xl border border-gray-100 bg-white p-3 md:col-span-2">
                     <div className="mb-2 font-semibold text-gray-800">Stored Record</div>
                     <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] text-gray-700">{JSON.stringify(selectedAudioMetadataRecord, null, 2)}</pre>
                   </div>

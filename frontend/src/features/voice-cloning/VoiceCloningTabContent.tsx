@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -7,10 +7,14 @@ import {
   Download,
   FileAudio,
   Gauge,
+  LibraryBig,
+  Loader2,
   Mic2,
   Music2,
+  Pause,
   Play,
   RefreshCw,
+  Search,
   Sparkles,
   X,
 } from 'lucide-react';
@@ -24,39 +28,71 @@ import { getEngineDisplayName } from '../../../services/engineDisplay';
 import { getSharedAudioContext } from '../../../src/shared/audio/audioContext';
 import { arrayBufferToBase64 } from '../../../src/shared/audio/base64';
 import { audioBufferToWav } from '../../../src/shared/audio/wav';
-import { hasActiveAdminActor } from '../../shared/auth/adminAccess';
+import { resolvePublicVoiceLabel } from '../../../src/shared/voices/voicePublicName';
 import { useManagedTabs } from '../../../src/shared/ui/tabs';
-import type { TtsEngineKey, UserProfile } from '../../../types';
+import type { ClonedVoice, TtsEngineKey, UserProfile, VoiceOption } from '../../../types';
 import { buildDunoClonePreviewUrl } from './dunoPreview';
 import { resolveVoiceClonePlayableAudioUrlWithFallback } from './audio';
 import {
+  canViewVoiceCloneStressControls,
+  deriveStressRpmFromConcurrency,
+  getErrorMessage,
+  getStressRuntimeDeviceLabel,
+  getStressValidationMessage,
+  isVoiceCloneStressActiveStatus,
+  isVoiceCloneStressTerminalStatus,
+  mapVoiceCloneStressError,
+  normalizeVoiceCloneStressTarget,
+  shouldPollVoiceCloneStressStatus,
+} from './voiceCloneStressHelpers';
+import {
+  cancelVoiceCloneJob,
   cancelVoiceCloneStressTest,
   cloneVoiceWithDunoNative,
-  cloneVoiceWithOpenVoice,
   type DunoNativeCloneResponse,
+  fetchVoiceCloneStatus,
+  fetchVoiceCloneJobStatus,
+  fetchVoiceCloneJobStatusByRequest,
   fetchVoiceCloneStressTestStatus,
-  fetchOpenVoiceCloneStatus,
   separateVoiceAndBackgroundWithDemucs,
+  startDunoNativeCloneJob,
+  startVoiceCloneRenderJob,
   startVoiceCloneStressTest,
-  type OpenVoiceCloneResponse,
+  type VoiceCloneJobError,
+  type VoiceCloneJobProgress,
+  type VoiceCloneJobStatusResponse,
   type VoiceCloneStressBenchmarkTarget,
   type VoiceCloneStressConfig,
   type VoiceCloneStressStartRequest,
   type VoiceCloneStressStatusResponse,
+  type VoiceCloneRenderResponse,
 } from './api';
 import {
-  getOpenVoiceProviderDisplayStatus,
-  type OpenVoiceBenchmarkStatusResponse,
+  getVoiceCloneProviderDisplayStatus,
+  type VoiceCloneBenchmarkStatusResponse,
 } from './openvoiceTypes';
 import {
-  buildOpenVoiceStemSeparationRequest,
-  getOpenVoiceStemExtractionMaxBytes,
+  buildVoiceCloneStemSeparationRequest,
+  getVoiceCloneStemExtractionMaxBytes,
   isFullDurationTrimRange,
 } from './stemSeparation';
+import {
+  deleteVoiceCloneWorkspaceFile,
+  readVoiceCloneWorkspaceDraft,
+  readVoiceCloneWorkspaceFile,
+  type PersistedVoiceCloneActiveJob,
+  type PersistedVoiceCloneFileRef,
+  type PersistedVoiceCloneResult,
+  writeVoiceCloneWorkspaceDraft,
+  storeVoiceCloneWorkspaceFile,
+} from './workspacePersistence';
 
 interface VoiceCloningTabContentProps {
   backendBaseUrl?: string | undefined;
   selectedEngine?: TtsEngineKey;
+  voiceLibraryVoices?: VoiceOption[];
+  voicePreviewState?: { id: string; status: 'loading' | 'playing' } | null;
+  onPreviewVoice?: (voiceId: string, name: string) => Promise<void> | void;
   layout?: 'stacked' | 'workspace';
   denseTabs?: boolean;
   showRail?: boolean;
@@ -64,7 +100,7 @@ interface VoiceCloningTabContentProps {
   onDiagnosticsExpandedChange?: (expanded: boolean) => void;
 }
 
-type VoiceCloneResponse = OpenVoiceCloneResponse | DunoNativeCloneResponse;
+type VoiceCloneResponse = VoiceCloneRenderResponse | DunoNativeCloneResponse;
 
 interface CloningResultState {
   previewUrl: string;
@@ -82,6 +118,8 @@ interface StemExtractionResultState {
   backgroundDownloadUrl: string;
   backgroundFileName: string;
   durationSec: number;
+  consumedVcUnits: number;
+  chargedInr: number;
 }
 
 interface TrimmedStemExtractionResultState {
@@ -101,7 +139,7 @@ interface TrimmedSourceMixState {
   endSec: number;
 }
 
-type VoiceUtilityTab = 'clone' | 'separate';
+type VoiceUtilityTab = 'clone' | 'separate' | 'library';
 type VoiceCloneTaskKind = 'clone' | 'separate';
 
 interface VoiceCloneTaskState {
@@ -112,15 +150,40 @@ interface VoiceCloneTaskState {
   progress: number;
 }
 
+interface VoiceCloneJobRuntimeState extends PersistedVoiceCloneActiveJob {
+  progress?: VoiceCloneJobProgress;
+  result?: VoiceCloneResponse;
+  error?: VoiceCloneJobError;
+}
+
 const VOICE_UTILITY_TAB_ITEMS: Array<{ id: VoiceUtilityTab }> = [
   { id: 'clone' },
   { id: 'separate' },
+  { id: 'library' },
 ];
 
 const TRIM_DURATION_EPSILON = 0.001;
-const MAX_STEM_EXTRACTION_SOURCE_BYTES = getOpenVoiceStemExtractionMaxBytes();
-const OPENVOICE_STATUS_RETRY_INTERVAL_MS = 15_000;
+const MAX_STEM_EXTRACTION_SOURCE_BYTES = getVoiceCloneStemExtractionMaxBytes();
+const VOICE_CLONE_STATUS_RETRY_INTERVAL_MS = 15_000;
 const VOICE_CLONE_CONSENT_STORAGE_KEY = 'vf_voice_clone_consent_v1';
+const VOICE_CLONE_JOB_POLL_INTERVAL_MS = 2_500;
+const VOICE_LIBRARY_CARD_RENDER_STYLE: React.CSSProperties = {
+  contentVisibility: 'auto',
+  containIntrinsicSize: '110px 140px',
+};
+type VoiceUtilityTabStatusTone = 'ready' | 'usable' | 'down';
+
+const getVoiceUtilityTabDotClass = (tone: VoiceUtilityTabStatusTone): string => {
+  if (tone === 'usable') return 'bg-emerald-500';
+  if (tone === 'ready') return 'bg-amber-500';
+  return 'bg-red-500';
+};
+
+const getVoiceUtilityTabStatusLabel = (tone: VoiceUtilityTabStatusTone): string => {
+  if (tone === 'usable') return 'Can start using';
+  if (tone === 'ready') return 'Ready';
+  return 'Server down';
+};
 
 const clampProgress = (value: number): number => Math.max(0, Math.min(100, Number(value) || 0));
 
@@ -136,6 +199,155 @@ const buildVoiceCloneTaskState = (
   detail,
   progress: clampProgress(progress),
 });
+
+const isVoiceCloneJobTerminalStatus = (status: string): boolean => {
+  const token = String(status || '').trim().toLowerCase();
+  return token === 'completed' || token === 'failed' || token === 'cancelled';
+};
+
+const isVoiceCloneJobReconnectPendingStatus = (status: string): boolean => {
+  const token = String(status || '').trim().toLowerCase();
+  return token === 'starting' || token === 'queued' || token === 'running';
+};
+
+const isVoiceCloneJobNotFoundError = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && 'status' in error
+    ? Number((error as { status?: unknown }).status) === 404
+    : false;
+
+const isRetryableVoiceCloneConnectionError = (error: unknown): boolean => {
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error
+      ? Number((error as { status?: unknown }).status)
+      : 0;
+  if (status >= 500) return true;
+  const message = String((error as { message?: unknown } | null | undefined)?.message || error || '').trim().toLowerCase();
+  return [
+    'failed to fetch',
+    'fetch failed',
+    'networkerror',
+    'network error',
+    'load failed',
+    'econnrefused',
+    'err_connection_refused',
+  ].some((token) => message.includes(token));
+};
+
+const normalizeVoiceCloneJobRuntimeState = (
+  job: VoiceCloneJobStatusResponse | PersistedVoiceCloneActiveJob | null | undefined
+): VoiceCloneJobRuntimeState | null => {
+  if (!job) return null;
+  const requestId = String(job.requestId || '').trim();
+  const rawKind = String((job as { kind?: unknown }).kind || '').trim().toLowerCase();
+  const kind = rawKind === 'openvoice' ? 'voice_clone' : rawKind;
+  if (!requestId || (kind !== 'voice_clone' && kind !== 'duno_native')) return null;
+  const typedJob = job as VoiceCloneJobStatusResponse;
+  const result = typedJob.result && typeof typedJob.result === 'object'
+    ? (typedJob.result as VoiceCloneResponse)
+    : undefined;
+  const error = typedJob.error && typeof typedJob.error === 'object'
+    ? typedJob.error
+    : undefined;
+  return {
+    requestId,
+    ...(String((job as { jobId?: unknown }).jobId || '').trim() ? { jobId: String((job as { jobId?: unknown }).jobId || '').trim() } : {}),
+    kind,
+    status: String(job.status || '').trim() || 'starting',
+    ...(typedJob.progress && typeof typedJob.progress === 'object' ? { progress: typedJob.progress } : {}),
+    ...(result ? { result } : {}),
+    ...(error ? { error } : {}),
+  };
+};
+
+const mergeVoiceCloneRuntimeJobState = (
+  job: VoiceCloneJobStatusResponse | PersistedVoiceCloneActiveJob | null | undefined,
+  fallback: VoiceCloneJobRuntimeState | null
+): VoiceCloneJobRuntimeState | null => {
+  const normalized = normalizeVoiceCloneJobRuntimeState(job);
+  if (normalized) return normalized;
+  if (!fallback) return null;
+  const nextStatus = String((job as { status?: unknown } | null | undefined)?.status || '').trim();
+  const nextJobId = String((job as { jobId?: unknown } | null | undefined)?.jobId || '').trim();
+  const rawKind = String((job as { kind?: unknown } | null | undefined)?.kind || '').trim().toLowerCase();
+  const nextKind = rawKind === 'openvoice' ? 'voice_clone' : rawKind;
+  const merged: VoiceCloneJobRuntimeState = {
+    ...fallback,
+    ...(nextStatus ? { status: nextStatus } : {}),
+    ...(nextJobId ? { jobId: nextJobId } : {}),
+  };
+  if (nextKind === 'voice_clone' || nextKind === 'duno_native') {
+    merged.kind = nextKind as VoiceCloneJobRuntimeState['kind'];
+  }
+  return merged;
+};
+
+const buildVoiceCloneTaskFromRuntimeJob = (
+  job: VoiceCloneJobRuntimeState,
+  isOnline: boolean
+): VoiceCloneTaskState => {
+  const status = String(job.status || '').trim().toLowerCase();
+  const progress = clampProgress(Number(job.progress?.percent || (status === 'starting' ? 8 : status === 'queued' ? 16 : status === 'running' ? 56 : 100)));
+  if (!isOnline && isVoiceCloneJobReconnectPendingStatus(status)) {
+    return buildVoiceCloneTaskState(
+      'clone',
+      progress,
+      'Waiting for connection',
+      'The browser is offline. Your cached inputs will reconnect automatically when the network returns.'
+    );
+  }
+  if (status === 'starting') {
+    return buildVoiceCloneTaskState(
+      'clone',
+      progress,
+      'Restoring reconnect-safe request',
+      'Checking whether the backend already has this request, then resubmitting only if needed.'
+    );
+  }
+  if (status === 'queued' || status === 'running') {
+    return buildVoiceCloneTaskState(
+      'clone',
+      progress,
+      String(job.progress?.stage || 'Processing voice clone').trim() || 'Processing voice clone',
+      String(job.progress?.detail || 'The backend is keeping this voice clone available for reconnect and refresh recovery.').trim()
+        || 'The backend is keeping this voice clone available for reconnect and refresh recovery.'
+    );
+  }
+  if (status === 'completed') {
+    return buildVoiceCloneTaskState('clone', 100, 'Completed', 'The finished voice clone is ready to preview.');
+  }
+  if (status === 'cancelled') {
+    return buildVoiceCloneTaskState('clone', progress, 'Cancelled', 'The active voice clone run was cancelled.');
+  }
+  return buildVoiceCloneTaskState(
+    'clone',
+    progress,
+    'Clone failed',
+    String(job.error?.message || job.error?.detail || 'Voice cloning failed.').trim() || 'Voice cloning failed.'
+  );
+};
+
+const getVoiceCloneJobFailureMessage = (job: VoiceCloneJobRuntimeState | null): string => {
+  if (!job) return 'Voice cloning failed.';
+  if (String(job.status || '').trim().toLowerCase() === 'cancelled') {
+    return 'Cloning cancelled.';
+  }
+  return String(job.error?.message || job.error?.detail || 'Voice cloning failed.').trim() || 'Voice cloning failed.';
+};
+
+const toPersistedCloningResult = (result: CloningResultState | null): PersistedVoiceCloneResult | null => {
+  if (!result) return null;
+  const response = result.response && typeof result.response === 'object'
+    ? ({ ...result.response } as VoiceCloneResponse & { audioBase64?: string })
+    : ({} as VoiceCloneResponse & { audioBase64?: string });
+  delete response.audioBase64;
+  return {
+    previewUrl: String(result.previewUrl || '').trim(),
+    downloadUrl: String(result.downloadUrl || '').trim(),
+    fileName: String(result.fileName || '').trim() || 'voice-clone.wav',
+    response,
+    cloneMode: result.cloneMode,
+  };
+};
 
 const isAbortError = (error: unknown): boolean => {
   const name = String((error as { name?: unknown } | null | undefined)?.name || '').trim().toLowerCase();
@@ -206,46 +418,9 @@ const toAudioFileName = (label: string, fallback: string): string => {
   return `${safeLabel || fallback}.wav`;
 };
 
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) return error.message;
-  return String(error || 'Unable to start voice cloning.');
-};
-
 const isDunoCloneResponse = (response: VoiceCloneResponse | null | undefined): response is DunoNativeCloneResponse => (
   String((response as { engine?: unknown } | null | undefined)?.engine || '').trim().toUpperCase() === 'DUNO'
 );
-
-export const mapVoiceCloneStressError = (error: unknown): string => {
-  const status =
-    typeof error === 'object' && error !== null && 'status' in error
-      ? Number((error as { status?: unknown }).status)
-      : 0;
-  const detail =
-    typeof error === 'object' && error !== null && 'detail' in error
-      ? String((error as { detail?: unknown }).detail || '').trim()
-      : '';
-
-  if (status === 401) {
-    return detail || 'Authentication is required to run admin stress tests.';
-  }
-  if (status === 403) {
-    return detail || 'You do not have permission to run admin stress tests.';
-  }
-  if (status === 429) {
-    return detail || 'Stress test requests are rate-limited. Please wait and retry.';
-  }
-  if (status === 404) {
-    const normalizedDetail = detail.toLowerCase();
-    if (!detail || normalizedDetail === 'not found' || normalizedDetail === '404 not found') {
-      return 'Stress endpoint is unavailable on the connected backend. Restart/update backend and retry.';
-    }
-    return detail;
-  }
-  if (status >= 500) {
-    return detail || 'Stress test service is temporarily unavailable. Please retry shortly.';
-  }
-  return detail || getErrorMessage(error);
-};
 
 const makeRequestId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -464,25 +639,9 @@ const useFilePreviewUrl = (file: File | null): string => {
 };
 
 const VOICE_CLONE_STRESS_DEFAULT_GEMINI_TEXT =
-  'VoiceFlow stress test benchmark sample for Gemini Flash throughput.';
+  'V FLOW AI stress test benchmark sample for Gemini Flash throughput.';
 
-const STRESS_RPM_INCREMENT = 5;
 const VOICE_CLONE_STRESS_DEFAULT_CONCURRENCY = 2;
-
-const roundStressRpm = (value: number): number => {
-  if (!Number.isFinite(value) || value <= 0) return STRESS_RPM_INCREMENT;
-  return Math.max(STRESS_RPM_INCREMENT, Math.round(value / STRESS_RPM_INCREMENT) * STRESS_RPM_INCREMENT);
-};
-
-export const deriveStressRpmFromConcurrency = (
-  concurrency: number
-): Pick<VoiceCloneStressConfig, 'startRpm' | 'stepRpm' | 'maxRpm'> => {
-  const safeConcurrency = Math.min(128, Math.max(1, Math.floor(Number(concurrency) || 0)));
-  const startRpm = roundStressRpm(safeConcurrency * 10);
-  const stepRpm = roundStressRpm(Math.max(STRESS_RPM_INCREMENT, safeConcurrency * 5));
-  const maxRpm = roundStressRpm(Math.max(safeConcurrency * 20, startRpm + stepRpm));
-  return { startRpm, stepRpm, maxRpm };
-};
 
 const VOICE_CLONE_STRESS_DEFAULT_RPM = deriveStressRpmFromConcurrency(VOICE_CLONE_STRESS_DEFAULT_CONCURRENCY);
 
@@ -498,16 +657,6 @@ const VOICE_CLONE_STRESS_DEFAULT_CONFIG: VoiceCloneStressConfig = {
   requestTimeoutSec: 60,
 };
 
-export const isVoiceCloneStressTerminalStatus = (status: string): boolean => {
-  const token = String(status || '').trim().toLowerCase();
-  return token === 'completed' || token === 'failed' || token === 'cancelled';
-};
-
-export const isVoiceCloneStressActiveStatus = (status: string): boolean => {
-  const token = String(status || '').trim().toLowerCase();
-  return token === 'queued' || token === 'running';
-};
-
 const formatStressPercent = (value: number): string => {
   if (!Number.isFinite(value)) return '0.0%';
   return `${(value * 100).toFixed(1)}%`;
@@ -516,59 +665,6 @@ const formatStressPercent = (value: number): string => {
 const formatStressNumber = (value: number, digits = 1): string => {
   if (!Number.isFinite(value)) return '0';
   return value.toFixed(digits);
-};
-
-export const getStressRuntimeDeviceLabel = (
-  status: VoiceCloneStressStatusResponse | null,
-  benchmarkTarget: VoiceCloneStressBenchmarkTarget
-): string => {
-  const runtimeDevices = Array.isArray(status?.runtimeDeviceSamples)
-    ? status.runtimeDeviceSamples.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  if (runtimeDevices.length > 0) {
-    return runtimeDevices.join(', ');
-  }
-
-  const preflight = status?.runtimePreflight && typeof status.runtimePreflight === 'object'
-    ? (status.runtimePreflight as Record<string, unknown>)
-    : null;
-  const preflightDevice = String(preflight?.device || '').trim();
-  if (preflightDevice) {
-    return preflightDevice;
-  }
-
-  return benchmarkTarget === 'OPENVOICE_L4_VC'
-    ? 'Modal VC (configured target)'
-    : 'Gemini Flash (configured target)';
-};
-
-export const getStressValidationMessage = (
-  benchmarkTarget: VoiceCloneStressBenchmarkTarget,
-  config: VoiceCloneStressConfig,
-  referenceAudio: File | null,
-  targetAudio: File | null,
-  geminiText: string,
-  geminiVoiceName: string
-): string => {
-  if (config.startRpm < 1) return 'Start RPM must be at least 1.';
-  if (config.stepRpm < 1) return 'Step RPM must be at least 1.';
-  if (config.maxRpm < config.startRpm) return 'Max RPM must be greater than or equal to start RPM.';
-  if (config.stepDurationSec < 5) return 'Step duration must be at least 5 seconds.';
-  if (config.concurrency < 1) return 'Concurrency must be at least 1.';
-  if (config.maxFailureRate < 0 || config.maxFailureRate > 1) return 'Max failure rate must be between 0 and 1.';
-  if (config.maxP95Ms < 500) return 'Max p95 latency must be at least 500 ms.';
-  if (config.warmupRequests < 0) return 'Warmup requests cannot be negative.';
-  if (config.requestTimeoutSec < 1) return 'Request timeout must be at least 1 second.';
-
-  if (benchmarkTarget === 'OPENVOICE_L4_VC') {
-    if (!referenceAudio) return 'Reference audio is required for the Modal VC benchmark.';
-    if (!targetAudio) return 'Target audio is required for the Modal VC benchmark.';
-    return '';
-  }
-
-  if (!String(geminiText || '').trim()) return 'Gemini Flash benchmark text is required.';
-  if (!String(geminiVoiceName || '').trim()) return 'Gemini Flash benchmark voice name is required.';
-  return '';
 };
 
 const getStressStopReason = (status: VoiceCloneStressStatusResponse | null): string => {
@@ -580,20 +676,6 @@ const getStressStopReason = (status: VoiceCloneStressStatusResponse | null): str
   const statusToken = String(status?.status || '').trim().toLowerCase();
   return isVoiceCloneStressTerminalStatus(statusToken) ? 'Unknown' : '--';
 };
-
-export const shouldPollVoiceCloneStressStatus = (
-  isModalOpen: boolean,
-  status: VoiceCloneStressStatusResponse | null
-): boolean => {
-  if (!isModalOpen) return false;
-  const jobId = String(status?.jobId || '').trim();
-  if (!jobId) return false;
-  return isVoiceCloneStressActiveStatus(String(status?.status || '').trim().toLowerCase());
-};
-
-export const canViewVoiceCloneStressControls = (
-  user: Pick<UserProfile, 'isAdmin' | 'adminActor'> | null | undefined
-): boolean => Boolean(user?.isAdmin) || hasActiveAdminActor(user?.adminActor || null);
 
 interface VoiceCloneStressModalProps {
   isOpen: boolean;
@@ -841,7 +923,7 @@ const VoiceCloneStressModal: React.FC<VoiceCloneStressModalProps> = ({
                   value={benchmarkTarget}
                   onChange={(event) => onBenchmarkTargetChange(event.target.value as VoiceCloneStressBenchmarkTarget)}
                 >
-                  <option value="OPENVOICE_L4_VC">Modal VC</option>
+                  <option value="VOICE_CLONE_L4_VC">Voice Clone</option>
                 </select>
               </label>
               <label className="block">
@@ -969,7 +1051,7 @@ const VoiceCloneStressModal: React.FC<VoiceCloneStressModalProps> = ({
               </label>
             </div>
 
-            {benchmarkTarget === 'OPENVOICE_L4_VC' ? (
+            {normalizeVoiceCloneStressTarget(benchmarkTarget) === 'VOICE_CLONE_L4_VC' ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                   <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
@@ -1260,13 +1342,16 @@ const VoiceCloneStressModal: React.FC<VoiceCloneStressModalProps> = ({
 export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   backendBaseUrl,
   selectedEngine,
+  voiceLibraryVoices = [],
+  voicePreviewState = null,
+  onPreviewVoice,
   layout = 'stacked',
   denseTabs = false,
   showRail = true,
   diagnosticsExpanded,
   onDiagnosticsExpandedChange,
 }) => {
-  const { user, addClonedVoice } = useUser();
+  const { user, addClonedVoice, clonedVoices } = useUser();
   const isDunoCloneMode = String(selectedEngine || '').trim().toUpperCase() === 'DUNO';
   const dunoLabel = getEngineDisplayName('DUNO');
   const isWorkspaceLayout = layout === 'workspace';
@@ -1279,6 +1364,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const [isVoiceCloneCancelling, setIsVoiceCloneCancelling] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [result, setResult] = useState<CloningResultState | null>(null);
+  const [activeCloneJob, setActiveCloneJob] = useState<VoiceCloneJobRuntimeState | null>(null);
+  const persistedReferenceAudioRef = useRef<PersistedVoiceCloneFileRef | null>(null);
+  const persistedTargetAudioRef = useRef<PersistedVoiceCloneFileRef | null>(null);
+  const [persistedDraftRevision, setPersistedDraftRevision] = useState(0);
+  const [isCloneWorkspaceHydrated, setIsCloneWorkspaceHydrated] = useState(false);
   const [sourceMixAudio, setSourceMixAudio] = useState<File | null>(null);
   const [sourceMixDurationSec, setSourceMixDurationSec] = useState(0);
   const [sourceTrimStartInput, setSourceTrimStartInput] = useState('0');
@@ -1295,7 +1385,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const [isTrimmingStems, setIsTrimmingStems] = useState(false);
   const [stemTrimErrorMessage, setStemTrimErrorMessage] = useState('');
   const [isStressModalOpen, setIsStressModalOpen] = useState(false);
-  const [stressBenchmarkTarget, setStressBenchmarkTarget] = useState<VoiceCloneStressBenchmarkTarget>('OPENVOICE_L4_VC');
+  const [stressBenchmarkTarget, setStressBenchmarkTarget] = useState<VoiceCloneStressBenchmarkTarget>('VOICE_CLONE_L4_VC');
   const [stressConfig, setStressConfig] = useState<VoiceCloneStressConfig>(VOICE_CLONE_STRESS_DEFAULT_CONFIG);
   const [stressGeminiText, setStressGeminiText] = useState(VOICE_CLONE_STRESS_DEFAULT_GEMINI_TEXT);
   const [stressGeminiVoiceName, setStressGeminiVoiceName] = useState('Fenrir');
@@ -1303,29 +1393,44 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const [stressErrorMessage, setStressErrorMessage] = useState('');
   const [isStressStarting, setIsStressStarting] = useState(false);
   const [isStressCancelling, setIsStressCancelling] = useState(false);
-  const [openVoiceStatus, setOpenVoiceStatus] = useState<OpenVoiceBenchmarkStatusResponse | null>(null);
+  const [openVoiceStatus, setOpenVoiceStatus] = useState<VoiceCloneBenchmarkStatusResponse | null>(null);
   const [isLoadingOpenVoiceStatus, setIsLoadingOpenVoiceStatus] = useState(false);
   const [openVoiceStatusError, setOpenVoiceStatusError] = useState('');
   const [cloneConsentAccepted, setCloneConsentAccepted] = useState(false);
   const [cloneSafetyAccepted, setCloneSafetyAccepted] = useState(false);
   const [isCloneConsentPersisted, setIsCloneConsentPersisted] = useState(false);
   const [localRuntimeDiagnosticsExpanded, setLocalRuntimeDiagnosticsExpanded] = useState(false);
+  const [voiceLibrarySearch, setVoiceLibrarySearch] = useState('');
   const voiceCloneTaskControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const cloneWorkspaceHydratingRef = useRef(false);
+  const cloneJobRecoveryInFlightRef = useRef(false);
+  const cloneSubmitLockRef = useRef(false);
+  const handledTerminalCloneRequestRef = useRef('');
+  const stemExtractionInFlightRef = useRef<Set<string>>(new Set());
+  const stemExtractionRunIdRef = useRef(0);
   const cloneConsentUserKey = useMemo(
     () => resolveVoiceCloneConsentUserKey(user),
     [user]
   );
+  const cloneWorkspaceScopeKey = useMemo(
+    () => `${cloneConsentUserKey}::${isDunoCloneMode ? 'duno' : 'voice-clone'}`,
+    [cloneConsentUserKey, isDunoCloneMode]
+  );
 
   const showRuntimeDiagnostics = diagnosticsExpanded ?? localRuntimeDiagnosticsExpanded;
   const setRuntimeDiagnosticsExpanded = onDiagnosticsExpandedChange || setLocalRuntimeDiagnosticsExpanded;
+  const showRuntimeDiagnosticsUi = false;
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      cloneSubmitLockRef.current = false;
       voiceCloneTaskControllerRef.current?.abort();
       voiceCloneTaskControllerRef.current = null;
+      const stemExtractionInFlight = stemExtractionInFlightRef;
+      stemExtractionInFlight.current.clear();
     };
   }, []);
 
@@ -1341,18 +1446,19 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     idBase: 'voice-tools',
   });
 
-  const isOpenVoiceRuntimeReady = Boolean(openVoiceStatus?.ready);
-  const isVoiceCloneActionBusy = Boolean(voiceCloneTask) || isCloning || isExtractingStems || isVoiceCloneCancelling;
+  const isVoiceCloneRuntimeReady = Boolean(openVoiceStatus?.ready);
+  const isActiveClonePending = Boolean(activeCloneJob && !isVoiceCloneJobTerminalStatus(activeCloneJob.status));
+  const isVoiceCloneActionBusy = Boolean(voiceCloneTask) || isCloning || isExtractingStems || isVoiceCloneCancelling || isActiveClonePending || cloneSubmitLockRef.current;
   const canStartCloning = useMemo(
     () => Boolean(
       referenceAudio
       && !isVoiceCloneActionBusy
       && (isDunoCloneMode || targetAudio)
-      && (isDunoCloneMode || isOpenVoiceRuntimeReady)
+      && (isDunoCloneMode || isVoiceCloneRuntimeReady)
       && cloneConsentAccepted
       && cloneSafetyAccepted
     ),
-    [cloneConsentAccepted, cloneSafetyAccepted, isDunoCloneMode, isOpenVoiceRuntimeReady, isVoiceCloneActionBusy, referenceAudio, targetAudio]
+    [cloneConsentAccepted, cloneSafetyAccepted, isDunoCloneMode, isVoiceCloneRuntimeReady, isVoiceCloneActionBusy, referenceAudio, targetAudio]
   );
 
   const canExtractStems = useMemo(
@@ -1360,9 +1466,83 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     [isVoiceCloneActionBusy, sourceMixAudio]
   );
   const openVoiceProviderStatus = useMemo(
-    () => getOpenVoiceProviderDisplayStatus(openVoiceStatus),
+    () => getVoiceCloneProviderDisplayStatus(openVoiceStatus),
     [openVoiceStatus]
   );
+  const shouldPrepareVoiceLibrary = activeToolTab === 'library';
+  const voiceLibraryCatalog = useMemo(() => {
+    if (!shouldPrepareVoiceLibrary) return [];
+    const primaryCatalog = Array.isArray(voiceLibraryVoices) && voiceLibraryVoices.length > 0
+      ? voiceLibraryVoices
+      : clonedVoices;
+    const dedup = new Map<string, VoiceOption>();
+    for (const voice of primaryCatalog || []) {
+      const voiceId = String(voice?.id || '').trim();
+      if (!voiceId || dedup.has(voiceId)) continue;
+      dedup.set(voiceId, voice);
+    }
+    return Array.from(dedup.values()).sort((a, b) =>
+      String(a.name || a.id || '').localeCompare(String(b.name || b.id || ''), undefined, { sensitivity: 'base' })
+    );
+  }, [clonedVoices, shouldPrepareVoiceLibrary, voiceLibraryVoices]);
+  const deferredVoiceLibrarySearch = useDeferredValue(voiceLibrarySearch);
+  const normalizedVoiceLibrarySearch = useMemo(
+    () => String(deferredVoiceLibrarySearch || '').trim().toLowerCase(),
+    [deferredVoiceLibrarySearch]
+  );
+  const filteredVoiceLibraryCatalog = useMemo(() => {
+    if (!shouldPrepareVoiceLibrary) return [];
+    if (!normalizedVoiceLibrarySearch) return voiceLibraryCatalog;
+    return voiceLibraryCatalog.filter((voice) => {
+      const searchable = [
+        resolvePublicVoiceLabel(voice.name, voice.geminiVoiceName, voice.id) || voice.name || voice.id || '',
+        voice.id,
+        voice.geminiVoiceName,
+        voice.gender,
+        voice.accent,
+        voice.country,
+        voice.ageGroup,
+        voice.engine || selectedEngine || '',
+        voice.accessTier || '',
+        voice.isCloned ? 'cloned' : '',
+      ]
+        .map((value) => String(value || '').toLowerCase())
+        .join(' ');
+      return searchable.includes(normalizedVoiceLibrarySearch);
+    });
+  }, [normalizedVoiceLibrarySearch, selectedEngine, shouldPrepareVoiceLibrary, voiceLibraryCatalog]);
+  const maleVoiceLibraryCatalog = useMemo(
+    () => filteredVoiceLibraryCatalog.filter((voice) => String(voice.gender || '').trim().toLowerCase() === 'male'),
+    [filteredVoiceLibraryCatalog]
+  );
+  const femaleVoiceLibraryCatalog = useMemo(
+    () => filteredVoiceLibraryCatalog.filter((voice) => {
+      const normalizedGender = String(voice.gender || '').trim().toLowerCase();
+      return normalizedGender === 'female';
+    }),
+    [filteredVoiceLibraryCatalog]
+  );
+  const voiceLibraryAuditSummary = useMemo(() => {
+    let freeCount = 0;
+    let proCount = 0;
+    let clonedCount = 0;
+    for (const voice of filteredVoiceLibraryCatalog) {
+      const tier = String(voice.accessTier || '').trim().toLowerCase();
+      if (tier === 'pro' || voice.isPlanRestricted) {
+        proCount += 1;
+      } else {
+        freeCount += 1;
+      }
+      if (voice.isCloned) clonedCount += 1;
+    }
+    return {
+      totalCount: voiceLibraryCatalog.length,
+      filteredCount: filteredVoiceLibraryCatalog.length,
+      freeCount,
+      proCount,
+      clonedCount,
+    };
+  }, [filteredVoiceLibraryCatalog, voiceLibraryCatalog.length]);
   const sourceTrimValidationMessage = useMemo(() => {
     if (!sourceMixAudio || sourceMixDurationSec <= 0) return '';
     return validateTrimRange(sourceTrimStartInput, sourceTrimEndInput, sourceMixDurationSec);
@@ -1406,12 +1586,12 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const isStressRunning = isVoiceCloneStressActiveStatus(stressStatusToken);
   const isStressTerminal = isVoiceCloneStressTerminalStatus(stressStatusToken);
   const canSeeStressControls = useMemo(() => canViewVoiceCloneStressControls(user), [user]);
-  const refreshOpenVoiceStatus = useCallback(async (showLoading = true): Promise<void> => {
+  const refreshVoiceCloneStatus = useCallback(async (showLoading = true): Promise<void> => {
     if (showLoading) {
       setIsLoadingOpenVoiceStatus(true);
     }
     try {
-      const status = await fetchOpenVoiceCloneStatus(
+      const status = await fetchVoiceCloneStatus(
         backendBaseUrl ? { baseUrl: backendBaseUrl } : undefined
       );
       setOpenVoiceStatus(status);
@@ -1438,6 +1618,151 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     void persistVoiceCloneConsentAcceptance(cloneConsentUserKey);
     setIsCloneConsentPersisted(true);
   }, [cloneConsentUserKey, cloneConsentAccepted, cloneSafetyAccepted, isCloneConsentPersisted]);
+
+  useEffect(() => {
+    let cancelled = false;
+    cloneWorkspaceHydratingRef.current = true;
+    setIsCloneWorkspaceHydrated(false);
+
+    const draft = readVoiceCloneWorkspaceDraft(cloneWorkspaceScopeKey);
+    if (!draft) {
+      setReferenceAudio(null);
+      setTargetAudio(null);
+      persistedReferenceAudioRef.current = null;
+      persistedTargetAudioRef.current = null;
+      setPersistedDraftRevision((value) => value + 1);
+      setResult(null);
+      setErrorMessage('');
+      setActiveCloneJob(null);
+      handledTerminalCloneRequestRef.current = '';
+      cloneWorkspaceHydratingRef.current = false;
+      setIsCloneWorkspaceHydrated(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void Promise.all([
+      readVoiceCloneWorkspaceFile(draft.referenceAudio || null),
+      readVoiceCloneWorkspaceFile(draft.targetAudio || null),
+    ]).then(([referenceFile, targetFile]) => {
+      if (cancelled) return;
+      setReferenceAudio(referenceFile);
+      setTargetAudio(targetFile);
+      persistedReferenceAudioRef.current = draft.referenceAudio || null;
+      persistedTargetAudioRef.current = draft.targetAudio || null;
+      setPersistedDraftRevision((value) => value + 1);
+      setResult((draft.result as CloningResultState | null) || null);
+      setErrorMessage(String(draft.errorMessage || '').trim());
+      setActiveCloneJob(normalizeVoiceCloneJobRuntimeState(draft.activeJob || null));
+      handledTerminalCloneRequestRef.current = '';
+    }).catch(() => {
+      if (cancelled) return;
+      setReferenceAudio(null);
+      setTargetAudio(null);
+      persistedReferenceAudioRef.current = null;
+      persistedTargetAudioRef.current = null;
+      setPersistedDraftRevision((value) => value + 1);
+      setResult(null);
+      setErrorMessage('');
+      setActiveCloneJob(null);
+    }).finally(() => {
+      if (cancelled) return;
+      cloneWorkspaceHydratingRef.current = false;
+      setIsCloneWorkspaceHydrated(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cloneWorkspaceScopeKey]);
+
+  useEffect(() => {
+    if (!isCloneWorkspaceHydrated || cloneWorkspaceHydratingRef.current) return;
+    let cancelled = false;
+    if (!referenceAudio) {
+      const previousReferenceAudioRef = persistedReferenceAudioRef.current;
+      void deleteVoiceCloneWorkspaceFile(previousReferenceAudioRef).catch(() => {
+        // Best effort cleanup only.
+      });
+      persistedReferenceAudioRef.current = null;
+      setPersistedDraftRevision((value) => value + 1);
+      return () => {
+        cancelled = true;
+      };
+    }
+    void storeVoiceCloneWorkspaceFile(cloneWorkspaceScopeKey, 'reference', referenceAudio)
+      .then((fileRef) => {
+        if (!cancelled) {
+          persistedReferenceAudioRef.current = fileRef;
+          setPersistedDraftRevision((value) => value + 1);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          persistedReferenceAudioRef.current = null;
+          setPersistedDraftRevision((value) => value + 1);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloneWorkspaceScopeKey, isCloneWorkspaceHydrated, referenceAudio]);
+
+  useEffect(() => {
+    if (!isCloneWorkspaceHydrated || cloneWorkspaceHydratingRef.current) return;
+    let cancelled = false;
+    if (!targetAudio) {
+      const previousTargetAudioRef = persistedTargetAudioRef.current;
+      void deleteVoiceCloneWorkspaceFile(previousTargetAudioRef).catch(() => {
+        // Best effort cleanup only.
+      });
+      persistedTargetAudioRef.current = null;
+      setPersistedDraftRevision((value) => value + 1);
+      return () => {
+        cancelled = true;
+      };
+    }
+    void storeVoiceCloneWorkspaceFile(cloneWorkspaceScopeKey, 'target', targetAudio)
+      .then((fileRef) => {
+        if (!cancelled) {
+          persistedTargetAudioRef.current = fileRef;
+          setPersistedDraftRevision((value) => value + 1);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          persistedTargetAudioRef.current = null;
+          setPersistedDraftRevision((value) => value + 1);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloneWorkspaceScopeKey, isCloneWorkspaceHydrated, targetAudio]);
+
+  useEffect(() => {
+    if (!isCloneWorkspaceHydrated || cloneWorkspaceHydratingRef.current) return;
+    writeVoiceCloneWorkspaceDraft(cloneWorkspaceScopeKey, {
+      referenceAudio: persistedReferenceAudioRef.current,
+      targetAudio: persistedTargetAudioRef.current,
+      result: toPersistedCloningResult(result),
+      activeJob: activeCloneJob ? {
+        requestId: activeCloneJob.requestId,
+        ...(activeCloneJob.jobId ? { jobId: activeCloneJob.jobId } : {}),
+        kind: activeCloneJob.kind,
+        status: activeCloneJob.status,
+      } : null,
+      errorMessage,
+    });
+  }, [
+    activeCloneJob,
+    cloneWorkspaceScopeKey,
+    errorMessage,
+    isCloneWorkspaceHydrated,
+    persistedDraftRevision,
+    result,
+  ]);
 
   const clearResult = useCallback(() => {
     setErrorMessage('');
@@ -1486,16 +1811,368 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   }, []);
 
   const cancelVoiceCloneTask = useCallback(() => {
+    if (isVoiceCloneCancelling) return;
     const controller = voiceCloneTaskControllerRef.current;
-    if (!controller || controller.signal.aborted) return;
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+    const runtimeJob = activeCloneJob;
+    if (!runtimeJob) {
+      if (!controller || controller.signal.aborted) return;
+      setIsVoiceCloneCancelling(true);
+      updateVoiceCloneTask({
+        stage: 'Cancelling request...',
+        detail: 'Stopping the active root request and clearing pending output.',
+        progress: 95,
+      });
+      return;
+    }
+
     setIsVoiceCloneCancelling(true);
-    updateVoiceCloneTask({
-      stage: 'Cancelling request...',
-      detail: 'Stopping the active root request and clearing pending output.',
-      progress: 95,
-    });
-    controller.abort();
-  }, [updateVoiceCloneTask]);
+    setVoiceCloneTask(buildVoiceCloneTaskState(
+      'clone',
+      95,
+      'Cancelling request...',
+      'Requesting backend cancellation and preserving reconnect-safe state.'
+    ));
+
+    const finishLocalCancel = (message: string, options?: { clearActiveJob?: boolean }): void => {
+      if (!mountedRef.current) return;
+      handledTerminalCloneRequestRef.current = '';
+      if (options?.clearActiveJob ?? true) {
+        setActiveCloneJob(null);
+      }
+      setIsCloning(false);
+      clearVoiceCloneTask();
+      setErrorMessage(message);
+    };
+
+    void (async () => {
+      try {
+        let safeJobId = String(runtimeJob.jobId || '').trim();
+        if (!safeJobId) {
+          const byRequest = await fetchVoiceCloneJobStatusByRequest(
+            runtimeJob.requestId,
+            backendBaseUrl ? { baseUrl: backendBaseUrl } : undefined
+          );
+          safeJobId = String(byRequest.jobId || '').trim();
+        }
+        if (!safeJobId) {
+          finishLocalCancel('Cloning cancelled.');
+          return;
+        }
+        const cancelled = await cancelVoiceCloneJob(
+          safeJobId,
+          backendBaseUrl ? { baseUrl: backendBaseUrl } : undefined
+        );
+        if (!mountedRef.current) return;
+        handledTerminalCloneRequestRef.current = '';
+        setErrorMessage('');
+        setIsCloning(false);
+        clearVoiceCloneTask();
+        const nextRuntimeJob = mergeVoiceCloneRuntimeJobState(cancelled, runtimeJob);
+        if (!nextRuntimeJob) {
+          finishLocalCancel('Cloning cancelled.');
+          return;
+        }
+        setActiveCloneJob(nextRuntimeJob);
+      } catch (error) {
+        if (isAbortError(error) || isVoiceCloneJobNotFoundError(error)) {
+          finishLocalCancel('Cloning cancelled.');
+          return;
+        }
+        if (isRetryableVoiceCloneConnectionError(error)) {
+          if (!mountedRef.current) return;
+          const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+          setIsCloning(true);
+          setErrorMessage('Connection interrupted while sending cancel. Keeping the request active until backend confirmation.');
+          setVoiceCloneTask(buildVoiceCloneTaskFromRuntimeJob(runtimeJob, isOnline));
+          return;
+        }
+        finishLocalCancel(getErrorMessage(error));
+      } finally {
+        if (!mountedRef.current) return;
+        setIsVoiceCloneCancelling(false);
+      }
+    })();
+  }, [activeCloneJob, backendBaseUrl, clearVoiceCloneTask, isVoiceCloneCancelling, updateVoiceCloneTask]);
+
+  const finalizeCloneJobSuccess = useCallback(async (job: VoiceCloneJobRuntimeState): Promise<void> => {
+    const response = job.result;
+    if (!response) {
+      throw new Error('Voice clone job completed without a result payload.');
+    }
+
+    if (job.kind === 'duno_native' || isDunoCloneResponse(response)) {
+      const dunoResponse = (isDunoCloneResponse(response) ? response : (response as DunoNativeCloneResponse));
+      const clonedVoice: ClonedVoice | null = dunoResponse.clonedVoice
+        ? { ...dunoResponse.clonedVoice }
+        : null;
+      if (clonedVoice && !String(clonedVoice.previewUrl || '').trim()) {
+        const clonedVoiceId = String(clonedVoice.geminiVoiceName || dunoResponse.voiceId || clonedVoice.id || '').trim();
+        const clonedVoiceName = String(clonedVoice.name || clonedVoice.sourceVoiceName || clonedVoiceId || 'DUNO Clone').trim() || 'DUNO Clone';
+        clonedVoice.previewUrl = await buildDunoClonePreviewUrl({
+          backendBaseUrl,
+          voiceId: clonedVoiceId || String(dunoResponse.voiceId || clonedVoice.id || '').trim(),
+          voiceName: clonedVoiceName,
+          voiceModel: String(dunoResponse.model || '').trim(),
+        });
+      }
+      if (clonedVoice) {
+        addClonedVoice(clonedVoice);
+      }
+      const previewUrl = String(clonedVoice?.previewUrl || '').trim();
+      setResult({
+        previewUrl,
+        downloadUrl: previewUrl,
+        fileName: toAudioFileName(String(clonedVoice?.name || clonedVoice?.sourceVoiceName || 'DUNO Clone').trim() || 'DUNO Clone', 'duno-clone'),
+        response: clonedVoice ? { ...dunoResponse, clonedVoice } : dunoResponse,
+        cloneMode: 'duno_native',
+      });
+    } else {
+      const contentType = String(response.artifact?.contentType || targetAudio?.type || referenceAudio?.type || 'audio/wav').trim() || 'audio/wav';
+      const resolvedUrl = await resolveVoiceClonePlayableAudioUrlWithFallback(response, contentType, {
+        ...(backendBaseUrl ? { backendBaseUrl } : {}),
+      });
+      setResult({
+        previewUrl: resolvedUrl,
+        downloadUrl: resolvedUrl,
+        fileName: targetAudio?.name || 'voice-clone.wav',
+        response,
+        cloneMode: 'modal_vc',
+      });
+    }
+
+    setErrorMessage('');
+    setIsCloning(false);
+    clearVoiceCloneTask();
+    setActiveCloneJob(null);
+  }, [addClonedVoice, backendBaseUrl, clearVoiceCloneTask, referenceAudio, targetAudio]);
+
+  const submitCloneJob = useCallback(async (
+    requestId: string,
+    signal?: AbortSignal
+  ): Promise<VoiceCloneJobStatusResponse> => {
+    if (!referenceAudio || (!isDunoCloneMode && !targetAudio)) {
+      throw new Error(
+        isDunoCloneMode
+          ? `Upload a reference audio clip before creating a ${dunoLabel} clone.`
+          : 'Upload both reference audio and target audio before cloning.'
+      );
+    }
+
+    const referenceAudioBase64 = await referenceAudio.arrayBuffer().then((buffer) => arrayBufferToBase64(buffer));
+    if (isDunoCloneMode) {
+      const requestOptions = backendBaseUrl
+        ? { baseUrl: backendBaseUrl, ...(signal ? { signal } : {}) }
+        : (signal ? { signal } : undefined);
+      return await startDunoNativeCloneJob(
+        {
+          referenceAudioBase64,
+          referenceAudioName: referenceAudio.name || 'reference-audio.wav',
+          sourceVoiceEngine: 'DUNO',
+          speaker: 'Voice cloning workspace',
+          requestId,
+          traceId: requestId,
+        },
+        requestOptions
+      );
+    }
+
+    const targetAudioFile = targetAudio;
+    if (!targetAudioFile) {
+      throw new Error('Upload both reference audio and target audio before cloning.');
+    }
+    const [sourceAudioBase64, durationSec] = await Promise.all([
+      targetAudioFile.arrayBuffer().then((buffer) => arrayBufferToBase64(buffer)),
+      measureAudioDurationSec(targetAudioFile),
+    ]);
+    const requestOptions = backendBaseUrl
+      ? { baseUrl: backendBaseUrl, ...(signal ? { signal } : {}) }
+      : (signal ? { signal } : undefined);
+    return await startVoiceCloneRenderJob(
+      {
+        durationSec,
+        language: 'EN',
+        text: '',
+        sourceVoiceId: '',
+        sourceVoiceName: 'Voice cloning tab',
+        sourceVoiceEngine: '',
+        referenceAudioBase64,
+        referenceAudioName: referenceAudio.name || 'reference-audio.wav',
+        referenceAudioUrl: '',
+        sourceAudioBase64,
+        sourceAudioName: targetAudioFile.name || 'target-audio.wav',
+        extractSourceVocals: true,
+        sourceSeparationModel: 'htdemucs_ft',
+        sourceSeparationDevice: 'gpu_preferred',
+        speed: 1,
+        requestId,
+        traceId: requestId,
+        regionHint: '',
+        regionSource: 'frontend',
+        costMultiplier: 1,
+      },
+      requestOptions
+    );
+  }, [backendBaseUrl, dunoLabel, isDunoCloneMode, referenceAudio, targetAudio]);
+
+  useEffect(() => {
+    if (!activeCloneJob) return;
+    const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+    setVoiceCloneTask(buildVoiceCloneTaskFromRuntimeJob(activeCloneJob, isOnline));
+    setIsCloning(isVoiceCloneJobReconnectPendingStatus(activeCloneJob.status));
+    if (isVoiceCloneJobReconnectPendingStatus(activeCloneJob.status)) {
+      setErrorMessage((current) => (/connection interrupted/i.test(current) ? current : ''));
+    }
+  }, [activeCloneJob]);
+
+  useEffect(() => {
+    if (!activeCloneJob || !isVoiceCloneJobTerminalStatus(activeCloneJob.status)) return;
+    if (handledTerminalCloneRequestRef.current === activeCloneJob.requestId) return;
+    handledTerminalCloneRequestRef.current = activeCloneJob.requestId;
+    if (String(activeCloneJob.status || '').trim().toLowerCase() === 'completed') {
+      void finalizeCloneJobSuccess(activeCloneJob).catch((error) => {
+        if (!mountedRef.current) return;
+        setIsCloning(false);
+        clearVoiceCloneTask();
+        setActiveCloneJob(null);
+        setErrorMessage(getErrorMessage(error));
+      });
+      return;
+    }
+    setIsCloning(false);
+    clearVoiceCloneTask();
+    setActiveCloneJob(null);
+    setErrorMessage(getVoiceCloneJobFailureMessage(activeCloneJob));
+  }, [activeCloneJob, clearVoiceCloneTask, finalizeCloneJobSuccess]);
+
+  useEffect(() => {
+    if (!isCloneWorkspaceHydrated || !activeCloneJob || isVoiceCloneJobTerminalStatus(activeCloneJob.status)) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const syncJob = async (): Promise<void> => {
+      if (cancelled || cloneJobRecoveryInFlightRef.current) return;
+      const requestId = String(activeCloneJob.requestId || '').trim();
+      if (!requestId) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        setVoiceCloneTask(buildVoiceCloneTaskFromRuntimeJob(activeCloneJob, false));
+        return;
+      }
+      cloneJobRecoveryInFlightRef.current = true;
+      const controller = new AbortController();
+      voiceCloneTaskControllerRef.current = controller;
+      try {
+        const nextJob = activeCloneJob.jobId
+          ? await fetchVoiceCloneJobStatus(
+              activeCloneJob.jobId,
+              backendBaseUrl ? { baseUrl: backendBaseUrl, signal: controller.signal } : { signal: controller.signal }
+            )
+          : await fetchVoiceCloneJobStatusByRequest(
+              requestId,
+              backendBaseUrl ? { baseUrl: backendBaseUrl, signal: controller.signal } : { signal: controller.signal }
+            );
+        if (cancelled) return;
+        setErrorMessage('');
+        setActiveCloneJob((current) => mergeVoiceCloneRuntimeJobState(nextJob, current || activeCloneJob));
+      } catch (error) {
+        if (cancelled || isAbortError(error)) {
+          return;
+        }
+        if (
+          isVoiceCloneJobNotFoundError(error)
+          && referenceAudio
+          && (isDunoCloneMode || targetAudio)
+        ) {
+          try {
+            if (String(activeCloneJob.jobId || '').trim()) {
+              const byRequestJob = await fetchVoiceCloneJobStatusByRequest(
+                requestId,
+                backendBaseUrl ? { baseUrl: backendBaseUrl, signal: controller.signal } : { signal: controller.signal }
+              );
+              if (cancelled) return;
+              setErrorMessage('');
+              setActiveCloneJob((current) => mergeVoiceCloneRuntimeJobState(byRequestJob, current || activeCloneJob));
+              return;
+            }
+          } catch (lookupError) {
+            if (cancelled || isAbortError(lookupError)) {
+              return;
+            }
+            if (!isVoiceCloneJobNotFoundError(lookupError)) {
+              if (isRetryableVoiceCloneConnectionError(lookupError)) {
+                setErrorMessage('Connection interrupted. Your cached clone request will retry automatically.');
+                return;
+              }
+              setIsCloning(false);
+              clearVoiceCloneTask();
+              setActiveCloneJob(null);
+              setErrorMessage(getErrorMessage(lookupError));
+              return;
+            }
+          }
+          try {
+            const restartedJob = await submitCloneJob(requestId, controller.signal);
+            if (cancelled) return;
+            setErrorMessage('');
+            setActiveCloneJob((current) => mergeVoiceCloneRuntimeJobState(restartedJob, current || activeCloneJob));
+            return;
+          } catch (restartError) {
+            if (cancelled || isAbortError(restartError)) {
+              return;
+            }
+            if (isRetryableVoiceCloneConnectionError(restartError)) {
+              setErrorMessage('Connection interrupted. Your cached clone request will retry automatically.');
+              return;
+            }
+            setIsCloning(false);
+            clearVoiceCloneTask();
+            setActiveCloneJob(null);
+            setErrorMessage(getErrorMessage(restartError));
+            return;
+          }
+        }
+        if (isRetryableVoiceCloneConnectionError(error)) {
+          setErrorMessage('Connection interrupted. Your cached clone request will retry automatically.');
+          return;
+        }
+        setIsCloning(false);
+        clearVoiceCloneTask();
+        setActiveCloneJob(null);
+        setErrorMessage(getErrorMessage(error));
+      } finally {
+        cloneJobRecoveryInFlightRef.current = false;
+        if (voiceCloneTaskControllerRef.current === controller) {
+          voiceCloneTaskControllerRef.current = null;
+        }
+      }
+    };
+
+    void syncJob();
+    const timer = window.setInterval(() => {
+      void syncJob();
+    }, VOICE_CLONE_JOB_POLL_INTERVAL_MS);
+    const handleOnline = () => {
+      void syncJob();
+    };
+    window.addEventListener('online', handleOnline);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [
+    activeCloneJob,
+    backendBaseUrl,
+    clearVoiceCloneTask,
+    isCloneWorkspaceHydrated,
+    isDunoCloneMode,
+    referenceAudio,
+    submitCloneJob,
+    targetAudio,
+  ]);
 
   const openStressModal = useCallback(() => {
     if (!canSeeStressControls) {
@@ -1539,7 +2216,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         config: stressConfig,
       };
 
-      if (stressBenchmarkTarget === 'OPENVOICE_L4_VC') {
+      if (normalizeVoiceCloneStressTarget(stressBenchmarkTarget) === 'VOICE_CLONE_L4_VC') {
         if (!referenceAudio || !targetAudio) {
           throw new Error('Both reference and target audio are required for the Modal VC stress benchmark.');
         }
@@ -1639,28 +2316,20 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   }, [trimmedSourceMix]);
 
   useEffect(() => {
-    if (isDunoCloneMode) {
-      setOpenVoiceStatus(null);
-      setOpenVoiceStatusError('');
-      return;
-    }
-    void refreshOpenVoiceStatus(true);
-  }, [isDunoCloneMode, refreshOpenVoiceStatus]);
+    void refreshVoiceCloneStatus(true);
+  }, [refreshVoiceCloneStatus]);
 
   useEffect(() => {
-    if (isDunoCloneMode) {
-      return undefined;
-    }
-    if (isOpenVoiceRuntimeReady) {
+    if (isVoiceCloneRuntimeReady) {
       return undefined;
     }
     const timer = window.setInterval(() => {
-      void refreshOpenVoiceStatus(false);
-    }, OPENVOICE_STATUS_RETRY_INTERVAL_MS);
+      void refreshVoiceCloneStatus(false);
+    }, VOICE_CLONE_STATUS_RETRY_INTERVAL_MS);
     return () => {
       window.clearInterval(timer);
     };
-  }, [isDunoCloneMode, isOpenVoiceRuntimeReady, refreshOpenVoiceStatus]);
+  }, [isVoiceCloneRuntimeReady, refreshVoiceCloneStatus]);
 
   useEffect(() => {
     const stressJobId = String(stressStatus?.jobId || '').trim();
@@ -1765,9 +2434,15 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
 
   const handleSubmit = useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isVoiceCloneActionBusy) return;
-    if (!isDunoCloneMode && !isOpenVoiceRuntimeReady) {
-      setErrorMessage('Modal VC runtime is not ready. Wait for readiness, then retry.');
+    if (cloneSubmitLockRef.current) return;
+    cloneSubmitLockRef.current = true;
+    if (isVoiceCloneActionBusy) {
+      cloneSubmitLockRef.current = false;
+      return;
+    }
+    if (!isDunoCloneMode && !isVoiceCloneRuntimeReady) {
+      setErrorMessage('Voice Clone runtime is not ready. Wait for readiness, then retry.');
+      cloneSubmitLockRef.current = false;
       return;
     }
     if (!referenceAudio || (!isDunoCloneMode && !targetAudio)) {
@@ -1776,16 +2451,25 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           ? `Upload a reference audio clip before creating a ${dunoLabel} clone.`
           : 'Upload both reference audio and target audio before cloning.'
       );
+      cloneSubmitLockRef.current = false;
       return;
     }
     if (!cloneConsentAccepted || !cloneSafetyAccepted) {
       setErrorMessage('Confirm consent and responsible-use attestations before cloning.');
+      cloneSubmitLockRef.current = false;
       return;
     }
 
+    const requestId = makeRequestId();
+    handledTerminalCloneRequestRef.current = '';
     setIsCloning(true);
     setErrorMessage('');
     setResult(null);
+    setActiveCloneJob({
+      requestId,
+      kind: isDunoCloneMode ? 'duno_native' : 'voice_clone',
+      status: 'starting',
+    });
     const controller = startVoiceCloneTask(
       'clone',
       8,
@@ -1801,164 +2485,52 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     try {
       ensureTaskActive();
       updateVoiceCloneTask({
-        progress: 18,
-        stage: 'Encoding reference audio',
-        detail: 'Packing the consented reference clip for the root request.',
+        progress: 16,
+        stage: 'Preparing reconnect-safe request',
+        detail: 'Encoding the current inputs so the backend can restore the clone after refresh or connection loss.',
       });
-      const referenceAudioBase64 = await referenceAudio.arrayBuffer().then((buffer) => arrayBufferToBase64(buffer));
+      const job = await submitCloneJob(requestId, controller.signal);
       ensureTaskActive();
-      const referenceAudioType = String(referenceAudio.type || 'audio/wav').trim() || 'audio/wav';
-      const referenceDataUrl = `data:${referenceAudioType};base64,${referenceAudioBase64}`;
-      const requestId = makeRequestId();
-
-      if (isDunoCloneMode) {
-        updateVoiceCloneTask({
-          progress: 40,
-          stage: 'Submitting root request',
-          detail: 'Sending the reference sample to the DUNO runtime.',
-        });
-        const response = await cloneVoiceWithDunoNative(
-          {
-            referenceAudioBase64,
-            referenceAudioName: referenceAudio.name || 'reference-audio.wav',
-            sourceVoiceEngine: 'DUNO',
-            speaker: 'Voice cloning workspace',
-            requestId,
-            traceId: requestId,
-          },
-          backendBaseUrl ? { baseUrl: backendBaseUrl, signal: controller.signal } : { signal: controller.signal }
-        );
-        ensureTaskActive();
-        updateVoiceCloneTask({
-          progress: 82,
-          stage: 'Preparing preview',
-          detail: 'Rendering the cloned voice preview for the output player.',
-        });
-
-        const clonedVoice = response.clonedVoice
-          ? {
-              ...response.clonedVoice,
-              originalSampleUrl: String(response.clonedVoice.originalSampleUrl || referenceDataUrl).trim() || referenceDataUrl,
-              referenceAudioUrl: String(response.clonedVoice.referenceAudioUrl || referenceDataUrl).trim() || referenceDataUrl,
-              referenceAudioName: String(response.clonedVoice.referenceAudioName || referenceAudio.name || 'reference-audio.wav').trim() || 'reference-audio.wav',
-              sourceVoiceEngine: String(response.clonedVoice.sourceVoiceEngine || 'DUNO').trim() || 'DUNO',
-            }
-          : null;
-        if (clonedVoice) {
-          if (!String(clonedVoice.previewUrl || '').trim()) {
-            const clonedVoiceId = String(clonedVoice.geminiVoiceName || response.voiceId || clonedVoice.id || '').trim();
-            const clonedVoiceName = String(clonedVoice.name || clonedVoice.sourceVoiceName || clonedVoiceId || 'DUNO Clone').trim() || 'DUNO Clone';
-            clonedVoice.previewUrl = await buildDunoClonePreviewUrl({
-              backendBaseUrl,
-              voiceId: clonedVoiceId || String(response.voiceId || clonedVoice.id || '').trim(),
-              voiceName: clonedVoiceName,
-              voiceModel: String(response.model || '').trim(),
-              signal: controller.signal,
-            });
-          }
-          ensureTaskActive();
-          addClonedVoice(clonedVoice);
-        }
-        ensureTaskActive();
-        const previewUrl = String(clonedVoice?.previewUrl || '').trim();
-        setResult({
-          previewUrl,
-          downloadUrl: previewUrl,
-          fileName: toAudioFileName(String(clonedVoice?.name || clonedVoice?.sourceVoiceName || 'DUNO Clone').trim() || 'DUNO Clone', 'duno-clone'),
-          response: clonedVoice ? { ...response, clonedVoice } : response,
-          cloneMode: 'duno_native',
-        });
-        return;
-      }
-
-      const targetAudioFile = targetAudio;
-      if (!targetAudioFile) {
-        setErrorMessage('Upload both reference audio and target audio before cloning.');
-        return;
-      }
-      updateVoiceCloneTask({
-        progress: 28,
-        stage: 'Encoding target audio',
-        detail: 'Compressing the conversion source clip.',
-      });
-      const [sourceAudioBase64, durationSec] = await Promise.all([
-        targetAudioFile.arrayBuffer().then((buffer) => arrayBufferToBase64(buffer)),
-        measureAudioDurationSec(targetAudioFile),
-      ]);
-      ensureTaskActive();
-      updateVoiceCloneTask({
-        progress: 48,
-        stage: 'Submitting root request',
-        detail: 'Waiting for the OpenVoice runtime to render the output.',
-      });
-      const response = await cloneVoiceWithOpenVoice(
-        {
-          durationSec,
-          language: 'EN',
-          text: '',
-          sourceVoiceId: '',
-          sourceVoiceName: 'Voice cloning tab',
-          sourceVoiceEngine: '',
-          referenceAudioBase64,
-          referenceAudioName: referenceAudio.name || 'reference-audio.wav',
-          referenceAudioUrl: '',
-          sourceAudioBase64,
-          sourceAudioName: targetAudioFile.name || 'target-audio.wav',
-          extractSourceVocals: true,
-          sourceSeparationModel: 'htdemucs_ft',
-          sourceSeparationDevice: 'cpu_only',
-          speed: 1,
+      setErrorMessage('');
+      setActiveCloneJob(
+        normalizeVoiceCloneJobRuntimeState(job) || {
           requestId,
-          traceId: requestId,
-          regionHint: '',
-          regionSource: 'frontend',
-          costMultiplier: 1,
-        },
-        backendBaseUrl ? { baseUrl: backendBaseUrl, signal: controller.signal } : { signal: controller.signal }
+          ...(String(job.jobId || '').trim() ? { jobId: String(job.jobId || '').trim() } : {}),
+          kind: isDunoCloneMode ? 'duno_native' : 'voice_clone',
+          status: String(job.status || '').trim() || 'queued',
+        }
       );
-      ensureTaskActive();
-      updateVoiceCloneTask({
-        progress: 84,
-        stage: 'Resolving output preview',
-        detail: 'Preparing the generated audio URL for the output player.',
-      });
-      const contentType = String(response.artifact?.contentType || targetAudioFile.type || referenceAudio.type || 'audio/wav').trim() || 'audio/wav';
-      const resolvedUrl = await resolveVoiceClonePlayableAudioUrlWithFallback(response, contentType, {
-        ...(backendBaseUrl ? { backendBaseUrl } : {}),
-        signal: controller.signal,
-      });
-      ensureTaskActive();
-
-      setResult({
-        previewUrl: resolvedUrl,
-        downloadUrl: resolvedUrl,
-        fileName: targetAudioFile.name || 'voice-clone.wav',
-        response,
-        cloneMode: 'modal_vc',
-      });
     } catch (error) {
       if (!mountedRef.current) return;
       if (isAbortError(error)) {
+        setActiveCloneJob(null);
+        setIsCloning(false);
+        clearVoiceCloneTask();
         setErrorMessage('Cloning cancelled.');
-      } else {
-        setErrorMessage(getErrorMessage(error));
+        return;
       }
-    } finally {
-      if (!mountedRef.current) return;
+      if (isRetryableVoiceCloneConnectionError(error)) {
+        setErrorMessage('Connection interrupted. Your cached clone request will retry automatically.');
+        return;
+      }
+      setActiveCloneJob(null);
       setIsCloning(false);
       clearVoiceCloneTask();
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      cloneSubmitLockRef.current = false;
     }
   }, [
-    addClonedVoice,
-    backendBaseUrl,
     clearVoiceCloneTask,
     cloneConsentAccepted,
     cloneSafetyAccepted,
+    dunoLabel,
     isDunoCloneMode,
-    isOpenVoiceRuntimeReady,
+    isVoiceCloneRuntimeReady,
     isVoiceCloneActionBusy,
     referenceAudio,
     startVoiceCloneTask,
+    submitCloneJob,
     targetAudio,
     updateVoiceCloneTask,
   ]);
@@ -2015,6 +2587,8 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   }, [isVoiceCloneActionBusy, sourceMixAudio, sourceMixDurationSec, sourceTrimEndInput, sourceTrimStartInput]);
 
   const handleExtractStems = useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
+    let extractionFingerprint = '';
+    let extractionRunId = 0;
     event.preventDefault();
     if (isVoiceCloneActionBusy) return;
     if (!sourceMixAudio) {
@@ -2049,6 +2623,23 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           `Source upload is ${formatBytes(sourceMixAudio.size)}. Compress the source mix or choose a shorter clip so the compressed upload stays under ${formatBytes(MAX_STEM_EXTRACTION_SOURCE_BYTES)}.`
         );
       }
+      const appliedTrimStart = hasExplicitSourceTrim && matchesAppliedTrim ? sourceTrimStartSec : 0;
+      const appliedTrimEnd = hasExplicitSourceTrim && matchesAppliedTrim
+        ? sourceTrimEndSec
+        : Math.max(0, sourceMixDurationSec);
+      extractionFingerprint = [
+        sourceMixAudio.name,
+        sourceMixAudio.size,
+        sourceMixAudio.lastModified,
+        appliedTrimStart.toFixed(3),
+        appliedTrimEnd.toFixed(3),
+      ].join(':');
+      if (stemExtractionInFlightRef.current.has(extractionFingerprint)) {
+        return;
+      }
+      stemExtractionInFlightRef.current.add(extractionFingerprint);
+      extractionRunId = stemExtractionRunIdRef.current + 1;
+      stemExtractionRunIdRef.current = extractionRunId;
 
       setIsExtractingStems(true);
       setStemErrorMessage('');
@@ -2077,11 +2668,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             endSec: sourceTrimEndSec,
           }
         : null;
-      const stemRequest = await buildOpenVoiceStemSeparationRequest({
+      const stemRequest = await buildVoiceCloneStemSeparationRequest({
         sourceAudio: sourceMixAudio,
         requestId,
         sourceSeparationModel: 'htdemucs_ft',
-        sourceSeparationDevice: 'cpu_only',
+        sourceSeparationDevice: 'gpu_preferred',
         trimRange,
       });
       ensureTaskActive();
@@ -2133,6 +2724,25 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       const durationSec = durationSecFromRuntime > 0
         ? durationSecFromRuntime
         : fallbackDurationSec;
+      const consumedVcUnits = Math.max(
+        0,
+        Number(response.consumedVcUnits ?? response.vcBilling?.consumedUnits ?? 0)
+      );
+      const runtimeRateVcPerMin = Math.max(0.000001, Number(response.vcBilling?.rateVcUnitsPerMin || 1));
+      const runtimeRateInrPerMin = Math.max(0, Number(response.vcBilling?.rateInrPerMin || 1.2));
+      const inferredChargedInr = consumedVcUnits > 0
+        ? (consumedVcUnits / runtimeRateVcPerMin) * runtimeRateInrPerMin
+        : 0;
+      const chargedInrFromResponse = Number(response.vcBilling?.chargedInr);
+      const chargedInr = Math.max(
+        0,
+        Number.isFinite(chargedInrFromResponse) && chargedInrFromResponse > 0
+          ? chargedInrFromResponse
+          : inferredChargedInr
+      );
+      if (extractionRunId !== stemExtractionRunIdRef.current) {
+        return;
+      }
       const sourceBaseName = toStemFallbackBaseName(sourceMixAudio.name);
       setStemResult({
         vocalsPreviewUrl: vocalsUrl,
@@ -2148,19 +2758,29 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           `${sourceBaseName}_background.wav`
         ),
         durationSec,
+        consumedVcUnits,
+        chargedInr,
       });
       setTrimmedStemResult(null);
     } catch (error) {
       if (!mountedRef.current) return;
+      if (extractionRunId > 0 && extractionRunId !== stemExtractionRunIdRef.current) {
+        return;
+      }
       if (isAbortError(error)) {
         setStemErrorMessage('Stem extraction cancelled.');
       } else {
         setStemErrorMessage(getErrorMessage(error));
       }
     } finally {
+      if (extractionFingerprint) {
+        stemExtractionInFlightRef.current.delete(extractionFingerprint);
+      }
       if (!mountedRef.current) return;
-      setIsExtractingStems(false);
-      clearVoiceCloneTask();
+      if (extractionRunId === 0 || extractionRunId === stemExtractionRunIdRef.current) {
+        setIsExtractingStems(false);
+        clearVoiceCloneTask();
+      }
     }
   }, [
     backendBaseUrl,
@@ -2243,6 +2863,21 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       };
     }
 
+    if (activeToolTab === 'library') {
+      if (voiceLibraryAuditSummary.totalCount <= 0) {
+        return {
+          title: 'Waiting for voice catalog',
+          detail: 'Voice options will appear here after the current engine catalog loads.',
+          status: String(selectedEngine || 'Library').trim() || 'Library',
+        };
+      }
+      return {
+        title: 'Voice library ready',
+        detail: `${voiceLibraryAuditSummary.filteredCount} voices visible (${voiceLibraryAuditSummary.freeCount} free, ${voiceLibraryAuditSummary.proCount} pro, ${voiceLibraryAuditSummary.clonedCount} cloned).`,
+        status: `${voiceLibraryAuditSummary.filteredCount}/${voiceLibraryAuditSummary.totalCount}`,
+      };
+    }
+
     if (activeToolTab === 'clone') {
       if (!result) {
         return {
@@ -2275,7 +2910,29 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       detail: `Processed duration ${formatDuration(stemResult.durationSec)}.`,
       status: 'Ready',
     };
-  }, [activeToolTab, isDunoCloneMode, openVoiceProviderStatus.readyLabel, result, stemResult, voiceCloneTask]);
+  }, [
+    activeToolTab,
+    dunoLabel,
+    isDunoCloneMode,
+    openVoiceProviderStatus.readyLabel,
+    result,
+    selectedEngine,
+    stemResult,
+    voiceCloneTask,
+    voiceLibraryAuditSummary,
+  ]);
+
+  const cloneTabStatusTone: VoiceUtilityTabStatusTone =
+    (!isDunoCloneMode && !isVoiceCloneRuntimeReady)
+      ? 'down'
+      : canStartCloning
+        ? 'usable'
+        : 'ready';
+
+  const separateTabStatusTone: VoiceUtilityTabStatusTone =
+    canExtractStems
+      ? 'usable'
+      : 'ready';
 
   return (
     <div
@@ -2286,22 +2943,34 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       <SectionCard className="p-2.5 sm:p-3.5">
         <div className="flex items-start gap-2 sm:gap-2.5">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(99,102,241,0.28)] ring-1 ring-white/10 sm:h-10 sm:w-10 sm:rounded-[1rem]">
-            {activeToolTab === 'clone' ? <Mic2 size={17} /> : <Music2 size={17} />}
+            {activeToolTab === 'clone'
+              ? <Mic2 size={17} />
+              : activeToolTab === 'separate'
+                ? <Music2 size={17} />
+                : <LibraryBig size={17} />}
           </div>
           <div className="min-w-0">
             <h2 className="text-[14px] font-semibold text-slate-900 sm:text-[15px]">
-              {activeToolTab === 'clone' ? 'Voice Cloning' : 'Extract Voice + BG Music'}
+              {activeToolTab === 'clone'
+                ? 'Voice Cloning'
+                : activeToolTab === 'separate'
+                  ? 'Extract Voice + BG Music'
+                  : 'Voice Libraries'}
             </h2>
             {activeToolTab === 'separate' ? (
               <p className="mt-0.5 max-w-2xl text-[10px] leading-4 text-slate-600 sm:text-[11px] sm:leading-5">
                 Upload one mixed track to split out a speech-focused voice stem and a background-music stem.
+              </p>
+            ) : activeToolTab === 'library' ? (
+              <p className="mt-0.5 max-w-2xl text-[10px] leading-4 text-slate-600 sm:text-[11px] sm:leading-5">
+                Audit every available voice option for the active engine, including tier and clone metadata.
               </p>
             ) : null}
           </div>
         </div>
 
         <div className={`rounded-xl border border-slate-200 bg-slate-50 p-0.5 sm:rounded-2xl ${denseTabs ? 'mt-1.5 sm:mt-2' : 'mt-2 sm:mt-2.5 sm:p-1'}`}>
-          <div className={denseTabs ? 'vf-scrollbar-invisible flex flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'grid grid-cols-2 gap-0.5 sm:gap-1'} {...voiceUtilityTabs.listProps}>
+          <div className={denseTabs ? 'vf-scrollbar-invisible flex flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'grid grid-cols-3 gap-0.5 sm:gap-1'} {...voiceUtilityTabs.listProps}>
             <button
               type="button"
               {...voiceUtilityTabs.getTabProps('clone')}
@@ -2311,7 +2980,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
               }`}
             >
-              <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} block font-semibold`}>Voice Cloning</span>
+              <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} inline-flex items-center gap-1.5 font-semibold`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${getVoiceUtilityTabDotClass(cloneTabStatusTone)}`} aria-hidden="true" />
+                <span>Voice Cloning</span>
+                <span className="sr-only">{getVoiceUtilityTabStatusLabel(cloneTabStatusTone)}</span>
+              </span>
               <span className={`${denseTabs ? 'hidden' : 'mt-0.5 block text-[10px] text-slate-500 sm:text-[11px]'}`}>
                 {isDunoCloneMode ? `Reusable ${dunoLabel} native clones` : 'Reference + target conversion'}
               </span>
@@ -2325,14 +2998,33 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
               }`}
             >
-              <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} block font-semibold`}>Extract Voice + BG</span>
+              <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} inline-flex items-center gap-1.5 font-semibold`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${getVoiceUtilityTabDotClass(separateTabStatusTone)}`} aria-hidden="true" />
+                <span>Extract Voice + BG</span>
+                <span className="sr-only">{getVoiceUtilityTabStatusLabel(separateTabStatusTone)}</span>
+              </span>
               <span className={`${denseTabs ? 'hidden' : 'mt-0.5 block text-[10px] text-slate-500 sm:text-[11px]'}`}>
                 Split vocals and background
+              </span>
+            </button>
+            <button
+              type="button"
+              {...voiceUtilityTabs.getTabProps('library')}
+              className={`${denseTabs ? 'shrink-0 min-w-[8.6rem] rounded-lg px-2 py-1.5' : 'rounded-lg px-2 py-1.5 sm:rounded-xl sm:px-3 sm:py-2'} text-left transition ${
+                activeToolTab === 'library'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
+              }`}
+            >
+              <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} block font-semibold`}>Voice Libraries</span>
+              <span className={`${denseTabs ? 'hidden' : 'mt-0.5 block text-[10px] text-slate-500 sm:text-[11px]'}`}>
+                All voices
               </span>
             </button>
           </div>
         </div>
 
+        {activeToolTab === 'clone' ? (
         <div
           className={`mt-2.5 space-y-2.5 sm:mt-3 sm:space-y-3 ${isWorkspaceLayout ? 'pb-28 sm:pb-32' : ''}`}
           {...voiceUtilityTabs.getPanelProps('clone')}
@@ -2383,7 +3075,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             ) : null}
           </div>
 
-          {!isDunoCloneMode ? (
+          {showRuntimeDiagnosticsUi && !isDunoCloneMode ? (
           <section className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-800 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-xs sm:leading-5">
             <button
               type="button"
@@ -2429,14 +3121,14 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                     icon={<RefreshCw size={14} className={isLoadingOpenVoiceStatus ? 'animate-spin' : ''} />}
                     disabled={isLoadingOpenVoiceStatus}
                     onClick={() => {
-                      void refreshOpenVoiceStatus(true);
+                      void refreshVoiceCloneStatus(true);
                     }}
                   >
                     {isLoadingOpenVoiceStatus ? 'Checking Availability...' : 'Check Availability'}
                   </Button>
-                  {!isOpenVoiceRuntimeReady ? (
+                  {!isVoiceCloneRuntimeReady ? (
                     <span className="text-[10px] text-slate-500 sm:text-[11px]">
-                      Availability checks auto-retry every {Math.round(OPENVOICE_STATUS_RETRY_INTERVAL_MS / 1000)}s while the provider is not ready.
+                      Availability checks auto-retry every {Math.round(VOICE_CLONE_STATUS_RETRY_INTERVAL_MS / 1000)}s while the provider is not ready.
                     </span>
                   ) : null}
                 </div>
@@ -2445,7 +3137,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           </section>
           ) : null}
 
-          {!isDunoCloneMode && openVoiceStatusError ? (
+          {showRuntimeDiagnosticsUi && !isDunoCloneMode && openVoiceStatusError ? (
             <div className="rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-[10px] leading-4 text-gray-700 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5">
               {openVoiceStatusError}
             </div>
@@ -2578,7 +3270,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             </div>
           ) : null}
         </div>
+        ) : null}
 
+        {activeToolTab === 'separate' ? (
         <div className="mt-2.5 space-y-2.5 sm:mt-3 sm:space-y-3" {...voiceUtilityTabs.getPanelProps('separate')}>
           <UploadDropzone
             accept="audio/*"
@@ -2730,6 +3424,196 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             </div>
           ) : null}
         </div>
+        ) : null}
+
+        {activeToolTab === 'library' ? (
+        <div className="mt-2.5 space-y-2.5 sm:mt-3 sm:space-y-3" {...voiceUtilityTabs.getPanelProps('library')}>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 sm:rounded-2xl sm:px-3.5 sm:py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold text-slate-900 sm:text-[12px]">All Voices</div>
+                <p className="mt-0.5 text-[10px] text-slate-600 sm:text-[11px]">
+                  {voiceLibraryAuditSummary.filteredCount} visible of {voiceLibraryAuditSummary.totalCount} total for {String(selectedEngine || 'current engine')}.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-semibold text-emerald-700 sm:text-[10px]">{voiceLibraryAuditSummary.freeCount} free</span>
+                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-semibold text-amber-700 sm:text-[10px]">{voiceLibraryAuditSummary.proCount} pro</span>
+                <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[9px] font-semibold text-indigo-700 sm:text-[10px]">{voiceLibraryAuditSummary.clonedCount} cloned</span>
+              </div>
+            </div>
+          </div>
+
+          <label className="relative block">
+            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={voiceLibrarySearch}
+              onChange={(event) => setVoiceLibrarySearch(event.target.value)}
+              placeholder="Search voices by name, id, accent, country, gender..."
+              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-8 pr-3 text-[11px] text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 sm:rounded-xl sm:text-[12px]"
+            />
+          </label>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-1.5 sm:rounded-2xl sm:p-2">
+            <div className="vf-scrollbar-invisible max-h-[58vh] overflow-x-hidden overflow-y-auto pr-0.5">
+              {filteredVoiceLibraryCatalog.length <= 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-5 text-center text-[11px] text-slate-500 sm:rounded-xl sm:text-[12px]">
+                  No voices matched the current filter.
+                </div>
+              ) : (
+                <div className="space-y-2.5 sm:space-y-3">
+                  <section className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-[11px] font-semibold text-slate-800 sm:text-[12px]">Male Voices</h3>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold text-slate-600 sm:text-[10px]">{maleVoiceLibraryCatalog.length}</span>
+                    </div>
+                    {maleVoiceLibraryCatalog.length <= 0 ? (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-3 text-[10px] text-slate-500 sm:text-[11px]">
+                        No male voices matched the current filter.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-1.5 sm:gap-2 lg:grid-cols-6 xl:grid-cols-8">
+                        {maleVoiceLibraryCatalog.map((voice) => {
+                          const voiceTier = String(voice.accessTier || (voice.isPlanRestricted ? 'pro' : 'free')).trim().toLowerCase();
+                          const voiceCountry = String(voice.country || voice.accent || 'Unknown').trim() || 'Unknown';
+                          const voiceEngine = String(voice.engine || selectedEngine || 'Unknown').trim() || 'Unknown';
+                          const displayName = String(resolvePublicVoiceLabel(voice.name, voice.geminiVoiceName, voice.id) || voice.name || voice.id || 'Voice').trim() || 'Voice';
+                          const previewStatus = voicePreviewState?.id === voice.id ? voicePreviewState.status : 'idle';
+                          return (
+                            <article key={voice.id} className="min-h-[6.85rem] rounded-lg border border-slate-200 bg-white/95 p-1.5 shadow-sm sm:rounded-xl sm:p-2" style={VOICE_LIBRARY_CARD_RENDER_STYLE}>
+                              <div className="flex items-start justify-between gap-1">
+                                <p className="truncate text-[10px] font-semibold text-slate-900 sm:text-[11px]" title={displayName}>
+                                  {displayName}
+                                </p>
+                                <span
+                                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                                    voiceTier === 'pro'
+                                      ? 'bg-amber-50 text-amber-700'
+                                      : 'bg-emerald-50 text-emerald-700'
+                                  }`}
+                                >
+                                  {voiceTier.toUpperCase()}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[9px] text-slate-500 sm:text-[10px]" title={String(voice.id || 'unknown-id')}>
+                                {String(voice.id || 'unknown-id')}
+                              </p>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600" title={voiceCountry}>{voiceCountry}</span>
+                                {voice.isCloned ? <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-medium text-indigo-700">Clone</span> : null}
+                              </div>
+                              <p className="mt-1 truncate text-[9px] text-slate-500" title={voiceEngine}>
+                                {voiceEngine}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!onPreviewVoice) return;
+                                  void onPreviewVoice(String(voice.id || ''), displayName);
+                                }}
+                                disabled={!onPreviewVoice}
+                                className={`mt-1 inline-flex w-full items-center justify-center gap-1 rounded-md border px-1.5 py-1 text-[9px] font-semibold transition sm:text-[10px] ${
+                                  !onPreviewVoice
+                                    ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                                    : previewStatus === 'playing'
+                                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                      : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+                                }`}
+                                aria-label={`Play preview for ${displayName}`}
+                              >
+                                {previewStatus === 'loading'
+                                  ? <Loader2 size={11} className="animate-spin" />
+                                  : previewStatus === 'playing'
+                                    ? <Pause size={11} />
+                                    : <Play size={11} />}
+                                <span>{previewStatus === 'playing' ? 'Pause' : 'Play'}</span>
+                              </button>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-[11px] font-semibold text-slate-800 sm:text-[12px]">Female Voices</h3>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold text-slate-600 sm:text-[10px]">{femaleVoiceLibraryCatalog.length}</span>
+                    </div>
+                    {femaleVoiceLibraryCatalog.length <= 0 ? (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-3 text-[10px] text-slate-500 sm:text-[11px]">
+                        No female voices matched the current filter.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-1.5 sm:gap-2 lg:grid-cols-6 xl:grid-cols-8">
+                        {femaleVoiceLibraryCatalog.map((voice) => {
+                          const voiceTier = String(voice.accessTier || (voice.isPlanRestricted ? 'pro' : 'free')).trim().toLowerCase();
+                          const voiceCountry = String(voice.country || voice.accent || 'Unknown').trim() || 'Unknown';
+                          const voiceEngine = String(voice.engine || selectedEngine || 'Unknown').trim() || 'Unknown';
+                          const displayName = String(resolvePublicVoiceLabel(voice.name, voice.geminiVoiceName, voice.id) || voice.name || voice.id || 'Voice').trim() || 'Voice';
+                          const previewStatus = voicePreviewState?.id === voice.id ? voicePreviewState.status : 'idle';
+                          return (
+                            <article key={voice.id} className="min-h-[6.85rem] rounded-lg border border-slate-200 bg-white/95 p-1.5 shadow-sm sm:rounded-xl sm:p-2" style={VOICE_LIBRARY_CARD_RENDER_STYLE}>
+                              <div className="flex items-start justify-between gap-1">
+                                <p className="truncate text-[10px] font-semibold text-slate-900 sm:text-[11px]" title={displayName}>
+                                  {displayName}
+                                </p>
+                                <span
+                                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                                    voiceTier === 'pro'
+                                      ? 'bg-amber-50 text-amber-700'
+                                      : 'bg-emerald-50 text-emerald-700'
+                                  }`}
+                                >
+                                  {voiceTier.toUpperCase()}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[9px] text-slate-500 sm:text-[10px]" title={String(voice.id || 'unknown-id')}>
+                                {String(voice.id || 'unknown-id')}
+                              </p>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600" title={voiceCountry}>{voiceCountry}</span>
+                                {voice.isCloned ? <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-medium text-indigo-700">Clone</span> : null}
+                              </div>
+                              <p className="mt-1 truncate text-[9px] text-slate-500" title={voiceEngine}>
+                                {voiceEngine}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!onPreviewVoice) return;
+                                  void onPreviewVoice(String(voice.id || ''), displayName);
+                                }}
+                                disabled={!onPreviewVoice}
+                                className={`mt-1 inline-flex w-full items-center justify-center gap-1 rounded-md border px-1.5 py-1 text-[9px] font-semibold transition sm:text-[10px] ${
+                                  !onPreviewVoice
+                                    ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                                    : previewStatus === 'playing'
+                                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                      : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+                                }`}
+                                aria-label={`Play preview for ${displayName}`}
+                              >
+                                {previewStatus === 'loading'
+                                  ? <Loader2 size={11} className="animate-spin" />
+                                  : previewStatus === 'playing'
+                                    ? <Pause size={11} />
+                                    : <Play size={11} />}
+                                <span>{previewStatus === 'playing' ? 'Pause' : 'Play'}</span>
+                              </button>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        ) : null}
       </SectionCard>
 
       {!isWorkspaceLayout && activeToolTab === 'clone' && result ? (
@@ -2744,7 +3628,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
               </p>
               {!isDunoCloneResponse(result.response) ? (
                 <p className="mt-0.5 text-[10px] text-slate-500 sm:text-[11px]">
-                  VC used: {Math.max(0, Number(result.response.consumedVcUnits || result.response.vcBilling?.consumedUnits || 0)).toFixed(0)} units
+                  VC used: {Math.max(0, Number(result.response.consumedVcUnits || result.response.vcBilling?.consumedUnits || 0)).toFixed(2)} units
                 </p>
               ) : null}
             </div>
@@ -2783,6 +3667,12 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
               </p>
               <p className="mt-0.5 text-[10px] text-slate-500 sm:text-[11px]">
                 Processed duration: {formatDuration(stemResult.durationSec)}
+              </p>
+              <p className="mt-0.5 text-[10px] text-slate-500 sm:text-[11px]">
+                VC used: {Math.max(0, Number(stemResult.consumedVcUnits || 0)).toFixed(2)} units
+                {Number(stemResult.chargedInr || 0) > 0
+                  ? ` | Cost: Rs ${Math.max(0, Number(stemResult.chargedInr || 0)).toFixed(2)}`
+                  : ''}
               </p>
             </div>
             <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 sm:px-2.5 sm:py-1 sm:text-[11px]">
@@ -2951,7 +3841,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                 </div>
               ) : null}
             </>
-          ) : (
+          ) : activeToolTab === 'separate' ? (
             <>
               <div className="vf-voice-clone-rail-card">
                 <div className="vf-voice-clone-rail-head">
@@ -3000,9 +3890,20 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                 </div>
               ) : null}
             </>
+          ) : (
+            <div className="vf-voice-clone-rail-card">
+              <div className="vf-voice-clone-rail-head">
+                <h3 className="vf-voice-clone-rail-title">Library audit</h3>
+                <span className="vf-voice-clone-status-chip">{voiceLibraryAuditSummary.filteredCount}</span>
+              </div>
+              <p className="vf-voice-clone-rail-copy">
+                {voiceLibraryAuditSummary.filteredCount} voices visible from {voiceLibraryAuditSummary.totalCount} total
+                ({voiceLibraryAuditSummary.freeCount} free, {voiceLibraryAuditSummary.proCount} pro, {voiceLibraryAuditSummary.clonedCount} cloned).
+              </p>
+            </div>
           )}
 
-          {!isDunoCloneMode ? (
+          {showRuntimeDiagnosticsUi && !isDunoCloneMode ? (
             <div className="vf-voice-clone-rail-card">
               <button
                 type="button"
@@ -3033,7 +3934,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                       icon={<RefreshCw size={14} className={isLoadingOpenVoiceStatus ? 'animate-spin' : ''} />}
                       disabled={isLoadingOpenVoiceStatus}
                       onClick={() => {
-                        void refreshOpenVoiceStatus(true);
+                        void refreshVoiceCloneStatus(true);
                       }}
                     >
                       Check Availability

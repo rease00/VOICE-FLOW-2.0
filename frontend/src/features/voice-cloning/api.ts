@@ -1,12 +1,12 @@
 import { HttpError, requestJson } from '../../shared/api/httpClient';
 import type { ClonedVoice } from '../../../types';
 import type {
-  OpenVoiceBenchmarkArtifact,
-  OpenVoiceBenchmarkRequest,
-  OpenVoiceBenchmarkResponse,
-  OpenVoiceBenchmarkRuntime,
-  OpenVoiceBenchmarkTimings,
-  OpenVoiceBenchmarkStatusResponse,
+  VoiceCloneBenchmarkArtifact,
+  VoiceCloneBenchmarkRequest,
+  VoiceCloneBenchmarkResponse,
+  VoiceCloneBenchmarkRuntime,
+  VoiceCloneBenchmarkTimings,
+  VoiceCloneBenchmarkStatusResponse,
   VoiceCloneStressBenchmarkTarget,
   VoiceCloneStressConfig,
   VoiceCloneStressStartRequest,
@@ -17,13 +17,51 @@ import type {
 
 const DEFAULT_VOICE_CLONE_PROXY_BASE_URL = '/api/backend';
 
-export type OpenVoiceCloneRequest = Omit<OpenVoiceBenchmarkRequest, 'mode' | 'runKind'> & {
+export type VoiceCloneRenderRequest = Omit<VoiceCloneBenchmarkRequest, 'mode' | 'runKind'> & {
   mode?: 'vc';
   runKind?: 'warm';
 };
 
-export interface OpenVoiceCloneResponse extends OpenVoiceBenchmarkResponse {
+export type OpenVoiceCloneRequest = VoiceCloneRenderRequest;
+
+export interface VoiceCloneRenderResponse extends VoiceCloneBenchmarkResponse {
   clonedVoice?: ClonedVoice;
+}
+
+export type OpenVoiceCloneResponse = VoiceCloneRenderResponse;
+
+export type VoiceCloneJobKind = 'voice_clone' | 'openvoice' | 'duno_native';
+
+export interface VoiceCloneJobProgress {
+  percent?: number;
+  stage?: string;
+  detail?: string;
+}
+
+export interface VoiceCloneJobError {
+  status?: number;
+  message?: string;
+  detail?: string;
+  retryable?: boolean;
+}
+
+export interface VoiceCloneJobStatusResponse {
+  ok: boolean;
+  jobId: string;
+  requestId: string;
+  kind: VoiceCloneJobKind | string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  progress?: VoiceCloneJobProgress;
+  result?: VoiceCloneRenderResponse | DunoNativeCloneResponse;
+  error?: VoiceCloneJobError;
 }
 
 export interface DunoNativeCloneRequest {
@@ -55,7 +93,7 @@ export interface DunoNativeCloneResponse {
   clonedVoice?: ClonedVoice;
 }
 
-export interface OpenVoiceStemSeparationRequest {
+export interface VoiceCloneStemSeparationRequest {
   sourceAudioBase64: string;
   sourceAudioName: string;
   sourceSeparationModel?: string;
@@ -66,33 +104,60 @@ export interface OpenVoiceStemSeparationRequest {
   traceId?: string;
 }
 
-export interface OpenVoiceStemSeparationResponse {
+export type OpenVoiceStemSeparationRequest = VoiceCloneStemSeparationRequest;
+
+export interface VoiceCloneStemSeparationResponse {
   ok?: boolean;
   status?: string;
   requestId?: string;
   traceId?: string;
   sourceAudioName?: string;
-  timings?: OpenVoiceBenchmarkTimings;
-  runtime?: OpenVoiceBenchmarkRuntime;
-  vocalsArtifact?: OpenVoiceBenchmarkArtifact;
-  backgroundArtifact?: OpenVoiceBenchmarkArtifact;
+  timings?: VoiceCloneBenchmarkTimings;
+  runtime?: VoiceCloneBenchmarkRuntime;
+  vocalsArtifact?: VoiceCloneBenchmarkArtifact;
+  backgroundArtifact?: VoiceCloneBenchmarkArtifact;
+  consumedVcUnits?: number;
+  vcBilling?: {
+    enabled?: boolean;
+    reservedUnits?: number;
+    consumedUnits?: number;
+    chargedInr?: number;
+    durationSec?: number;
+    billableDurationSec?: number;
+    rateInrPerMin?: number;
+    rateVcUnitsPerMin?: number;
+    rule?: string;
+    breakdown?: {
+      vcFree?: number;
+      vcPaid?: number;
+    };
+    remaining?: {
+      vcFreeBalance?: number;
+      vcPaidBalance?: number;
+    };
+    idempotentReuse?: boolean;
+  };
   notes?: string[];
   message?: string;
 }
 
-export const fetchOpenVoiceCloneStatus = async (
+export type OpenVoiceStemSeparationResponse = VoiceCloneStemSeparationResponse;
+
+export const fetchVoiceCloneStatus = async (
   options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
-): Promise<OpenVoiceBenchmarkStatusResponse> => requestVoiceCloneJson<OpenVoiceBenchmarkStatusResponse>(
-  '/voice-clone/openvoice/status',
+): Promise<VoiceCloneBenchmarkStatusResponse> => requestVoiceCloneJson<VoiceCloneBenchmarkStatusResponse>(
+  '/voice-clone/status',
   undefined,
   options
 );
 
-export const cloneVoiceWithOpenVoice = async (
-  payload: OpenVoiceCloneRequest,
+export const fetchOpenVoiceCloneStatus = fetchVoiceCloneStatus;
+
+export const renderVoiceClone = async (
+  payload: VoiceCloneRenderRequest,
   options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
-): Promise<OpenVoiceCloneResponse> => requestVoiceCloneJson<OpenVoiceCloneResponse>(
-  '/voice-clone/openvoice',
+): Promise<VoiceCloneRenderResponse> => requestVoiceCloneJson<VoiceCloneRenderResponse>(
+  '/voice-clone/render',
   {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -109,6 +174,32 @@ export const cloneVoiceWithOpenVoice = async (
     ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
   }
 );
+
+export const cloneVoiceWithOpenVoice = renderVoiceClone;
+
+export const startVoiceCloneRenderJob = async (
+  payload: VoiceCloneRenderRequest,
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
+): Promise<VoiceCloneJobStatusResponse> => requestVoiceCloneJson<VoiceCloneJobStatusResponse>(
+  '/voice-clone/jobs/render',
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...payload,
+      mode: 'vc',
+      runKind: 'warm',
+    }),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  },
+  {
+    requireAuth: true,
+    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+  }
+);
+
+export const startOpenVoiceCloneJob = startVoiceCloneRenderJob;
 
 export const cloneVoiceWithDunoNative = async (
   payload: DunoNativeCloneRequest,
@@ -134,15 +225,80 @@ export const cloneVoiceWithDunoNative = async (
   );
 };
 
-export const separateVoiceAndBackgroundWithDemucs = async (
-  payload: OpenVoiceStemSeparationRequest,
+export const startDunoNativeCloneJob = async (
+  payload: DunoNativeCloneRequest,
   options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
-): Promise<OpenVoiceStemSeparationResponse> => requestVoiceCloneJson<OpenVoiceStemSeparationResponse>(
-  '/voice-clone/openvoice/separate',
+): Promise<VoiceCloneJobStatusResponse> => {
+  const { referenceAudioUrl: _referenceAudioUrl, ...safePayload } = payload;
+  return requestVoiceCloneJson<VoiceCloneJobStatusResponse>(
+    '/voice-clone/duno/native/jobs',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(safePayload),
+      ...(options?.signal ? { signal: options.signal } : {}),
+    },
+    {
+      requireAuth: true,
+      ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+    }
+  );
+};
+
+export const separateVoiceAndBackgroundWithDemucs = async (
+  payload: VoiceCloneStemSeparationRequest,
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
+): Promise<VoiceCloneStemSeparationResponse> => requestVoiceCloneJson<VoiceCloneStemSeparationResponse>(
+  '/voice-clone/separate',
   {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  },
+  {
+    requireAuth: true,
+    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+  }
+);
+
+export const separateOpenVoiceAndBackgroundWithDemucs = separateVoiceAndBackgroundWithDemucs;
+
+export const fetchVoiceCloneJobStatus = async (
+  jobId: string,
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
+): Promise<VoiceCloneJobStatusResponse> => requestVoiceCloneJson<VoiceCloneJobStatusResponse>(
+  `/voice-clone/jobs/${encodeURIComponent(String(jobId || '').trim())}`,
+  options?.signal ? { signal: options.signal } : undefined,
+  {
+    requireAuth: true,
+    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+  }
+);
+
+export const fetchVoiceCloneJobStatusByRequest = async (
+  requestId: string,
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
+): Promise<VoiceCloneJobStatusResponse> => requestVoiceCloneJson<VoiceCloneJobStatusResponse>(
+  `/voice-clone/jobs/by-request/${encodeURIComponent(String(requestId || '').trim())}`,
+  options?.signal ? { signal: options.signal } : undefined,
+  {
+    requireAuth: true,
+    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+  }
+);
+
+export const cancelVoiceCloneJob = async (
+  jobId: string,
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
+): Promise<VoiceCloneJobStatusResponse> => requestVoiceCloneJson<VoiceCloneJobStatusResponse>(
+  `/voice-clone/jobs/${encodeURIComponent(String(jobId || '').trim())}/cancel`,
+  {
+    method: 'POST',
     ...(options?.signal ? { signal: options.signal } : {}),
   },
   {
@@ -282,7 +438,8 @@ const requestVoiceCloneJson = async <T>(
   const idempotencyKey = extractVoiceCloneIdempotencyKey(init);
   const baseInit = withIdempotencyHeader(init, idempotencyKey);
   const requestMethod = String(init?.method || 'GET').trim().toUpperCase();
-  const canRetryAcrossBaseUrls = requestMethod !== 'POST' || Boolean(idempotencyKey);
+  const isCancelRoute = /\/cancel$/i.test(String(path || '').trim());
+  const canRetryAcrossBaseUrls = requestMethod !== 'POST' || Boolean(idempotencyKey) || isCancelRoute;
   let lastError: unknown = null;
 
   for (const [index, baseUrl] of baseUrls.entries()) {

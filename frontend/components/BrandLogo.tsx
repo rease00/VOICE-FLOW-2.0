@@ -94,7 +94,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
       {showWordmark && (
         <span className="flex min-w-0 flex-col leading-none" data-testid="brand-logo-wordmark">
           <span className={`truncate ${spec.title} font-extrabold tracking-tight ${titleToneClass}`}>V FLOW AI</span>
-          <span className={`mt-1 truncate font-mono font-bold uppercase ${spec.subtitle} ${subtitleToneClass}`}>AI Studio</span>
+          <span className={`mt-1 truncate font-mono font-bold uppercase ${spec.subtitle} ${subtitleToneClass}`}>AI STUDIO</span>
         </span>
       )}
     </div>

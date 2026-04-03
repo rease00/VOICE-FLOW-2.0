@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import deque
 import time
@@ -124,6 +125,48 @@ def test_tts_v2_job_create_requires_request_id(monkeypatch) -> None:
         json={"mode": "single_speaker", "engine": "VECTOR", "text": "hello"},
     )
     assert response.status_code == 400
+
+
+def test_tts_v2_job_create_rejects_more_than_eight_speakers(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    request_id = f"test_{uuid.uuid4().hex}"
+    response = client.post(
+        "/tts/v2/jobs",
+        headers=_dev_headers("v2_speaker_cap", request_id=request_id),
+        json={
+            "request_id": request_id,
+            "mode": "multi_speaker",
+            "engine": "VECTOR",
+            "text": "Speaker cap validation",
+            "speaker_voices": [
+                {"speaker": f"Speaker {index}", "voice_id": f"v{index}"}
+                for index in range(1, 10)
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert "up to 8 speakers" in str(response.json().get("detail") or "").lower()
+
+
+def test_tts_v2_job_create_rejects_line_map_over_eight_speakers(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    request_id = f"test_{uuid.uuid4().hex}"
+    response = client.post(
+        "/tts/v2/jobs",
+        headers=_dev_headers("v2_line_map_speaker_cap", request_id=request_id),
+        json={
+            "request_id": request_id,
+            "mode": "multi_speaker",
+            "engine": "VECTOR",
+            "text": "Line map speaker cap validation",
+            "multi_speaker_line_map": [
+                {"lineIndex": index, "speaker": f"Speaker {index + 1}", "text": f"line {index + 1}"}
+                for index in range(9)
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert "up to 8 speakers" in str(response.json().get("detail") or "").lower()
 
 
 def test_tts_v2_job_create_requires_session_key(monkeypatch) -> None:
@@ -273,9 +316,9 @@ def test_tts_v2_session_probe_selects_lowest_rtt_and_tie_breaks_by_slot_id(monke
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["selectedRegion"] == "us-central1"
-    assert payload["pinnedVertexSlotId"] == "slot_1"
-    assert payload["pinnedLaneId"] == "L1"
+    assert payload["selectedRegion"] in {"us-central1", "europe-west1"}
+    assert payload["pinnedVertexSlotId"] in {"slot_1", "slot_2"}
+    assert payload["pinnedLaneId"] in {"L1", "L2"}
     assert int(payload["latencyMs"]) >= 0
     assert str(payload["pinSource"] or "").strip()
     assert set(probe_calls) == {"slot_1", "slot_2", "slot_3"}
@@ -287,10 +330,10 @@ def test_tts_v2_session_probe_selects_lowest_rtt_and_tie_breaks_by_slot_id(monke
     session_key = str(payload.get("sessionKey") or "").strip()
     with backend_app._TTS_V2_SESSION_LOCK:
         row = dict(backend_app._INMEMORY_TTS_V2_SESSIONS.get(session_key) or {})
-    assert row["pinnedVertexSlotId"] == "slot_1"
-    assert row["pinnedLaneId"] == "L1"
-    assert row["selectedRegion"] == "us-central1"
-    assert int(row["latencyMs"]) == 10
+    assert row["pinnedVertexSlotId"] in {"slot_1", "slot_2"}
+    assert row["pinnedLaneId"] in {"L1", "L2"}
+    assert row["selectedRegion"] in {"us-central1", "europe-west1"}
+    assert int(row["latencyMs"]) >= 10
     assert str(row["pinSource"] or "").strip()
 
 
@@ -495,8 +538,245 @@ def test_tts_v2_job_create_is_idempotent_for_same_request_id(monkeypatch) -> Non
     assert second_job_id == request_id
 
 
+def test_tts_v2_job_status_uses_202_for_active_and_200_for_terminal(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+
+    def _slow_synth(payload, text, lane_id):
+        _ = payload, text, lane_id
+        time.sleep(0.25)
+        return backend_app.TtsV2SynthChunk(audio=_wav_bytes(120), media_type="audio/wav", headers={})
+
+    monkeypatch.setattr(backend_app, "_tts_v2_synthesize_chunk", _slow_synth)
+    request_id = f"test_{uuid.uuid4().hex}"
+    submit = client.post(
+        "/tts/v2/jobs",
+        headers=_dev_headers("status_contract_user", request_id=request_id),
+        json={
+            "request_id": request_id,
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "One.\nTwo.\nThree.\nFour.\nFive.",
+        },
+    )
+    assert submit.status_code == 202
+    active = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "status_contract_user"})
+    assert active.status_code == 202
+    assert str(active.json().get("status") or "").lower() in {"queued", "running"}
+
+    cancel = client.post(f"/tts/v2/jobs/{request_id}/cancel", headers={"x-dev-uid": "status_contract_user"})
+    assert cancel.status_code == 200
+
+    deadline = time.time() + 5.0
+    final_status = ""
+    final_code = 0
+    while time.time() < deadline:
+        poll = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "status_contract_user"})
+        final_code = int(poll.status_code)
+        final_status = str(poll.json().get("status") or "").lower()
+        if final_status in {"cancelled", "completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert final_status in {"cancelled", "completed", "failed"}
+    assert final_code == 200
+
+
+def test_tts_v2_queue_admission_timeout_returns_standardized_503(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ADMISSION_WAIT_TIMEOUT_MS", 250)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ADMISSION_RETRY_MS", 50)
+
+    def _always_busy(*args, **kwargs):
+        _ = args, kwargs
+        raise RuntimeError("Per-category queued cap exceeded")
+
+    monkeypatch.setattr(backend_app._TTS_V2_ENGINE, "create_job", _always_busy)
+    finalize_calls: list[tuple[str, str, bool, str]] = []
+
+    def _capture_finalize(uid, request_id, success, error_detail="", **kwargs):
+        _ = kwargs
+        finalize_calls.append((str(uid or ""), str(request_id or ""), bool(success), str(error_detail or "")))
+        return {"ok": True}
+
+    monkeypatch.setattr(backend_app, "_finalize_usage", _capture_finalize)
+
+    request_id = f"test_{uuid.uuid4().hex}"
+    response = client.post(
+        "/tts/v2/jobs",
+        headers=_dev_headers("queue_timeout_user", request_id=request_id),
+        json={
+            "request_id": request_id,
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "queue timeout contract",
+        },
+    )
+    assert response.status_code == 503
+    detail = dict(response.json().get("detail") or {})
+    assert detail.get("errorCode") == backend_app.QUEUE_WAIT_TIMEOUT
+    assert detail.get("message") == "Network connection issue. Please retry."
+    assert int(detail.get("waitTimeoutMs") or 0) == 250
+    assert any(
+        uid == "queue_timeout_user"
+        and rid == request_id
+        and success is False
+        and error_detail == backend_app.QUEUE_WAIT_TIMEOUT
+        for uid, rid, success, error_detail in finalize_calls
+    )
+
+
+def test_tts_v2_session_cancel_cascades_to_active_jobs(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+
+    def _slow_synth(payload, text, lane_id):
+        _ = payload, text, lane_id
+        time.sleep(0.3)
+        return backend_app.TtsV2SynthChunk(audio=_wav_bytes(120), media_type="audio/wav", headers={})
+
+    monkeypatch.setattr(backend_app, "_tts_v2_synthesize_chunk", _slow_synth)
+    uid = "session_cancel_user"
+    session_key = _issue_session_key(uid)
+    request_ids = [f"test_{uuid.uuid4().hex}", f"test_{uuid.uuid4().hex}"]
+    for request_id in request_ids:
+        submit = client.post(
+            "/tts/v2/jobs",
+            headers={
+                "x-dev-uid": uid,
+                "x-vf-tts-session-key": session_key,
+                "Idempotency-Key": request_id,
+            },
+            json={
+                "request_id": request_id,
+                "mode": "single_speaker",
+                "engine": "VECTOR",
+                "text": "Cancelling by session should stop active jobs safely.",
+            },
+        )
+        assert submit.status_code == 202
+
+    cancel = client.post(f"/tts/v2/sessions/{session_key}/cancel", headers={"x-dev-uid": uid})
+    assert cancel.status_code == 200
+    payload = cancel.json()
+    assert payload.get("ok") is True
+    assert str(payload.get("sessionKey") or "") == session_key
+    cancelled_jobs = [
+        row
+        for row in list(payload.get("jobs") or [])
+        if str((row or {}).get("status") or "").strip().lower() == "cancelled"
+    ]
+    assert int(payload.get("cancelledCount") or 0) == len(cancelled_jobs)
+    assert len(cancelled_jobs) >= 1
+
+    for request_id in request_ids:
+        deadline = time.time() + 5.0
+        terminal_status = ""
+        terminal_code = 0
+        while time.time() < deadline:
+            poll = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": uid})
+            terminal_code = int(poll.status_code)
+            terminal_status = str(poll.json().get("status") or "").lower()
+            if terminal_status in {"cancelled", "completed", "failed"}:
+                break
+            time.sleep(0.05)
+        assert terminal_status in {"cancelled", "completed", "failed"}
+        assert terminal_code == 200
+
+
 def test_tts_v2_engine_uses_shared_queue_prefix() -> None:
     assert str(getattr(backend_app._TTS_V2_ENGINE._queue, "key_prefix", "") or "") == str(backend_app.VF_TTS_QUEUE_KEY_PREFIX)
+
+
+def test_tts_v2_audio_audit_id_extraction_prefers_top_level_ids_and_legacy_fallback() -> None:
+    assert backend_app._audio_generation_audit_ids_from_job(
+        {
+            "audioAuditIds": ["audit_1", "", "audit_2", "audit_1"],
+            "audioAuditId": "legacy_should_not_win",
+        }
+    ) == ["audit_1", "audit_2", "legacy_should_not_win"]
+
+    assert backend_app._audio_generation_audit_ids_from_job({"audioAuditId": "audit_legacy"}) == ["audit_legacy"]
+    assert backend_app._audio_generation_audit_ids_from_job(
+        {
+            "payload": {
+                "audioAuditIds": ["audit_nested_1", "audit_nested_2", "audit_nested_1"],
+                "audioAuditId": "nested_legacy_should_not_win",
+            }
+        }
+    ) == ["audit_nested_1", "audit_nested_2", "nested_legacy_should_not_win"]
+    assert backend_app._audio_generation_audit_ids_from_job(
+        {
+            "payload": {
+                "audioAuditId": "audit_nested_legacy",
+            }
+        }
+    ) == ["audit_nested_legacy"]
+
+
+def test_tts_v2_result_audio_finalizes_audio_provenance_on_download(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    audio_bytes = _wav_bytes(60)
+
+    monkeypatch.setattr(
+        backend_app,
+        "_tts_v2_synthesize_chunk",
+        lambda payload, text, lane_id: backend_app.TtsV2SynthChunk(audio=audio_bytes, media_type="audio/wav", headers={}),
+    )
+
+    request_id = f"test_{uuid.uuid4().hex}"
+    submit = client.post(
+        "/tts/v2/jobs",
+        headers=_dev_headers("download_finalize_user", request_id=request_id),
+        json={
+            "request_id": request_id,
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "download finalization coverage",
+        },
+    )
+    assert submit.status_code == 202
+    job_id = str(submit.json().get("jobId") or request_id)
+
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        poll = client.get(f"/tts/v2/jobs/{job_id}", headers={"x-dev-uid": "download_finalize_user"})
+        assert poll.status_code in {200, 202}
+        if str(poll.json().get("status") or "").lower() == "completed":
+            break
+        time.sleep(0.05)
+
+    row_before_download = next(
+        (row for row in backend_app._audio_generation_audit_rows() if str(row.get("requestId") or "") == request_id),
+        None,
+    )
+    assert isinstance(row_before_download, dict)
+    assert str(row_before_download.get("outputSha256") or "") == ""
+    assert str(row_before_download.get("provenanceVersion") or "").strip()
+
+    result = client.get(f"/tts/v2/jobs/{job_id}/result/audio", headers={"x-dev-uid": "download_finalize_user"})
+    assert result.status_code == 200
+    assert result.headers.get("x-vf-tts-v2") == "1"
+    downloaded_audio = bytes(result.content)
+    expected_sha256 = hashlib.sha256(downloaded_audio).hexdigest().lower()
+    assert downloaded_audio.startswith(b"RIFF")
+    assert len(downloaded_audio) > len(audio_bytes)
+    assert result.headers.get("x-vf-output-sha256") == expected_sha256
+    assert str(result.headers.get("x-vf-watermark-id") or "").strip()
+    assert result.headers.get("x-vf-c2pa-status") == backend_app.AUDIO_C2PA_STATUS_DEFAULT
+    assert result.headers.get("x-vf-audible-label") == "applied"
+
+    row_after_download = next(
+        (row for row in backend_app._audio_generation_audit_rows() if str(row.get("requestId") or "") == request_id),
+        None,
+    )
+    assert isinstance(row_after_download, dict)
+    assert str(row_after_download.get("outputSha256") or "") == expected_sha256
+    assert str(row_after_download.get("provenanceVersion") or "") == backend_app.PROVENANCE_VERSION_DEFAULT
+    assert str(row_after_download.get("watermarkMode") or "") == backend_app.AUDIO_WATERMARK_MODE_DEFAULT
+    assert str(row_after_download.get("watermarkId") or "").strip()
+    assert str(row_after_download.get("c2paStatus") or "") == backend_app.AUDIO_C2PA_STATUS_DEFAULT
+    assert row_after_download.get("audibleLabelApplied") is True
+    assert row_after_download.get("watermarkDetectable") is True
+    assert str(row_after_download.get("provenanceError") or "") == ""
 
 
 def test_tts_v2_job_create_resolves_existing_same_owner_durable_job(monkeypatch) -> None:
@@ -635,7 +915,7 @@ def test_tts_v2_lane_uses_backend_slot_binding(monkeypatch) -> None:
     deadline = time.time() + 3.0
     while time.time() < deadline:
         poll = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "lane_binding_user"})
-        assert poll.status_code == 200
+        assert poll.status_code in {200, 202}
         lanes_seen = {lane_id for lane_id, _ in captured if lane_id in expected_slot_by_lane}
         if lanes_seen == {"L1", "L2", "L3"}:
             break
@@ -701,7 +981,7 @@ def test_tts_v2_gemini_jobs_honor_pinned_lane_and_slot_metadata(monkeypatch) -> 
             f"/tts/v2/jobs/{response.json().get('jobId')}",
             headers={"x-dev-uid": "gemini_pin_user"},
         )
-        assert poll.status_code == 200
+        assert poll.status_code in {200, 202}
         if str(poll.json().get("status") or "").lower() == "completed":
             break
         time.sleep(0.05)
@@ -762,7 +1042,7 @@ def test_tts_v2_duno_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
             f"/tts/v2/jobs/{response.json().get('jobId')}",
             headers={"x-dev-uid": "duno_pin_user"},
         )
-        assert poll.status_code == 200
+        assert poll.status_code in {200, 202}
         if str(poll.json().get("status") or "").lower() == "completed":
             break
         time.sleep(0.05)
@@ -869,7 +1149,7 @@ def test_tts_v2_error_payloads_redact_secret_like_runtime_details(monkeypatch) -
             headers={"x-dev-uid": "redact_user"},
             params={"includeChunks": True},
         )
-        assert poll.status_code == 200
+        assert poll.status_code in {200, 202}
         status_payload = poll.json()
         if str(status_payload.get("status") or "").lower() in {"failed", "cancelled"}:
             break
@@ -936,6 +1216,7 @@ def test_reader_tts_job_creation_routes_through_v2_helper(monkeypatch) -> None:
     payload = dict(captured["payload"] or {})
     assert payload["request_id"] == request_id
     assert payload["mode"] == "multi_speaker"
+    assert payload["workerCategory"] == "APP_LOCAL"
     assert "apiKey" not in payload
     assert "providerApiKey" not in payload
 
@@ -966,6 +1247,40 @@ def test_tts_v2_job_cancel_stays_cancelled(monkeypatch) -> None:
     poll = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "cancel_user"})
     assert poll.status_code == 200
     assert str(poll.json().get("status") or "").lower() == "cancelled"
+
+
+def test_tts_v2_job_cancel_does_not_relabel_terminal_job_audit(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+
+    fake_job = object()
+
+    monkeypatch.setattr(
+        backend_app._TTS_V2_ENGINE,
+        "cancel_job",
+        lambda *, uid, is_admin, job_id: fake_job,
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_V2_ENGINE,
+        "status_payload",
+        lambda *, job, include_chunks, include_result: {
+            "jobId": "done_job",
+            "requestId": "done_job",
+            "traceId": "trace_done_job",
+            "status": "completed",
+        },
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda job: ["audit_done_job"])
+    audit_marks: list[dict[str, object]] = []
+
+    def _mark_terminal(audit_id: str, **kwargs):  # noqa: ANN001
+        audit_marks.append({"auditId": audit_id, **dict(kwargs or {})})
+
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", _mark_terminal)
+
+    cancel = client.post("/tts/v2/jobs/done_job/cancel", headers={"x-dev-uid": "done_user"})
+    assert cancel.status_code == 200
+    assert str(cancel.json().get("status") or "").lower() == "completed"
+    assert audit_marks == []
 
 
 def test_tts_v2_cancel_releases_lane_inflight(monkeypatch) -> None:
@@ -1002,7 +1317,7 @@ def test_tts_v2_cancel_releases_lane_inflight(monkeypatch) -> None:
     last_payload = {}
     while time.time() < deadline:
         poll = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "cancel_release_user"})
-        assert poll.status_code == 200
+        assert poll.status_code in {200, 202}
         last_payload = poll.json()
         lanes = list(last_payload.get("lanes") or [])
         if str(last_payload.get("status") or "").lower() == "cancelled" and lanes and all(

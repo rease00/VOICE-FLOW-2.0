@@ -2,15 +2,14 @@ import { AppScreen } from '../../entities/contracts';
 
 export const requiresAuthenticatedScreen = (screen: AppScreen): boolean => (
   screen === AppScreen.MAIN ||
-  screen === AppScreen.PROFILE ||
-  screen === AppScreen.USER_ID_SETUP
+  screen === AppScreen.PROFILE
 );
 
 export const resolveScreenFromSearch = (search: string): AppScreen | null => {
   const forced = String(new URLSearchParams(search).get('vf-screen') || '').trim().toLowerCase();
   if (forced === 'login') return AppScreen.LOGIN;
   if (forced === 'profile') return AppScreen.PROFILE;
-  if (forced === 'uid' || forced === 'userid' || forced === 'user-id') return AppScreen.USER_ID_SETUP;
+  if (forced === 'uid' || forced === 'userid' || forced === 'user-id') return AppScreen.MAIN;
   if (forced === 'main') return AppScreen.MAIN;
   return null;
 };
@@ -19,7 +18,7 @@ export const resolveInitialScreen = (search: string, isDev: boolean): AppScreen 
   if (!isDev) return AppScreen.ONBOARDING;
   const forced = String(new URLSearchParams(search).get('vf-screen') || '').trim().toLowerCase();
   if (forced === 'login') return AppScreen.LOGIN;
-  if (forced === 'uid' || forced === 'userid' || forced === 'user-id') return AppScreen.USER_ID_SETUP;
+  if (forced === 'uid' || forced === 'userid' || forced === 'user-id') return AppScreen.MAIN;
   if (forced === 'main') return AppScreen.MAIN;
   if (forced === 'profile') return AppScreen.PROFILE;
   return AppScreen.ONBOARDING;
@@ -30,8 +29,6 @@ export interface ResolveSessionScreenArgs {
   currentScreen: AppScreen;
   hasSession: boolean;
   canOpenAdminConsole: boolean;
-  needsUserIdSetup: boolean;
-  hasUserId: boolean;
 }
 
 export const resolveSessionScreen = ({
@@ -39,8 +36,6 @@ export const resolveSessionScreen = ({
   currentScreen,
   hasSession,
   canOpenAdminConsole,
-  needsUserIdSetup,
-  hasUserId,
 }: ResolveSessionScreenArgs): AppScreen | null => {
   if (!authReady) return null;
 
@@ -53,19 +48,13 @@ export const resolveSessionScreen = ({
   if (canOpenAdminConsole) {
     if (
       currentScreen === AppScreen.LOGIN ||
-      currentScreen === AppScreen.ONBOARDING ||
-      currentScreen === AppScreen.USER_ID_SETUP
+      currentScreen === AppScreen.ONBOARDING
     ) {
       return AppScreen.MAIN;
     }
     return null;
   }
-
-  if (needsUserIdSetup && currentScreen !== AppScreen.USER_ID_SETUP) {
-    return AppScreen.USER_ID_SETUP;
-  }
-
-  if (!needsUserIdSetup && currentScreen === AppScreen.USER_ID_SETUP && hasUserId) {
+  if (currentScreen === AppScreen.USER_ID_SETUP) {
     return AppScreen.MAIN;
   }
 

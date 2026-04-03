@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 
-const DEV_LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1']);
+const DEV_LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '0.0.0.0']);
 
 export const DevCanonicalHostRedirect: React.FC = () => {
   useEffect(() => {

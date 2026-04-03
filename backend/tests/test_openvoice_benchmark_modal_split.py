@@ -56,7 +56,7 @@ def test_openvoice_benchmark_uses_modal_duno_and_openvoice_vc(monkeypatch, tmp_p
             self.calls: list[dict[str, object]] = []
 
         def health(self) -> dict[str, object]:
-            return {"ok": True, "state": "online", "detail": "openvoice ready", "device": "cuda:0", "warm": True}
+            return {"ok": True, "state": "online", "detail": "voice clone ready", "device": "cuda:0", "warm": True}
 
         def capabilities(self) -> dict[str, object]:
             return {"ok": True, "engine": "SEED_VC", "supportsVC": True}
@@ -104,7 +104,7 @@ def test_openvoice_benchmark_uses_modal_duno_and_openvoice_vc(monkeypatch, tmp_p
                     "artifactId": "ov123",
                     "fileName": "ov123.wav",
                     "contentType": "audio/wav",
-                    "downloadUrl": "/voice-lab/openvoice/artifacts/ov123?sig=test",
+                    "downloadUrl": "/voice-lab/voice-clone/artifacts/ov123?sig=test",
                     "sizeBytes": len(vc_audio),
                     "durationSec": 0.25,
                 },
@@ -216,6 +216,40 @@ def test_openvoice_benchmark_extracts_source_vocals_with_demucs_fast_cpu(monkeyp
             size_bytes=len(audio_bytes),
         )
 
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.0,
+            "billableDurationSec": 0.0,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.0,
+            "billableDurationSec": 0.0,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
     monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test-uid")
     monkeypatch.setattr(backend_app, "_request_is_admin", lambda request, uid: True)
     monkeypatch.setattr(backend_app, "_ensure_source_separation", _fake_ensure_source_separation)
@@ -265,13 +299,15 @@ def test_openvoice_benchmark_extracts_source_vocals_with_demucs_fast_cpu(monkeyp
 def test_voice_clone_alias_forces_vc_and_warm(monkeypatch):
     captured: dict[str, object] = {}
 
-    def _fake_openvoice_payload(payload, request):
+    def _fake_openvoice_payload(payload, request, uid=None):
         captured["mode"] = payload.mode
         captured["runKind"] = payload.runKind
         captured["request"] = request
+        captured["uid"] = uid
         return {"ok": True, "mode": payload.mode, "runKind": payload.runKind, "source": "seed-vc-vc"}
 
     monkeypatch.setattr(backend_app, "_openvoice_benchmark_payload", _fake_openvoice_payload)
+    monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test-uid")
 
     payload = OpenVoiceBenchmarkRequest(
         mode="tts_then_vc",
@@ -298,6 +334,121 @@ def test_voice_clone_alias_forces_vc_and_warm(monkeypatch):
     assert captured["runKind"] == "warm"
 
 
+def test_voice_clone_openvoice_route_reuses_idempotent_response(monkeypatch):
+    backend_app._INMEMORY_REQUEST_IDEMPOTENCY.clear()
+    calls: list[dict[str, object]] = []
+
+    def _fake_openvoice_payload(payload, request=None, uid=""):
+        _ = request
+        calls.append({"requestId": payload.requestId, "uid": uid})
+        return {"ok": True, "requestId": payload.requestId, "traceId": payload.traceId, "status": "completed"}
+
+    monkeypatch.setattr(backend_app, "_require_request_uid", lambda _request: "test-uid")
+    monkeypatch.setattr(backend_app, "_openvoice_benchmark_payload", _fake_openvoice_payload)
+
+    payload = OpenVoiceBenchmarkRequest(
+        mode="vc",
+        runKind="warm",
+        durationSec=15,
+        language="EN",
+        text="idempotent voice clone",
+        referenceAudioBase64="ref-audio",
+        sourceAudioBase64="source-audio",
+        requestId="req-openvoice-idem-1",
+        traceId="trace-openvoice-idem-1",
+    )
+    request = types.SimpleNamespace(
+        headers={"Idempotency-Key": "openvoice-idem-1"},
+        url=types.SimpleNamespace(path="/voice-clone/openvoice"),
+    )
+
+    first = backend_app.voice_clone_render(payload, request=request)
+    second = backend_app.voice_clone_render(payload, request=request)
+    first_body = json.loads(first.body.decode("utf-8"))
+    second_body = json.loads(second.body.decode("utf-8"))
+
+    assert len(calls) == 1
+    assert first_body.get("requestId") == "req-openvoice-idem-1"
+    assert second_body == first_body
+
+
+def test_voice_clone_openvoice_separate_reuses_idempotent_response(monkeypatch, tmp_path):
+    backend_app._INMEMORY_REQUEST_IDEMPOTENCY.clear()
+    source_mix_audio = _build_wav_bytes(duration_sec=0.5)
+    extracted_vocals_audio = _build_wav_bytes(duration_sec=0.4)
+    extracted_background_audio = _build_wav_bytes(duration_sec=0.4)
+
+    speech_path = tmp_path / "speech.wav"
+    speech_path.write_bytes(extracted_vocals_audio)
+    background_path = tmp_path / "background.wav"
+    background_path.write_bytes(extracted_background_audio)
+
+    separation_calls: list[dict[str, object]] = []
+
+    def _fake_ensure_source_separation(source_path, model_name, *, device_preference=None, trim_window_key=""):
+        separation_calls.append(
+            {
+                "sourcePath": str(source_path),
+                "model": str(model_name),
+                "devicePreference": str(device_preference or ""),
+                "trimWindowKey": str(trim_window_key or ""),
+            }
+        )
+        return speech_path, background_path, "cache-stems-idem-1"
+
+    def _save_artifact(audio_bytes: bytes, artifact_id: str):
+        return types.SimpleNamespace(
+            artifact_id=artifact_id,
+            file_name=f"{artifact_id}.wav",
+            content_type="audio/wav",
+            size_bytes=len(audio_bytes),
+        )
+
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.0,
+            "billableDurationSec": 0.0,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
+    monkeypatch.setattr(backend_app, "_require_request_uid", lambda _request: "test-uid")
+    monkeypatch.setattr(backend_app, "_ensure_source_separation", _fake_ensure_source_separation)
+    monkeypatch.setattr(backend_app, "_charge_voice_clone_separation_vc", _fake_charge)
+    monkeypatch.setattr(backend_app, "save_openvoice_artifact", _save_artifact)
+    monkeypatch.setattr(backend_app, "build_openvoice_artifact_url", lambda artifact_id, **_: f"/artifacts/{artifact_id}")
+
+    source_b64 = base64.b64encode(source_mix_audio).decode("ascii")
+    payload = backend_app.OpenVoiceStemSeparationRequest(
+        sourceAudioBase64=source_b64,
+        sourceAudioName="source.wav",
+        requestId="sep-idem-1",
+        traceId="sep-idem-1",
+    )
+    request = types.SimpleNamespace(
+        headers={"Idempotency-Key": "openvoice-separate-idem-1"},
+        url=types.SimpleNamespace(path="/voice-clone/openvoice/separate"),
+    )
+
+    first = backend_app.voice_clone_separate(payload, request=request)
+    second = backend_app.voice_clone_separate(payload, request=request)
+    first_body = json.loads(first.body.decode("utf-8"))
+    second_body = json.loads(second.body.decode("utf-8"))
+
+    assert len(separation_calls) == 1
+    assert first_body.get("requestId") == "sep-idem-1"
+    assert second_body == first_body
+
+
 def test_voice_clone_openvoice_separate_returns_demucs_artifacts(monkeypatch, tmp_path):
     source_mix_audio = _build_wav_bytes(duration_sec=0.5)
     extracted_vocals_audio = _build_wav_bytes(duration_sec=0.4)
@@ -321,6 +472,23 @@ def test_voice_clone_openvoice_separate_returns_demucs_artifacts(monkeypatch, tm
         )
         return speech_path, background_path, "cache-stems-1"
 
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.4,
+            "billableDurationSec": 0.4,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
     def _save_artifact(audio_bytes: bytes, artifact_id: str):
         return types.SimpleNamespace(
             artifact_id=artifact_id,
@@ -329,8 +497,26 @@ def test_voice_clone_openvoice_separate_returns_demucs_artifacts(monkeypatch, tm
             size_bytes=len(audio_bytes),
         )
 
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.0,
+            "billableDurationSec": 0.0,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
     monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test-uid")
     monkeypatch.setattr(backend_app, "_ensure_source_separation", _fake_ensure_source_separation)
+    monkeypatch.setattr(backend_app, "_charge_voice_clone_separation_vc", _fake_charge)
     monkeypatch.setattr(backend_app, "save_openvoice_artifact", _save_artifact)
     monkeypatch.setattr(backend_app, "build_openvoice_artifact_url", lambda artifact_id, **_: f"/artifacts/{artifact_id}")
 
@@ -358,6 +544,174 @@ def test_voice_clone_openvoice_separate_returns_demucs_artifacts(monkeypatch, tm
     runtime_source_separation = (result.get("runtime") or {}).get("sourceSeparation") or {}
     assert runtime_source_separation.get("enabled") is True
     assert runtime_source_separation.get("pipeline") == "demucs"
+
+
+def test_voice_clone_openvoice_separate_prefers_modal_runtime_and_reports_vc_billing(monkeypatch):
+    source_mix_audio = _build_wav_bytes(duration_sec=0.5)
+    extracted_vocals_audio = _build_wav_bytes(duration_sec=0.4)
+    extracted_background_audio = _build_wav_bytes(duration_sec=0.4)
+    modal_calls: list[dict[str, object]] = []
+
+    def _fake_modal_separation(**kwargs):
+        modal_calls.append(dict(kwargs))
+        return (
+            extracted_vocals_audio,
+            extracted_background_audio,
+            {
+                "enabled": True,
+                "pipeline": "demucs",
+                "model": "htdemucs_ft",
+                "device": "cpu_only",
+                "cacheKey": "modal-cache-key",
+                "timeoutSec": 45,
+                "trimApplied": False,
+                "durationSec": 0.4,
+                "provider": "modal",
+                "providerLabel": "modal-runtime",
+            },
+            123,
+            ["source_audio_vocals_extracted_demucs_modal"],
+        )
+
+    def _unexpected_local(*args, **kwargs):
+        raise AssertionError("Local demucs fallback should not run when modal separation succeeds.")
+
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": True,
+            "reservedUnits": 0.4,
+            "consumedUnits": 0.4,
+            "chargedInr": 0.48,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.4,
+            "billableDurationSec": 0.4,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.4, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 9.6, "vcPaidBalance": 5.0},
+            "idempotentReuse": False,
+            "transactionId": "tx_modal_sep_1",
+        }
+
+    def _save_artifact(audio_bytes: bytes, artifact_id: str):
+        return types.SimpleNamespace(
+            artifact_id=artifact_id,
+            file_name=f"{artifact_id}.wav",
+            content_type="audio/wav",
+            size_bytes=len(audio_bytes),
+        )
+
+    monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test-uid")
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED", True)
+    monkeypatch.setattr(backend_app, "_voice_clone_separation_modal_client", lambda: object())
+    monkeypatch.setattr(backend_app, "_run_modal_source_separation", _fake_modal_separation)
+    monkeypatch.setattr(backend_app, "_ensure_source_separation", _unexpected_local)
+    monkeypatch.setattr(backend_app, "_charge_voice_clone_separation_vc", _fake_charge)
+    monkeypatch.setattr(backend_app, "save_openvoice_artifact", _save_artifact)
+    monkeypatch.setattr(backend_app, "build_openvoice_artifact_url", lambda artifact_id, **_: f"/artifacts/{artifact_id}")
+
+    payload = backend_app.OpenVoiceStemSeparationRequest(
+        sourceAudioBase64=base64.b64encode(source_mix_audio).decode("ascii"),
+        sourceAudioName="mix.mp3",
+        sourceSeparationModel="htdemucs_ft",
+        sourceSeparationDevice="cpu_only",
+        requestId="sep-modal-1",
+        traceId="trace-modal-1",
+    )
+
+    response = backend_app.voice_clone_openvoice_separate(payload, request=types.SimpleNamespace())
+    assert response.status_code == 200
+    result = json.loads(response.body.decode("utf-8"))
+
+    assert modal_calls
+    assert result.get("ok") is True
+    assert (result.get("runtime") or {}).get("sourceSeparation", {}).get("provider") == "modal"
+    assert float(result.get("consumedVcUnits") or 0.0) == pytest.approx(0.4)
+    assert float(((result.get("vcBilling") or {}).get("chargedInr") or 0.0)) == pytest.approx(0.48)
+    assert "source_audio_vocals_extracted_demucs_modal" in (result.get("notes") or [])
+
+
+def test_voice_clone_openvoice_separate_falls_back_to_local_when_modal_errors(monkeypatch, tmp_path):
+    source_mix_audio = _build_wav_bytes(duration_sec=0.5)
+    extracted_vocals_audio = _build_wav_bytes(duration_sec=0.4)
+    extracted_background_audio = _build_wav_bytes(duration_sec=0.4)
+    local_calls: list[dict[str, object]] = []
+
+    speech_path = tmp_path / "speech.wav"
+    speech_path.write_bytes(extracted_vocals_audio)
+    background_path = tmp_path / "background.wav"
+    background_path.write_bytes(extracted_background_audio)
+
+    def _failing_modal(**kwargs):
+        _ = kwargs
+        raise RuntimeError("modal separation unavailable")
+
+    def _fake_local(source_path, model_name, *, device_preference=None, trim_window_key=""):
+        local_calls.append(
+            {
+                "sourcePath": str(source_path),
+                "model": str(model_name),
+                "devicePreference": str(device_preference or ""),
+                "trimWindowKey": str(trim_window_key or ""),
+                "sourceExists": Path(source_path).exists(),
+            }
+        )
+        return speech_path, background_path, "cache-local-fallback"
+
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.4,
+            "billableDurationSec": 0.4,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
+    def _save_artifact(audio_bytes: bytes, artifact_id: str):
+        return types.SimpleNamespace(
+            artifact_id=artifact_id,
+            file_name=f"{artifact_id}.wav",
+            content_type="audio/wav",
+            size_bytes=len(audio_bytes),
+        )
+
+    monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test-uid")
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_MODAL_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_MODAL_ALLOW_LOCAL_FALLBACK", True)
+    monkeypatch.setattr(backend_app, "_voice_clone_separation_modal_client", lambda: object())
+    monkeypatch.setattr(backend_app, "_run_modal_source_separation", _failing_modal)
+    monkeypatch.setattr(backend_app, "_ensure_source_separation", _fake_local)
+    monkeypatch.setattr(backend_app, "_charge_voice_clone_separation_vc", _fake_charge)
+    monkeypatch.setattr(backend_app, "save_openvoice_artifact", _save_artifact)
+    monkeypatch.setattr(backend_app, "build_openvoice_artifact_url", lambda artifact_id, **_: f"/artifacts/{artifact_id}")
+
+    payload = backend_app.OpenVoiceStemSeparationRequest(
+        sourceAudioBase64=base64.b64encode(source_mix_audio).decode("ascii"),
+        sourceAudioName="mix.mp3",
+        sourceSeparationModel="htdemucs_ft",
+        sourceSeparationDevice="cpu_only",
+        requestId="sep-local-fallback",
+        traceId="trace-local-fallback",
+    )
+
+    response = backend_app.voice_clone_openvoice_separate(payload, request=types.SimpleNamespace())
+    assert response.status_code == 200
+    result = json.loads(response.body.decode("utf-8"))
+
+    assert local_calls
+    assert local_calls[0]["sourceExists"] is True
+    assert (result.get("runtime") or {}).get("sourceSeparation", {}).get("provider") == "local"
+    assert "source_audio_vocals_extracted_demucs_modal_fallback_local" in (result.get("notes") or [])
+    assert float(result.get("consumedVcUnits") or 0.0) == 0.0
 
 
 def test_voice_clone_openvoice_separate_rejects_oversized_source_payload(monkeypatch):
@@ -416,6 +770,23 @@ def test_voice_clone_openvoice_separate_applies_trim_server_side(monkeypatch, tm
         )
         return speech_path, background_path, "cache-trimmed-1"
 
+    def _fake_charge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": False,
+            "reservedUnits": 0.0,
+            "consumedUnits": 0.0,
+            "chargedInr": 0.0,
+            "rateInrPerMin": 1.2,
+            "rateVcUnitsPerMin": 1.0,
+            "durationSec": 0.3,
+            "billableDurationSec": 0.3,
+            "rule": "duration_minutes_x_vc_rate",
+            "breakdown": {"vcFree": 0.0, "vcPaid": 0.0},
+            "remaining": {"vcFreeBalance": 0.0, "vcPaidBalance": 0.0},
+            "idempotentReuse": False,
+        }
+
     def _save_artifact(audio_bytes: bytes, artifact_id: str):
         return types.SimpleNamespace(
             artifact_id=artifact_id,
@@ -427,6 +798,7 @@ def test_voice_clone_openvoice_separate_applies_trim_server_side(monkeypatch, tm
     monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test-uid")
     monkeypatch.setattr(backend_app, "_trim_media_to_clip_window", _fake_trim_media_to_clip_window)
     monkeypatch.setattr(backend_app, "_ensure_source_separation", _fake_ensure_source_separation)
+    monkeypatch.setattr(backend_app, "_charge_voice_clone_separation_vc", _fake_charge)
     monkeypatch.setattr(backend_app, "save_openvoice_artifact", _save_artifact)
     monkeypatch.setattr(backend_app, "build_openvoice_artifact_url", lambda artifact_id, **_: f"/artifacts/{artifact_id}")
 
@@ -490,3 +862,17 @@ def test_source_separation_cache_key_includes_trim_window(tmp_path):
     assert trim_key_a != trim_key_b
     assert trim_key_a != base_key
     assert trim_key_b != base_key
+
+
+def test_voice_clone_separation_vc_billing_quote_uses_per_minute_rates(monkeypatch):
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_BILLING_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_INR_PER_MIN", 1.2)
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN", 1.0)
+    monkeypatch.setattr(backend_app, "VF_VOICE_CLONE_SEPARATION_BILLING_MIN_SECONDS", 0.0)
+
+    quote = backend_app._voice_clone_separation_vc_billing_quote(90.0)
+
+    assert quote["enabled"] is True
+    assert float(quote["consumedUnits"]) == pytest.approx(1.5)
+    assert float(quote["chargedInr"]) == pytest.approx(1.8)
+    assert float(quote["billableDurationSec"]) == pytest.approx(90.0)

@@ -4,10 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildWorkspaceTabs, WorkspaceTab } from '../src/features/workspace/model/tabs';
 
-const workspaceScreenMock = vi.hoisted(() => vi.fn(() => <div data-testid="workspace-screen-stub">Workspace Screen</div>));
+const workspaceRouteEntryScreenMock = vi.hoisted(() => vi.fn(() => <div data-testid="workspace-screen-stub">Workspace Screen</div>));
 
-vi.mock('../src/app/workspace/WorkspaceScreen', () => ({
-  WorkspaceScreen: (...args: unknown[]) => workspaceScreenMock(...args),
+vi.mock('../src/app/workspace/WorkspaceRouteEntryScreen', () => ({
+  WorkspaceRouteEntryScreen: (...args: unknown[]) => workspaceRouteEntryScreenMock(...args),
 }));
 
 import VoicesRoutePage from '../app/(app)/app/voices/page';
@@ -28,6 +28,6 @@ describe('voices route contract', () => {
     const html = renderToStaticMarkup(<VoicesRoutePage />);
 
     expect(html).toContain('Workspace Screen');
-    expect(workspaceScreenMock).toHaveBeenCalledTimes(1);
+    expect(workspaceRouteEntryScreenMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -91,7 +91,7 @@ def _stress_payload(
         "text": "stress benchmark sample",
         "voiceName": "Fenrir",
     }
-    if target == "OPENVOICE_L4_VC":
+    if target in {"OPENVOICE_L4_VC", "VOICE_CLONE_L4_VC"}:
         payload.update(
             {
                 "referenceAudioBase64": _wav_b64(duration_sec=0.2),
@@ -111,7 +111,7 @@ def test_voice_clone_stress_admin_routes_require_ops_mutate(monkeypatch: pytest.
     denied = client.post(
         "/admin/voice-clone/stress/start",
         headers=_admin_headers("voice_reader"),
-        json=_stress_payload("OPENVOICE_L4_VC"),
+        json=_stress_payload("VOICE_CLONE_L4_VC"),
     )
     assert denied.status_code == 403
     assert "Missing permission: ops.mutate" in str(denied.json().get("detail") or "")
@@ -119,7 +119,7 @@ def test_voice_clone_stress_admin_routes_require_ops_mutate(monkeypatch: pytest.
     started = client.post(
         "/admin/voice-clone/stress/start",
         headers=_admin_headers("voice_admin"),
-        json=_stress_payload("OPENVOICE_L4_VC"),
+        json=_stress_payload("VOICE_CLONE_L4_VC"),
     )
     assert started.status_code == 202
     body = started.json()
@@ -156,7 +156,7 @@ def test_voice_clone_stress_start_and_cancel_enforce_admin_unlock(monkeypatch: p
     started = client.post(
         "/admin/voice-clone/stress/start",
         headers=_admin_headers("voice_admin"),
-        json=_stress_payload("OPENVOICE_L4_VC"),
+        json=_stress_payload("VOICE_CLONE_L4_VC"),
     )
     assert started.status_code == 202
     job_id = str((started.json() or {}).get("jobId") or "").strip()
@@ -176,7 +176,7 @@ def test_voice_clone_stress_start_rejects_invalid_ramp_bounds() -> None:
     response = client.post(
         "/admin/voice-clone/stress/start",
         headers=_admin_headers("voice_admin"),
-        json=_stress_payload("OPENVOICE_L4_VC", start_rpm=40, step_rpm=10, max_rpm=20),
+        json=_stress_payload("VOICE_CLONE_L4_VC", start_rpm=40, step_rpm=10, max_rpm=20),
     )
     assert response.status_code == 400
     assert "maxRpm must be greater than or equal to startRpm" in str(response.json().get("detail") or "")
@@ -189,7 +189,7 @@ def test_voice_clone_stress_v1_admin_route_aliases_work(monkeypatch: pytest.Monk
     started = client.post(
         "/v1/admin/voice-clone/stress/start",
         headers=_admin_headers("voice_admin"),
-        json=_stress_payload("OPENVOICE_L4_VC"),
+        json=_stress_payload("VOICE_CLONE_L4_VC"),
     )
     assert started.status_code == 202
     body = started.json()
@@ -214,7 +214,7 @@ def test_voice_clone_stress_defaults_use_two_way_concurrency() -> None:
     assert request.config.concurrency == 2
 
 
-def test_voice_clone_stress_openvoice_ramp_stops_on_failure_and_stays_no_billing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_voice_clone_stress_voice_clone_ramp_stops_on_failure_and_stays_no_billing(monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_role("voice_admin", backend_app.RBAC_ROLE_SUPER_ADMIN)
 
     calls: list[dict[str, object]] = []
@@ -261,7 +261,7 @@ def test_voice_clone_stress_openvoice_ramp_stops_on_failure_and_stays_no_billing
     job_id = "vcs_openvoice_ramp"
     backend_app._VOICE_CLONE_STRESS_JOBS[job_id] = {
         "jobId": job_id,
-        "benchmarkTarget": "OPENVOICE_L4_VC",
+        "benchmarkTarget": "VOICE_CLONE_L4_VC",
         "status": "queued",
         "config": {
             "startRpm": 2,
@@ -374,7 +374,7 @@ def test_voice_clone_stress_cancel_transitions_to_cancelled_and_halts_dispatch(m
     job_id = "vcs_cancel"
     backend_app._VOICE_CLONE_STRESS_JOBS[job_id] = {
         "jobId": job_id,
-        "benchmarkTarget": "OPENVOICE_L4_VC",
+        "benchmarkTarget": "VOICE_CLONE_L4_VC",
         "status": "queued",
         "config": {
             "startRpm": 60,

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { getOpenVoiceProviderDisplayStatus } from '../src/features/voice-cloning/openvoiceTypes';
+import { getVoiceCloneProviderDisplayStatus, getOpenVoiceProviderDisplayStatus } from '../src/features/voice-cloning/openvoiceTypes';
 
-describe('openvoice provider display status', () => {
+describe('voice clone provider display status', () => {
   it('reads the modal-only provider status payload', () => {
     expect(
-      getOpenVoiceProviderDisplayStatus({
+      getVoiceCloneProviderDisplayStatus({
         ok: true,
         activeProvider: 'modal',
         defaultProvider: 'modal',
@@ -30,11 +30,21 @@ describe('openvoice provider display status', () => {
       runtimeGpuConcurrency: 2,
       concurrencyVerified: true,
     });
+    expect(
+      getOpenVoiceProviderDisplayStatus({
+        ok: true,
+        activeProvider: 'modal',
+        defaultProvider: 'modal',
+      } as any)
+    ).toMatchObject({
+      activeProvider: 'modal',
+      activeProviderLabel: 'Modal',
+    });
   });
 
   it('falls back to runtime vc provider labels when provider payload is missing', () => {
     expect(
-      getOpenVoiceProviderDisplayStatus({
+      getVoiceCloneProviderDisplayStatus({
         ok: true,
         state: 'online',
         ready: false,

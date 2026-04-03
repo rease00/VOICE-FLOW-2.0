@@ -9,6 +9,9 @@ param(
     [string]$DunoRuntimeToken = $env:VF_DUNO_RUNTIME_TOKEN,
     [string]$KokoroRuntimeUrl = $env:VF_KOKORO_RUNTIME_URL,
     [string]$KokoroRuntimeToken = $env:VF_KOKORO_RUNTIME_TOKEN,
+    [string]$VoiceCloneRuntimeUrl = $env:VF_VOICE_CLONE_MODAL_RUNTIME_URL,
+    [string]$VoiceCloneRuntimeToken = $env:VF_VOICE_CLONE_RUNTIME_TOKEN,
+    [string]$VoiceCloneArtifactSecret = $env:VF_VOICE_CLONE_ARTIFACT_SECRET,
     [string]$OpenVoiceRuntimeUrl = $env:VF_OPENVOICE_MODAL_RUNTIME_URL,
     [string]$OpenVoiceRuntimeToken = $env:VF_OPENVOICE_RUNTIME_TOKEN,
     [string]$OpenVoiceArtifactSecret = $env:VF_OPENVOICE_ARTIFACT_SECRET,
@@ -22,6 +25,33 @@ $ErrorActionPreference = "Stop"
 
 if (-not $OpenVoiceRuntimeUrl) {
     $OpenVoiceRuntimeUrl = [string]$env:VF_OPENVOICE_RUNTIME_URL
+}
+if (-not $VoiceCloneRuntimeUrl) {
+    $VoiceCloneRuntimeUrl = [string]$env:VF_VOICE_CLONE_RUNTIME_URL
+}
+if (-not $VoiceCloneRuntimeUrl) {
+    $VoiceCloneRuntimeUrl = [string]$env:VF_OPENVOICE_RUNTIME_URL
+}
+if (-not $VoiceCloneRuntimeUrl -and $OpenVoiceRuntimeUrl) {
+    $VoiceCloneRuntimeUrl = [string]$OpenVoiceRuntimeUrl
+}
+if (-not $VoiceCloneRuntimeToken) {
+    $VoiceCloneRuntimeToken = [string]$env:VF_VOICE_CLONE_RUNTIME_TOKEN
+}
+if (-not $VoiceCloneRuntimeToken) {
+    $VoiceCloneRuntimeToken = [string]$env:VF_OPENVOICE_RUNTIME_TOKEN
+}
+if (-not $VoiceCloneRuntimeToken -and $OpenVoiceRuntimeToken) {
+    $VoiceCloneRuntimeToken = [string]$OpenVoiceRuntimeToken
+}
+if (-not $VoiceCloneArtifactSecret) {
+    $VoiceCloneArtifactSecret = [string]$env:VF_VOICE_CLONE_ARTIFACT_SECRET
+}
+if (-not $VoiceCloneArtifactSecret) {
+    $VoiceCloneArtifactSecret = [string]$env:VF_OPENVOICE_ARTIFACT_SECRET
+}
+if (-not $VoiceCloneArtifactSecret -and $OpenVoiceArtifactSecret) {
+    $VoiceCloneArtifactSecret = [string]$OpenVoiceArtifactSecret
 }
 
 function Invoke-Gcloud {
@@ -186,8 +216,8 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = [string]$KokoroRuntimeUrl
             }
-            "__OPENVOICE_RUNTIME_URL__" {
-                if (-not $OpenVoiceRuntimeUrl) {
+            "__VOICE_CLONE_RUNTIME_URL__" {
+                if (-not $VoiceCloneRuntimeUrl) {
                     if ($DryRun) {
                         $resolved[$key] = ""
                         break
@@ -195,10 +225,32 @@ function Resolve-EnvMap {
                     $resolved[$key] = ""
                     break
                 }
-                $resolved[$key] = [string]$OpenVoiceRuntimeUrl
+                $resolved[$key] = [string]$VoiceCloneRuntimeUrl
+            }
+            "__VOICE_CLONE_MODAL_RUNTIME_URL__" {
+                if (-not $VoiceCloneRuntimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = ""
+                        break
+                    }
+                    $resolved[$key] = ""
+                    break
+                }
+                $resolved[$key] = [string]$VoiceCloneRuntimeUrl
+            }
+            "__OPENVOICE_RUNTIME_URL__" {
+                if (-not $VoiceCloneRuntimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = ""
+                        break
+                    }
+                    $resolved[$key] = ""
+                    break
+                }
+                $resolved[$key] = [string]$VoiceCloneRuntimeUrl
             }
             "__OPENVOICE_MODAL_RUNTIME_URL__" {
-                if (-not $OpenVoiceRuntimeUrl) {
+                if (-not $VoiceCloneRuntimeUrl) {
                     if ($DryRun) {
                         $resolved[$key] = ""
                         break
@@ -206,7 +258,21 @@ function Resolve-EnvMap {
                     $resolved[$key] = ""
                     break
                 }
-                $resolved[$key] = [string]$OpenVoiceRuntimeUrl
+                $resolved[$key] = [string]$VoiceCloneRuntimeUrl
+            }
+            "__VOICE_CLONE_RUNTIME_TOKEN__" {
+                if ($VoiceCloneRuntimeToken) {
+                    $resolved[$key] = [string]$VoiceCloneRuntimeToken
+                    break
+                }
+                $resolved[$key] = ""
+            }
+            "__VOICE_CLONE_MODAL_RUNTIME_TOKEN__" {
+                if ($VoiceCloneRuntimeToken) {
+                    $resolved[$key] = [string]$VoiceCloneRuntimeToken
+                    break
+                }
+                $resolved[$key] = ""
             }
             "__KOKORO_RUNTIME_TOKEN__" {
                 if ($KokoroRuntimeToken) {
@@ -216,22 +282,29 @@ function Resolve-EnvMap {
                 $resolved[$key] = ""
             }
             "__OPENVOICE_RUNTIME_TOKEN__" {
-                if ($OpenVoiceRuntimeToken) {
-                    $resolved[$key] = [string]$OpenVoiceRuntimeToken
+                if ($VoiceCloneRuntimeToken) {
+                    $resolved[$key] = [string]$VoiceCloneRuntimeToken
                     break
                 }
                 $resolved[$key] = ""
             }
             "__OPENVOICE_MODAL_RUNTIME_TOKEN__" {
-                if ($OpenVoiceRuntimeToken) {
-                    $resolved[$key] = [string]$OpenVoiceRuntimeToken
+                if ($VoiceCloneRuntimeToken) {
+                    $resolved[$key] = [string]$VoiceCloneRuntimeToken
+                    break
+                }
+                $resolved[$key] = ""
+            }
+            "__VOICE_CLONE_ARTIFACT_SECRET__" {
+                if ($VoiceCloneArtifactSecret) {
+                    $resolved[$key] = [string]$VoiceCloneArtifactSecret
                     break
                 }
                 $resolved[$key] = ""
             }
             "__OPENVOICE_ARTIFACT_SECRET__" {
-                if ($OpenVoiceArtifactSecret) {
-                    $resolved[$key] = [string]$OpenVoiceArtifactSecret
+                if ($VoiceCloneArtifactSecret) {
+                    $resolved[$key] = [string]$VoiceCloneArtifactSecret
                     break
                 }
                 $resolved[$key] = ""

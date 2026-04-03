@@ -171,6 +171,7 @@ const MAINAPP_SPEAKER_LINE_REGEX_V2 = new RegExp(
 
 const MAINAPP_SFX_REGEX = /^(?:\[|\()(?:SFX|sfx|Sound|SOUND|Music|MUSIC)\b/i;
 const MAINAPP_SPEAKER_LINE_REGEX = MAINAPP_SPEAKER_LINE_REGEX_V2;
+const MAINAPP_CANONICAL_HEADER_ONLY_REGEX = /^\s*\[[^\]\n]{1,80}\](?:\s*\([^\)\n]{1,120}\))?\s*[:\uFF1A]\s*$/u;
 
 export const normalizeSpeakerName = (raw: string): string => (
   String(raw || '')
@@ -207,19 +208,56 @@ export const resolveSpeakerMappedVoiceId = (
 };
 
 export const normalizeSpeakerHeaderScript = (text: string): string => (
-  String(text || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => {
-      const match = String(line || '').match(MAINAPP_SPEAKER_LINE_REGEX);
-      if (!match) return line;
-      const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
-      const dialogue = String(match[4] || '').trim();
-      if (!speaker) return line;
-      return dialogue ? `[${speaker}]: ${dialogue}` : `[${speaker}]:`;
-    })
-    .join('\n')
+  (() => {
+    const normalizedLines = String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .map((line) => {
+        const match = String(line || '').match(MAINAPP_SPEAKER_LINE_REGEX);
+        if (!match) return line;
+        const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
+        if (!speaker) return line;
+        const rawTagBlock = String(match[4] || '').trim();
+        const dialogue = String(match[5] || '').trim();
+        const tagBlock = rawTagBlock ? ` (${rawTagBlock})` : '';
+        return dialogue ? `[${speaker}]${tagBlock}: ${dialogue}` : `[${speaker}]${tagBlock}:`;
+      });
+
+    // Remove duplicate orphan headers and merge orphan headers with following plain dialogue lines.
+    const compacted: string[] = [];
+    for (let index = 0; index < normalizedLines.length; index += 1) {
+      const rawLine = String(normalizedLines[index] || '');
+      const trimmed = rawLine.trim();
+      if (!trimmed) {
+        compacted.push(rawLine);
+        continue;
+      }
+      if (!MAINAPP_CANONICAL_HEADER_ONLY_REGEX.test(trimmed)) {
+        compacted.push(rawLine);
+        continue;
+      }
+
+      const previous = String(compacted[compacted.length - 1] || '').trim();
+      if (previous === trimmed) continue;
+
+      const nextRaw = String(normalizedLines[index + 1] || '');
+      const nextTrimmed = nextRaw.trim();
+      if (
+        nextTrimmed &&
+        !MAINAPP_SFX_REGEX.test(nextTrimmed) &&
+        !MAINAPP_SPEAKER_LINE_REGEX.test(nextTrimmed)
+      ) {
+        compacted.push(`${trimmed} ${nextTrimmed}`);
+        index += 1;
+        continue;
+      }
+
+      compacted.push(trimmed);
+    }
+
+    return compacted.join('\n');
+  })()
 );
 
 export const parseMultiSpeakerScript = (text: string): { isMultiSpeaker: boolean; speakersList: string[]; crewTagsList: string[] } => {
@@ -408,6 +446,9 @@ const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
 export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | undefined): Tab | null => {
   const pathname = String(pathnameInput || '').trim().toLowerCase();
   if (!pathname) return null;
+  if (pathname === '/reader' || pathname.startsWith('/reader/')) {
+    return Tab.READER;
+  }
   for (const entry of WORKSPACE_PATH_TO_TAB) {
     if (pathname === entry.prefix || pathname.startsWith(`${entry.prefix}/`)) {
       return entry.tab;
@@ -446,7 +487,7 @@ export const buildWorkspaceTabNavigationHref = (
   candidate: Tab | null | undefined
 ): { tab: Tab; href: string; changed: boolean } => {
   const nextTab = normalizeWorkspaceTabCandidate(candidate);
-  const fallbackOrigin = 'https://voiceflow.local';
+  const fallbackOrigin = 'https://v-flow-ai.local';
   const currentUrl = new URL(String(currentHref || fallbackOrigin), fallbackOrigin);
   const desiredPath = resolveWorkspaceRoutePath(nextTab);
   const desiredPathToken = desiredPath.toLowerCase();

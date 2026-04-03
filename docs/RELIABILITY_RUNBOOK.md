@@ -215,7 +215,7 @@
    - Canonical log directory: `backend/.runtime/logs/`
 6. If synthesis fails, use `trace_id`:
    - Request includes optional `trace_id`
-   - Runtime response includes `X-VoiceFlow-Trace-Id`
+   - Runtime response includes `X-VFlowAI-Trace-Id`
    - Find matching stage events in runtime logs
 7. If live audio is not playing while generating:
    - Confirm gateway submission is async (`/tts/jobs` or `wait_ms=0` fallback).

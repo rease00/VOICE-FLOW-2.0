@@ -641,7 +641,7 @@ function toCmdDoubleQuoted(value) {
 }
 
 function buildVisibleWindowsServiceScript(service, cmd, args, logFile) {
-  const title = `VoiceFlow - ${service.name}`;
+  const title = `V FLOW AI - ${service.name}`;
   const serializedArgs = args.map((arg) => toPowerShellSingleQuoted(arg)).join(", ");
   return [
     "$ErrorActionPreference = 'Continue'",
@@ -654,7 +654,7 @@ function buildVisibleWindowsServiceScript(service, cmd, args, logFile) {
     "$exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 0 }",
     "if ($exitCode -ne 0) {",
     "  Write-Host ''",
-    "  Write-Host \"[VoiceFlow] Process exited with code $exitCode\" -ForegroundColor Red",
+    "  Write-Host \"[V FLOW AI] Process exited with code $exitCode\" -ForegroundColor Red",
     "  Read-Host 'Press Enter to close this window' | Out-Null",
     "}",
     "exit $exitCode",
@@ -669,7 +669,7 @@ function writeVisibleWindowsServiceLauncher(service, cmd, args, logFile) {
     wrapperPath,
     [
       "@echo off",
-      `title VoiceFlow - ${service.name}`,
+      `title V FLOW AI - ${service.name}`,
       `cd /d ${toCmdDoubleQuoted(ROOT)}`,
       `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ${toCmdDoubleQuoted(launcherPath)}`,
       "exit /b %ERRORLEVEL%",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -10,7 +11,7 @@ import pytest
 import app as backend_app
 from services.queue import cloud_tasks_wake as drain_wake
 from services.queue.redis_queue import TtsJobQueue
-from workers.tts_worker import WorkerHealthState, _process_http_drain, _start_worker_http_server
+from workers.tts_worker import WorkerHealthState, _process_http_drain, _start_claim_heartbeat, _start_worker_http_server
 
 
 class _FakePipeline:
@@ -483,3 +484,34 @@ def test_runtime_auth_headers_include_gemini_id_token_and_admin_token(monkeypatc
     assert headers["Accept"] == "application/json"
     assert headers["Authorization"] == "Bearer id-token-123"
     assert headers["x-admin-token"] == "admin-secret"
+
+
+def test_claim_heartbeat_stops_after_failure_threshold_without_touch_loop(monkeypatch) -> None:
+    monkeypatch.setattr("workers.tts_worker._claim_heartbeat_interval_seconds", lambda _queue: 0.01)
+    monkeypatch.setattr("workers.tts_worker._claim_heartbeat_grace_seconds", lambda _queue: 0.0)
+    monkeypatch.setattr("workers.tts_worker._claim_heartbeat_max_failures", lambda: 1)
+
+    calls: list[int] = []
+
+    class _FailingQueue:
+        def renew_claim(self, _job_id: str, *, worker_id: str) -> bool:  # noqa: ARG002
+            calls.append(len(calls) + 1)
+            return False
+
+    stop_event = _start_claim_heartbeat(
+        _FailingQueue(),
+        job_id="job-heartbeat-stop",
+        worker_id="worker-stop",
+        logger=logging.getLogger("tests.tts_worker"),
+        touch_loop=None,
+    )
+    try:
+        time.sleep(0.12)
+        first_window_calls = len(calls)
+        time.sleep(0.12)
+        second_window_calls = len(calls)
+    finally:
+        stop_event.set()
+
+    assert first_window_calls >= 1
+    assert second_window_calls == first_window_calls

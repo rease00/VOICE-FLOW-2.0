@@ -27,7 +27,13 @@ from services.queue.cloud_tasks_wake import (
     request_initial_drain,
     touch_wake_key,
 )
-from services.queue.redis_queue import QUEUE_TERMINAL_STATUSES
+from services.queue.redis_queue import (
+    DEFAULT_WORKER_CATEGORY,
+    QUEUE_TERMINAL_STATUSES,
+    WORKER_CATEGORY_APP_LOCAL,
+    WORKER_CATEGORY_GLOBAL_API,
+    normalize_worker_category,
+)
 
 try:  # pragma: no cover - import availability depends on the runtime image
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -72,6 +78,18 @@ def _worker_id() -> str:
     return f"{host}:{pid}"
 
 
+def _worker_category() -> str:
+    explicit = str(os.getenv("VF_TTS_WORKER_CATEGORY") or "").strip()
+    if explicit:
+        return normalize_worker_category(explicit)
+    role = str(os.getenv("VF_SERVICE_ROLE") or "").strip().lower()
+    if role == "api":
+        return WORKER_CATEGORY_APP_LOCAL
+    if role == "worker":
+        return WORKER_CATEGORY_GLOBAL_API
+    return DEFAULT_WORKER_CATEGORY
+
+
 def _idle_sleep_seconds() -> float:
     raw = str(os.getenv("VF_TTS_WORKER_IDLE_SLEEP_MS") or "250").strip()
     try:
@@ -91,6 +109,38 @@ def _error_sleep_seconds() -> float:
 def _claim_heartbeat_interval_seconds(queue: Any) -> float:
     ttl_sec = max(30, int(getattr(queue, "_claim_ttl_sec", 0) or 0))
     return max(5.0, min(30.0, float(ttl_sec) / 3.0))
+
+
+def _claim_heartbeat_max_failures() -> int:
+    raw = str(os.getenv("VF_TTS_WORKER_CLAIM_HEARTBEAT_MAX_FAILURES") or "3").strip()
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 3
+
+
+def _claim_heartbeat_grace_seconds(queue: Any) -> float:
+    missing_claim_grace_sec = 0.0
+    try:
+        missing_claim_grace_sec = max(
+            0.0,
+            float(int(getattr(queue, "_missing_claim_grace_ms", 0) or 0)) / 1000.0,
+        )
+    except Exception:
+        missing_claim_grace_sec = 0.0
+
+    raw = str(os.getenv("VF_TTS_WORKER_CLAIM_HEARTBEAT_GRACE_SEC") or "").strip()
+    if raw:
+        try:
+            configured = max(5.0, float(raw))
+            return min(configured, missing_claim_grace_sec) if missing_claim_grace_sec > 0 else configured
+        except Exception:
+            pass
+    ttl_sec = max(30, int(getattr(queue, "_claim_ttl_sec", 0) or 0))
+    default_grace = max(15.0, float(ttl_sec) * 1.5)
+    if missing_claim_grace_sec > 0:
+        return max(5.0, min(default_grace, missing_claim_grace_sec))
+    return default_grace
 
 
 def _recovery_interval_seconds(queue: Any) -> float:
@@ -297,22 +347,58 @@ def _start_claim_heartbeat(queue: Any, *, job_id: str, worker_id: str, logger: l
 
     def _loop() -> None:
         interval = _claim_heartbeat_interval_seconds(queue)
+        max_failures = _claim_heartbeat_max_failures()
+        grace_ms = int(_claim_heartbeat_grace_seconds(queue) * 1000.0)
+        consecutive_failures = 0
+        last_success_ms = int(time.time() * 1000)
         while not stop_event.wait(interval):
             try:
                 renewed = bool(getattr(queue, "renew_claim", lambda *args, **kwargs: False)(job_id, worker_id=worker_id))
             except Exception as exc:  # noqa: BLE001
+                renewed = False
                 logger.warning(
                     "Claim heartbeat failed",
                     extra={"workerId": worker_id, "jobId": job_id, "error": str(exc)},
                 )
-                break
             if callable(touch_loop):
                 try:
                     touch_loop()
                 except Exception:
                     pass
-            if not renewed:
-                break
+            if renewed:
+                consecutive_failures = 0
+                last_success_ms = int(time.time() * 1000)
+                continue
+            consecutive_failures += 1
+            now_ms = int(time.time() * 1000)
+            failure_age_ms = max(0, now_ms - last_success_ms)
+            if failure_age_ms < grace_ms or consecutive_failures < max_failures:
+                logger.warning(
+                    "Claim heartbeat retrying after transient renewal miss",
+                    extra={
+                        "workerId": worker_id,
+                        "jobId": job_id,
+                        "consecutiveFailures": consecutive_failures,
+                        "failureAgeMs": failure_age_ms,
+                        "graceMs": grace_ms,
+                    },
+                )
+                continue
+            logger.warning(
+                "Claim heartbeat exhausted retries; stopping renewal loop",
+                extra={
+                    "workerId": worker_id,
+                    "jobId": job_id,
+                    "consecutiveFailures": consecutive_failures,
+                    "failureAgeMs": failure_age_ms,
+                },
+            )
+            if callable(touch_loop):
+                try:
+                    touch_loop()
+                except Exception:
+                    pass
+            break
 
     thread = threading.Thread(target=_loop, daemon=True, name=f"tts-heartbeat-{job_id[:8]}")
     thread.start()
@@ -656,6 +742,8 @@ def run_worker(*, stop_event: Event | None = None) -> int:
         )
     active_stop_event = stop_event or Event()
     worker_id = _worker_id()
+    worker_category = _worker_category()
+    os.environ.setdefault("VF_TTS_WORKER_CATEGORY", worker_category)
     health_state = WorkerHealthState(worker_id=worker_id)
     health_server: WorkerHealthServer | None = None
     idle_sleep_seconds = _idle_sleep_seconds()
@@ -677,6 +765,7 @@ def run_worker(*, stop_event: Event | None = None) -> int:
             "TTS worker starting",
             extra={
                 "workerId": worker_id,
+                "workerCategory": worker_category,
                 "idleSleepSeconds": idle_sleep_seconds,
                 "recoveryIntervalSeconds": recovery_interval_seconds,
                 "queueStorage": "redis",
@@ -748,6 +837,8 @@ def run_worker_http(*, stop_event: Event | None = None) -> int:
         )
     active_stop_event = stop_event or Event()
     worker_id = _worker_id()
+    worker_category = _worker_category()
+    os.environ.setdefault("VF_TTS_WORKER_CATEGORY", worker_category)
     health_state = WorkerHealthState(worker_id=worker_id, require_heartbeat=False)
     health_server: WorkerHealthServer | None = None
     try:
@@ -761,6 +852,7 @@ def run_worker_http(*, stop_event: Event | None = None) -> int:
             "TTS worker HTTP server starting",
             extra={
                 "workerId": worker_id,
+                "workerCategory": worker_category,
                 "healthPort": int(health_server.bound_port),
                 "queueStorage": "redis",
                 "workerMode": "http",

@@ -7,7 +7,7 @@ import {
   getStressValidationMessage,
   mapVoiceCloneStressError,
   shouldPollVoiceCloneStressStatus,
-} from '../src/features/voice-cloning/VoiceCloningTabContent';
+} from '../src/features/voice-cloning/voiceCloneStressHelpers';
 
 describe('voice cloning stress helpers', () => {
   const baseConfig = {
@@ -22,15 +22,18 @@ describe('voice cloning stress helpers', () => {
     requestTimeoutSec: 60,
   };
 
-  it('validates OpenVoice file requirements and Gemini text requirements', () => {
+  it('validates Voice Clone file requirements and Gemini text requirements', () => {
     const fakeFile = {} as File;
 
     expect(
-      getStressValidationMessage('OPENVOICE_L4_VC', baseConfig, null, fakeFile, 'text', 'Fenrir')
+      getStressValidationMessage('VOICE_CLONE_L4_VC', baseConfig, null, fakeFile, 'text', 'Fenrir')
     ).toContain('Reference audio is required');
     expect(
-      getStressValidationMessage('OPENVOICE_L4_VC', baseConfig, fakeFile, null, 'text', 'Fenrir')
+      getStressValidationMessage('VOICE_CLONE_L4_VC', baseConfig, fakeFile, null, 'text', 'Fenrir')
     ).toContain('Target audio is required');
+    expect(
+      getStressValidationMessage('OPENVOICE_L4_VC', baseConfig, null, fakeFile, 'text', 'Fenrir')
+    ).toContain('Reference audio is required');
     expect(
       getStressValidationMessage('GEMINI_FLASH_TTS', baseConfig, null, null, '', 'Fenrir')
     ).toContain('benchmark text is required');
@@ -48,13 +51,13 @@ describe('voice cloning stress helpers', () => {
         {
           ok: true,
           jobId: 'v1',
-          benchmarkTarget: 'OPENVOICE_L4_VC',
+          benchmarkTarget: 'VOICE_CLONE_L4_VC',
           status: 'running',
           createdAtMs: 0,
           updatedAtMs: 0,
           runtimeDeviceSamples: ['cuda:0'],
         },
-        'OPENVOICE_L4_VC'
+        'VOICE_CLONE_L4_VC'
       )
     ).toBe('cuda:0');
 
@@ -73,6 +76,7 @@ describe('voice cloning stress helpers', () => {
       )
     ).toBe('gemini-runtime');
 
+    expect(getStressRuntimeDeviceLabel(null, 'VOICE_CLONE_L4_VC')).toBe('Modal VC (configured target)');
     expect(getStressRuntimeDeviceLabel(null, 'OPENVOICE_L4_VC')).toBe('Modal VC (configured target)');
   });
 

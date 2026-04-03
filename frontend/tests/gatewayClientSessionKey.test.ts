@@ -156,4 +156,38 @@ describe('issueTtsV2SessionKey', () => {
     await expect(second).resolves.toBe('session-key-shared');
     expect(requestJsonMock).toHaveBeenCalledTimes(1);
   });
+
+  it('cancels the cached TTS session through the session cancel endpoint', async () => {
+    requestJsonMock
+      .mockResolvedValueOnce({
+        ok: true,
+        sessionKey: 'session-key-cancel',
+        ttlSeconds: 1800,
+        expiresAtMs: Date.now() + 3_600_000,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        sessionKey: 'session-key-cancel',
+        cancelledCount: 1,
+        jobs: [],
+      });
+
+    const { issueTtsV2SessionKey, cancelTtsSession } = await import('../src/shared/api/gatewayClient');
+    const baseUrl = `https://backend.example.test/${crypto.randomUUID()}`;
+
+    await issueTtsV2SessionKey({ baseUrl, force: true });
+    const result = await cancelTtsSession({ baseUrl });
+
+    expect(result.ok).toBe(true);
+    expect(requestJsonMock).toHaveBeenCalledTimes(2);
+
+    const [cancelPath, cancelInit, cancelOptions] = requestJsonMock.mock.calls[1] as [
+      string,
+      RequestInit,
+      { baseUrl?: string; requireAuth?: boolean },
+    ];
+    expect(cancelPath).toBe('/tts/v2/sessions/session-key-cancel/cancel');
+    expect(cancelInit.method).toBe('POST');
+    expect(cancelOptions).toEqual({ baseUrl, requireAuth: true });
+  });
 });

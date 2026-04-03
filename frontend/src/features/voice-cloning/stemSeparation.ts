@@ -1,33 +1,41 @@
 import { arrayBufferToBase64 } from '../../shared/audio/base64';
-import type { OpenVoiceStemSeparationRequest } from './api';
+import type { VoiceCloneStemSeparationRequest } from './api';
 
-const DEFAULT_OPENVOICE_MAX_AUDIO_BYTES = 12 * 1024 * 1024;
+const DEFAULT_VOICE_CLONE_MAX_AUDIO_BYTES = 12 * 1024 * 1024;
 
-export interface OpenVoiceSourceTrimRange {
+export interface VoiceCloneSourceTrimRange {
   startSec: number;
   endSec: number;
 }
 
-export interface BuildOpenVoiceStemSeparationRequestInput {
+export type OpenVoiceSourceTrimRange = VoiceCloneSourceTrimRange;
+
+export interface BuildVoiceCloneStemSeparationRequestInput {
   sourceAudio: File;
   requestId: string;
   sourceSeparationModel?: string;
   sourceSeparationDevice?: string;
-  trimRange?: OpenVoiceSourceTrimRange | null;
+  trimRange?: VoiceCloneSourceTrimRange | null;
 }
 
-export const getOpenVoiceStemExtractionMaxBytes = (): number => {
+export type BuildOpenVoiceStemSeparationRequestInput = BuildVoiceCloneStemSeparationRequestInput;
+
+export const getVoiceCloneStemExtractionMaxBytes = (): number => {
   const raw = String(
-    process.env.NEXT_PUBLIC_OPENVOICE_MAX_AUDIO_BYTES
+    process.env.NEXT_PUBLIC_VOICE_CLONE_MAX_AUDIO_BYTES
+      || process.env.NEXT_PUBLIC_OPENVOICE_MAX_AUDIO_BYTES
+      || process.env.VITE_VOICE_CLONE_MAX_AUDIO_BYTES
       || process.env.VITE_OPENVOICE_MAX_AUDIO_BYTES
       || ''
   ).trim();
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_OPENVOICE_MAX_AUDIO_BYTES;
+    return DEFAULT_VOICE_CLONE_MAX_AUDIO_BYTES;
   }
   return Math.max(64_000, Math.floor(parsed));
 };
+
+export const getOpenVoiceStemExtractionMaxBytes = getVoiceCloneStemExtractionMaxBytes;
 
 export const isFullDurationTrimRange = (
   startSec: number,
@@ -42,15 +50,15 @@ export const isFullDurationTrimRange = (
   && endSec >= (maxDurationSec - 0.05)
 );
 
-export const buildOpenVoiceStemSeparationRequest = async (
-  input: BuildOpenVoiceStemSeparationRequestInput
-): Promise<OpenVoiceStemSeparationRequest> => {
+export const buildVoiceCloneStemSeparationRequest = async (
+  input: BuildVoiceCloneStemSeparationRequestInput
+): Promise<VoiceCloneStemSeparationRequest> => {
   const sourceAudioBase64 = await input.sourceAudio.arrayBuffer().then((buffer) => arrayBufferToBase64(buffer));
-  const payload: OpenVoiceStemSeparationRequest = {
+  const payload: VoiceCloneStemSeparationRequest = {
     sourceAudioBase64,
     sourceAudioName: input.sourceAudio.name || 'source-audio.wav',
     sourceSeparationModel: input.sourceSeparationModel || 'htdemucs_ft',
-    sourceSeparationDevice: input.sourceSeparationDevice || 'cpu_only',
+    sourceSeparationDevice: input.sourceSeparationDevice || 'gpu_preferred',
     requestId: input.requestId,
     traceId: input.requestId,
   };
@@ -60,3 +68,5 @@ export const buildOpenVoiceStemSeparationRequest = async (
   }
   return payload;
 };
+
+export const buildOpenVoiceStemSeparationRequest = buildVoiceCloneStemSeparationRequest;

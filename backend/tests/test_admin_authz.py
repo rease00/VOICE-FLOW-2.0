@@ -218,6 +218,72 @@ def test_admin_gemini_pools_permission_path_does_not_trigger_profile_writes(monk
     assert response.json().get("ok") is True
 
 
+def test_admin_db_mutation_routes_reject_non_super_admin_role(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_require_admin_mutation_unlock",
+        lambda _request, expected_uid=None: str(expected_uid or "billing_actor_user"),
+    )
+
+    backend_app._rbac_write_assignment(
+        "billing_actor_user",
+        {
+            "role": backend_app.RBAC_ROLE_BILLING_OPS,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "updatedBy": "seed",
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/admin/billing/usage-events/settlement-migration",
+        headers={"x-dev-uid": "billing_actor_user"},
+        json={"dryRun": True, "limit": 1},
+    )
+    assert response.status_code == 403
+    assert "super_admin" in str((response.json() or {}).get("detail") or "").lower()
+
+
+def test_admin_db_mutation_routes_allow_super_admin_role(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_require_admin_mutation_unlock",
+        lambda _request, expected_uid=None: str(expected_uid or "billing_admin_user"),
+    )
+
+    backend_app._rbac_write_assignment(
+        "billing_admin_user",
+        {
+            "role": backend_app.RBAC_ROLE_SUPER_ADMIN,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "updatedBy": "seed",
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/admin/billing/usage-events/settlement-migration",
+        headers={"x-dev-uid": "billing_admin_user"},
+        json={"dryRun": True, "limit": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["dryRun"] is True
+
+
 class _FakeDocSnapshot:
     def __init__(self, payload: dict | None) -> None:
         self._payload = dict(payload or {})
@@ -426,12 +492,23 @@ def test_account_profile_routes_allow_userid_when_firestore_service_disabled(mon
     save_response = client.post(
         "/account/profile",
         headers={"Authorization": "Bearer test_token"},
-        json={"userId": "admin1"},
+        json={
+            "userId": "admin1",
+            "billingProfile": {
+                "companyName": "V FLOW AI Labs",
+                "billingEmail": "billing@v-flow-ai.com",
+                "addressLine1": "MG Road",
+                "city": "Bengaluru",
+                "country": "India",
+            },
+        },
     )
     assert save_response.status_code == 200
     saved_payload = save_response.json()
     assert saved_payload.get("ok") is True
     assert str((saved_payload.get("profile") or {}).get("userId") or "") == "admin1"
+    assert str((((saved_payload.get("profile") or {}).get("billingProfile") or {}).get("companyName") or "")) == "V FLOW AI Labs"
+    assert str((((saved_payload.get("profile") or {}).get("billingProfile") or {}).get("billingEmail") or "")) == "billing@v-flow-ai.com"
 
     read_response = client.get(
         "/account/profile",
@@ -442,6 +519,7 @@ def test_account_profile_routes_allow_userid_when_firestore_service_disabled(mon
     assert read_payload.get("ok") is True
     assert bool(read_payload.get("requiredUserId")) is False
     assert str((read_payload.get("profile") or {}).get("userId") or "") == "admin1"
+    assert str((((read_payload.get("profile") or {}).get("billingProfile") or {}).get("city") or "")) == "Bengaluru"
 
 
 def test_admin_users_endpoint_repairs_colliding_backfill_user_ids(monkeypatch) -> None:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 
 import type { WorkspaceLayoutMode } from '../../../types';
 
@@ -24,7 +24,7 @@ const readWindowWidth = (): number => {
 export const useWorkspaceViewport = () => {
   const [width, setWidth] = useState<number>(readWindowWidth);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === 'undefined') return undefined;
 
     const onResize = () => {

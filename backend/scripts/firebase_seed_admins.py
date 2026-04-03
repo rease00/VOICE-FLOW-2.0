@@ -72,7 +72,7 @@ def synthetic_email_for_uid(uid: str) -> str:
     safe = re.sub(r"[^a-z0-9]", "", str(uid or "").lower())[:24]
     if not safe:
         safe = "adminseed"
-    return f"admin-{safe}@voiceflow.local"
+    return f"admin-{safe}@v-flow-ai.local"
 
 
 def parse_env_file(path: Path) -> dict[str, str]:

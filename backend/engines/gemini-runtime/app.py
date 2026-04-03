@@ -241,6 +241,12 @@ TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
         ],
     },
 }
+
+
+def _is_production_like_runtime() -> bool:
+    return str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower() in {"prod", "production"}
+
+
 MODEL_DISCOVERY_TTL_SECONDS = max(60, int(os.getenv("GEMINI_MODEL_DISCOVERY_TTL_SECONDS", "600")))
 MODEL_DISCOVERY_SCAN_LIMIT = max(20, int(os.getenv("GEMINI_MODEL_DISCOVERY_SCAN_LIMIT", "200")))
 KEY_COOLDOWN_BASE_MS = max(1000, int(os.getenv("GEMINI_KEY_COOLDOWN_BASE_MS", "8000")))
@@ -258,6 +264,12 @@ GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS = (
     (os.getenv("GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+if GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS and _is_production_like_runtime():
+    print(
+        "[gemini-runtime] GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS is ignored in production-like environments.",
+        flush=True,
+    )
+    GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS = False
 GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS = max(
     1000,
     int(os.getenv("GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS", "22000")),
@@ -4134,6 +4146,9 @@ def _synthesize_pcm_with_key_pool(
         if remaining_budget_ms <= 0:
             timed_out = True
             break
+        if attempt >= retry_limit:
+            pool_exhausted = True
+            break
 
         effective_model_candidates = [
             model_id for model_id in model_candidates if model_id not in blocked_models
@@ -5609,6 +5624,9 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
         if remaining_budget_ms <= 0:
             timed_out = True
             break
+        if attempt >= attempt_budget:
+            pool_exhausted = True
+            break
 
         effective_model_candidates = [
             model_id for model_id in model_candidates if model_id not in blocked_models
@@ -5831,13 +5849,13 @@ def count_tokens(payload: CountTokensRequest) -> JSONResponse:
 def synthesize(payload: SynthesizeRequest) -> Response:
     synthesis_result = _synthesize_text_to_wav(payload)
     headers = {
-        "X-VoiceFlow-Trace-Id": str(synthesis_result.get("traceId") or ""),
-        "X-VoiceFlow-Model": str(synthesis_result.get("model") or ""),
-        "X-VoiceFlow-Speech-Mode": str(synthesis_result.get("speechModeUsed") or ""),
+        "X-VFlowAI-Trace-Id": str(synthesis_result.get("traceId") or ""),
+        "X-VFlowAI-Model": str(synthesis_result.get("model") or ""),
+        "X-VFlowAI-Speech-Mode": str(synthesis_result.get("speechModeUsed") or ""),
     }
     diagnostics = synthesis_result.get("diagnostics")
     if isinstance(diagnostics, dict) and diagnostics:
-        headers["X-VoiceFlow-Diagnostics"] = quote(
+        headers["X-VFlowAI-Diagnostics"] = quote(
             json.dumps(diagnostics, ensure_ascii=True, separators=(",", ":")),
             safe="",
         )
@@ -5847,7 +5865,7 @@ def synthesize(payload: SynthesizeRequest) -> Response:
             **usage_metadata,
             "providerReported": True,
         }
-        headers["X-VoiceFlow-Usage"] = quote(
+        headers["X-VFlowAI-Usage"] = quote(
             json.dumps(usage_header_payload, ensure_ascii=True, separators=(",", ":")),
             safe="",
         )

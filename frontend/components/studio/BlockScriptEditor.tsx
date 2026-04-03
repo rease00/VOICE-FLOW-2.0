@@ -20,6 +20,9 @@ interface BlockScriptEditorProps {
   maxChars?: number;
   onOverflow?: (info: { maxChars: number }) => void;
   onModeChange: (mode: StudioEditorMode) => void;
+  assistantActionLabel?: string;
+  assistantActionTitle?: string;
+  onAssistantAction?: () => void;
   directorActionLabel?: string;
   directorActionTitle?: string;
   onDirectorAction?: () => void;
@@ -53,6 +56,9 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
   maxChars,
   onOverflow,
   onModeChange,
+  assistantActionLabel = 'Assistant',
+  assistantActionTitle = 'Open creative assistant',
+  onAssistantAction,
   directorActionLabel = 'AI Director',
   directorActionTitle = 'Analyze the current text and apply AI Director tags.',
   onDirectorAction,
@@ -190,14 +196,14 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
 
   return (
     <div className={`vf-block-editor relative flex h-full min-h-0 flex-col ${className}`}>
-      <div className="vf-block-editor__header flex items-center justify-between border-b px-4 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="vf-block-editor__header vf-block-editor__header--compact flex items-center justify-between border-b px-4 py-2">
+        <div className="vf-block-editor__left-actions flex min-w-0 flex-1 items-center justify-start gap-2">
           <div className="vf-block-editor__control-cluster">
-            <div className="vf-block-editor__mode-toggle inline-flex items-center gap-1 rounded-xl border p-1">
+            <div className="vf-block-editor__mode-toggle inline-flex items-center gap-1 rounded-xl border p-[3px]">
               <button
                 type="button"
                 onClick={() => onModeChange('blocks')}
-                className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[12px] font-bold transition-colors ${
+                className={`vf-block-editor__mode-btn rounded-lg px-2 py-0.5 text-[11px] font-bold transition-colors ${
                   mode === 'blocks' ? 'vf-block-editor__mode-btn--active' : ''
                 }`}
               >
@@ -206,28 +212,49 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
               <button
                 type="button"
                 onClick={() => onModeChange('raw')}
-                className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[12px] font-bold transition-colors ${
+                className={`vf-block-editor__mode-btn rounded-lg px-2 py-0.5 text-[11px] font-bold transition-colors ${
                   mode === 'raw' ? 'vf-block-editor__mode-btn--active' : ''
                 }`}
-              >
-                Raw
-              </button>
+                >
+                  Raw
+                </button>
             </div>
           </div>
 
-          {onDirectorAction && (
-            <div className="vf-studio-director-cluster ml-auto" title={directorActionTitle}>
+          {(onAssistantAction || onDirectorAction) && (
+            <div className="vf-block-editor__cta-group">
+            {onAssistantAction && (
               <button
                 type="button"
-                onClick={onDirectorAction}
-                disabled={disabled || directorActionBusy}
-                className="vf-toolbar-ai text-sm font-bold disabled:opacity-50 transition-colors"
-                title={directorActionTitle}
-                aria-label={directorActionLabel}
+                onClick={onAssistantAction}
+                disabled={disabled}
+                className="vf-toolbar-action text-xs font-bold disabled:opacity-50 transition-colors"
+                title={assistantActionTitle}
+                aria-label={assistantActionLabel}
               >
-                {directorActionBusy ? <Loader2 size={12} aria-hidden="true" className="animate-spin" /> : <Wand2 size={12} aria-hidden="true" />}
-                <span>{directorActionLabel}</span>
+                <Sparkles size={12} aria-hidden="true" />
+                <span>{assistantActionLabel}</span>
               </button>
+            )}
+
+            {onDirectorAction && (
+              <div className="vf-studio-director-cluster" title={directorActionTitle}>
+                <button
+                  type="button"
+                  onClick={onDirectorAction}
+                  disabled={disabled || directorActionBusy}
+                  className="vf-toolbar-ai vf-toolbar-ai--director-live text-xs font-bold disabled:opacity-50 transition-colors"
+                  title={directorActionTitle}
+                  aria-label={directorActionLabel}
+                >
+                  <span className="vf-toolbar-ai__live-icon" aria-hidden="true">
+                    {directorActionBusy ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                    {!directorActionBusy ? <span className="vf-toolbar-ai__live-dot" /> : null}
+                  </span>
+                  <span className="vf-toolbar-ai__label">{directorActionLabel}</span>
+                </button>
+              </div>
+            )}
             </div>
           )}
         </div>

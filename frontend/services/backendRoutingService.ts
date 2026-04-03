@@ -58,11 +58,11 @@ const probeCandidateRtt = async (
   const safeBase = String(baseUrl || '').trim().replace(/\/+$/, '');
   if (!safeBase) return Number.POSITIVE_INFINITY;
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
+  const timer = globalThis.setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
   const forwardAbort = () => controller.abort();
   if (signal) {
     if (signal.aborted) {
-      window.clearTimeout(timer);
+      globalThis.clearTimeout(timer);
       throw createAbortError();
     }
     signal.addEventListener('abort', forwardAbort, { once: true });
@@ -83,7 +83,7 @@ const probeCandidateRtt = async (
     }
     return Number.POSITIVE_INFINITY;
   } finally {
-    window.clearTimeout(timer);
+    globalThis.clearTimeout(timer);
     if (signal) {
       signal.removeEventListener('abort', forwardAbort);
     }
@@ -313,6 +313,33 @@ export const primeLoginTtsSessionKey = async (options?: {
       reason: 'session_issue_failed',
     };
   }
+};
+
+export const primeLoginRoutingAfterAccountBootstrap = async (options?: {
+  baseUrl?: string;
+  signal?: AbortSignal;
+}): Promise<LoginRoutingResult> => {
+  const routingOptions: { signal?: AbortSignal } = {};
+  if (options?.signal) {
+    routingOptions.signal = options.signal;
+  }
+  const routingResult = await applyNearestBackendRoutingOnLogin(routingOptions);
+  const primeOptions: { baseUrl?: string; regionHint?: string; regionSource?: string; signal?: AbortSignal } = {};
+  const nextBaseUrl = routingResult.baseUrl || String(options?.baseUrl || '').trim();
+  if (nextBaseUrl) {
+    primeOptions.baseUrl = nextBaseUrl;
+  }
+  if (routingResult.regionHint) {
+    primeOptions.regionHint = routingResult.regionHint;
+  }
+  if (routingResult.regionSource) {
+    primeOptions.regionSource = routingResult.regionSource;
+  }
+  if (options?.signal) {
+    primeOptions.signal = options.signal;
+  }
+  void primeLoginTtsSessionKey(primeOptions).catch(() => undefined);
+  return routingResult;
 };
 
 export const clearNearestBackendRoutingState = (): void => {

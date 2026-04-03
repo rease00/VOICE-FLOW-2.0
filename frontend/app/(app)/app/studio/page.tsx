@@ -1,2 +1,2 @@
-export { WorkspaceScreen as default } from '../../../../src/app/workspace/WorkspaceScreen';
+export { StudioRouteScreen as default } from '../../../../src/app/studio/StudioRouteScreen';
 

@@ -21,7 +21,7 @@ describe('workspace tab navigation model', () => {
 
     expectations.forEach(({ tab, path }) => {
       const result = buildWorkspaceTabNavigationHref(
-        'https://voiceflow.local/app/voices?billing=success#top',
+        'https://v-flow-ai.local/app/voices?billing=success#top',
         tab
       );
       expect(result.tab).toBe(tab);
@@ -29,9 +29,39 @@ describe('workspace tab navigation model', () => {
     });
   });
 
+  it('canonicalizes reader alias paths back to the app reader route during navigation', () => {
+    const result = buildWorkspaceTabNavigationHref(
+      'https://v-flow-ai.local/reader/novel/book-7?billing=success#top',
+      WorkspaceTab.READER
+    );
+
+    expect(result.tab).toBe(WorkspaceTab.READER);
+    expect(result.href).toBe('/app/reader?billing=success#top');
+    expect(result.changed).toBe(true);
+  });
+
+  it('collapses nested canonical and alias reader deep links to the same workspace route', () => {
+    const canonical = buildWorkspaceTabNavigationHref(
+      'https://v-flow-ai.local/app/reader/novel/book-7?billing=success#top',
+      WorkspaceTab.READER
+    );
+    const alias = buildWorkspaceTabNavigationHref(
+      'https://v-flow-ai.local/reader/novel/book-7?billing=success#top',
+      WorkspaceTab.READER
+    );
+
+    expect(canonical.tab).toBe(WorkspaceTab.READER);
+    expect(canonical.href).toBe('/app/reader?billing=success#top');
+    expect(canonical.changed).toBe(true);
+
+    expect(alias.tab).toBe(WorkspaceTab.READER);
+    expect(alias.href).toBe(canonical.href);
+    expect(alias.changed).toBe(true);
+  });
+
   it('removes legacy vf-tab query params during tab navigation', () => {
     const result = buildWorkspaceTabNavigationHref(
-      'https://voiceflow.local/app/voices?vf-tab=READER&billing=success#credits',
+      'https://v-flow-ai.local/app/voices?vf-tab=READER&billing=success#credits',
       WorkspaceTab.READER
     );
 
@@ -41,12 +71,17 @@ describe('workspace tab navigation model', () => {
   });
 
   it('hydrates active tab from pathname and keeps billing canonical', () => {
+    expect(resolveWorkspaceTabFromPathname('/billing')).toBeNull();
     expect(resolveWorkspaceTabFromPathname('/app/billing')).toBe(WorkspaceTab.BILLING);
+    expect(resolveWorkspaceTabFromPathname('/app/reader')).toBe(WorkspaceTab.READER);
     expect(resolveWorkspaceTabFromPathname('/app/voices')).toBe(WorkspaceTab.VOICE_CLONING);
+    expect(resolveWorkspaceTabFromPathname('/app/reader/novel/book-7')).toBe(WorkspaceTab.READER);
   });
 
   it('does not hydrate active tab from legacy vf-tab state', () => {
     expect(resolveWorkspaceTabFromPathname('/app/reader')).toBe(WorkspaceTab.READER);
+    expect(resolveWorkspaceTabFromPathname('/reader')).toBe(WorkspaceTab.READER);
+    expect(resolveWorkspaceTabFromPathname('/reader/novel/book-7')).toBe(WorkspaceTab.READER);
   });
 
   it('formats mobile available credits as percentage of free-limit plus paid capacity', () => {

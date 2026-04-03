@@ -96,8 +96,18 @@ jobs:
       - name: Install Playwright browsers
         run: npx --prefix frontend playwright install --with-deps chromium
 
-      - name: Smoke E2E
+      - name: Smoke E2E launch gate
         env:
           CI: "true"
           NEXT_DIST_DIR: .next-playwright
+          PLAYWRIGHT_ADMIN_EMAIL: ${{ secrets.PLAYWRIGHT_ADMIN_EMAIL }}
+          PLAYWRIGHT_ADMIN_PASSWORD: ${{ secrets.PLAYWRIGHT_ADMIN_PASSWORD }}
         run: npm --prefix frontend run e2e:smoke
+
+      - name: Smoke E2E full matrix
+        env:
+          CI: "true"
+          NEXT_DIST_DIR: .next-playwright
+          PLAYWRIGHT_ADMIN_EMAIL: ${{ secrets.PLAYWRIGHT_ADMIN_EMAIL }}
+          PLAYWRIGHT_ADMIN_PASSWORD: ${{ secrets.PLAYWRIGHT_ADMIN_PASSWORD }}
+        run: npm --prefix frontend run e2e:smoke:full

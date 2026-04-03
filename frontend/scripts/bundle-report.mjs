@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROOT = process.cwd();
-const NEXT_DIR = path.join(ROOT, '.next');
+const DIST_DIR_NAME = String(process.env.NEXT_DIST_DIR || process.env.VF_NEXT_DIST_DIR || '.next').trim() || '.next';
+const NEXT_DIR = path.join(ROOT, DIST_DIR_NAME);
 const STATIC_DIR = path.join(NEXT_DIR, 'static');
 const BUILD_MANIFEST_PATH = path.join(NEXT_DIR, 'build-manifest.json');
 const REACT_LOADABLE_MANIFEST_PATH = path.join(NEXT_DIR, 'react-loadable-manifest.json');

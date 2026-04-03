@@ -3,6 +3,7 @@ import {
   injectDirectorTagsPreservingFormat,
   getEngineSelectorCopy,
   normalizeAllowedEngines,
+  normalizeSpeakerHeaderScript,
   resolveEngineToken,
   resolvePrimeAllowedEngines,
 } from '../views/mainAppHelpers';
@@ -87,5 +88,16 @@ describe('injectDirectorTagsPreservingFormat', () => {
 
     expect(patched.text).toBe('[SFX: Rain]');
     expect(patched.patchedLineCount).toBe(0);
+  });
+});
+
+describe('normalizeSpeakerHeaderScript', () => {
+  it('preserves dialogue text while normalizing bracketed headers', () => {
+    expect(normalizeSpeakerHeaderScript('मोहन: नमस्ते दुनिया')).toBe('[मोहन]: नमस्ते दुनिया');
+  });
+
+  it('merges orphan speaker headers with the following plain line', () => {
+    const input = '[Narrator]:\nThe story begins now.';
+    expect(normalizeSpeakerHeaderScript(input)).toBe('[Narrator]: The story begins now.');
   });
 });

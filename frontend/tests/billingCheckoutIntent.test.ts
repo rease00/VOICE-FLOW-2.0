@@ -91,7 +91,7 @@ describe('billingCheckoutIntent', () => {
         kind: 'token-pack',
         selection: { packKey: 'standard' },
         authMode: 'login',
-        resumePath: '/app/billing',
+        resumePath: '/billing',
         createdAt,
       },
       createdAt

@@ -1,4 +1,5 @@
 import type { GenerationSettings } from '../../../types';
+import { authFetch } from '../../../services/authHttpClient';
 import type {
   EngineStatusItem,
   RuntimeLogTailResponse,
@@ -51,6 +52,13 @@ interface TtsV2SessionIssueResponse {
   sessionKey?: string;
   expiresAtMs?: number;
   ttlSeconds?: number;
+}
+
+interface TtsV2SessionCancelResponse {
+  ok?: boolean;
+  sessionKey?: string;
+  cancelledCount?: number;
+  jobs?: Array<Record<string, unknown>>;
 }
 
 export const issueTtsV2SessionKey = async (options?: {
@@ -109,6 +117,27 @@ export const issueTtsV2SessionKey = async (options?: {
     if (TTS_V2_SESSION_IN_FLIGHT.get(requestKey) === pending) {
       TTS_V2_SESSION_IN_FLIGHT.delete(requestKey);
     }
+  }
+};
+
+export const cancelTtsSession = async (options?: {
+  baseUrl?: string;
+  sessionKey?: string;
+}): Promise<TtsV2SessionCancelResponse> => {
+  const cacheKey = ttsV2SessionCacheKey(options?.baseUrl);
+  const sessionKey = String(options?.sessionKey || TTS_V2_SESSION_CACHE.get(cacheKey)?.sessionKey || '').trim();
+  if (!sessionKey) {
+    return { ok: false };
+  }
+
+  try {
+    return await requestJson<TtsV2SessionCancelResponse>(
+      `/tts/v2/sessions/${encodeURIComponent(sessionKey)}/cancel`,
+      { method: 'POST' },
+      { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+    );
+  } finally {
+    clearTtsV2SessionKeyCache(options?.baseUrl);
   }
 };
 
@@ -769,15 +798,25 @@ export const fetchTtsJobResult = async (
   options?: { baseUrl?: string }
 ): Promise<{ audioBytes: ArrayBuffer; mediaType: string; headers: Record<string, string> }> => {
   const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  const blob = await requestBlob(
-    `/tts/v2/jobs/${safeJobId}/result/audio`,
+  const response = await authFetch(
+    resolveApiUrl(`/tts/v2/jobs/${safeJobId}/result/audio`, options?.baseUrl),
     undefined,
-    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+    { requireAuth: true }
   );
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`.trim());
+  }
+  const blob = await response.blob();
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    const safeKey = String(key || '').trim().toLowerCase();
+    if (!safeKey) return;
+    headers[safeKey] = String(value || '');
+  });
   return {
     audioBytes: await blob.arrayBuffer(),
     mediaType: String(blob.type || 'audio/wav'),
-    headers: {},
+    headers,
   };
 };
 

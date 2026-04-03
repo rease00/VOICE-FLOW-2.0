@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
 import json
 import logging
 from pathlib import Path
@@ -10,7 +11,8 @@ from urllib.request import urlopen
 
 import pytest
 
-from services.tts_v2_engine import TtsV2Engine
+import app as backend_app
+from services.tts_v2_engine import TtsV2Engine, V2ValidationError
 from services.openvoice_modal import build_openvoice_artifact_signature, decode_openvoice_audio_base64
 from services.queue.redis_queue import TtsJobQueue
 from workers.tts_worker import WorkerHealthState, _process_claimed_job, _restore_dequeued_job, _start_worker_health_server, run_worker
@@ -110,14 +112,8 @@ class _FakeRedis:
     def scan_iter(self, match=None, count=None):  # noqa: ANN001
         _ = count
         pattern = str(match or "")
-        if pattern.endswith("*"):
-            prefix = pattern[:-1]
-            for key in list(self.strings.keys()):
-                if str(key).startswith(prefix):
-                    yield key
-            return
         for key in list(self.strings.keys()):
-            if key == pattern:
+            if fnmatch.fnmatch(str(key), pattern or "*"):
                 yield key
 
 
@@ -240,6 +236,44 @@ def test_queue_submit_reserve_ack_and_release_round_trip() -> None:
     assert released["status"] == "failed"
 
 
+def test_tts_v2_audio_audit_id_extraction_promotes_nested_payload_values() -> None:
+    assert backend_app._audio_generation_audit_ids_from_job(
+        {
+            "audioAuditIds": ["audit_top_1", "audit_top_2"],
+            "payload": {
+                "audioAuditIds": ["audit_nested_1", "audit_nested_2"],
+                "audioAuditId": "nested_legacy_should_not_win",
+            },
+        }
+    ) == ["audit_top_1", "audit_top_2", "audit_nested_1", "audit_nested_2", "nested_legacy_should_not_win"]
+
+    assert backend_app._audio_generation_audit_ids_from_job(
+        {
+            "payload": {
+                "audioAuditIds": ["audit_nested_1", "", "audit_nested_2", "audit_nested_1"],
+                "audioAuditId": "nested_legacy_should_not_win",
+            },
+        }
+    ) == ["audit_nested_1", "audit_nested_2", "nested_legacy_should_not_win"]
+
+
+def test_tts_v2_queue_submission_promotes_nested_audio_audit_ids() -> None:
+    engine = backend_app._TTS_V2_ENGINE
+    submitted = engine.build_queue_submission(
+        payload={
+            "request_id": "queue_req_audio_123456",
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "hello",
+            "payload": {"audioAuditIds": ["audit_nested_1", "audit_nested_2"]},
+        },
+        uid="queue_user",
+        plan_key="free",
+        lane="free",
+    )
+    assert submitted["audioAuditIds"] == ["audit_nested_1", "audit_nested_2"]
+
+
 def test_queue_renew_claim_updates_claimed_at_timestamp(monkeypatch) -> None:
     queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:tts")
     fake_redis = _FakeRedis()
@@ -268,6 +302,9 @@ def test_queue_renew_claim_updates_claimed_at_timestamp(monkeypatch) -> None:
     after = json.loads(str(fake_redis.get(claim_key) or "{}"))
     assert int(after.get("claimedAtMs") or 0) == before_claimed_at + 5000
     assert fake_redis.expiries[claim_key] == queue._claim_ttl_sec  # type: ignore[attr-defined]
+    updated = queue.get("job_heartbeat_123") or {}
+    assert int(updated.get("claimRenewedAtMs") or 0) == before_claimed_at + 5000
+    assert int(updated.get("updatedAtMs") or 0) >= before_claimed_at + 5000
 
 
 def test_queue_depth_total_counts_unique_lanes_only() -> None:
@@ -365,6 +402,35 @@ def test_queue_requeue_dedupes_ready_entries() -> None:
     assert fake_redis.lists[ready_key] == ["job_dedupe_123"]
 
 
+def test_queue_requeue_does_not_resurrect_terminal_job() -> None:
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:terminal-requeue")
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_terminal_123",
+            "requestId": "req_terminal_123",
+            "uid": "user_terminal",
+            "text": "hello",
+        },
+    )
+    claimed = queue.claim("job_terminal_123", worker_id="worker-terminal")
+    assert claimed is not None
+    cancelled = queue.cancel("job_terminal_123")
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+
+    requeued = queue.requeue(
+        "job_terminal_123",
+        worker_id="worker-terminal",
+        payload=claimed,
+    )
+    assert requeued is not None
+    assert requeued["status"] == "cancelled"
+
+
 def test_queue_reserve_fallback_dedupes_ready_entries_when_claim_is_active() -> None:
     queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:fallback")
     fake_redis = _FakeRedis()
@@ -412,6 +478,42 @@ def test_queue_recover_stalled_claims_requeues_expired_running_job() -> None:
     assert recovered == 1
     assert queue.get("job_stall_123")["status"] == "queued"
     assert fake_redis.llen("vf:test:tts:ready:free") == 1
+
+
+def test_queue_recover_stalled_claims_skips_recent_missing_claim(monkeypatch) -> None:
+    monkeypatch.setenv("VF_TTS_QUEUE_MISSING_CLAIM_GRACE_SEC", "120")
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:missing-claim")
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_missing_claim_123",
+            "requestId": "req_missing_claim_123",
+            "uid": "user_missing_claim",
+            "text": "hello",
+        },
+    )
+    queue.claim("job_missing_claim_123", worker_id="worker-1")
+    claim_key = "vf:test:missing-claim:claim:job_missing_claim_123"
+    fake_redis.delete(claim_key)
+
+    now_ms = queue._now_ms()  # noqa: SLF001
+    queue.update(
+        "job_missing_claim_123",
+        {
+            "status": "running",
+            "workerId": "worker-1",
+            "claimRenewedAtMs": now_ms - 30_000,
+            "updatedAtMs": now_ms - 30_000,
+        },
+    )
+
+    recovered = queue.recover_stalled_claims(limit=10)
+    assert recovered == 0
+    assert queue.get("job_missing_claim_123")["status"] == "running"
+    assert fake_redis.llen("vf:test:missing-claim:ready:free") == 0
 
 
 def test_queue_recovery_exhaustion_writes_dead_letter_when_enabled(monkeypatch) -> None:
@@ -486,6 +588,72 @@ def test_queue_submit_enforces_per_user_queued_cap(monkeypatch) -> None:
                 "text": "second",
             },
         )
+
+
+def test_queue_submit_enforces_per_category_cap(monkeypatch) -> None:
+    monkeypatch.setenv("VF_TTS_QUEUE_MAX_QUEUED_GLOBAL_API", "1")
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:category-cap")
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_category_1",
+            "requestId": "req_category_1",
+            "uid": "user_category",
+            "text": "first",
+            "workerCategory": "GLOBAL_API",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="Per-category queued cap exceeded"):
+        queue.submit(
+            lane="free",
+            payload={
+                "jobId": "job_category_2",
+                "requestId": "req_category_2",
+                "uid": "user_category",
+                "text": "second",
+                "workerCategory": "GLOBAL_API",
+            },
+        )
+
+
+def test_queue_reserve_next_isolates_worker_category(monkeypatch) -> None:
+    monkeypatch.setenv("VF_TTS_WORKER_CATEGORY", "APP_LOCAL")
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:category-isolation")
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_category_global",
+            "requestId": "req_category_global",
+            "uid": "user_category",
+            "text": "global first",
+            "workerCategory": "GLOBAL_API",
+        },
+    )
+    queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_category_local",
+            "requestId": "req_category_local",
+            "uid": "user_category",
+            "text": "local second",
+            "workerCategory": "APP_LOCAL",
+        },
+    )
+
+    claimed = queue.reserve_next(worker_id="worker-local")
+    assert claimed is not None
+    assert claimed["jobId"] == "job_category_local"
+    assert str(claimed.get("workerCategory") or "").upper() == "APP_LOCAL"
+    assert queue.get("job_category_global") is not None
+    assert str(queue.get("job_category_global")["status"]) == "queued"
+    assert str(queue.get("job_category_local")["status"]) == "running"
 
 
 def test_queue_user_counter_tracks_transitions_and_terminal_updates(monkeypatch) -> None:
@@ -841,7 +1009,7 @@ def test_openvoice_artifact_signature_requires_stable_secret(monkeypatch) -> Non
     monkeypatch.setattr("services.openvoice_modal.OPENVOICE_ARTIFACT_SECRET", "")
     monkeypatch.setattr("services.openvoice_modal.OPENVOICE_DEV_ALLOW_EPHEMERAL_SECRET", False)
 
-    with pytest.raises(RuntimeError, match="VF_OPENVOICE_ARTIFACT_SECRET"):
+    with pytest.raises(RuntimeError, match="VF_VOICE_CLONE_ARTIFACT_SECRET"):
         build_openvoice_artifact_signature("artifact-123")
 
 
@@ -939,3 +1107,23 @@ def test_tts_v2_engine_uses_queue_state_when_redis_is_available(tmp_path: Path) 
     completed_audio, completed_media_type = engine.get_result_audio(uid="queue_user", is_admin=False, job_id=result_request_id)
     assert completed_audio == b"result-bytes"
     assert completed_media_type == "audio/wav"
+
+
+def test_tts_v2_engine_rejects_more_than_eight_speakers(tmp_path: Path) -> None:
+    engine = TtsV2Engine(
+        synthesize_fn=lambda *args, **kwargs: None,
+        output_root=tmp_path,
+        redis_url="",
+    )
+    payload = {
+        "request_id": "queue_req_speaker_cap",
+        "mode": "multi_speaker",
+        "engine": "VECTOR",
+        "text": "Queue speaker cap validation.",
+        "speaker_voices": [
+            {"speaker": f"Speaker {index}", "voice_id": f"v{index}"}
+            for index in range(1, 10)
+        ],
+    }
+    with pytest.raises(V2ValidationError, match="up to 8 speakers"):
+        engine.create_job(payload=payload, uid="queue_user", plan_key="free")

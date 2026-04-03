@@ -20,6 +20,7 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_COUPON_CODE_INDEX.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
     backend_app._INMEMORY_STRIPE_WEBHOOK_EVENTS.clear()
+    backend_app._INMEMORY_REQUEST_IDEMPOTENCY.clear()
     backend_app._INMEMORY_USER_PROFILES.clear()
     backend_app._INMEMORY_USER_ID_INDEX.clear()
     backend_app._FIREBASE_APP = None
@@ -198,6 +199,162 @@ def test_token_pack_checkout_session_honors_idempotency_key(monkeypatch) -> None
     token_key = str(captured_sessions[0].get("idempotency_key") or "")
     assert token_key.startswith("vf:")
     assert "token_pack_user:standard:1" in token_key
+
+
+def test_razorpay_subscription_checkout_reuses_idempotent_result(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_load_entitlement", lambda uid: backend_app._default_entitlement(uid))
+
+    customer_calls: list[dict[str, object]] = []
+    subscription_calls: list[dict[str, object]] = []
+
+    def _fake_create_customer(**kwargs):
+        customer_calls.append(dict(kwargs))
+        return {"customer_id": "cust_rzp_idem_1"}
+
+    def _fake_create_subscription(**kwargs):
+        subscription_calls.append(dict(kwargs))
+        return {"subscription_id": "sub_rzp_idem_1"}
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_customer", _fake_create_customer)
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_subscription", _fake_create_subscription)
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "rzp_idem_user", "Idempotency-Key": "rzp_idem_user:starter:1"}
+    first = client.post("/billing/checkout-session", headers=headers, json={"plan": "starter"})
+    second = client.post("/billing/checkout-session", headers=headers, json={"plan": "starter"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(customer_calls) == 1
+    assert len(subscription_calls) == 1
+    assert first.json().get("subscriptionId") == second.json().get("subscriptionId")
+
+
+def test_razorpay_subscription_checkout_reuses_result_when_entitlement_write_fails(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda uid: {
+            **backend_app._default_entitlement(uid),
+            "razorpayCustomerId": "cust_rzp_existing",
+        },
+    )
+
+    subscription_calls: list[dict[str, object]] = []
+
+    def _fake_create_subscription(**kwargs):
+        subscription_calls.append(dict(kwargs))
+        return {"subscription_id": f"sub_rzp_partial_{len(subscription_calls)}"}
+
+    entitlement_write_attempts: list[dict[str, object]] = []
+
+    def _failing_write_entitlement(_uid: str, patch: dict[str, object], *, merge: bool = True) -> None:
+        _ = merge
+        entitlement_write_attempts.append(dict(patch))
+        if "subscriptionId" in patch:
+            raise RuntimeError("entitlement write failed after subscription create")
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_subscription", _fake_create_subscription)
+    monkeypatch.setattr(backend_app, "_write_entitlement", _failing_write_entitlement)
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "rzp_partial_user", "Idempotency-Key": "rzp_partial_user:starter:1"}
+    first = client.post("/billing/checkout-session", headers=headers, json={"plan": "starter"})
+    second = client.post("/billing/checkout-session", headers=headers, json={"plan": "starter"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(subscription_calls) == 1
+    assert first.json().get("subscriptionId") == "sub_rzp_partial_1"
+    assert second.json().get("subscriptionId") == "sub_rzp_partial_1"
+    assert any("subscriptionId" in attempt for attempt in entitlement_write_attempts)
+
+
+def test_razorpay_checkout_fails_closed_when_idempotency_storage_unavailable(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda uid: {
+            **backend_app._default_entitlement(uid),
+            "razorpayCustomerId": "cust_rzp_existing",
+        },
+    )
+
+    class _BrokenDoc:
+        def create(self, _payload: dict[str, object]) -> None:
+            raise RuntimeError("idempotency store unavailable")
+
+    class _BrokenCollection:
+        def document(self, _doc_id: str) -> _BrokenDoc:
+            return _BrokenDoc()
+
+    def _fake_firestore_collection(name: str):
+        if name == backend_app.REQUEST_IDEMPOTENCY_COLLECTION:
+            return _BrokenCollection()
+        return None
+
+    subscription_calls: list[dict[str, object]] = []
+
+    def _fake_create_subscription(**kwargs):
+        subscription_calls.append(dict(kwargs))
+        return {"subscription_id": "sub_should_not_exist"}
+
+    monkeypatch.setattr(backend_app, "_firestore_collection", _fake_firestore_collection)
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_subscription", _fake_create_subscription)
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/checkout-session",
+        headers={"x-dev-uid": "rzp_fail_closed_user", "Idempotency-Key": "rzp_fail_closed_user:starter:1"},
+        json={"plan": "starter"},
+    )
+
+    assert response.status_code == 503
+    assert "idempotency storage" in str(response.json().get("detail") or "").lower()
+    assert len(subscription_calls) == 0
+
+
+def test_vc_token_pack_checkout_reuses_idempotent_result(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "VC_TOKEN_PACK_CATALOG",
+        {
+            "starter": {"vc": 650, "priceInr": 499},
+        },
+    )
+
+    order_calls: list[dict[str, object]] = []
+
+    def _fake_create_one_time_order(**kwargs):
+        order_calls.append(dict(kwargs))
+        return {"id": "order_vc_idem_1", "order_id": "order_vc_idem_1"}
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_one_time_order", _fake_create_one_time_order)
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "vc_idem_user", "Idempotency-Key": "vc_idem_user:starter:1"}
+    first = client.post("/billing/vc-token-pack/checkout-session", headers=headers, json={"pack": "starter"})
+    second = client.post("/billing/vc-token-pack/checkout-session", headers=headers, json={"pack": "starter"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(order_calls) == 1
+    assert first.json().get("orderId") == second.json().get("orderId")
 
 
 def test_checkout_scopes_same_client_idempotency_key_per_user(monkeypatch) -> None:

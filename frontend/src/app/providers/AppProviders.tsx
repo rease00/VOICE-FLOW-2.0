@@ -1,15 +1,22 @@
 'use client';
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { UserProvider } from '../../features/auth/context/UserContext';
 import { NotificationProvider } from '../../shared/notifications/NotificationProvider';
-import { NotificationUI } from '../../shared/notifications/NotificationUI';
+import { ReaderPwaBootstrap } from './ReaderPwaBootstrap';
+
+const NotificationUI = lazy(async () =>
+  import('../../shared/notifications/NotificationUI').then((module) => ({ default: module.NotificationUI }))
+);
 
 export const AppProviders: React.FC<React.PropsWithChildren> = ({ children }) => {
   return (
     <UserProvider>
       <NotificationProvider>
+        <ReaderPwaBootstrap />
         {children}
-        <NotificationUI />
+        <Suspense fallback={null}>
+          <NotificationUI />
+        </Suspense>
       </NotificationProvider>
     </UserProvider>
   );

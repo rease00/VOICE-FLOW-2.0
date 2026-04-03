@@ -17,7 +17,6 @@ type SessionStore = {
 };
 
 declare global {
-  // eslint-disable-next-line no-var
   var __vfDevSessionStore: SessionStore | undefined;
 }
 
@@ -95,4 +94,3 @@ export const POST = async (request: Request): Promise<Response> => {
 
   return NextResponse.json(toActiveSessionPayload(store), { headers: { 'Cache-Control': 'no-store' } });
 };
-

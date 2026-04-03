@@ -32,7 +32,7 @@ describe('voice clone stress api', () => {
     requestJsonMock.mockResolvedValueOnce({ ok: true, jobId: 'vcs_1', status: 'queued' });
 
     const payload = {
-      benchmarkTarget: 'OPENVOICE_L4_VC',
+      benchmarkTarget: 'VOICE_CLONE_L4_VC',
       config: {
         startRpm: 20,
         stepRpm: 10,
@@ -78,6 +78,40 @@ describe('voice clone stress api', () => {
     expect(options).toMatchObject({ baseUrl: 'https://backend.example', requireAuth: true });
   });
 
+  it('posts cancel request to voice clone job cancel endpoint', async () => {
+    const { cancelVoiceCloneJob } = await import('../src/features/voice-cloning/api');
+    requestJsonMock.mockResolvedValueOnce({ ok: true, jobId: 'vc_job_1', status: 'cancelled' });
+
+    await cancelVoiceCloneJob('vc_job_1', { baseUrl: 'https://backend.example' });
+
+    expect(requestJsonMock).toHaveBeenCalledTimes(1);
+    const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; requireAuth: boolean }];
+    expect(path).toBe('/voice-clone/jobs/vc_job_1/cancel');
+    expect(init.method).toBe('POST');
+    expect(options).toMatchObject({ baseUrl: 'https://backend.example', requireAuth: true });
+  });
+
+  it('retries voice clone cancel across proxy and direct backend even without idempotency key', async () => {
+    const { cancelVoiceCloneJob } = await import('../src/features/voice-cloning/api');
+    requestJsonMock
+      .mockRejectedValueOnce({ status: 404, detail: 'Not Found' })
+      .mockResolvedValueOnce({ ok: true, jobId: 'vc_job_2', status: 'cancelled' });
+
+    const response = await cancelVoiceCloneJob('vc_job_2', {
+      baseUrl: 'http://127.0.0.1:7800',
+      timeoutMs: 12000,
+    });
+
+    expect(response).toMatchObject({ ok: true, jobId: 'vc_job_2', status: 'cancelled' });
+    expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    const firstCall = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
+    const secondCall = requestJsonMock.mock.calls[1] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
+    expect(firstCall[0]).toBe('/voice-clone/jobs/vc_job_2/cancel');
+    expect(secondCall[0]).toBe('/voice-clone/jobs/vc_job_2/cancel');
+    expect(firstCall[2]).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
+    expect(secondCall[2]).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
+  });
+
   it('posts cancel request to admin stress cancel endpoint', async () => {
     const { cancelVoiceCloneStressTest } = await import('../src/features/voice-cloning/api');
     requestJsonMock.mockResolvedValueOnce({ ok: true, jobId: 'vcs_2', status: 'cancelled' });
@@ -98,7 +132,7 @@ describe('voice clone stress api', () => {
       .mockResolvedValueOnce({ ok: true, jobId: 'vcs_3', status: 'queued' });
 
     const payload = {
-      benchmarkTarget: 'OPENVOICE_L4_VC',
+      benchmarkTarget: 'VOICE_CLONE_L4_VC',
       config: {
         startRpm: 20,
         stepRpm: 10,
@@ -136,7 +170,7 @@ describe('voice clone stress api', () => {
       .mockResolvedValueOnce({ ok: true, jobId: 'vcs_4', status: 'queued' });
 
     const payload = {
-      benchmarkTarget: 'OPENVOICE_L4_VC',
+      benchmarkTarget: 'VOICE_CLONE_L4_VC',
       config: {
         startRpm: 20,
         stepRpm: 10,
@@ -168,7 +202,7 @@ describe('voice clone stress api', () => {
       .mockRejectedValueOnce(new MockHttpError(404, 'Not Found', 'Not Found'));
 
     const payload = {
-      benchmarkTarget: 'OPENVOICE_L4_VC',
+      benchmarkTarget: 'VOICE_CLONE_L4_VC',
       config: {
         startRpm: 20,
         stepRpm: 10,
@@ -198,7 +232,7 @@ describe('voice clone stress api', () => {
     expect(secondCall[2]).toMatchObject({ baseUrl: 'https://backend.example', timeoutMs: 45000, requireAuth: true });
   });
 
-  it('always requires auth for voice-clone openvoice endpoints', async () => {
+  it('always requires auth for voice-clone endpoints', async () => {
     const {
       fetchOpenVoiceCloneStatus,
       cloneVoiceWithOpenVoice,
@@ -236,10 +270,10 @@ describe('voice clone stress api', () => {
     const cloneCall = requestJsonMock.mock.calls[1] as [string, RequestInit, { requireAuth: boolean }];
     const dunoCall = requestJsonMock.mock.calls[2] as [string, RequestInit, { requireAuth: boolean }];
     const separateCall = requestJsonMock.mock.calls[3] as [string, RequestInit, { requireAuth: boolean }];
-    expect(statusCall[0]).toBe('/voice-clone/openvoice/status');
-    expect(cloneCall[0]).toBe('/voice-clone/openvoice');
+    expect(statusCall[0]).toBe('/voice-clone/status');
+    expect(cloneCall[0]).toBe('/voice-clone/render');
     expect(dunoCall[0]).toBe('/voice-clone/duno/native');
-    expect(separateCall[0]).toBe('/voice-clone/openvoice/separate');
+    expect(separateCall[0]).toBe('/voice-clone/separate');
     expect(statusCall[2]).toMatchObject({ requireAuth: true });
     expect(cloneCall[2]).toMatchObject({ requireAuth: true });
     expect(dunoCall[2]).toMatchObject({ requireAuth: true });
@@ -262,7 +296,7 @@ describe('voice clone stress api', () => {
 
     expect(requestJsonMock).toHaveBeenCalledTimes(1);
     const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { requireAuth: boolean; baseUrl: string }];
-    expect(path).toBe('/voice-clone/openvoice');
+    expect(path).toBe('/voice-clone/render');
     expect(options).toMatchObject({ requireAuth: true, baseUrl: 'https://backend.example' });
     expect(new Headers(init.headers).get('Idempotency-Key')).toBe('voice_clone_req_123');
   });
@@ -357,9 +391,9 @@ describe('voice clone stress api', () => {
     expect(requestJsonMock).toHaveBeenCalledTimes(2);
     const firstCall = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
     const secondCall = requestJsonMock.mock.calls[1] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
-    expect(firstCall[0]).toBe('/voice-clone/openvoice');
+    expect(firstCall[0]).toBe('/voice-clone/render');
     expect(firstCall[2]).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
-    expect(secondCall[0]).toBe('/voice-clone/openvoice');
+    expect(secondCall[0]).toBe('/voice-clone/render');
     expect(secondCall[2]).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
     expect(new Headers(firstCall[1].headers).get('Idempotency-Key')).toBe('clone_req_123');
     expect(new Headers(secondCall[1].headers).get('Idempotency-Key')).toBe('clone_req_123');

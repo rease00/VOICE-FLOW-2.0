@@ -16,8 +16,7 @@ export interface ReaderRestoreEntry {
 export type ReaderRestoreStore = Record<string, ReaderRestoreEntry>;
 
 export interface ReaderTabBadgeMap {
-  voices?: string;
-  cast?: string;
-  text?: string;
-  translate?: string;
+  settings?: string;
+  scripts?: string;
+  saved?: string;
 }

@@ -72,6 +72,7 @@ const NOTIFICATION_POLL_HIDDEN_MS = 5 * 60_000;
 const NOTIFICATION_POLL_ERROR_BASE_MS = 75_000;
 const NOTIFICATION_POLL_ERROR_MAX_MS = 10 * 60_000;
 const NOTIFICATION_SYNC_MIN_GAP_MS = 15_000;
+const NOTIFICATION_BOOTSTRAP_DELAY_MS = 1200;
 const NON_RUNTIME_GENERATION_FAILURE_HINTS = [
   'sign in',
   'authentication',
@@ -115,6 +116,27 @@ export const resolveNotificationPollDelayMs = (
 const readSettingsBackendUrl = (): string => {
   const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
   return resolveApiBaseUrl(parsed?.mediaBackendUrl);
+};
+
+const scheduleWhenBrowserIdle = (callback: () => void, timeoutMs = NOTIFICATION_BOOTSTRAP_DELAY_MS): (() => void) => {
+  if (typeof window === 'undefined') {
+    callback();
+    return () => undefined;
+  }
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (cb: IdleRequestCallback, options?: IdleRequestOptions) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    const handle = idleWindow.requestIdleCallback(() => callback(), { timeout: timeoutMs });
+    return () => {
+      if (typeof idleWindow.cancelIdleCallback === 'function') {
+        idleWindow.cancelIdleCallback(handle);
+      }
+    };
+  }
+  const timeoutId = window.setTimeout(callback, timeoutMs);
+  return () => window.clearTimeout(timeoutId);
 };
 
 const toTimestampMs = (value: unknown, fallback = Date.now()): number => {
@@ -308,6 +330,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
   const persistedSyncQueuedRef = useRef(false);
   const persistedSyncErrorCountRef = useRef(0);
   const persistedSyncTimerRef = useRef<number | null>(null);
+  const syncPersistedNotificationsRef = useRef<(options?: { force?: boolean; source?: string }) => Promise<boolean>>(async () => true);
   const generationFailuresRef = useRef<Record<string, number[]>>({});
   const generationEscalationUntilRef = useRef<Record<string, number>>({});
 
@@ -351,7 +374,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       )
     );
     persistedSyncTimerRef.current = window.setTimeout(() => {
-      void syncPersistedNotifications({ force: true, source: 'timer' });
+      void syncPersistedNotificationsRef.current({ force: true, source: 'timer' });
     }, nextDelay);
   }, [clearPersistedSyncTimer, hasSessionIdentity, shouldSyncRemoteNotifications]);
 
@@ -403,20 +426,29 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
   }, [hasSessionIdentity, shouldSyncRemoteNotifications]);
 
   useEffect(() => {
+    syncPersistedNotificationsRef.current = syncPersistedNotifications;
+  }, [syncPersistedNotifications]);
+
+  useEffect(() => {
     if (!hasSessionIdentity) {
       notificationsRef.current = [];
       setNotifications([]);
       clearPersistedSyncTimer();
       persistedSyncErrorCountRef.current = 0;
-      return;
+      return undefined;
     }
     if (!shouldSyncRemoteNotifications) {
       clearPersistedSyncTimer();
-      return;
+      return undefined;
     }
-    void syncPersistedNotifications({ force: true, source: 'identity' });
-    void syncPreferences();
-  }, [clearPersistedSyncTimer, hasSessionIdentity, shouldSyncRemoteNotifications, syncPersistedNotifications, syncPreferences, user.uid]);
+    const cancelDeferredBootstrap = scheduleWhenBrowserIdle(() => {
+      void syncPersistedNotifications({ force: true, source: 'identity' });
+      void syncPreferences();
+    });
+    return () => {
+      cancelDeferredBootstrap();
+    };
+  }, [clearPersistedSyncTimer, hasSessionIdentity, shouldSyncRemoteNotifications, syncPersistedNotifications, syncPreferences]);
 
   useEffect(() => {
     if (!hasSessionIdentity || !shouldSyncRemoteNotifications || !isCenterOpen) return;

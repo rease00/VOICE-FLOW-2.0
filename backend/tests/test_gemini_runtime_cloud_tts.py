@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import struct
 import sys
 from pathlib import Path
@@ -249,3 +250,42 @@ def test_cloud_tts_timeout_errors_map_to_504_on_synthesize_structured(monkeypatc
     assert response.status_code == 504
     detail = response.json().get("detail") or {}
     assert str(detail.get("errorCode") or "") == runtime.ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT
+
+
+def test_known_gemini_voice_gender_map_matches_voice_id_map() -> None:
+    runtime = _load_gemini_runtime_module()
+    workspace_root = Path(__file__).resolve().parents[1]
+    payload = json.loads((workspace_root / "config" / "voice_id_map.v1.json").read_text(encoding="utf-8-sig"))
+    runtime_voices = list(payload.get("engines", {}).get("PRIME", {}).get("runtimeVoices") or [])
+    known = {
+        str(key or "").strip().lower(): str(value or "").strip().lower()
+        for key, value in dict(getattr(runtime, "_KNOWN_GEMINI_VOICE_GENDERS", {}) or {}).items()
+        if str(key or "").strip()
+    }
+
+    mismatches: list[str] = []
+    for row in runtime_voices:
+        if not isinstance(row, dict):
+            continue
+        voice_name = str(row.get("voice") or "").strip().lower()
+        declared_gender = str(row.get("gender") or "").strip().lower()
+        if not voice_name or not declared_gender:
+            continue
+        known_gender = known.get(voice_name)
+        if not known_gender:
+            mismatches.append(f"{voice_name}:missing-known-gender")
+            continue
+        if known_gender != declared_gender:
+            mismatches.append(voice_name)
+
+    assert mismatches == []
+
+
+def test_cloud_tts_gender_hint_uses_correct_known_voice_gender() -> None:
+    runtime = _load_gemini_runtime_module()
+    female_hint = runtime._cloud_tts_gender_hint("female")
+    male_hint = runtime._cloud_tts_gender_hint("male")
+
+    assert runtime._cloud_tts_gender_hint("Charon") == male_hint
+    assert runtime._cloud_tts_gender_hint("Achernar") == female_hint
+    assert runtime._cloud_tts_gender_hint("Zubenelgenubi") == male_hint

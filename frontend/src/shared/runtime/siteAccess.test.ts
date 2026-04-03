@@ -8,7 +8,7 @@ describe('isPublicDeploymentHost', () => {
   });
 
   it('treats Cloudflare Pages hosts as public', () => {
-    expect(isPublicDeploymentHost('voice-flow-bl1.pages.dev')).toBe(true);
+    expect(isPublicDeploymentHost('v-flow-ai.pages.dev')).toBe(true);
   });
 
   it('keeps unrelated hosts private-capable', () => {
@@ -19,7 +19,7 @@ describe('isPublicDeploymentHost', () => {
 describe('shouldEnforcePrivateMode', () => {
   it('never locks public deployment hosts even when private mode is enabled', () => {
     expect(shouldEnforcePrivateMode({ VF_SITE_PRIVATE: '1' }, 'v-flow-ai.com')).toBe(false);
-    expect(shouldEnforcePrivateMode({ VF_SITE_PRIVATE: '1' }, 'voice-flow-bl1.pages.dev')).toBe(false);
+    expect(shouldEnforcePrivateMode({ VF_SITE_PRIVATE: '1' }, 'v-flow-ai.pages.dev')).toBe(false);
   });
 
   it('locks non-public hosts when private mode is enabled', () => {
@@ -47,9 +47,9 @@ describe('resolveRequestHost', () => {
   it('falls back to the request URL host when headers are missing', () => {
     expect(
       resolveRequestHost({
-        url: 'https://voice-flow-bl1.pages.dev/',
+        url: 'https://v-flow-ai.pages.dev/',
       }),
-    ).toBe('voice-flow-bl1.pages.dev');
+    ).toBe('v-flow-ai.pages.dev');
   });
 
   it('normalizes ports and casing out of the resolved host', () => {

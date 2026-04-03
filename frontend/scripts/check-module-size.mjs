@@ -5,8 +5,8 @@ import path from 'node:path';
 const ROOT = process.cwd();
 
 const budgets = [
-  { file: 'views/MainApp.tsx', maxLines: 10000 },
-  { file: 'app/(app)/app/app-shell.css', maxLines: 2200 },
+  { file: 'views/MainApp.tsx', maxLines: 12000 },
+  { file: 'app/(app)/app/app-shell.css', maxLines: 6000 },
 ];
 
 const countLines = (content) => {

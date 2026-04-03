@@ -28,7 +28,11 @@ from services.audio_compat import ratecv as pcm_ratecv
 from services.audio_compat import rms as pcm_rms
 from services.audio_compat import tomono as pcm_tomono
 from services.audio_compat import tostereo as pcm_tostereo
-from services.queue.redis_queue import TtsJobQueue
+from services.queue.redis_queue import (
+    DEFAULT_WORKER_CATEGORY,
+    TtsJobQueue,
+    normalize_worker_category,
+)
 from shared.tts_chunk_scheduler import (
     DEFAULT_LANE_IDS,
     build_single_speaker_chunk_plan,
@@ -45,6 +49,8 @@ DEFAULT_CONTIGUOUS_READY_MS = 4000
 MAX_CONTIGUOUS_READY_MS = 8000
 STARTUP_PRIORITY_CHUNK_COUNT = 4
 MAX_UPSTREAM_CALLS_MULTIPLIER = 2
+MAX_MULTI_SPEAKER_SPEAKERS = 8
+MAX_MULTI_SPEAKER_ERROR = f"Multi-speaker supports up to {MAX_MULTI_SPEAKER_SPEAKERS} speakers."
 PUBLIC_ERROR_PATH_RE = re.compile(r"([A-Za-z]:\\|/[^ \n\t\r]{2,}|\\.json\b|\\|/)")
 PUBLIC_ERROR_SECRET_RE = re.compile(
     r"(google_application_credentials|service[_ -]?account|private[_ -]?key|api[_ -]?key|provider[_ -]?api[_ -]?key|credential)",
@@ -512,6 +518,46 @@ def _normalize_token(value: Any, *, default: str = "") -> str:
 def _normalize_profile_key(value: Any) -> str:
     token = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip().lower())
     return token.strip("_") or "speaker"
+
+
+def _normalize_speaker_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _count_unique_speakers_from_rows(
+    rows: Any,
+    *,
+    speaker_keys: tuple[str, ...] = ("speaker",),
+) -> int:
+    if not isinstance(rows, list):
+        return 0
+    seen: set[str] = set()
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        speaker_name = ""
+        for key in speaker_keys:
+            speaker_name = _normalize_speaker_label(item.get(key))
+            if speaker_name:
+                break
+        if not speaker_name:
+            continue
+        seen.add(speaker_name.lower())
+    return len(seen)
+
+
+def _validate_multi_speaker_hard_cap(payload: dict[str, Any]) -> None:
+    speaker_rows = payload.get("speaker_profiles") or payload.get("speaker_voices") or []
+    profile_speaker_count = _count_unique_speakers_from_rows(
+        speaker_rows,
+        speaker_keys=("speaker", "speakerName", "name"),
+    )
+    line_map_speaker_count = _count_unique_speakers_from_rows(
+        payload.get("multi_speaker_line_map"),
+        speaker_keys=("speaker",),
+    )
+    if max(profile_speaker_count, line_map_speaker_count) > MAX_MULTI_SPEAKER_SPEAKERS:
+        raise V2ValidationError(MAX_MULTI_SPEAKER_ERROR)
 
 
 def _sanitize_public_tts_error_text(value: Any, *, fallback: str = "TTS request failed.", max_len: int = 220) -> str:
@@ -1005,6 +1051,7 @@ class TtsV2Engine:
         text = str(payload.get("text") or "").strip()
         if not text:
             raise V2ValidationError("text is required.")
+        _validate_multi_speaker_hard_cap(payload)
         claimed, owner = self._claim_idempotency(request_id, uid)
         if not claimed and owner and owner != uid and not is_admin:
             raise RequestConflictError("request_id is already associated with a different user.")
@@ -1031,6 +1078,34 @@ class TtsV2Engine:
         safe_payload["text"] = text
         if str(payload.get("engine") or "").strip():
             safe_payload["engine"] = _norm_engine(payload.get("engine"))
+        audit_ids: list[str] = []
+        raw_audit_ids = list(payload.get("audioAuditIds") or [])
+        if not raw_audit_ids and payload.get("audioAuditId"):
+            raw_audit_ids = [payload.get("audioAuditId")]
+        nested_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        nested_audit_ids = list(nested_payload.get("audioAuditIds") or [])
+        if nested_payload.get("audioAuditId"):
+            nested_audit_ids.append(nested_payload.get("audioAuditId"))
+        raw_audit_ids.extend(nested_audit_ids)
+        for item in raw_audit_ids:
+            safe_item = str(item or "").strip()
+            if safe_item and safe_item not in audit_ids:
+                audit_ids.append(safe_item)
+        if audit_ids:
+            safe_payload["audioAuditIds"] = list(audit_ids)
+            safe_payload["audioAuditId"] = audit_ids[0]
+        session_key = str(
+            safe_payload.get("_sessionKey")
+            or safe_payload.get("sessionKey")
+            or payload.get("_sessionKey")
+            or payload.get("sessionKey")
+            or ""
+        ).strip()
+        worker_category = normalize_worker_category(
+            safe_payload.get("workerCategory")
+            or payload.get("workerCategory")
+            or DEFAULT_WORKER_CATEGORY
+        )
         return {
             "jobId": request_id,
             "idempotencyKey": request_id,
@@ -1038,6 +1113,8 @@ class TtsV2Engine:
             "requestId": request_id,
             "traceId": safe_payload["trace_id"],
             "lane": str(lane or "free").strip() or "free",
+            "workerCategory": worker_category,
+            "sessionKey": session_key,
             "createdAtMs": now,
             "updatedAtMs": now,
             "status": "queued",
@@ -1047,6 +1124,8 @@ class TtsV2Engine:
             "engine": _norm_engine(payload.get("engine")),
             "mode": mode,
             "text": text,
+            "audioAuditIds": list(audit_ids),
+            "audioAuditId": audit_ids[0] if audit_ids else "",
             "payload": {
                 **safe_payload,
                 "speakerProfiles": speaker_profiles,
@@ -1341,6 +1420,7 @@ class TtsV2Engine:
         text = str(payload.get("text") or "").strip()
         if not text:
             raise V2ValidationError("text is required.")
+        _validate_multi_speaker_hard_cap(payload)
         claimed, owner = self._claim_idempotency(request_id, uid)
         with self._jobs_lock:
             existing_id = str(self._request_to_job.get(request_id) or "").strip()

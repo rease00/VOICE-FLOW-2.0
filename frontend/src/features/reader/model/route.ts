@@ -1,4 +1,4 @@
-import type { ReaderMode, ReaderTab } from './tabs';
+import { normalizeReaderTabToken, type ReaderMode, type ReaderTab } from './tabs';
 
 export interface ReaderDeepLinkState {
   mode: ReaderMode;
@@ -7,6 +7,8 @@ export interface ReaderDeepLinkState {
   chapter?: number;
   episode?: number;
 }
+
+const CANONICAL_READER_ROUTE_PREFIX = '/app/reader';
 
 const LEGACY_KEYS = {
   mode: 'vf-reader-mode',
@@ -23,13 +25,7 @@ const normalizeMode = (value: string | null | undefined): ReaderMode | null => {
   return null;
 };
 
-const normalizeTab = (value: string | null | undefined): ReaderTab | null => {
-  const token = String(value || '').trim().toLowerCase();
-  if (token === 'read' || token === 'panels' || token === 'voices' || token === 'cast' || token === 'text' || token === 'translate') {
-    return token;
-  }
-  return null;
-};
+const normalizeTab = (value: string | null | undefined): ReaderTab | null => normalizeReaderTabToken(value);
 
 const normalizePositiveInt = (value: string | null | undefined): number | undefined => {
   const parsed = Number(value);
@@ -39,7 +35,12 @@ const normalizePositiveInt = (value: string | null | undefined): number | undefi
 
 export const isReaderPath = (pathname: string): boolean => {
   const normalized = String(pathname || '').trim().toLowerCase();
-  return normalized === '/reader' || normalized.startsWith('/reader/');
+  return (
+    normalized === '/reader'
+    || normalized.startsWith('/reader/')
+    || normalized === CANONICAL_READER_ROUTE_PREFIX
+    || normalized.startsWith(`${CANONICAL_READER_ROUTE_PREFIX}/`)
+  );
 };
 
 export const parseReaderDeepLink = (pathname: string, search: string): ReaderDeepLinkState | null => {
@@ -49,8 +50,17 @@ export const parseReaderDeepLink = (pathname: string, search: string): ReaderDee
     .map((segment) => decodeURIComponent(segment))
     .filter(Boolean);
 
-  const pathMode = normalizeMode(segments[1]);
-  const pathTitleId = segments.length >= 3 ? String(segments[2] || '').trim() : '';
+  let pathMode: ReaderMode | null = null;
+  let pathTitleId = '';
+
+  if (segments[0] === 'reader') {
+    pathMode = normalizeMode(segments[1]);
+    pathTitleId = segments.length >= 3 ? String(segments[2] || '').trim() : '';
+  } else if (segments[0] === 'app' && segments[1] === 'reader') {
+    pathMode = normalizeMode(segments[2]);
+    pathTitleId = segments.length >= 4 ? String(segments[3] || '').trim() : '';
+  }
+
   const legacyMode = normalizeMode(params.get(LEGACY_KEYS.mode));
   const legacyTitleId = String(params.get(LEGACY_KEYS.item) || params.get('vf-reader-title') || '').trim();
 
@@ -79,7 +89,7 @@ export const buildReaderDeepLink = (
   const params = new URLSearchParams(url.search);
   const modeToken = state.mode === 'novel' ? 'novel' : 'comic';
   const encodedTitleId = encodeURIComponent(String(state.titleId).trim());
-  url.pathname = `/reader/${modeToken}/${encodedTitleId}`;
+  url.pathname = `${CANONICAL_READER_ROUTE_PREFIX}/${modeToken}/${encodedTitleId}`;
 
   const readerQueryKeys = [
     'tab',

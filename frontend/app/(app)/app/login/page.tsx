@@ -4,7 +4,7 @@ import { resolveSafeInternalNextPath, type AuthRouteMode } from '../../../../src
 type LoginSearchParams = Record<string, string | string[] | undefined>;
 
 interface AppLoginPageProps {
-  searchParams?: LoginSearchParams | Promise<LoginSearchParams>;
+  searchParams?: Promise<LoginSearchParams>;
 }
 
 const readFirstSearchParam = (value: string | string[] | undefined): string | null => {
@@ -17,7 +17,7 @@ const readFirstSearchParam = (value: string | string[] | undefined): string | nu
 export const dynamic = 'force-dynamic';
 
 export default async function AppLoginPage({ searchParams }: AppLoginPageProps) {
-  const resolvedSearchParams = await Promise.resolve(searchParams);
+  const resolvedSearchParams = await searchParams;
   const requestedMode = readFirstSearchParam(resolvedSearchParams?.mode);
   const requestedNext = resolveSafeInternalNextPath(readFirstSearchParam(resolvedSearchParams?.next), null);
   const initialMode: AuthRouteMode | undefined =

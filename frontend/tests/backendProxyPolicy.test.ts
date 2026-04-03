@@ -19,7 +19,7 @@ const createRequest = (input: {
     method: input.method || 'GET',
     headers: new Headers(input.headers),
     body: input.body ?? null,
-    nextUrl: new URL(input.url || 'https://voiceflow.local/api/backend/tts/v2/jobs'),
+    nextUrl: new URL(input.url || 'https://v-flow-ai.local/api/backend/tts/v2/jobs'),
   } as unknown as NextRequest;
 };
 
@@ -53,7 +53,7 @@ describe('backend proxy header policy', () => {
 
     const request = createRequest({
       method: 'POST',
-      url: 'https://voiceflow.local/api/backend/tts/v2/jobs?trace=1',
+      url: 'https://v-flow-ai.local/api/backend/tts/v2/jobs?trace=1',
       headers: {
         authorization: 'Bearer token',
         cookie: 'session=abc',
@@ -138,7 +138,7 @@ describe('backend proxy header policy', () => {
     const response = await proxyBackendRequest(
       createRequest({
         method: 'POST',
-        url: 'https://voiceflow.local/api/backend/admin/voice-clone/stress/start?trace=stress',
+        url: 'https://v-flow-ai.local/api/backend/admin/voice-clone/stress/start?trace=stress',
         headers: {
           authorization: 'Bearer token',
           'content-type': 'application/json',
@@ -165,7 +165,7 @@ describe('backend proxy header policy', () => {
     const response = await proxyBackendRequest(
       createRequest({
         method: 'PATCH',
-        url: 'https://voiceflow.local/api/backend/admin/voice-clone/provider',
+        url: 'https://v-flow-ai.local/api/backend/admin/voice-clone/provider',
         headers: {
           authorization: 'Bearer token',
           'content-type': 'application/json',

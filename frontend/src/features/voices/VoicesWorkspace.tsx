@@ -29,6 +29,16 @@ const VoiceCloningTabContent = lazy(async () =>
 
 type PreviewState = { id: string; status: 'loading' | 'playing' } | null;
 type ToastTone = 'success' | 'error' | 'info';
+type VoiceLibraryEntry = {
+  voice: VoiceOption;
+  country: string;
+  searchable: string;
+  meta: { name: string; countryTag: string };
+  personaLabel: string;
+  accessTier: 'free' | 'pro';
+  isLocked: boolean;
+  voiceEngine: GenerationSettings['engine'];
+};
 
 interface VoicesWorkspaceProps {
   layoutMode: WorkspaceLayoutMode;
@@ -157,9 +167,34 @@ export function VoicesWorkspace({
     [characterLibrary, viewState.selectedCharacterId]
   );
 
+  const voiceLibraryEntries = useMemo<VoiceLibraryEntry[]>(() => galleryVoicePool.map((voice) => {
+    const country = resolveVoiceCountry(voice);
+    const voiceEngine = (voice.engine || selectedEngine) as GenerationSettings['engine'];
+    const meta = resolveVoiceDisplayMeta(voice);
+    const displayName = meta.name;
+    return {
+      voice,
+      country,
+      searchable: [displayName, voice.accent, country, voice.engine || ''].join(' ').toLowerCase(),
+      meta,
+      personaLabel: resolveVoicePersonaLabel(voice),
+      accessTier: resolveVoiceAccessTier(voiceEngine, voice),
+      isLocked: isVoiceLockedForFreeTier(voiceEngine, voice),
+      voiceEngine,
+    };
+  }), [
+    galleryVoicePool,
+    isVoiceLockedForFreeTier,
+    resolveVoiceAccessTier,
+    resolveVoiceCountry,
+    resolveVoiceDisplayMeta,
+    resolveVoicePersonaLabel,
+    selectedEngine,
+  ]);
+
   const selectedVoice = useMemo(
-    () => galleryVoicePool.find((voice) => voice.id === viewState.selectedVoiceId) || null,
-    [galleryVoicePool, viewState.selectedVoiceId]
+    () => voiceLibraryEntries.find((entry) => entry.voice.id === viewState.selectedVoiceId)?.voice || null,
+    [viewState.selectedVoiceId, voiceLibraryEntries]
   );
 
   const modeTabs = useManagedTabs({
@@ -205,28 +240,27 @@ export function VoicesWorkspace({
     });
   }, [characterLibrary, galleryVoicePool]);
 
-  const filteredVoices = useMemo(() => {
+  const filteredVoiceEntries = useMemo(() => {
     const normalizedSearch = deferredVoiceSearch.trim().toLowerCase();
-    return galleryVoicePool.filter((voice) => {
-      const searchable = [voice.name, voice.accent, resolveVoiceCountry(voice), voice.engine || ''].join(' ').toLowerCase();
-      const matchesSearch = !normalizedSearch || searchable.includes(normalizedSearch);
-      const matchesGender = voiceFilterGender === 'All' || voice.gender === voiceFilterGender;
-      const matchesAccent = voiceFilterAccent === 'All' || resolveVoiceCountry(voice) === voiceFilterAccent;
+    return voiceLibraryEntries.filter((entry) => {
+      const matchesSearch = !normalizedSearch || entry.searchable.includes(normalizedSearch);
+      const matchesGender = voiceFilterGender === 'All' || entry.voice.gender === voiceFilterGender;
+      const matchesAccent = voiceFilterAccent === 'All' || entry.country === voiceFilterAccent;
       return matchesSearch && matchesGender && matchesAccent;
     });
-  }, [deferredVoiceSearch, galleryVoicePool, resolveVoiceCountry, voiceFilterAccent, voiceFilterGender]);
+  }, [deferredVoiceSearch, voiceFilterAccent, voiceFilterGender, voiceLibraryEntries]);
 
   const uniqueAccents = useMemo(
-    () => Array.from(new Set(galleryVoicePool.map((voice) => resolveVoiceCountry(voice)))).sort(),
-    [galleryVoicePool, resolveVoiceCountry]
+    () => Array.from(new Set(voiceLibraryEntries.map((entry) => entry.country))).sort(),
+    [voiceLibraryEntries]
   );
 
   useEffect(() => {
     if (viewState.mode !== 'library') return;
-    const nextVoiceId = resolveVoicesSelectionId(viewState.selectedVoiceId, filteredVoices.map((voice) => voice.id));
+    const nextVoiceId = resolveVoicesSelectionId(viewState.selectedVoiceId, filteredVoiceEntries.map((entry) => entry.voice.id));
     if (nextVoiceId === viewState.selectedVoiceId) return;
     setViewState((current) => ({ ...current, selectedVoiceId: nextVoiceId }));
-  }, [filteredVoices, viewState.mode, viewState.selectedVoiceId]);
+  }, [filteredVoiceEntries, viewState.mode, viewState.selectedVoiceId]);
 
   useEffect(() => {
     setViewState((current) => {
@@ -294,7 +328,7 @@ export function VoicesWorkspace({
           <h3 className="vf-voices-section-title">Voices</h3>
         </div>
         <div className="vf-voices-status-strip vf-voices-status-strip--compact">
-          <span className="vf-voices-chip">{filteredVoices.length} shown</span>
+          <span className="vf-voices-chip">{filteredVoiceEntries.length} shown</span>
           <span className="vf-voices-chip">{galleryVoicePool.length} total</span>
         </div>
       </div>
@@ -378,7 +412,7 @@ export function VoicesWorkspace({
           </div>
         </div>
         <div className="vf-voices-panel-scroll">
-          {filteredVoices.length <= 0 ? (
+          {filteredVoiceEntries.length <= 0 ? (
             <div className="vf-voices-empty-state">
               <Search size={18} />
               <div>
@@ -388,12 +422,9 @@ export function VoicesWorkspace({
             </div>
           ) : (
             <div className="vf-voices-library-grid">
-              {filteredVoices.map((voice) => {
-                const voiceEngine = (voice.engine || selectedEngine) as GenerationSettings['engine'];
-                const meta = resolveVoiceDisplayMeta(voice);
+              {filteredVoiceEntries.map((entry) => {
+                const { accessTier, country, isLocked, meta, personaLabel, voice, voiceEngine } = entry;
                 const previewStatus = getPreviewStatus(previewState, voice.id);
-                const accessTier = resolveVoiceAccessTier(voiceEngine, voice);
-                const isLocked = isVoiceLockedForFreeTier(voiceEngine, voice);
                 const isSelected = voice.id === viewState.selectedVoiceId;
 
                 return (
@@ -418,21 +449,21 @@ export function VoicesWorkspace({
                           {meta.name}
                           {meta.countryTag ? <span className="vf-voices-country-tag">{meta.countryTag}</span> : null}
                         </span>
-                        <span className="vf-voices-row-meta">{resolveVoicePersonaLabel(voice)}</span>
+                        <span className="vf-voices-row-meta">{personaLabel}</span>
                       </span>
                       <span className={`vf-voices-chip ${accessTier === 'pro' ? 'vf-voices-chip--warn' : 'vf-voices-chip--accent'}`}>{accessTier}</span>
                     </span>
                     <span className="vf-voices-library-footer">
-                      <span className="vf-voices-row-meta">{resolveVoiceCountry(voice)}</span>
+                      <span className="vf-voices-row-meta">{country}</span>
                       <span className="vf-voices-row-actions">
                         <button
                           type="button"
                           className="vf-voices-icon-btn"
                           onClick={(event) => {
                             event.stopPropagation();
-                            void onPreviewVoice(voice.id, voice.name);
+                            void onPreviewVoice(voice.id, meta.name);
                           }}
-                          aria-label={`Preview ${voice.name}`}
+                          aria-label={`Preview ${meta.name}`}
                         >
                           {previewStatus === 'loading' ? <Loader2 size={15} className="animate-spin" /> : previewStatus === 'playing' ? <Pause size={15} /> : <Play size={15} />}
                         </button>
@@ -447,7 +478,7 @@ export function VoicesWorkspace({
                             }
                             openCharacterModal(undefined, voice.id);
                           }}
-                          aria-label={isLocked ? `Upgrade to use ${voice.name}` : `Create character using ${voice.name}`}
+                          aria-label={isLocked ? `Upgrade to use ${meta.name}` : `Create character using ${meta.name}`}
                         >
                           {isLocked ? <Lock size={14} /> : <Plus size={14} />}
                           {isLocked ? (isDesktop ? 'Upgrade' : 'Pro') : isDesktop ? 'Create character' : 'Create'}
@@ -507,6 +538,9 @@ export function VoicesWorkspace({
               <VoiceCloningTabContent
                 backendBaseUrl={backendBaseUrl}
                 selectedEngine={selectedEngine}
+                voiceLibraryVoices={galleryVoicePool}
+                voicePreviewState={previewState}
+                onPreviewVoice={onPreviewVoice}
                 denseTabs
                 layout={isDesktop ? 'workspace' : 'stacked'}
                 showRail={false}

@@ -1,5 +1,5 @@
 export type ReaderMode = 'novel' | 'comic';
-export type ReaderTab = 'read' | 'panels' | 'voices' | 'cast' | 'text' | 'translate';
+export type ReaderTab = 'read' | 'panels' | 'settings' | 'scripts' | 'saved';
 export const READER_HOME_TABS = ['novels', 'library', 'imported'] as const;
 export type ReaderHomeTab = (typeof READER_HOME_TABS)[number];
 export type ReaderHomeTabCounts = Record<ReaderHomeTab, number>;
@@ -12,6 +12,15 @@ export interface ReaderTabAvailabilityInput {
   sourceLanguage?: string;
   playbackLanguage?: string;
 }
+
+const LEGACY_TAB_ALIASES: Record<string, ReaderTab> = {
+  voices: 'settings',
+  cast: 'settings',
+  text: 'scripts',
+  translate: 'settings',
+  savedaudio: 'saved',
+  'saved-audio': 'saved',
+};
 
 const normalizeLang = (value: string | undefined): string =>
   String(value || '').trim().toLowerCase();
@@ -47,32 +56,27 @@ export const shouldShowTranslateTab = (input: Pick<ReaderTabAvailabilityInput, '
   return source !== playback;
 };
 
+export const normalizeReaderTabToken = (requestedTab: string | null | undefined): ReaderTab | null => {
+  const token = String(requestedTab || '').trim().toLowerCase();
+  if (!token) return null;
+  if (token === 'read' || token === 'panels' || token === 'settings' || token === 'scripts' || token === 'saved') {
+    return token;
+  }
+  return LEGACY_TAB_ALIASES[token] || null;
+};
+
 export const getReaderTabs = (input: ReaderTabAvailabilityInput): ReaderTab[] => {
-  const tabs: ReaderTab[] = input.mode === 'novel'
-    ? ['read', 'voices', 'text']
-    : ['panels', 'voices', 'text'];
-
-  if (shouldShowCastTab(input)) {
-    tabs.push('cast');
-  }
-  if (shouldShowTranslateTab(input)) {
-    tabs.push('translate');
-  }
-
-  // Enforce requested order exactly.
-  const orderNovel: ReaderTab[] = ['read', 'voices', 'cast', 'text', 'translate'];
-  const orderComic: ReaderTab[] = ['panels', 'voices', 'cast', 'text', 'translate'];
-  const order = input.mode === 'novel' ? orderNovel : orderComic;
-  return order.filter((tab) => tabs.includes(tab));
+  return input.mode === 'novel'
+    ? ['read', 'settings', 'scripts', 'saved']
+    : ['panels', 'settings', 'scripts', 'saved'];
 };
 
 export const getReaderTabLabel = (tab: ReaderTab): string => {
   if (tab === 'read') return 'Read';
   if (tab === 'panels') return 'Panels';
-  if (tab === 'voices') return 'Voices';
-  if (tab === 'cast') return 'Cast';
-  if (tab === 'text') return 'Text';
-  return 'Translate';
+  if (tab === 'settings') return 'Settings';
+  if (tab === 'scripts') return 'Scripts';
+  return 'Saved Audio';
 };
 
 export const coerceReaderTab = (
@@ -80,8 +84,8 @@ export const coerceReaderTab = (
   availableTabs: ReaderTab[],
   mode: ReaderMode
 ): ReaderTab => {
-  const token = String(requestedTab || '').trim().toLowerCase() as ReaderTab;
-  if (availableTabs.includes(token)) return token;
+  const token = normalizeReaderTabToken(requestedTab);
+  if (token && availableTabs.includes(token)) return token;
   return availableTabs[0] || getReaderPrimaryTab(mode);
 };
 
@@ -93,9 +97,9 @@ export const resolveImportedDefaultTab = (input: {
 }): ReaderTab => {
   if (!input.imported) return input.availableTabs[0] || getReaderPrimaryTab(input.mode);
   const preferred = input.mode === 'comic'
-    ? 'text'
+    ? 'scripts'
     : input.lowConfidence
-      ? 'text'
+      ? 'scripts'
       : 'read';
   if (input.availableTabs.includes(preferred)) return preferred;
   return input.availableTabs[0] || getReaderPrimaryTab(input.mode);

@@ -1,5 +1,7 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, ChevronUp, Pause, Play, Settings2, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronUp, Download, Pause, Play, RefreshCw, Settings2, Upload, X } from 'lucide-react';
+
+type ReaderViewportMode = 'mobile' | 'tablet' | 'desktop';
 
 interface ReaderStickyDockProps {
   title: string;
@@ -9,6 +11,8 @@ interface ReaderStickyDockProps {
   queueFillPct?: number;
   progressPct?: number;
   statusLabel: string;
+  vfEstimateLabel: string;
+  vfEstimateDetail: string;
   isPlaying: boolean;
   miniMode: boolean;
   transportDisabled?: boolean;
@@ -25,6 +29,7 @@ interface ReaderStickyDockProps {
   importDialogSignal?: number;
   onImportFiles?: (files: File[]) => void;
   onOpenSettings?: () => void;
+  viewportMode?: ReaderViewportMode;
 }
 
 export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
@@ -35,6 +40,8 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
   queueFillPct,
   progressPct,
   statusLabel,
+  vfEstimateLabel,
+  vfEstimateDetail,
   isPlaying,
   miniMode,
   transportDisabled,
@@ -51,17 +58,20 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
   importDialogSignal = 0,
   onImportFiles,
   onOpenSettings,
+  viewportMode = 'desktop',
 }) => {
   const importInputRef = React.useRef<HTMLInputElement>(null);
   const importInputId = React.useId();
   const lastImportDialogSignalRef = React.useRef(importDialogSignal);
+  const isCompactViewport = viewportMode !== 'desktop';
 
   const safeReadyChunks = Math.max(0, Math.floor(Number(readyChunkCount || 0)));
   const safePendingChunks = Math.max(0, Math.floor(Number(pendingChunkCount || 0)));
   const safeQueuePct = Math.max(0, Math.min(100, Number(queueFillPct ?? 0)));
   const resolvedTransportDisabled = Boolean(transportDisabled);
 
-  const queueStatusText = `${safeReadyChunks} ready chunks, ${safePendingChunks} pending, queue ${safeQueuePct}%`;
+  const safeProgressPct = Math.max(0, Math.min(100, Math.round(Number(progressPct || 0))));
+  const queueStatusText = `${safeReadyChunks} ready chunks, ${safePendingChunks} pending, queue ${safeQueuePct}%, progress ${safeProgressPct}%`;
 
   const handleImportClick = () => {
     const handledByParent = onDockImport?.();
@@ -86,7 +96,15 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
 
   if (miniMode) {
     return (
-      <footer className="vf-reader-v2-dock vf-reader-v2-dock--mini" data-testid="reader-sticky-dock">
+      <footer
+        className="vf-reader-v2-dock vf-reader-v2-dock--mini"
+        data-testid="reader-sticky-dock"
+        data-reader-dock-mode="mini"
+        data-reader-dock-state="mini"
+        data-reader-dock-viewport={viewportMode}
+        data-reader-viewport={viewportMode}
+        data-reader-dock-controls="compact"
+      >
         <button
           type="button"
           className="vf-reader-v2-dock__mini-circle"
@@ -97,14 +115,22 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
           <ChevronUp size={12} aria-hidden="true" />
         </button>
         <div className="vf-reader-v2-dock__status-sr" role="status" aria-live="polite" aria-atomic="true">
-          Reader status: {statusLabel}. {queueStatusText}
+          Reader status: {statusLabel}. {queueStatusText}. {vfEstimateLabel}. {vfEstimateDetail}
         </div>
       </footer>
     );
   }
 
   return (
-    <footer className="vf-reader-v2-dock" data-testid="reader-sticky-dock">
+    <footer
+      className="vf-reader-v2-dock"
+      data-testid="reader-sticky-dock"
+      data-reader-dock-mode="full"
+      data-reader-dock-state="full"
+      data-reader-dock-viewport={viewportMode}
+      data-reader-viewport={viewportMode}
+      data-reader-dock-controls="expanded"
+    >
       <div className="vf-reader-v2-dock__transport">
         <button type="button" aria-label="Previous chunk" className="vf-reader-v2-dock__icon-btn" onClick={onPrev} disabled={resolvedTransportDisabled}>
           <ChevronLeft size={16} aria-hidden="true" />
@@ -132,6 +158,8 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
           <div className="vf-reader-v2-dock__status-meta">
             <span>{safeReadyChunks} ready chunks</span>
             <em>{safePendingChunks} pending</em>
+            <span>{safeProgressPct}% progress</span>
+            <strong data-testid="reader-dock-vf-estimate">{vfEstimateLabel}</strong>
           </div>
           <div
             className="vf-reader-v2-dock__progress vf-reader-v2-dock__progress--queue"
@@ -149,23 +177,37 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
           </div>
         </div>
         <div className="vf-reader-v2-dock__status-sr" role="status" aria-live="polite" aria-atomic="true">
-          Reader status: {statusLabel}. {queueStatusText}
+          Reader status: {statusLabel}. {queueStatusText}. {vfEstimateLabel}. {vfEstimateDetail}
         </div>
       </div>
 
       <div className="vf-reader-v2-dock__controls vf-reader-v2-dock__controls-shell">
         <div className="vf-reader-v2-dock__quick-tools" role="group" aria-label="Reader quick tools">
-          <button
-            type="button"
-            className="vf-reader-v2-dock__text-btn"
-            onClick={handleImportClick}
-            aria-controls={importInputId}
-            aria-label="Import content"
-            title="Import content"
-          >
-            <Upload size={14} aria-hidden="true" />
-            <span>Import</span>
-          </button>
+          {isCompactViewport ? (
+            <button
+              type="button"
+              className="vf-reader-v2-dock__icon-btn vf-reader-v2-dock__icon-btn--compact"
+              onClick={handleImportClick}
+              aria-controls={importInputId}
+              aria-label="Import content"
+              title="Import content"
+            >
+              <Upload size={14} aria-hidden="true" />
+              <span className="vf-reader-v2-sr-only">Import</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="vf-reader-v2-dock__text-btn"
+              onClick={handleImportClick}
+              aria-controls={importInputId}
+              aria-label="Import content"
+              title="Import content"
+            >
+              <Upload size={14} aria-hidden="true" />
+              <span>Import</span>
+            </button>
+          )}
           <input
             ref={importInputRef}
             id={importInputId}
@@ -178,34 +220,72 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
             tabIndex={-1}
           />
 
-          <button
-            type="button"
-            className="vf-reader-v2-dock__text-btn"
-            onClick={() => {
-              onDockSettings?.();
-              onOpenSettings?.();
-            }}
-            aria-label="Open settings"
-            title="Open settings"
-            disabled={!onDockSettings && !onOpenSettings}
-          >
-            <Settings2 size={14} aria-hidden="true" />
-            <span>Settings</span>
-          </button>
-          {onRefresh ? (
-            <button type="button" className="vf-reader-v2-dock__text-btn" onClick={onRefresh}>
-              <span>Refresh</span>
+          {isCompactViewport ? (
+            <button
+              type="button"
+              className="vf-reader-v2-dock__icon-btn vf-reader-v2-dock__icon-btn--compact"
+              onClick={() => {
+                onDockSettings?.();
+                onOpenSettings?.();
+              }}
+              aria-label="Open settings"
+              title="Open settings"
+              disabled={!onDockSettings && !onOpenSettings}
+            >
+              <Settings2 size={14} aria-hidden="true" />
+              <span className="vf-reader-v2-sr-only">Settings</span>
             </button>
+          ) : (
+            <button
+              type="button"
+              className="vf-reader-v2-dock__text-btn"
+              onClick={() => {
+                onDockSettings?.();
+                onOpenSettings?.();
+              }}
+              aria-label="Open settings"
+              title="Open settings"
+              disabled={!onDockSettings && !onOpenSettings}
+            >
+              <Settings2 size={14} aria-hidden="true" />
+              <span>Settings</span>
+            </button>
+          )}
+          {onRefresh ? (
+            isCompactViewport ? (
+              <button type="button" className="vf-reader-v2-dock__icon-btn vf-reader-v2-dock__icon-btn--compact" onClick={onRefresh} aria-label="Refresh reader" title="Refresh reader">
+                <RefreshCw size={14} aria-hidden="true" />
+                <span className="vf-reader-v2-sr-only">Refresh</span>
+              </button>
+            ) : (
+              <button type="button" className="vf-reader-v2-dock__text-btn" onClick={onRefresh}>
+                <span>Refresh</span>
+              </button>
+            )
           ) : null}
           {onExport ? (
-            <button type="button" className="vf-reader-v2-dock__text-btn" onClick={onExport}>
-              <span>Export</span>
-            </button>
+            isCompactViewport ? (
+              <button type="button" className="vf-reader-v2-dock__icon-btn vf-reader-v2-dock__icon-btn--compact" onClick={onExport} aria-label="Export reader audio" title="Export reader audio">
+                <Download size={14} aria-hidden="true" />
+                <span className="vf-reader-v2-sr-only">Export</span>
+              </button>
+            ) : (
+              <button type="button" className="vf-reader-v2-dock__text-btn" onClick={onExport}>
+                <span>Export</span>
+              </button>
+            )
           ) : null}
           {onClose ? (
-            <button type="button" className="vf-reader-v2-dock__text-btn" onClick={onClose}>
-              <span>Close</span>
-            </button>
+            isCompactViewport ? (
+              <button type="button" className="vf-reader-v2-dock__icon-btn vf-reader-v2-dock__icon-btn--compact" onClick={onClose} aria-label="Close reader" title="Close reader">
+                <X size={14} aria-hidden="true" />
+                <span className="vf-reader-v2-sr-only">Close</span>
+              </button>
+            ) : (
+              <button type="button" className="vf-reader-v2-dock__text-btn" onClick={onClose}>
+                <span>Close</span>
+              </button>
+            )
           ) : null}
         </div>
 

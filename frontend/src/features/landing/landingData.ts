@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildStudioLiveMultiSpeakerPrompt } from '../../shared/prompts/liveMultiSpeakerPrompt';
 
@@ -47,14 +47,14 @@ interface MultiSpeakerManifest {
   entries: MultiSpeakerManifestEntry[];
 }
 
-interface OpenVoiceManifestFile {
+interface VoiceCloneManifestFile {
   role: string;
   file: string;
 }
 
-interface OpenVoiceManifest {
+interface VoiceCloneManifest {
   engine: string;
-  files: OpenVoiceManifestFile[];
+  files: VoiceCloneManifestFile[];
 }
 
 export interface LandingSingleSpeakerDemo {
@@ -145,67 +145,63 @@ const SINGLE_SPEAKER_COPY: Record<
   }
 > = {
   'en-us': {
-    title: 'Launch film narration',
-    summary: 'Polished English pacing for hero films, product reveals, and broadcast-style intros.',
-    cue: 'Bright authority with controlled lift on the close.',
+    title: 'Daily assistant check-in',
+    summary: 'Smart-home weather, schedule, and a playful reminder in one pass.',
+    cue: 'Bright, friendly, warm.',
   },
   hi: {
-    title: 'Hindi explainer read',
-    summary: 'Localized delivery tuned for onboarding films, app walkthroughs, and education cuts.',
-    cue: 'Measured, practical, and warm enough for repeat listening.',
+    title: 'Hindi support response',
+    summary: 'Support reply built around reassurance and clear next steps.',
+    cue: 'Calm, steady, reassuring.',
   },
   es: {
-    title: 'Spanish campaign pass',
-    summary: 'A cleaner market read for social promos, paid spots, and short-form launch assets.',
-    cue: 'Expressive opening with a compact, persuasive finish.',
+    title: 'Spanish delivery update',
+    summary: 'Delivery status with light urgency and practical guidance.',
+    cue: 'Upbeat, practical, crisp.',
   },
-  ar: {
-    title: 'Arabic documentary tone',
-    summary: 'Measured narration with enough gravity for premium editorial and documentary framing.',
-    cue: 'Low, composed, and cinematic without losing clarity.',
+  ja: {
+    title: 'Japanese meeting reminder',
+    summary: 'Business reminder with composed pre-meeting pacing.',
+    cue: 'Measured, professional, supportive.',
   },
-  'zh-cn': {
-    title: 'Mandarin release teaser',
-    summary: 'Fast, crisp delivery for high-end teasers, feature drops, and product announcements.',
-    cue: 'Compact phrasing with a sharp editorial cadence.',
+  fr: {
+    title: 'French lifestyle narrative',
+    summary: 'Dreamy travel-style narration with a soft finish.',
+    cue: 'Airy, warm, gentle.',
   },
+};
+
+const MULTI_SPEAKER_SUMMARY_COPY: Record<string, string> = {
+  'en-weekend-plan': 'Three friends pitch a blockbuster, an indie drama, and a playful middle ground.',
+  'hi-family-dinner': 'A family dinner scene that balances warmth, teasing, and gentle authority.',
+  'es-boutique-shop': 'A retail exchange that moves from polite ask to confident close.',
+  'ja-office-deadline': 'An office handoff scene with tired focus and professional restraint.',
+  'fr-city-tour': 'A guide and tourist move through a romantic city recommendation.',
 };
 
 const MULTI_SPEAKER_TITLE_COPY: Record<string, string> = {
-  'en-roundtable': 'Creator roundtable',
-  'zh-briefing': 'Mandarin creator briefing',
-  'hi-audiobook': 'Hindi audiobook scene',
-  'es-culture': 'Culture recap panel',
-  'ar-documentary': 'Arabic documentary passage',
+  'en-weekend-plan': 'The weekend plan',
+  'hi-family-dinner': 'Family dinner',
+  'es-boutique-shop': 'The boutique shop',
+  'ja-office-deadline': 'The office deadline',
+  'fr-city-tour': 'The city tour',
 };
 
 const MULTI_SPEAKER_CUE_COPY: Record<string, string> = {
-  'en-roundtable': 'Lead with a confident host and keep the strategist turn punchy.',
-  'zh-briefing': 'Presenter first, reporter second, analyst last. Calm all the way through.',
-  'hi-audiobook': 'Hold the suspense between narration and dialogue instead of rushing the reveal.',
-  'es-culture': 'Keep it conversational, then tighten the final production handoff.',
-  'ar-documentary': 'Low cinematic narration with warm expert context and a deliberate archival close.',
+  'en-weekend-plan': 'Fast turns with crisp character contrast.',
+  'hi-family-dinner': 'Warm family timing with teasing authority.',
+  'es-boutique-shop': 'Helpful retail pacing with a bright finish.',
+  'ja-office-deadline': 'Tired but professional handoff energy.',
+  'fr-city-tour': 'Elegant guide pacing with a romantic finish.',
 };
 
-const resolveFrontendAssetPath = (...segments: string[]) => {
-  const directPath = path.join(/* turbopackIgnore: true */ process.cwd(), ...segments);
-  if (existsSync(directPath)) return directPath;
+const readJsonWithBom = <T,>(...segments: string[]): T => (
+  JSON.parse(readFileSync(path.join('public', ...segments), 'utf8').replace(/^\uFEFF/, '')) as T
+);
 
-  const repoRelativePath = path.join(/* turbopackIgnore: true */ process.cwd(), 'frontend', ...segments);
-  if (existsSync(repoRelativePath)) return repoRelativePath;
-
-  throw new Error(`Unable to resolve frontend asset path for ${segments.join('/')}.`);
-};
-
-const readJsonWithBom = <T,>(...segments: string[]): T => {
-  const filePath = resolveFrontendAssetPath(...segments);
-  const raw = readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
-  return JSON.parse(raw) as T;
-};
-
-const asVectorDemoManifest = readJsonWithBom<VectorDemoManifest>('public', 'audio', 'vector-demo', 'manifest.json');
-const asMultiSpeakerManifest = readJsonWithBom<MultiSpeakerManifest>('public', 'audio', 'vector-multi-demo', 'manifest.json');
-const asOpenVoiceManifest = readJsonWithBom<OpenVoiceManifest>('public', 'audio', 'openvoice-demo', 'manifest.json');
+const asVectorDemoManifest = readJsonWithBom<VectorDemoManifest>('audio', 'vector-demo', 'manifest.json');
+const asMultiSpeakerManifest = readJsonWithBom<MultiSpeakerManifest>('audio', 'vector-multi-demo', 'manifest.json');
+const asVoiceCloneManifest = readJsonWithBom<VoiceCloneManifest>('audio', 'openvoice-demo', 'manifest.json');
 
 const requireSingleSample = (slug: string) => {
   const sample = asVectorDemoManifest.samples.find((entry) => entry.slug === slug);
@@ -224,15 +220,21 @@ const requireMultiSpeakerEntry = (id: string) => {
 };
 
 const requireCloneFile = (role: string) => {
-  const file = asOpenVoiceManifest.files.find((entry) => entry.role === role);
+  const file = asVoiceCloneManifest.files.find((entry) => entry.role === role);
   if (!file) {
-    throw new Error(`OpenVoice landing proof is missing the "${role}" file.`);
+    throw new Error(`Voice Clone landing proof is missing the "${role}" file.`);
   }
   return file;
 };
 
-const FEATURED_SINGLE_SPEAKER_IDS = ['en-us', 'hi', 'es', 'ar', 'zh-cn'] as const;
-const FEATURED_MULTI_SPEAKER_IDS = ['en-roundtable', 'zh-briefing', 'hi-audiobook', 'es-culture', 'ar-documentary'] as const;
+const FEATURED_SINGLE_SPEAKER_IDS = ['en-us', 'hi', 'es', 'ja', 'fr'] as const;
+const FEATURED_MULTI_SPEAKER_IDS = [
+  'en-weekend-plan',
+  'hi-family-dinner',
+  'es-boutique-shop',
+  'ja-office-deadline',
+  'fr-city-tour',
+] as const;
 
 export const LANDING_SINGLE_SPEAKER_DEMOS: readonly LandingSingleSpeakerDemo[] = FEATURED_SINGLE_SPEAKER_IDS.map((slug) => {
   const sample = requireSingleSample(slug);
@@ -258,7 +260,7 @@ export const LANDING_MULTI_SPEAKER_DEMOS: readonly LandingMultiSpeakerDemo[] = F
   return {
     id,
     title: MULTI_SPEAKER_TITLE_COPY[id] || entry.scenario,
-    summary: entry.summary,
+    summary: MULTI_SPEAKER_SUMMARY_COPY[id] || entry.summary,
     scene: entry.scenario,
     market: entry.market,
     useCase: entry.useCase,
@@ -266,7 +268,7 @@ export const LANDING_MULTI_SPEAKER_DEMOS: readonly LandingMultiSpeakerDemo[] = F
     translation: entry.translation,
     cue: MULTI_SPEAKER_CUE_COPY[id] || entry.direction,
     audioSrc: entry.audioSrc,
-    cast: entry.cast.map((member) => `${member.role}: ${member.displayName}`),
+    cast: entry.cast.map((member) => member.displayName),
     lines: entry.lines.map((line) => ({
       speaker: line.speaker,
       role: line.role,
@@ -279,9 +281,8 @@ export const LANDING_MULTI_SPEAKER_DEMOS: readonly LandingMultiSpeakerDemo[] = F
 const LANDING_DIRECTOR_SOURCE_DEMO = LANDING_MULTI_SPEAKER_DEMOS[0];
 
 const LANDING_DIRECTOR_PROMPT_BUNDLE = buildStudioLiveMultiSpeakerPrompt({
-  castNames: LANDING_DIRECTOR_SOURCE_DEMO?.cast.map((member) => member.split(':')[0] || member) || [],
-  sourceText:
-    LANDING_DIRECTOR_SOURCE_DEMO?.lines.map((line) => `(${line.speaker}) : ${line.text}`).join('\n') || '',
+  castNames: Array.from(new Set(LANDING_DIRECTOR_SOURCE_DEMO?.lines.map((line) => line.role) || [])),
+  sourceText: LANDING_DIRECTOR_SOURCE_DEMO?.lines.map((line) => line.text).join('\n') || '',
   topic: LANDING_DIRECTOR_SOURCE_DEMO?.scene || 'Creator roundtable',
   pacingStyle: 'Confident premium pacing',
   language: 'English',
@@ -293,9 +294,9 @@ const referenceFile = requireCloneFile('reference');
 const renderedFile = requireCloneFile('rendered');
 
 export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
-  title: 'OpenVoice clone proof',
+  title: 'Voice Clone proof',
   summary:
-    'The public proof pair lets listeners compare the reference clip against the rendered clone before they ever enter the studio.',
+    'Compare the reference clip against the rendered clone before opening the studio.',
   source: {
     label: 'Reference take',
     name: 'reference.wav',
@@ -311,21 +312,21 @@ export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
 export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
   title: 'AI Director lane',
   summary:
-    'The same live prompt contract used in the studio can tighten emphasis, reshape pacing, and steer a scene before you commit the render.',
-  prompt: LANDING_DIRECTOR_PROMPT_BUNDLE.systemPrompt.split('\n').slice(0, 11).join('\n'),
-  before: 'Flat pacing, neutral emphasis, and no clear contrast between the opening question and the strategic answer.',
-  after: 'The host lands the opener with lift, the strategist drives the middle beat, and the close resolves with calm authority.',
+    'Use the same prompt contract as the studio to tighten emphasis and pacing before render.',
+  prompt: LANDING_DIRECTOR_PROMPT_BUNDLE.systemPrompt.split('\n').slice(0, 8).join('\n'),
+  before: 'Flat pacing with weak contrast between the three voices.',
+  after: 'Clearer handoffs, cleaner skepticism, warmer resolution.',
   bullets: [
-    { label: 'Prompt contract', value: 'Stable JSON output keeps direction usable instead of ornamental.' },
-    { label: 'Scene-safe edits', value: 'Direction changes delivery while preserving the source script and speaker order.' },
-    { label: 'Publish speed', value: 'Review the prompt, render again, and keep the same scene ready for release across markets.' },
+    { label: 'Prompt contract', value: 'Stable JSON keeps direction usable.' },
+    { label: 'Scene-safe edits', value: 'Delivery changes without rewriting the scene.' },
+    { label: 'Publish speed', value: 'Review, rerender, and keep the scene moving.' },
   ],
 };
 
 export const LANDING_READER_PROOF: LandingReaderProof = {
   title: 'Reader playback',
   summary:
-    'The reader closes the loop between script review and final listening, so creative teams can approve pacing and narrative flow in one surface.',
+    'The reader closes the loop between script review and final listening.',
   modeLabel: 'Reader review',
   coverLabel: 'Approval surface',
   progressLabel: '4 scenes locked',
@@ -336,19 +337,19 @@ export const LANDING_READER_PROOF: LandingReaderProof = {
       id: 'scene-1',
       title: 'Scene 01 - Cold open',
       status: 'Locked',
-      body: 'Lead with the premium promise, then move directly into proof instead of marketing filler.',
+      body: 'Lead with the promise, then move straight into proof.',
     },
     {
       id: 'scene-2',
       title: 'Scene 02 - Prime cast reel',
       status: 'Live',
-      body: 'The multi-speaker reel stays audible and easy to compare while the team reviews each cast handoff.',
+      body: 'Keep the cast reel easy to compare while the team reviews handoffs.',
     },
     {
       id: 'scene-3',
       title: 'Scene 03 - Clone approval',
       status: 'Ready',
-      body: 'Reference and rendered voice-clone takes stay together so approvals happen with real playback context.',
+      body: 'Keep reference and clone takes together for fast approval.',
     },
   ],
 };

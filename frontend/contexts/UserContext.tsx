@@ -1,3 +1,5 @@
+'use client';
+
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
@@ -53,10 +55,8 @@ import {
   ACCOUNT_DELETE_CONFIRM_PHRASE,
   deleteAccount as deleteAccountRequest,
   clearGenerationHistory,
-  fetchAccountProfile,
   fetchAccountEntitlements,
   fetchGenerationHistory,
-  upsertAccountProfile,
 } from '../services/accountService';
 import { fetchAdminActor } from '../services/adminService';
 import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
@@ -65,11 +65,12 @@ import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { readEnvBoolean, readEnvValue } from '../src/shared/runtime/env';
 import { shouldBootstrapAccountDataForPath } from '../src/app/navigation';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageJson, writeStorageJson, removeStorageKey, writeStorageString } from '../src/shared/storage/localStore';
+import { readStorageJson, writeStorageJson, removeStorageKey } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
 import {
   addSessionClonedVoice,
   clearSessionClonedVoices,
+  getSessionClonedVoices,
   setSessionClonedVoices,
 } from '../services/clonedVoiceSessionStore';
 
@@ -184,46 +185,6 @@ const readSettingsBackendUrl = (): string => {
 const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
 const DEFAULT_DEV_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/app/login';
 
-interface PendingSignupProfile {
-  uid: string;
-  email: string;
-  userId: string;
-  displayName?: string;
-  createdAt: number;
-}
-
-const syncUserIdSetupRequirement = (required: boolean): void => {
-  if (required) {
-    writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
-    return;
-  }
-  removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-};
-
-const readPendingSignupProfile = (): PendingSignupProfile | null => {
-  const payload = readStorageJson<PendingSignupProfile>(STORAGE_KEYS.pendingSignupProfile);
-  if (!payload || typeof payload !== 'object') return null;
-  const uid = String(payload.uid || '').trim();
-  const email = String(payload.email || '').trim().toLowerCase();
-  const userId = String(payload.userId || '').trim().toLowerCase();
-  if (!uid || !email || !userId) return null;
-  return {
-    uid,
-    email,
-    userId,
-    ...(payload.displayName ? { displayName: String(payload.displayName).trim() } : {}),
-    createdAt: Number.isFinite(payload.createdAt) ? Number(payload.createdAt) : Date.now(),
-  };
-};
-
-const writePendingSignupProfile = (payload: PendingSignupProfile): void => {
-  writeStorageJson(STORAGE_KEYS.pendingSignupProfile, payload);
-};
-
-const clearPendingSignupProfile = (): void => {
-  removeStorageKey(STORAGE_KEYS.pendingSignupProfile);
-};
-
 const resolveEmailVerificationContinueUrl = (): string => {
   const configured = readEnvValue(
     process.env.NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL,
@@ -300,6 +261,44 @@ const requiresEmailVerificationForUser = (user: { uid?: string | null; email?: s
   if (!email) return false;
   if (isAdminIdentity(user.uid, user.email, false)) return false;
   return user.emailVerified !== true;
+};
+
+const AUTH_USER_RELOAD_TIMEOUT_MS = 5_000;
+
+const waitForAuthUserReload = async (
+  user: { reload: () => Promise<void> },
+): Promise<void> => {
+  if (typeof window === 'undefined') {
+    await user.reload().catch(() => undefined);
+    return;
+  }
+
+  let timeoutId: number | null = null;
+  await Promise.race([
+    user.reload().catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timeoutId = window.setTimeout(resolve, AUTH_USER_RELOAD_TIMEOUT_MS);
+    }),
+  ]);
+  if (timeoutId !== null) {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const resolveWithTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeoutId = globalThis.setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  }
 };
 
 const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
@@ -500,34 +499,26 @@ const readFirestoreAdminStatus = async (uid: string): Promise<boolean> => {
   }
 };
 
-const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
-  const current = firebaseAuth.currentUser;
+export const mapFirebaseUserToProfile = async (firebaseUserOverride?: typeof firebaseAuth.currentUser): Promise<UserProfile> => {
+  const current = firebaseUserOverride || firebaseAuth.currentUser;
   if (!current) return BLANK_USER;
   const tokenResult = await current.getIdTokenResult().catch(() => null);
   const hasAdminClaim = Boolean(tokenResult?.claims?.admin);
   const envOrClaimAdmin = isAdminIdentity(current.uid, current.email, hasAdminClaim);
   let firestoreAdmin = false;
   if (!envOrClaimAdmin && shouldAllowFirestoreAdminRoleFallback()) {
-    firestoreAdmin = await readFirestoreAdminStatus(current.uid);
+    firestoreAdmin = await resolveWithTimeout(readFirestoreAdminStatus(current.uid), 750, false);
   }
   const isAdmin = envOrClaimAdmin || firestoreAdmin;
   const providerIds = (current.providerData || [])
     .map((provider) => String(provider?.providerId || '').trim())
     .filter(Boolean);
-  let userId = '';
-  try {
-    const accountProfile = await fetchAccountProfile(readSettingsBackendUrl());
-    syncUserIdSetupRequirement(Boolean(accountProfile?.requiredUserId));
-    userId = String(accountProfile?.profile?.userId || '').trim().toLowerCase();
-  } catch {
-    // Profile setup can be completed later; auth should remain usable.
-  }
   return {
     uid: current.uid,
     googleId: current.uid,
     name: current.displayName || current.email || current.phoneNumber || 'V FLOW AI User',
     email: current.email || `${current.uid}@firebase.vflowai`,
-    userId: userId || undefined,
+    userId: undefined,
     avatarUrl: current.photoURL || undefined,
     phoneNumber: current.phoneNumber || undefined,
     role: isAdmin ? 'admin' : 'user',
@@ -663,6 +654,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [stats]);
 
   useEffect(() => {
+    const persistedClones = getSessionClonedVoices();
+    if (persistedClones.length > 0) {
+      setClonedVoices(persistedClones);
+    }
+  }, []);
+
+  useEffect(() => {
     setSessionClonedVoices(clonedVoices);
   }, [clonedVoices]);
 
@@ -716,35 +714,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
     }
   }, []);
-
-  const applyPendingSignupProfile = async (uid: string, email: string): Promise<void> => {
-    const pending = readPendingSignupProfile();
-    if (!pending) return;
-    const safeUid = String(uid || '').trim();
-    const safeEmail = String(email || '').trim().toLowerCase();
-    if (!safeUid || pending.uid !== safeUid) return;
-    if (safeEmail && pending.email !== safeEmail) return;
-    try {
-      await upsertAccountProfile(
-        {
-          userId: pending.userId,
-          ...(pending.displayName ? { displayName: pending.displayName } : {}),
-        },
-        readSettingsBackendUrl()
-      );
-      setUser((prev) => {
-        if (String(prev.uid || '').trim() !== safeUid) return prev;
-        return {
-          ...prev,
-          userId: pending.userId,
-        };
-      });
-      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-      clearPendingSignupProfile();
-    } catch {
-      // Keep pending payload to retry after the next successful verified sign-in.
-    }
-  };
 
   const loadHistory = useCallback(async (limit = 30) => {
     const firebaseUser = firebaseAuth.currentUser;
@@ -828,14 +797,15 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
           clearDriveTokenCache();
           removeStorageKey(STORAGE_KEYS.settings);
-          removeStorageKey(STORAGE_KEYS.uidSetupRequired);
           setUser(BLANK_USER);
           setCharacterLibrary(DEFAULT_CHARACTERS);
           setStats(INITIAL_STATS);
           setHistory([]);
           return;
         }
-        await firebaseUser.reload().catch(() => undefined);
+        if (requiresEmailVerificationForUser(firebaseUser)) {
+          await waitForAuthUserReload(firebaseUser);
+        }
         if (requiresEmailVerificationForUser(firebaseUser)) {
           if (charactersUnsubscribeRef.current) {
             charactersUnsubscribeRef.current();
@@ -844,15 +814,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           await signOut(firebaseAuth).catch(() => undefined);
           clearDriveTokenCache();
           removeStorageKey(STORAGE_KEYS.settings);
-          removeStorageKey(STORAGE_KEYS.uidSetupRequired);
           setUser(BLANK_USER);
           setCharacterLibrary(DEFAULT_CHARACTERS);
           setStats(INITIAL_STATS);
           setHistory([]);
           return;
         }
-        void applyPendingSignupProfile(firebaseUser.uid, firebaseUser.email || '');
-        const profile = await mapFirebaseUserToProfile();
+        const profile = await mapFirebaseUserToProfile(firebaseUser);
         setUser(profile);
         bootstrapCharacterSync(firebaseUser.uid);
       } finally {
@@ -904,7 +872,9 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       }
       const credential = await signInWithEmailAndPassword(firebaseAuth, rawEmail, String(password || ''));
-      await credential.user.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(credential.user)) {
+        await waitForAuthUserReload(credential.user);
+      }
       if (requiresEmailVerificationForUser(credential.user)) {
         await signOut(firebaseAuth).catch(() => undefined);
         return buildUnverifiedEmailSignInResult();
@@ -921,7 +891,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
 
-  const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName, userId) => {
+  const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName) => {
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
@@ -942,23 +912,11 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: 'Use a full email address to create an account.',
         };
       }
-      const normalizedUserId = String(userId || '').trim().toLowerCase();
-      if (!normalizedUserId) {
-        return { ok: false, error: 'Choose a user ID.' };
-      }
       const credential = await createUserWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
       if (displayName?.trim()) {
         await updateProfile(credential.user, { displayName: displayName.trim() });
       }
       await sendVerificationEmailWithFallback(credential.user);
-      writePendingSignupProfile({
-        uid: String(credential.user.uid || '').trim(),
-        email: normalizedEmail.toLowerCase(),
-        userId: normalizedUserId,
-        ...(displayName?.trim() ? { displayName: displayName.trim() } : {}),
-        createdAt: Date.now(),
-      });
-      syncUserIdSetupRequirement(true);
       await signOut(firebaseAuth).catch(() => undefined);
       setUser(BLANK_USER);
       return { ok: true, requiresEmailVerification: true };
@@ -1043,7 +1001,9 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const result = await signInWithPopup(firebaseAuth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
-      await result.user.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(result.user)) {
+        await waitForAuthUserReload(result.user);
+      }
       if (requiresEmailVerificationForUser(result.user)) {
         await signOut(firebaseAuth).catch(() => undefined);
         return {
@@ -1123,8 +1083,9 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setCharacterLibrary(DEFAULT_CHARACTERS);
     setStats(INITIAL_STATS);
     setHistory([]);
+    setClonedVoices([]);
+    clearSessionClonedVoices();
     setShowSubscriptionModal(false);
-    removeStorageKey(STORAGE_KEYS.uidSetupRequired);
   };
 
   const updateCharacter = useCallback((character: CharacterProfile) => {
@@ -1225,7 +1186,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     },
     deleteAccount: async () => {
       await deleteAccountRequest(readSettingsBackendUrl(), ACCOUNT_DELETE_CONFIRM_PHRASE);
-      clearPendingSignupProfile();
       await signOutUser();
       setHistory([]);
       setClonedVoices([]);
@@ -1297,4 +1257,6 @@ export const useUser = () => {
   if (!context) throw new Error('useUser must be used within a UserProvider');
   return context;
 };
+
+export const useOptionalUser = () => useContext(UserContext);
 

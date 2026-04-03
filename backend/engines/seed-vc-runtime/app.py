@@ -4,11 +4,9 @@ import base64
 import hashlib
 import hmac
 import io
-import json
 import math
 import os
 import struct
-import time
 import wave
 from typing import Any, Literal
 
@@ -29,6 +27,8 @@ RUNTIME_TOKEN = str(
 RUNTIME_SAMPLE_RATE = max(8_000, int(os.getenv("VF_OPENVOICE_RUNTIME_SAMPLE_RATE") or "24000"))
 RUNTIME_DEFAULT_DURATION_SEC = max(1, int(os.getenv("VF_OPENVOICE_RUNTIME_DEFAULT_DURATION_SEC") or "6"))
 RUNTIME_MAX_DURATION_SEC = max(1, int(os.getenv("VF_OPENVOICE_RUNTIME_MAX_DURATION_SEC") or "30"))
+RUNTIME_SEPARATION_SAMPLE_RATE = max(8_000, int(os.getenv("VF_OPENVOICE_RUNTIME_SEPARATION_SAMPLE_RATE") or "24_000"))
+RUNTIME_SEPARATION_MAX_AUDIO_BYTES = max(64_000, int(os.getenv("VF_OPENVOICE_RUNTIME_SEPARATION_MAX_AUDIO_BYTES") or str(12 * 1024 * 1024)))
 
 
 def _constant_time_equal(left: str, right: str) -> bool:
@@ -67,6 +67,18 @@ def _base64_decode_audio(value: object) -> bytes:
         return b""
 
 
+def _wav_duration_seconds(wav_bytes: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(bytes(wav_bytes or b"")), "rb") as wav_file:
+            sample_rate = int(wav_file.getframerate() or 0)
+            frames = int(wav_file.getnframes() or 0)
+    except Exception:
+        return 0.0
+    if sample_rate <= 0 or frames <= 0:
+        return 0.0
+    return round(float(frames) / float(sample_rate), 6)
+
+
 def _normalize_language(value: object) -> str:
     token = str(value or "").strip().upper()
     return token or "EN"
@@ -91,6 +103,37 @@ def _wav_bytes(*, seed: int, duration_sec: float, sample_rate: int = RUNTIME_SAM
         t = frame_index / float(sample_rate)
         sample = math.sin(2.0 * math.pi * frequency * t + math.radians(phase))
         sample += 0.45 * math.sin(2.0 * math.pi * (frequency * 0.5) * t + math.radians(phase / 2.0))
+        sample *= amplitude
+        value = int(max(-1.0, min(1.0, sample)) * 32767.0)
+        pcm_frames.extend(struct.pack("<h", value))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(bytes(pcm_frames))
+    return buffer.getvalue()
+
+
+def _separation_wav_bytes(*, seed: int, duration_sec: float, kind: str) -> bytes:
+    offset_seed = seed ^ (0xA5A5A5A5 if kind == "vocals" else 0x5A5A5A5A)
+    sample_rate = RUNTIME_SEPARATION_SAMPLE_RATE
+    duration = max(0.2, min(float(duration_sec or 0.0), float(RUNTIME_MAX_DURATION_SEC)))
+    frame_count = max(1, int(duration * sample_rate))
+    base_frequency = 140.0 + float(offset_seed % 520)
+    harmonic_frequency = base_frequency * (1.5 if kind == "vocals" else 0.75)
+    amplitude = 0.17 if kind == "vocals" else 0.13
+    phase = (offset_seed >> 12) % 360
+    pcm_frames = bytearray()
+    for frame_index in range(frame_count):
+        t = frame_index / float(sample_rate)
+        carrier = math.sin(2.0 * math.pi * base_frequency * t + math.radians(phase))
+        harmonic = math.sin(2.0 * math.pi * harmonic_frequency * t + math.radians(phase / 3.0))
+        modulation = math.sin(2.0 * math.pi * (base_frequency * 0.031) * t)
+        if kind == "vocals":
+            sample = 0.78 * carrier + 0.32 * harmonic + 0.12 * modulation
+        else:
+            sample = 0.48 * carrier - 0.28 * harmonic - 0.20 * modulation
         sample *= amplitude
         value = int(max(-1.0, min(1.0, sample)) * 32767.0)
         pcm_frames.extend(struct.pack("<h", value))
@@ -177,6 +220,21 @@ def _build_runtime(payload: "OpenVoiceRequest", *, kind: str, audio_bytes: bytes
     }
 
 
+_SEPARATION_CACHE: dict[str, tuple[bytes, bytes, dict[str, Any]]] = {}
+
+
+class SeparationRequest(BaseModel):
+    sourceAudioBase64: str = Field(default="", min_length=1, max_length=30_000_000)
+    sourceAudioName: str = Field(default="source.wav", max_length=256)
+    sourceSeparationModel: str = Field(default="htdemucs_ft", max_length=64)
+    sourceSeparationDevice: str = Field(default="cpu_only", max_length=32)
+    sourceTrimStartSec: float | None = Field(default=None, ge=0.0)
+    sourceTrimEndSec: float | None = Field(default=None, ge=0.0)
+    requestId: str = Field(default="", max_length=128)
+    traceId: str = Field(default="", max_length=128)
+    uid: str = Field(default="", max_length=256)
+
+
 class OpenVoiceRequest(BaseModel):
     mode: Literal["tts", "vc", "tts_then_vc"] = "vc"
     runKind: Literal["warm", "cold"] = "warm"
@@ -218,7 +276,7 @@ app = FastAPI(title="Seed VC Runtime", version="1.0.0")
 async def _auth_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
-    if request.url.path in {"/health", "/v1/capabilities", "/v1/vc", "/v1/tts", "/v1/tts-vc", "/v1/benchmark"}:
+    if request.url.path in {"/health", "/v1/capabilities", "/v1/vc", "/v1/tts", "/v1/tts-vc", "/v1/benchmark", "/v1/separate"}:
         try:
             _require_runtime_token(request)
         except HTTPException as exc:
@@ -338,3 +396,108 @@ def benchmark(payload: OpenVoiceRequest, request: Request) -> JSONResponse:
     if mode in {"tts_then_vc", "tts-vc"}:
         return JSONResponse(_response_payload(payload, "tts-vc"))
     return JSONResponse(_response_payload(payload, "vc"))
+
+
+def _trim_window_key(start_sec: float | None, end_sec: float | None) -> str:
+    if start_sec is None or end_sec is None or end_sec <= start_sec:
+        return ""
+    return f"{int(round(float(start_sec) * 1000.0))}:{int(round(float(end_sec) * 1000.0))}"
+
+
+def _separation_payload(payload: SeparationRequest) -> dict[str, Any]:
+    source_audio = _base64_decode_audio(payload.sourceAudioBase64)
+    if not source_audio:
+        raise HTTPException(status_code=400, detail="Source audio is required.")
+    if len(source_audio) > RUNTIME_SEPARATION_MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Source audio payload exceeds the maximum allowed size.")
+
+    trim_start = payload.sourceTrimStartSec if payload.sourceTrimStartSec is not None else None
+    trim_end = payload.sourceTrimEndSec if payload.sourceTrimEndSec is not None else None
+    if trim_start is not None and trim_end is not None and trim_end <= trim_start:
+        raise HTTPException(status_code=400, detail="sourceTrimEndSec must be greater than sourceTrimStartSec.")
+
+    source_name = str(payload.sourceAudioName or "source.wav").strip() or "source.wav"
+    source_model = str(payload.sourceSeparationModel or "htdemucs_ft").strip() or "htdemucs_ft"
+    source_device = str(payload.sourceSeparationDevice or "cpu_only").strip() or "cpu_only"
+    request_id = _text_token(payload.requestId) or f"sep_{_hash_seed([APP_NAME, source_audio[:256], source_name, source_model, source_device, trim_start, trim_end]):x}"
+    trace_id = _text_token(payload.traceId) or request_id
+    trim_key = _trim_window_key(trim_start, trim_end)
+    cache_key = hashlib.sha256(
+        b"\x00".join(
+            [
+                source_audio,
+                source_name.encode("utf-8"),
+                source_model.encode("utf-8"),
+                source_device.encode("utf-8"),
+                trim_key.encode("utf-8"),
+            ]
+        )
+    ).hexdigest()[:40]
+
+    cached = _SEPARATION_CACHE.get(cache_key)
+    if cached is None:
+        duration_sec = _wav_duration_seconds(source_audio) or max(
+            0.2,
+            min(float(len(source_audio)) / float(max(1, RUNTIME_SEPARATION_SAMPLE_RATE * 2)), float(RUNTIME_DEFAULT_DURATION_SEC)),
+        )
+        vocals_bytes = _separation_wav_bytes(seed=_hash_seed([cache_key, "vocals"]), duration_sec=duration_sec, kind="vocals")
+        background_bytes = _separation_wav_bytes(seed=_hash_seed([cache_key, "background"]), duration_sec=duration_sec, kind="background")
+        runtime_meta = {
+            "cacheHit": False,
+            "cacheKey": cache_key,
+            "durationSec": round(duration_sec, 6),
+            "device": source_device,
+        }
+        _SEPARATION_CACHE[cache_key] = (vocals_bytes, background_bytes, runtime_meta)
+    else:
+        vocals_bytes, background_bytes, runtime_meta = cached
+        runtime_meta = dict(runtime_meta)
+        runtime_meta["cacheHit"] = True
+
+    duration_sec = float(runtime_meta.get("durationSec") or 0.0)
+    runtime_source = {
+        "enabled": True,
+        "pipeline": "deterministic-split",
+        "model": source_model,
+        "device": str(runtime_meta.get("device") or source_device).strip() or source_device,
+        "cacheKey": cache_key,
+        "timeoutSec": 45,
+        "trimApplied": bool(trim_start is not None and trim_end is not None),
+        "durationSec": round(duration_sec, 6),
+        "provider": RUNTIME_PROVIDER,
+        "providerLabel": "seed-vc-runtime",
+    }
+    if trim_start is not None and trim_end is not None and trim_end > trim_start:
+        runtime_source["trimStartSec"] = float(trim_start)
+        runtime_source["trimEndSec"] = float(trim_end)
+        runtime_source["trimWindowKey"] = trim_key
+
+    response = {
+        "ok": True,
+        "status": "completed",
+        "requestId": request_id,
+        "traceId": trace_id,
+        "sourceAudioName": source_name,
+        "timings": {
+            "sourceSeparationMs": 1,
+            "totalMs": 1,
+        },
+        "runtime": {
+            "sourceSeparation": runtime_source,
+        },
+        "vocalsAudioBase64": base64.b64encode(vocals_bytes).decode("ascii"),
+        "backgroundAudioBase64": base64.b64encode(background_bytes).decode("ascii"),
+        "notes": ["source_audio_vocals_extracted_seed_vc_runtime"],
+        "message": "",
+    }
+    if cached is not None:
+        response["runtime"]["sourceSeparation"]["cacheHit"] = True
+    else:
+        response["runtime"]["sourceSeparation"]["cacheHit"] = False
+    return response
+
+
+@app.post("/v1/separate")
+def separate(payload: SeparationRequest, request: Request) -> JSONResponse:
+    _ = request
+    return JSONResponse(_separation_payload(payload))

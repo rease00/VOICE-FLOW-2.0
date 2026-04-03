@@ -51,6 +51,9 @@ const expectBackdropState = async (page: Page, preferences: StoredBackdropPrefer
 
   await expect(page.locator('.vf-live-wallpaper')).toHaveCount(1);
   await expect(page.locator('.vf-live-wallpaper')).toBeVisible();
+  if (expectedAnimation === 'running') {
+    await expect(page.locator('.vf-app-layout').first()).toHaveAttribute('data-vf-visual-ready', 'true', { timeout: ROUTE_TIMEOUT_MS });
+  }
   await expect(page.locator('body')).toHaveAttribute('data-vf-theme-mode', preferences.theme);
   await expect(page.locator('body')).toHaveAttribute('data-vf-resolved-theme', resolvedTheme);
   await expect(page.locator('body')).toHaveAttribute('data-vf-brand-theme', preferences.brandTheme);
@@ -59,6 +62,7 @@ const expectBackdropState = async (page: Page, preferences: StoredBackdropPrefer
 };
 
 test('workspace backdrop animates with stored theme state', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await seedBackdropPreferences(page, {
     theme: 'light',
     brandTheme: 'aurora',
