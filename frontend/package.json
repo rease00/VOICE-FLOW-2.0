@@ -24,6 +24,7 @@
     "test:ci": "vitest run",
     "audit:prod": "npm run typecheck && npm run lint && npm run maintainability:check && npm run test:ci && npm run build",
     "e2e:smoke": "node scripts/run-playwright-smoke.mjs launch",
+    "e2e:smoke:md": "node scripts/run-playwright-smoke.mjs md",
     "e2e:smoke:full": "node scripts/run-playwright-smoke.mjs full",
     "audit:desktop": "node scripts/desktop-visual-audit.mjs",
     "headers:verify": "node scripts/verify-headers.mjs",

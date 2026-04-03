@@ -6,7 +6,7 @@ import {
   normalizeSpeakerHeaderScript,
   resolveEngineToken,
   resolvePrimeAllowedEngines,
-} from '../views/mainAppHelpers';
+} from '../src/app/workspace/mainAppHelpers';
 import { getEngineDisplayName } from '../services/engineDisplay';
 
 describe('mainAppHelpers engine token handling', () => {

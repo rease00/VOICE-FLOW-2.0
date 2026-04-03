@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
-import { PRIME_ACCESS_LOCK_MESSAGE } from '../views/mainAppHelpers';
+import { PRIME_ACCESS_LOCK_MESSAGE } from '../src/app/workspace/mainAppHelpers';
 
 describe('EngineRuntimeStrip read-only mode', () => {
   it('renders disabled controls and a lock hint when runtime switching is read-only', () => {

@@ -3,7 +3,7 @@
 import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppScreen } from '../../../../types';
-import { UserIdSetup } from '../../../../views/UserIdSetup';
+import { UserIdSetup } from '../../../../src/features/user-id-setup/UserIdSetup';
 import { resolveAppPath } from '../../../../src/app/navigation';
 
 export default function AppUserIdSetupPage() {

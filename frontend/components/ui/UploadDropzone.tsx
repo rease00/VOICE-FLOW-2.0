@@ -30,6 +30,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
 }) => {
   const [isDragActive, setIsDragActive] = useState(false);
   const inputId = useId();
+  const inputLabelId = useId();
   const hintId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const selectedFiles = useMemo(() => {
@@ -38,7 +39,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     return [];
   }, [file, files]);
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLLabelElement>): void => {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (disabled) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
@@ -60,12 +61,15 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   };
 
   return (
-    <label
+    <div
       role="button"
       tabIndex={disabled ? -1 : 0}
-      aria-label={label}
       aria-describedby={hintId}
       aria-disabled={disabled}
+      onClick={() => {
+        if (disabled) return;
+        inputRef.current?.click();
+      }}
       onKeyDown={handleKeyDown}
       onDragOver={(event) => {
         if (disabled) return;
@@ -97,6 +101,9 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           : 'border-gray-200 bg-gray-50'
       } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-gray-100/80'} ${className}`}
     >
+      <label id={inputLabelId} htmlFor={inputId} className="sr-only">
+        {label}
+      </label>
       <input
         ref={inputRef}
         id={inputId}
@@ -107,17 +114,16 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           handleFiles(event.currentTarget.files);
           event.currentTarget.value = '';
         }}
-        aria-label={label}
+        aria-labelledby={inputLabelId}
         aria-describedby={hintId}
         aria-disabled={disabled}
         tabIndex={-1}
-        className="sr-only"
+        className="hidden"
         disabled={disabled}
       />
 
       {selectedFiles.length > 0 ? (
         <div className="space-y-1">
-          <span className="sr-only">{label}</span>
           <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-bold text-indigo-700 shadow-sm">
             <FileAudio size={14} />
             {selectedFiles.length === 1 ? selectedFiles[0]?.name || 'Selected file' : `${selectedFiles.length} files selected`}
@@ -142,6 +148,6 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           <p id={hintId} className="text-[11px] text-gray-400">{hint}</p>
         </div>
       )}
-    </label>
+    </div>
   );
 };

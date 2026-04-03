@@ -20,6 +20,9 @@ export interface MarketingAudioCardProps {
   cast?: readonly string[];
   fallback?: string;
   variant?: 'hero' | 'list' | 'scene';
+  motionDelayMs?: number;
+  className?: string;
+  style?: CSSProperties;
 }
 
 const DEFAULT_FALLBACK = 'Audio preview is not available right now.';
@@ -46,6 +49,9 @@ export function MarketingAudioCard({
   cast = [],
   fallback = DEFAULT_FALLBACK,
   variant = 'list',
+  motionDelayMs,
+  className = '',
+  style,
 }: MarketingAudioCardProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const progressId = useId();
@@ -111,6 +117,15 @@ export function MarketingAudioCard({
     '--vf-audio-progress': `${progressPercent}%`,
   } as CSSProperties;
 
+  const revealStyle = motionDelayMs !== undefined
+    ? ({ '--vf-marketing-delay': `${motionDelayMs}ms` } as CSSProperties)
+    : undefined;
+
+  const combinedStyle = {
+    ...revealStyle,
+    ...style,
+  } as CSSProperties | undefined;
+
   const togglePlayback = async () => {
     const audio = audioRef.current;
     if (!audio || hasError) return;
@@ -140,9 +155,11 @@ export function MarketingAudioCard({
 
   return (
     <article
-      className={`vf-marketing-audio-card vf-marketing-audio-card--${variant}`}
+      className={`vf-marketing-audio-card vf-marketing-audio-card--${variant} ${className}`.trim()}
       data-audio-player="vf-marketing"
       data-audio-state={hasError ? 'error' : isPlaying ? 'playing' : isReady ? 'ready' : 'idle'}
+      data-vf-reveal
+      style={combinedStyle}
     >
       <audio ref={audioRef} preload={preload} src={audioSrc} aria-label={ariaLabel} />
 

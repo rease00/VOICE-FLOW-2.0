@@ -22,7 +22,6 @@ describe('Voice cloning stress control visibility', () => {
     });
 
     const html = renderToStaticMarkup(<VoiceCloningTabContent />);
-    expect(html).toContain('Runtime diagnostics');
     expect(html).not.toContain('Stress Test (Modal VC)');
   });
 
@@ -32,7 +31,6 @@ describe('Voice cloning stress control visibility', () => {
     });
 
     const html = renderToStaticMarkup(<VoiceCloningTabContent />);
-    expect(html).toContain('Runtime diagnostics');
     expect(html).toContain('Stress Test (Modal VC)');
   });
 

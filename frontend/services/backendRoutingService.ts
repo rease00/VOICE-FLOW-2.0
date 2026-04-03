@@ -159,10 +159,13 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
 
   const selectedRegionFromPayload = String(payload?.selectedRegion || '').trim().toLowerCase();
   const selectedBaseUrlFromPayload = String(payload?.selectedBaseUrl || '').trim();
+  const primaryRoutingMode = String(payload?.routingMode?.primary || '').trim().toLowerCase();
+  const clientRoutingMode = String(payload?.routingMode?.client || '').trim().toLowerCase();
+  const prefersGlobalLoadBalancer = primaryRoutingMode === 'global_load_balancer';
   const normalizedBaseUrls = new Set(reachable.map((candidate) => resolveApiBaseUrl(String(candidate.baseUrl || '').trim())));
   const sharesBaseUrl = normalizedBaseUrls.size <= 1;
 
-  const selectionPool = sharesBaseUrl
+  const selectionPool = (sharesBaseUrl || prefersGlobalLoadBalancer)
     ? reachable.map((candidate) => ({
         baseUrl: resolveApiBaseUrl(String(candidate.baseUrl || '').trim()),
         region: String(candidate.region || '').trim().toLowerCase(),
@@ -241,6 +244,17 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
   if (regionSource) routingDetail.regionSource = regionSource;
 
   const currentBase = readCurrentBackendUrl();
+  if (prefersGlobalLoadBalancer && clientRoutingMode !== 'client_primary') {
+    const stableBase = persistBackendUrl(selectedBaseUrlFromPayload || currentBase || selected.baseUrl);
+    markSessionRouted();
+    return {
+      applied: false,
+      reason: 'lb_primary_hint_only',
+      baseUrl: stableBase,
+      rttMs: Math.round(selected.rttMs),
+      ...routingDetail,
+    };
+  }
   const nextBase = persistBackendUrl(selected.baseUrl);
   markSessionRouted();
   if (resolveApiBaseUrl(currentBase) === resolveApiBaseUrl(nextBase)) {

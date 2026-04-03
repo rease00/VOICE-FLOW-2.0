@@ -1,4 +1,5 @@
 import { MarketingLanding, type LandingTabKey } from './MarketingLanding';
+import { LandingMotionObserver } from './LandingMotionObserver';
 import { landingMetadata } from './landingMetadata';
 
 const landingUrl = 'https://v-flow-ai.com/landing';
@@ -67,6 +68,7 @@ interface PublicLandingPageProps {
 export function PublicLandingPage({ activeTab = 'home' }: PublicLandingPageProps) {
   return (
     <>
+      <LandingMotionObserver />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareStructuredData) }}

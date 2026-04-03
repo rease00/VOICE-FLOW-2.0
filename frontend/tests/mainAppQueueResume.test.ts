@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findFirstRecoverableStudioQueueItem, hasRecoverableSingleInflightGenerationState } from '../views/MainApp';
+import { findFirstRecoverableStudioQueueItem, hasRecoverableSingleInflightGenerationState } from '../src/app/workspace/MainApp';
 
 describe('MainApp queue resume helper', () => {
   it('selects the earliest cancelled item when resuming a queue with no active work', () => {

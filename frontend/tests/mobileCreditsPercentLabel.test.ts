@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatMobileAvailableCreditsPercent } from '../views/mainAppHelpers';
+import { formatMobileAvailableCreditsPercent } from '../src/app/workspace/mainAppHelpers';
 
 describe('mobile credits percent label', () => {
   it('returns 100% for unlimited access', () => {

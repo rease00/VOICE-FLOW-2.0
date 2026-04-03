@@ -26,7 +26,7 @@ describe('billing catalog parity', () => {
 
   it('routes both wrappers through shared BillingSurface and keeps catalog ownership centralized', () => {
     const billingSurfaceSource = readText('../src/features/billing/surface/BillingSurface.tsx');
-    const billingCenterSource = readText('../views/BillingCenter.tsx');
+    const billingCenterSource = readText('../src/features/billing/AppBillingPage.tsx');
     const publicBillingPageSource = readText('../src/features/billing/PublicBillingPage.tsx');
 
     expect(billingSurfaceSource).toContain("from '../catalog'");
@@ -34,7 +34,7 @@ describe('billing catalog parity', () => {
     expect(billingSurfaceSource).toContain('BILLING_TOKEN_PACK_ROWS');
     expect(billingSurfaceSource).toContain('BILLING_VC_PACK_ROWS');
 
-    expect(billingCenterSource).toContain("from '../src/features/billing/surface/BillingSurface'");
+    expect(billingCenterSource).toContain("from './surface/BillingSurface'");
     expect(billingCenterSource).toContain('mode="app"');
     expect(billingCenterSource).toContain('walletSummary={walletSummary}');
     expect(billingCenterSource).toContain('APP_ROUTE_PATHS.billing');

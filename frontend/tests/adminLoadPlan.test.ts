@@ -4,7 +4,7 @@ import {
   getAdminSectionsToLoad,
   resolveAdminSectionsForView,
 } from '../src/features/admin/model/loadPlan';
-import { resolveAdminOpsTabFromUrl } from '../views/mainAppHelpers';
+import { resolveAdminOpsTabFromUrl } from '../src/app/workspace/mainAppHelpers';
 
 describe('admin load plan', () => {
   it('loads only the users section for the default admin tab', () => {

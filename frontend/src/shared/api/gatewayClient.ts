@@ -294,6 +294,11 @@ export interface RoutingBackendCandidatesResponse {
   selectedBaseUrl?: string;
   queueDepth?: number;
   oldestQueuedAgeMs?: number;
+  controlPlaneRegion?: string;
+  routingMode?: {
+    primary?: string;
+    client?: string;
+  };
 }
 
 interface RoutingRegionsSnapshotResponse {
@@ -303,6 +308,11 @@ interface RoutingRegionsSnapshotResponse {
   selectedBaseUrl?: string;
   queueDepth?: number;
   oldestQueuedAgeMs?: number;
+  controlPlaneRegion?: string;
+  routingMode?: {
+    primary?: string;
+    client?: string;
+  };
   regions?: RoutingBackendCandidate[];
   candidates?: RoutingBackendCandidate[];
 }
@@ -432,6 +442,15 @@ export const fetchRoutingBackendCandidates = async (options?: {
       oldestQueuedAgeMs: Number.isFinite(Number(routingSnapshot?.oldestQueuedAgeMs))
         ? Math.max(0, Math.floor(Number(routingSnapshot?.oldestQueuedAgeMs)))
         : 0,
+      controlPlaneRegion: String(routingSnapshot?.controlPlaneRegion || '').trim(),
+      ...(routingSnapshot?.routingMode && typeof routingSnapshot.routingMode === 'object'
+        ? {
+            routingMode: {
+              primary: String(routingSnapshot.routingMode.primary || '').trim(),
+              client: String(routingSnapshot.routingMode.client || '').trim(),
+            },
+          }
+        : {}),
       fetchedAt: String(routingSnapshot?.fetchedAt || nowIso),
     };
   } catch {
@@ -475,6 +494,7 @@ export const fetchRoutingBackendCandidates = async (options?: {
         selectedBaseUrl: baseUrl,
         queueDepth: 0,
         oldestQueuedAgeMs: 0,
+        controlPlaneRegion: '',
         fetchedAt: new Date().toISOString(),
       };
     } catch {
@@ -501,6 +521,7 @@ export const fetchRoutingBackendCandidates = async (options?: {
         selectedBaseUrl: baseUrl,
         queueDepth: 0,
         oldestQueuedAgeMs: 0,
+        controlPlaneRegion: '',
         fetchedAt: new Date().toISOString(),
       };
     }

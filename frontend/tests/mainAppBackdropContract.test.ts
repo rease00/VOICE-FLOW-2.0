@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const mainAppSourcePath = fileURLToPath(new URL('../views/MainApp.tsx', import.meta.url));
+const mainAppSourcePath = fileURLToPath(new URL('../src/app/workspace/MainApp.tsx', import.meta.url));
 
 describe('MainApp backdrop contract', () => {
   it('uses the shared motion helper and does not mount the wallpaper locally', () => {

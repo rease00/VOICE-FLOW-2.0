@@ -5,7 +5,7 @@ import path from 'node:path';
 const ROOT = process.cwd();
 
 const budgets = [
-  { file: 'views/MainApp.tsx', maxLines: 12000 },
+  { file: 'src/app/workspace/MainApp.tsx', maxLines: 12000 },
   { file: 'app/(app)/app/app-shell.css', maxLines: 6000 },
 ];
 

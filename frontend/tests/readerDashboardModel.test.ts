@@ -121,7 +121,7 @@ describe('reader dashboard model', () => {
     });
     const emptyView = resolveReaderHomeViewModel(emptyDashboard, 'novels', '');
 
-    expect(novelsView.sections.map((section) => section.id)).toEqual(['trending', 'newArrivals']);
+    expect(novelsView.sections.map((section) => section.id)).toEqual(['newArrivals']);
     expect(libraryView.sections.map((section) => section.id)).toContain('continueReading');
     expect(emptyView.sections).toEqual([]);
   });

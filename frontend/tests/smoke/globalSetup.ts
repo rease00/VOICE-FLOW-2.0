@@ -4,7 +4,7 @@ const ROUTE_TIMEOUT_MS = 120_000;
 
 const normalizeBaseUrl = (config: FullConfig): string => {
   const projectBaseUrl = config.projects[0]?.use?.baseURL;
-  return String(projectBaseUrl || 'http://localhost:42173').replace(/\/+$/, '');
+  return String(projectBaseUrl || 'http://localhost:3000').replace(/\/+$/, '');
 };
 
 export default async function globalSetup(config: FullConfig): Promise<void> {

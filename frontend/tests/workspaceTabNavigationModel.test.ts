@@ -5,7 +5,7 @@ import {
   buildWorkspaceTabNavigationHref,
   formatMobileAvailableCreditsPercent,
   resolveWorkspaceTabFromPathname,
-} from '../views/mainAppHelpers';
+} from '../src/app/workspace/mainAppHelpers';
 
 describe('workspace tab navigation model', () => {
   it('maps each main workspace tab to its canonical route path', () => {

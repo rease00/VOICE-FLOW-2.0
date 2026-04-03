@@ -3,7 +3,7 @@
 import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppScreen } from '../../../../types';
-import { Login } from '../../../../views/Login';
+import { Login } from '../../../../src/features/auth/Login';
 import { resolveAppPath, resolveLoginPath, type AuthRouteMode } from '../../../../src/app/navigation';
 import { UserProvider, useOptionalUser } from '../../../../src/features/auth/context/UserContext';
 

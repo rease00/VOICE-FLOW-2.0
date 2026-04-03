@@ -1926,12 +1926,21 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (session) return;
     setActiveTab('read');
   }, [session]);
+  const handleHomeSettingsBackdropPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    closeHomeSettingsModal();
+  }, [closeHomeSettingsModal]);
   useEffect(() => {
     if (!showHomeSettingsModal) return undefined;
+    const previousDocumentOverflow = document.documentElement.style.overflow;
     const previousOverflow = document.body.style.overflow;
+    document.body.classList.add('vf-reader-home-settings-open');
+    document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
     return () => {
+      document.documentElement.style.overflow = previousDocumentOverflow;
       document.body.style.overflow = previousOverflow;
+      document.body.classList.remove('vf-reader-home-settings-open');
     };
   }, [showHomeSettingsModal]);
   useEffect(() => {
@@ -2021,9 +2030,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
         data-reader-dock-state-source={dockStateSource}
         data-reader-viewport={readerViewportMode}
         data-reader-layout={session ? 'workspace' : 'home'}
+        data-reader-home-settings-open={showHomeSettingsModal ? 'true' : 'false'}
         data-reader-recording="restricted"
       >
-        <div ref={homeSettingsBackgroundRef} aria-hidden={showHomeSettingsModal ? true : undefined}>
+        <div
+          ref={homeSettingsBackgroundRef}
+          className="vf-reader-v2-home-layer"
+          aria-hidden={showHomeSettingsModal ? true : undefined}
+        >
           {!session ? (
             <>
             <ReaderBrowseHome
@@ -2189,6 +2203,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
           <div
             className="vf-reader-v2-modal-backdrop"
             data-reader-modal="home-settings"
+            onPointerDown={handleHomeSettingsBackdropPointerDown}
             onClick={(event) => {
               if (event.target !== event.currentTarget) return;
               closeHomeSettingsModal();

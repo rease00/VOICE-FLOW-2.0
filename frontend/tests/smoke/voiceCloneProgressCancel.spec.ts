@@ -226,8 +226,9 @@ test('voice-clone root progress card supports cancel from the top level', async 
   const voiceCloneHeading = page.getByRole('heading', { name: /Voice Cloning/i }).first();
   await expect(voiceCloneHeading).toBeVisible({ timeout: 60_000 });
 
-  const referenceDropzone = page.getByLabel('Drop reference audio').first();
-  const referenceVisibleInitially = await referenceDropzone.isVisible().catch(() => false);
+  const referenceDropzoneButton = page.getByRole('button', { name: 'Drop reference audio' }).first();
+  const referenceDropzoneInput = page.getByLabel('Drop reference audio').first();
+  const referenceVisibleInitially = await referenceDropzoneButton.isVisible().catch(() => false);
   if (!referenceVisibleInitially) {
     const cloneTab = page.getByRole('tab', { name: /Voice Cloning/i }).first();
     const cloneButton = page.getByRole('button', { name: /Voice Cloning/i }).first();
@@ -238,16 +239,16 @@ test('voice-clone root progress card supports cancel from the top level', async 
     }
   }
 
-  await expect(referenceDropzone).toBeVisible({ timeout: 60_000 });
+  await expect(referenceDropzoneButton).toBeVisible({ timeout: 60_000 });
 
   const hasTargetDropzone = (await page.getByLabel('Drop target audio').count()) > 0;
   if (hasTargetDropzone) {
-    await page.getByLabel('Drop reference audio').setInputFiles(REFERENCE_AUDIO);
+    await referenceDropzoneInput.setInputFiles(REFERENCE_AUDIO);
     await page.getByLabel('Drop target audio').setInputFiles(TARGET_AUDIO);
     await expect(page.getByText(REFERENCE_AUDIO_FILE).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(TARGET_AUDIO_FILE).first()).toBeVisible({ timeout: 30_000 });
   } else {
-    await page.getByLabel('Drop reference audio').setInputFiles(REFERENCE_AUDIO);
+    await referenceDropzoneInput.setInputFiles(REFERENCE_AUDIO);
     await expect(page.getByText(REFERENCE_AUDIO_FILE).first()).toBeVisible({ timeout: 30_000 });
   }
 

@@ -584,7 +584,7 @@ test('Reader home settings opens as a popup modal and closes cleanly', async ({ 
     await settingsBackdrop.click({
       position: {
         x: Math.max(8, Math.floor(settingsBackdropBox.width - 12)),
-        y: 8,
+        y: Math.max(32, Math.floor(settingsBackdropBox.height * 0.5)),
       },
     });
   } else {

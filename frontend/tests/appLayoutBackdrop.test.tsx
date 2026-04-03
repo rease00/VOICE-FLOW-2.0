@@ -20,7 +20,7 @@ import AppLayout from '../app/(app)/layout';
 
 const layoutSourcePath = fileURLToPath(new URL('../app/(app)/layout.tsx', import.meta.url));
 const bootstrapSourcePath = fileURLToPath(new URL('../src/app/providers/AppThemeBootstrap.tsx', import.meta.url));
-const mainAppSourcePath = fileURLToPath(new URL('../views/MainApp.tsx', import.meta.url));
+const mainAppSourcePath = fileURLToPath(new URL('../src/app/workspace/MainApp.tsx', import.meta.url));
 const cssSourcePath = fileURLToPath(new URL('../app/(app)/app/app-shell.css', import.meta.url));
 
 describe('app layout backdrop', () => {

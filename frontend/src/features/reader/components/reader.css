@@ -93,6 +93,18 @@
   --reader-v2-dock-bottom-space: 62px;
 }
 
+.vf-reader-v2-home-layer {
+  min-width: 0;
+}
+
+.vf-reader-v2-shell[data-reader-home-settings-open='true'] .vf-reader-v2-home-layer {
+  pointer-events: none;
+}
+
+.vf-reader-v2-shell[data-reader-home-settings-open='true'] .vf-reader-v2-modal-backdrop {
+  pointer-events: auto;
+}
+
 .vf-reader-v2-shell,
 .vf-reader-v2-home,
 .vf-reader-v2-workspace,
@@ -1541,13 +1553,17 @@
 .vf-reader-v2-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 48;
+  z-index: 120;
   background: color-mix(in srgb, #000000 50%, transparent);
   backdrop-filter: blur(4px);
   display: grid;
   place-items: center;
   padding: 16px;
   overscroll-behavior: contain;
+}
+
+body.vf-reader-home-settings-open .vf-topbar {
+  pointer-events: none;
 }
 
 .vf-reader-v2-modal {

@@ -29,7 +29,7 @@ vi.mock('../services/firebaseClient', () => ({
   firebaseAuth: firebaseAuthMock,
 }));
 
-vi.mock('../views/MainApp', () => ({
+vi.mock('../src/app/workspace/MainApp', () => ({
   MainApp: (...args: unknown[]) => mainAppMock(...args),
 }));
 

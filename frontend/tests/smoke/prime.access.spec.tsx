@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { PRIME_ACCESS_LOCK_MESSAGE } from '../../views/mainAppHelpers';
+import { PRIME_ACCESS_LOCK_MESSAGE } from '../../src/app/workspace/mainAppHelpers';
 
 type Engine = 'DUNO' | 'VECTOR' | 'PRIME';
 

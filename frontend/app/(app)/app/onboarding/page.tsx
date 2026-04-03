@@ -3,7 +3,7 @@
 import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppScreen } from '../../../../types';
-import { Onboarding } from '../../../../views/Onboarding';
+import { Onboarding } from '../../../../src/features/onboarding/Onboarding';
 import { resolveAppPath, resolveLoginPath, type AuthRouteMode } from '../../../../src/app/navigation';
 
 export default function AppOnboardingPage() {

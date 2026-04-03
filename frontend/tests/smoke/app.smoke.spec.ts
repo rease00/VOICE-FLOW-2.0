@@ -67,7 +67,13 @@ const isKnownConsoleNoise = (message: string): boolean => {
 
   if (
     lowered.includes('failed to load resource') &&
-    (lowered.includes('err_connection_refused') || lowered.includes('status of 502'))
+    (
+      lowered.includes('err_connection_refused')
+      || lowered.includes('status of 502')
+      || lowered.includes('status of 401')
+      || lowered.includes('status of 403')
+      || lowered.includes('status of 404')
+    )
   ) {
     return true;
   }

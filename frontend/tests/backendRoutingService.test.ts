@@ -233,6 +233,55 @@ describe('applyNearestBackendRoutingOnLogin', () => {
     expect(fetchRoutingBackendCandidatesMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the global load balancer URL as primary routing and only stores the region hint', async () => {
+    fetchRoutingBackendCandidatesMock.mockResolvedValue({
+      ok: true,
+      selectedRegion: 'us-central1',
+      selectedBaseUrl: 'https://voiceflow.example',
+      routingMode: {
+        primary: 'global_load_balancer',
+        client: 'secondary_failover',
+      },
+      candidates: [
+        {
+          baseUrl: 'https://voiceflow-us.example',
+          probeOk: true,
+          healthy: true,
+          region: 'us-central1',
+          queueDepth: 0,
+          oldestQueuedAgeMs: 40,
+          capabilities: { supportsTts: true },
+        },
+        {
+          baseUrl: 'https://voiceflow-eu.example',
+          probeOk: true,
+          healthy: true,
+          region: 'europe-west1',
+          queueDepth: 2,
+          oldestQueuedAgeMs: 120,
+          capabilities: { supportsTts: true },
+        },
+      ],
+      fetchedAt: new Date().toISOString(),
+    });
+    localStorage.setItem('vf.settings', JSON.stringify({ mediaBackendUrl: 'https://voiceflow.example' }));
+
+    const { applyNearestBackendRoutingOnLogin, clearNearestBackendRoutingState } = await import('../services/backendRoutingService');
+    clearNearestBackendRoutingState();
+
+    const result = await applyNearestBackendRoutingOnLogin();
+
+    expect(result.applied).toBe(false);
+    expect(result.reason).toBe('lb_primary_hint_only');
+    expect(result.baseUrl).toBe('https://voiceflow.example');
+    expect(result.selectedRegion).toBe('us-central1');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setGeminiRegionSelectionMock).toHaveBeenCalledWith({
+      regionHint: 'us-central1',
+      regionSource: 'login_auto_nearest',
+    });
+  });
+
   it('prefers the lowest queue depth even when discovery answered from another region', async () => {
     fetchRoutingBackendCandidatesMock.mockResolvedValue({
       ok: true,

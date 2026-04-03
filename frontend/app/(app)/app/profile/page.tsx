@@ -3,7 +3,7 @@
 import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppScreen } from '../../../../types';
-import { Profile } from '../../../../views/Profile';
+import { Profile } from '../../../../src/features/profile/Profile';
 import { resolveAppPath } from '../../../../src/app/navigation';
 
 export default function AppProfilePage() {

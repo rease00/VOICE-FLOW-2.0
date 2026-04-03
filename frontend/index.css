@@ -933,6 +933,77 @@
   }
 }
 
+@keyframes vf-marketing-reveal {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 1rem, 0) scale(0.985);
+    filter: blur(10px);
+  }
+
+  70% {
+    opacity: 1;
+    filter: blur(0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes vf-marketing-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(0, -0.45rem, 0);
+  }
+}
+
+@keyframes vf-marketing-ambient-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.56;
+  }
+
+  50% {
+    transform: translate3d(0.85rem, -1rem, 0) scale(1.08);
+    opacity: 0.86;
+  }
+}
+
+@keyframes vf-marketing-meter-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+    filter: brightness(0.94) saturate(0.92);
+  }
+
+  40% {
+    opacity: 1;
+    filter: brightness(1.08) saturate(1.08);
+  }
+
+  70% {
+    opacity: 0.7;
+    filter: brightness(1) saturate(1);
+  }
+}
+
+@keyframes vf-marketing-sheen {
+  0% {
+    background-position: -120% 0;
+  }
+
+  100% {
+    background-position: 120% 0;
+  }
+}
+
 .vf-marketing-shell {
   background:
     radial-gradient(circle at 18% 18%, rgba(34, 211, 238, 0.12), transparent 28%),
@@ -1032,6 +1103,19 @@
   will-change: transform;
 }
 
+.vf-marketing-shell [data-vf-reveal] {
+  animation-duration: 860ms;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-delay: var(--vf-marketing-delay, 0ms);
+  transform-origin: center top;
+  will-change: transform, opacity, filter;
+}
+
+.vf-marketing-shell [data-vf-reveal][data-vf-revealed='true'] {
+  animation-name: vf-marketing-reveal;
+}
+
 .vf-marketing-legal-link {
   color: rgba(226, 232, 240, 0.72) !important;
 }
@@ -1054,16 +1138,59 @@
     height: 22rem;
     width: 22rem;
   }
+
+  .vf-marketing-stage__ambient-orb--primary {
+    height: 8rem;
+    width: 8rem;
+  }
+
+  .vf-marketing-stage__ambient-orb--secondary {
+    height: 9rem;
+    right: -1rem;
+    width: 9rem;
+  }
+
+  .vf-marketing-stage__ambient-orb--tertiary {
+    height: 8rem;
+    width: 8rem;
+  }
+
+  .vf-marketing-stage__ambient-line {
+    left: 1rem;
+    right: 1rem;
+    top: 6.65rem;
+  }
+
+  .vf-marketing-stage__meter {
+    gap: 0.28rem;
+    left: 1rem;
+    right: 1rem;
+    top: 4rem;
+  }
+
+  .vf-marketing-stage__meter-bar {
+    height: 1.25rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vf-marketing-shell .animate-fade-in-up,
+  .vf-marketing-shell [data-vf-reveal],
+  .vf-marketing-stage,
+  .vf-marketing-stage::before,
+  .vf-marketing-stage::after,
+  .vf-marketing-stage__ambient-orb,
+  .vf-marketing-stage__ambient-line,
+  .vf-marketing-stage__meter-bar,
+  .vf-marketing-stage__live-dot,
   .vf-marketing-spotlight-a,
   .vf-marketing-spotlight-b,
-  .vf-marketing-stage::after,
   .vf-marketing-wave-bar,
   .vf-marketing-marquee {
     animation: none !important;
+    filter: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
   }
 }
 
@@ -1359,6 +1486,7 @@
 .vf-marketing-stage {
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 2rem;
+  isolation: isolate;
   overflow: hidden;
   padding: 1.35rem;
   position: relative;
@@ -1371,6 +1499,7 @@
       color-mix(in srgb, var(--vf-brand-surface) 92%, rgba(11, 18, 34, 0.96)) 48%,
       rgba(5, 9, 18, 0.98) 100%
     );
+  animation: vf-marketing-float 16s ease-in-out infinite;
   box-shadow:
     var(--vf-shadow-floating),
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
@@ -1378,7 +1507,11 @@
 }
 
 .vf-marketing-stage::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 28%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 28%),
+    linear-gradient(120deg, transparent 10%, rgba(255, 255, 255, 0.05) 52%, transparent 90%);
+  background-size: 100% 100%, 220% 100%;
+  animation: vf-marketing-sheen 18s linear infinite;
   content: "";
   inset: 0;
   pointer-events: none;
@@ -1394,6 +1527,80 @@
   position: absolute;
   right: 0;
   top: 32%;
+}
+
+.vf-marketing-stage__ambient {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.vf-marketing-stage__ambient-orb {
+  border-radius: 999px;
+  filter: blur(14px);
+  mix-blend-mode: screen;
+  position: absolute;
+}
+
+.vf-marketing-stage__ambient-orb--primary {
+  animation: vf-marketing-ambient-drift 16s ease-in-out infinite;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vf-brand-accent-primary) 30%, transparent) 0%, transparent 68%);
+  height: 11rem;
+  left: -1rem;
+  top: 1rem;
+  width: 11rem;
+}
+
+.vf-marketing-stage__ambient-orb--secondary {
+  animation: vf-marketing-ambient-drift 20s ease-in-out infinite reverse;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vf-brand-accent-secondary) 26%, transparent) 0%, transparent 68%);
+  height: 13rem;
+  right: -2rem;
+  top: 2rem;
+  width: 13rem;
+}
+
+.vf-marketing-stage__ambient-orb--tertiary {
+  animation: vf-marketing-ambient-drift 22s ease-in-out infinite;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vf-brand-accent-tertiary) 22%, transparent) 0%, transparent 68%);
+  bottom: -3rem;
+  height: 12rem;
+  left: 38%;
+  opacity: 0.72;
+  width: 12rem;
+}
+
+.vf-marketing-stage__ambient-line {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16), transparent);
+  background-size: 220% 100%;
+  height: 1px;
+  left: 1.35rem;
+  opacity: 0.48;
+  position: absolute;
+  right: 1.35rem;
+  top: 7.55rem;
+  animation: vf-marketing-sheen 14s linear infinite;
+}
+
+.vf-marketing-stage__meter {
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  left: 1.35rem;
+  pointer-events: none;
+  position: absolute;
+  right: 1.35rem;
+  top: 4.5rem;
+  z-index: 0;
+}
+
+.vf-marketing-stage__meter-bar {
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.82), rgba(192, 132, 252, 0.7));
+  border-radius: 999px;
+  height: calc(0.55rem + 1.2rem * var(--vf-marketing-meter-scale, 0.6));
+  opacity: 0.7;
+  animation: vf-marketing-meter-pulse 2.7s ease-in-out infinite;
 }
 
 .vf-marketing-stage__topline,
@@ -1436,6 +1643,19 @@
   background: rgba(125, 211, 252, 0.12);
   border-color: rgba(125, 211, 252, 0.18);
   color: #d8f3ff;
+}
+
+.vf-marketing-stage__badge--live {
+  gap: 0.55rem;
+}
+
+.vf-marketing-stage__live-dot {
+  animation: vf-brand-badge-pulse 1.8s ease-in-out infinite;
+  background: var(--vf-brand-accent-primary);
+  border-radius: 999px;
+  box-shadow: 0 0 0 0 rgba(56, 232, 208, 0.36);
+  height: 0.45rem;
+  width: 0.45rem;
 }
 
 .vf-marketing-audio-card__badge--warm {
@@ -1884,6 +2104,38 @@
 
 .vf-marketing-feature-panel--clone .vf-marketing-audio-card__times {
   font-size: 0.74rem;
+}
+
+.vf-marketing-stat,
+.vf-marketing-audio-card,
+.vf-marketing-feature-panel__block,
+.vf-marketing-before-after__item,
+.vf-marketing-director-bullet,
+.vf-marketing-reader-deck__item,
+.vf-marketing-reader-deck__rail,
+.vf-marketing-reader-deck__stage,
+.vf-marketing-final-cta__panel {
+  transition:
+    transform 220ms ease,
+    box-shadow 220ms ease,
+    border-color 220ms ease,
+    background-color 220ms ease;
+}
+
+.vf-marketing-stat:hover,
+.vf-marketing-audio-card:hover,
+.vf-marketing-feature-panel__block:hover,
+.vf-marketing-before-after__item:hover,
+.vf-marketing-director-bullet:hover,
+.vf-marketing-reader-deck__item:hover,
+.vf-marketing-reader-deck__rail:hover,
+.vf-marketing-reader-deck__stage:hover,
+.vf-marketing-final-cta__panel:hover {
+  transform: translateY(-0.25rem);
+  border-color: color-mix(in srgb, var(--vf-marketing-accent) 34%, var(--vf-marketing-border));
+  box-shadow:
+    0 24px 54px rgba(2, 6, 23, 0.3),
+    0 0 0 1px color-mix(in srgb, var(--vf-marketing-accent) 16%, transparent);
 }
 
 @media (min-width: 1280px) {
@@ -2349,6 +2601,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .vf-marketing-stat,
+  .vf-marketing-audio-card,
+  .vf-marketing-feature-panel__block,
+  .vf-marketing-before-after__item,
+  .vf-marketing-director-bullet,
+  .vf-marketing-reader-deck__item,
+  .vf-marketing-reader-deck__rail,
+  .vf-marketing-reader-deck__stage,
+  .vf-marketing-final-cta__panel,
   .vf-marketing-audio-card__wave-bar,
   .vf-marketing-header__primary,
   .vf-marketing-header__secondary,

@@ -1,13 +1,24 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const PORT = Number(process.env.PLAYWRIGHT_PORT || 42173);
+type SmokeProfile = 'launch' | 'md' | 'full';
+
+const normalizeSmokeProfile = (value: string | undefined): SmokeProfile => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'full') return 'full';
+  if (token === 'md') return 'md';
+  return 'launch';
+};
+
+const PORT = Number(process.env.PLAYWRIGHT_PORT || 3000);
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`;
 const REUSE_EXISTING_SERVER = process.env.CI !== 'true' && process.env.PLAYWRIGHT_REUSE_SERVER !== '0';
-const SMOKE_PROFILE = process.env.PLAYWRIGHT_SMOKE_PROFILE === 'full' ? 'full' : 'launch';
+const SMOKE_PROFILE = normalizeSmokeProfile(process.env.PLAYWRIGHT_SMOKE_PROFILE);
 const PLAYWRIGHT_OUTPUT_ROOT =
   SMOKE_PROFILE === 'full'
     ? '../tmp_dir/playwright/frontend-smoke-full'
-    : '../tmp_dir/playwright/frontend-smoke';
+    : SMOKE_PROFILE === 'md'
+      ? '../tmp_dir/playwright/frontend-smoke-md'
+      : '../tmp_dir/playwright/frontend-smoke';
 
 const launchProjects = [
   {
@@ -34,28 +45,41 @@ const fullProjects = [
   { name: 'chromium-mobile', use: { ...devices['Pixel 5'] } },
 ];
 
+const desktopMobileProjects = [
+  { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
+  { name: 'chromium-mobile', use: { ...devices['Pixel 5'] } },
+];
+
+const launchTestMatch = [/workspace\.launch\.spec\.ts$/, /app\.backdrop\.spec\.ts$/];
+const fullTestMatch = [
+  /app\.smoke\.spec\.ts$/,
+  /app\.backdrop\.spec\.ts$/,
+  /prime\.access\.spec\.tsx?$/,
+  /reader\.admin\.catalog\.spec\.ts$/,
+  /reader\.device-check\.spec\.ts$/,
+  /reader\.tabs\.spec\.ts$/,
+  /studio\.director-chip\.spec\.ts$/,
+  /duno-switch-3devices\.spec\.ts$/,
+  /toolbar\.one-line\.devices\.spec\.ts$/,
+  /workspace\.launch\.spec\.ts$/,
+  /voices\.gcp-mapping\.spec\.ts$/,
+  /voices\.duno\.spec\.ts$/,
+  /voiceCloneProgressCancel\.spec\.ts$/,
+  /voiceCloneDropzoneInteractions\.spec\.ts$/,
+];
+const desktopMobileTestMatch = fullTestMatch.filter((entry) => (
+  entry.toString() !== /reader\.device-check\.spec\.ts$/.toString()
+  && entry.toString() !== /duno-switch-3devices\.spec\.ts$/.toString()
+));
+
 export default defineConfig({
   globalSetup: './tests/smoke/globalSetup.ts',
   testDir: './tests/smoke',
-  testMatch:
-    SMOKE_PROFILE === 'full'
-      ? [
-          /app\.smoke\.spec\.ts$/,
-          /app\.backdrop\.spec\.ts$/,
-          /prime\.access\.spec\.tsx?$/,
-          /reader\.admin\.catalog\.spec\.ts$/,
-          /reader\.device-check\.spec\.ts$/,
-          /reader\.tabs\.spec\.ts$/,
-          /studio\.director-chip\.spec\.ts$/,
-          /duno-switch-3devices\.spec\.ts$/,
-          /toolbar\.one-line\.devices\.spec\.ts$/,
-          /workspace\.launch\.spec\.ts$/,
-          /voices\.gcp-mapping\.spec\.ts$/,
-          /voices\.duno\.spec\.ts$/,
-          /voiceCloneProgressCancel\.spec\.ts$/,
-          /voiceCloneDropzoneInteractions\.spec\.ts$/,
-        ]
-      : [/workspace\.launch\.spec\.ts$/, /app\.backdrop\.spec\.ts$/],
+  testMatch: SMOKE_PROFILE === 'full'
+    ? fullTestMatch
+    : SMOKE_PROFILE === 'md'
+      ? desktopMobileTestMatch
+      : launchTestMatch,
   outputDir: `${PLAYWRIGHT_OUTPUT_ROOT}/test-results`,
   timeout: SMOKE_PROFILE === 'full' ? 90_000 : 45_000,
   expect: {
@@ -70,7 +94,11 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: 'on-first-retry',
   },
-  projects: SMOKE_PROFILE === 'full' ? fullProjects : launchProjects,
+  projects: SMOKE_PROFILE === 'full'
+    ? fullProjects
+    : SMOKE_PROFILE === 'md'
+      ? desktopMobileProjects
+      : launchProjects,
   webServer: {
     command: 'npm run build && npm run start',
     env: {
