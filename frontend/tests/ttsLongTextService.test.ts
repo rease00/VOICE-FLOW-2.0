@@ -50,7 +50,7 @@ describe('ttsLongTextService', () => {
   it('never slices a long single word in the middle', () => {
     const longWord = 'supercalifragilisticexpialidocious'.repeat(8);
     const chunks = buildLongTextChunks({
-      engine: 'DUNO',
+      engine: 'VECTOR',
       language: 'en',
       text: longWord,
     });
@@ -59,19 +59,19 @@ describe('ttsLongTextService', () => {
     expect(chunks[0]?.text).toBe(longWord);
   });
 
-  it('keeps DUNO on the primary chunking path', () => {
-    expect(isPrimaryTtsEngine('DUNO')).toBe(true);
-    expect(getChunkProfile('DUNO', 'en')).toMatchObject({
-      hardCharCap: 180,
-      targetCharCap: 140,
-      maxWordsPerChunk: 32,
-      joinCrossfadeMs: 12,
+  it('keeps VECTOR on the primary chunking path', () => {
+    expect(isPrimaryTtsEngine('VECTOR')).toBe(true);
+    expect(getChunkProfile('VECTOR', 'en')).toMatchObject({
+      hardCharCap: 3000,
+      targetCharCap: 2400,
+      maxWordsPerChunk: 500,
+      joinCrossfadeMs: 8,
     });
-    expect(getChunkProfile('DUNO', 'hi')).toMatchObject({
-      hardCharCap: 200,
-      targetCharCap: 150,
-      maxWordsPerChunk: 34,
-      joinCrossfadeMs: 24,
+    expect(getChunkProfile('VECTOR', 'hi')).toMatchObject({
+      hardCharCap: 3000,
+      targetCharCap: 2400,
+      maxWordsPerChunk: 500,
+      joinCrossfadeMs: 8,
     });
   });
 

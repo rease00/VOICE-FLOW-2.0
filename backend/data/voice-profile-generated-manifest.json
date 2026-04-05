@@ -1,9 +1,8 @@
 {
   "generatedAt": "2026-03-01T19:42:18.381Z",
-  "note": "Voice profile reference clips generated from runtime mappings with PRIME primary and Modal-backed Duno.",
+  "note": "Voice profile reference clips generated from runtime mappings with Cloud TTS and Vertex text runtimes.",
   "runtimeUrls": {
-    "gem": "http://127.0.0.1:7810",
-    "duno": "https://your-duno-modal-endpoint"
+    "gem": "http://127.0.0.1:7810"
   },
   "rows": [
     {

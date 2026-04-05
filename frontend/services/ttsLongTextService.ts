@@ -1,6 +1,6 @@
-import { GenerationSettings } from '../types';
+import { ActiveTtsEngineKey, GenerationSettings } from '../types';
 
-export type PrimaryTtsEngine = GenerationSettings['engine'];
+export type PrimaryTtsEngine = ActiveTtsEngineKey;
 
 export interface ChunkingProfile {
   hardCharCap: number;
@@ -69,24 +69,6 @@ const QUALITY_CHUNK_PROFILES: Record<
   PrimaryTtsEngine,
   { hi: ChunkingProfile; default: ChunkingProfile }
 > = {
-  DUNO: {
-    hi: {
-      hardCharCap: 200,
-      targetCharCap: 150,
-      minWordsPerChunk: 1,
-      targetWordsPerChunk: 28,
-      maxWordsPerChunk: 34,
-      joinCrossfadeMs: 24,
-    },
-    default: {
-      hardCharCap: 180,
-      targetCharCap: 140,
-      minWordsPerChunk: 1,
-      targetWordsPerChunk: 26,
-      maxWordsPerChunk: 32,
-      joinCrossfadeMs: 12,
-    },
-  },
   VECTOR: {
     hi: {
       hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
@@ -189,7 +171,7 @@ export const preflightWordLimit = (text: string, maxWords = MAX_WORDS_PER_REQUES
 
 export const isPrimaryTtsEngine = (value: string): value is PrimaryTtsEngine => {
   const normalized = String(value || '').trim().toUpperCase();
-  return normalized === 'PRIME' || normalized === 'VECTOR' || normalized === 'DUNO';
+  return normalized === 'PRIME' || normalized === 'VECTOR';
 };
 
 export const getChunkProfile = (engine: PrimaryTtsEngine, language?: string): ChunkingProfile => {
@@ -726,7 +708,7 @@ export const resolveLiveChunkRequest = (
   engine: PrimaryTtsEngine,
   language?: string,
 ): LiveChunkRequestProfile => {
-  if (engine === 'PRIME' || engine === 'VECTOR' || engine === 'DUNO') {
+  if (engine === 'PRIME' || engine === 'VECTOR') {
     return {
       liveChunkChars: GEMINI_LIVE_POLICY_CHUNK_CHARS,
       liveChunkWords: GEMINI_LIVE_POLICY_CHUNK_WORDS,

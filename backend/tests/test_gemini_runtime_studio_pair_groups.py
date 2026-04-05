@@ -108,6 +108,7 @@ def _extract_non_silent_run_levels(samples: list[int]) -> list[int]:
 def _configure_runtime_for_local_tests(runtime, key_pool: list[str]) -> None:
     runtime.VF_TTS_UPSTREAM_PROVIDER = runtime.TTS_UPSTREAM_PROVIDER_RUNTIME
     runtime.VF_TTS_TEXTTOSPEECH_ONLY = False
+    runtime._tts_upstream_provider_for_engine = lambda _engine: runtime.TTS_UPSTREAM_PROVIDER_RUNTIME
     runtime._SERVER_API_KEY_POOL = tuple(key_pool)
     runtime._SERVER_API_KEY_SET = frozenset(key_pool)
     if runtime.genai is None:
@@ -379,7 +380,7 @@ def test_synthesize_structured_returns_serial_line_chunks() -> None:
         runtime._synthesize_pcm_with_key_pool = original
 
 
-@pytest.mark.parametrize("legacy_engine", ["GEMINI", "NEURAL2", "DUNO_RUNTIME"])
+@pytest.mark.parametrize("legacy_engine", ["GEMINI", "NEURAL2"])
 def test_synthesize_rejects_legacy_engine_aliases(legacy_engine: str) -> None:
     runtime = _load_gemini_runtime_module()
     client = TestClient(runtime.app)
@@ -396,7 +397,7 @@ def test_synthesize_rejects_legacy_engine_aliases(legacy_engine: str) -> None:
     )
 
     assert response.status_code == 400
-    assert "Invalid engine. Use DUNO, VECTOR, or PRIME." in str(response.json().get("detail") or response.text)
+    assert "Invalid engine. Use VECTOR or PRIME." in str(response.json().get("detail") or response.text)
 
 
 def test_grouped_long_text_is_windowed_and_reassembled() -> None:

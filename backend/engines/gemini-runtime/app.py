@@ -106,7 +106,13 @@ try:
 except Exception:
     google_service_account = None
 
-APP_NAME = "gemini-runtime"
+APP_NAME = str(os.getenv("VF_RUNTIME_NAME") or "gemini-runtime").strip() or "gemini-runtime"
+RUNTIME_ROLE_FULL = "full"
+RUNTIME_ROLE_TTS_ONLY = "tts_only"
+RUNTIME_ROLE_TEXT_ONLY = "text_only"
+VF_RUNTIME_ROLE = str(os.getenv("VF_RUNTIME_ROLE") or RUNTIME_ROLE_FULL).strip().lower()
+if VF_RUNTIME_ROLE not in {RUNTIME_ROLE_FULL, RUNTIME_ROLE_TTS_ONLY, RUNTIME_ROLE_TEXT_ONLY}:
+    VF_RUNTIME_ROLE = RUNTIME_ROLE_FULL
 GEMINI_RUNTIME_ADMIN_TOKEN = str(os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
 TTS_UPSTREAM_PROVIDER_RUNTIME = "runtime"
 TTS_UPSTREAM_PROVIDER_CLOUD_TTS = "texttospeech"
@@ -114,6 +120,31 @@ VF_GEMINI_SINGLE_POOL_ENFORCE = (
     str(os.getenv("VF_GEMINI_SINGLE_POOL_ENFORCE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+VF_RUNTIME_FORCE_AUTH_MODE = str(os.getenv("VF_RUNTIME_FORCE_AUTH_MODE") or "").strip().lower()
+if VF_RUNTIME_FORCE_AUTH_MODE not in {SOURCE_POLICY_PROVIDER_GEMINI_API, SOURCE_POLICY_PROVIDER_VERTEX}:
+    VF_RUNTIME_FORCE_AUTH_MODE = ""
+
+
+def _runtime_supports_tts() -> bool:
+    return VF_RUNTIME_ROLE != RUNTIME_ROLE_TEXT_ONLY
+
+
+def _runtime_supports_text() -> bool:
+    return VF_RUNTIME_ROLE != RUNTIME_ROLE_TTS_ONLY
+
+
+def _require_runtime_tts_support() -> None:
+    if not _runtime_supports_tts():
+        raise HTTPException(status_code=404, detail="This runtime is configured for text/AI only.")
+
+
+def _require_runtime_text_support() -> None:
+    if not _runtime_supports_text():
+        raise HTTPException(status_code=404, detail="This runtime is configured for TTS only.")
+
+
+def _text_provider_label(auth_mode: str) -> str:
+    return "vertex-ai" if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX else "gemini-api"
 
 
 def _constant_time_equal(left: str, right: str) -> bool:
@@ -218,7 +249,7 @@ TTS_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["tts"])
 TEXT_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["text"])
 OCR_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["ocr"])
 TTS_ENGINE_DEFAULT = "PRIME"
-TTS_ENGINE_KEYS = frozenset({"PRIME", "VECTOR", "DUNO"})
+TTS_ENGINE_KEYS = frozenset({"PRIME", "VECTOR"})
 TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
     SOURCE_POLICY_PROVIDER_GEMINI_API: {
         "VECTOR": [
@@ -896,7 +927,7 @@ def _normalize_runtime_engine(raw_engine: object, default: str = TTS_ENGINE_DEFA
         return str(default or TTS_ENGINE_DEFAULT).strip().upper() or TTS_ENGINE_DEFAULT
     if token in TTS_ENGINE_KEYS:
         return token
-    raise HTTPException(status_code=400, detail="Invalid engine. Use DUNO, VECTOR, or PRIME.")
+    raise HTTPException(status_code=400, detail="Invalid engine. Use VECTOR or PRIME.")
 
 
 def _normalize_tts_upstream_provider(raw_provider: object) -> str:
@@ -913,10 +944,7 @@ def _normalize_tts_upstream_provider(raw_provider: object) -> str:
 
 def _tts_upstream_provider_for_engine(engine: str) -> str:
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine in {"PRIME", "VECTOR"} and (
-        VF_TTS_TEXTTOSPEECH_ONLY
-        or _normalize_tts_upstream_provider(VF_TTS_UPSTREAM_PROVIDER) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
-    ):
+    if safe_engine in {"PRIME", "VECTOR"}:
         return TTS_UPSTREAM_PROVIDER_CLOUD_TTS
     return TTS_UPSTREAM_PROVIDER_RUNTIME
 
@@ -1230,6 +1258,8 @@ def _normalize_runtime_auth_mode(
     *,
     source_policy: Optional[dict[str, Any]] = None,
 ) -> str:
+    if VF_RUNTIME_FORCE_AUTH_MODE:
+        return VF_RUNTIME_FORCE_AUTH_MODE
     mode_token = str(raw_mode or "").strip().lower()
     if mode_token in {SOURCE_POLICY_PROVIDER_GEMINI_API, SOURCE_POLICY_PROVIDER_VERTEX}:
         return mode_token
@@ -1965,9 +1995,6 @@ def resolve_tts_model_candidates(
     _ = client
     _ = api_key
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine == "DUNO":
-        return []
-
     policy = dict(source_policy or _runtime_source_policy())
     mode = _normalize_runtime_auth_mode(auth_mode, source_policy=policy)
     preferred = list((TTS_MODEL_CANDIDATES_BY_AUTH_MODE.get(mode) or {}).get(safe_engine) or [])
@@ -5233,37 +5260,55 @@ def health(engine: Optional[str] = None) -> JSONResponse:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    cloud_tts_enabled = _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
-    model_candidates = resolve_tts_model_candidates(
-        engine=safe_engine,
-        auth_mode=auth_mode,
-        source_policy=source_policy,
-    )
-    model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
+    text_provider = _text_provider_label(auth_mode)
+    cloud_tts_enabled = _runtime_supports_tts() and _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    if _runtime_supports_tts():
+        model_candidates = resolve_tts_model_candidates(
+            engine=safe_engine,
+            auth_mode=auth_mode,
+            source_policy=source_policy,
+        )
+        model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
+        runtime_ready = _cloud_tts_client_ready(source_policy=source_policy) if cloud_tts_enabled else (genai is not None and types is not None)
+        provider = _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
+        mode = "cloud-text-to-speech" if cloud_tts_enabled else "gemini-only"
+        supports_multi_speaker = not cloud_tts_enabled
+        multi_speaker_max = 0 if cloud_tts_enabled else 2
+        tts_provider = provider
+    else:
+        model_candidates = resolve_text_model_candidates()
+        model = model_candidates[0] if model_candidates else ""
+        runtime_ready = genai is not None and types is not None
+        provider = text_provider
+        mode = "text-only"
+        supports_multi_speaker = False
+        multi_speaker_max = 0
+        tts_provider = "disabled"
     configured_pool = resolve_request_api_key_pool("")
-    provider = _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
-    tts_ready = _cloud_tts_client_ready(source_policy=source_policy) if cloud_tts_enabled else (genai is not None and types is not None)
     return JSONResponse(
         {
-            "ok": tts_ready,
+            "ok": runtime_ready,
             "engine": APP_NAME,
             "requestedEngine": safe_engine,
             "authMode": auth_mode,
             "model": "google-cloud-text-to-speech" if cloud_tts_enabled else model,
             "modelCandidates": model_candidates,
-            "supportsMultiSpeaker": not cloud_tts_enabled,
-            "multiSpeakerMaxSpeakers": 0 if cloud_tts_enabled else 2,
+            "supportsTts": _runtime_supports_tts(),
+            "supportsText": _runtime_supports_text(),
+            "supportsMultiSpeaker": supports_multi_speaker,
+            "multiSpeakerMaxSpeakers": multi_speaker_max,
             "geminiAvailable": genai is not None,
             "apiKeyConfigured": bool(configured_pool),
             "keyPoolSize": len(configured_pool),
             "ttsModelFallbackEnabled": _tts_model_fallback_enabled(source_policy),
             "ttsAllocatorRateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
-            "mode": "cloud-text-to-speech" if cloud_tts_enabled else "gemini-only",
+            "mode": mode,
+            "runtimeRole": VF_RUNTIME_ROLE,
             "device": "hosted",
             "device_mode": "remote",
             "provider": provider,
-            "textProvider": "vertex-ai" if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX else "gemini-api",
-            "ttsProvider": provider,
+            "textProvider": text_provider,
+            "ttsProvider": tts_provider,
             "provider_preference": ["hosted"],
             "gpu_enabled": False,
             "openvino_enabled": False,
@@ -5280,22 +5325,42 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    cloud_tts_enabled = _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
-    model_candidates = resolve_tts_model_candidates(
-        engine=safe_engine,
-        auth_mode=auth_mode,
-        source_policy=source_policy,
-    )
-    model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
+    text_provider = _text_provider_label(auth_mode)
+    cloud_tts_enabled = _runtime_supports_tts() and _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    if _runtime_supports_tts():
+        model_candidates = resolve_tts_model_candidates(
+            engine=safe_engine,
+            auth_mode=auth_mode,
+            source_policy=source_policy,
+        )
+        model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
+        ready = _cloud_tts_client_ready(source_policy=source_policy) if cloud_tts_enabled else (genai is not None and types is not None)
+        provider = _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
+        mode = "cloud-text-to-speech" if cloud_tts_enabled else ("gemini-only" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex")
+        supports_multi_speaker = not cloud_tts_enabled
+        supports_batch_synthesis = True
+        batch_endpoint: Optional[str] = "/synthesize/batch"
+        structured_endpoint: Optional[str] = "/synthesize/structured"
+        tts_provider = provider
+    else:
+        model_candidates = resolve_text_model_candidates()
+        model = model_candidates[0] if model_candidates else ""
+        ready = genai is not None and types is not None
+        provider = text_provider
+        mode = "text-only"
+        supports_multi_speaker = False
+        supports_batch_synthesis = False
+        batch_endpoint = None
+        structured_endpoint = None
+        tts_provider = "disabled"
     configured_pool = resolve_request_api_key_pool("")
-    provider = _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
     default_segmentation_profile = resolve_chunk_profile("en", "segment capabilities")
     hindi_segmentation_profile = resolve_chunk_profile("hi", "यह सेगमेंट प्रोफाइल है")
     return JSONResponse(
         {
             "engine": safe_engine,
             "runtime": APP_NAME,
-            "ready": _cloud_tts_client_ready(source_policy=source_policy) if cloud_tts_enabled else (genai is not None and types is not None),
+            "ready": ready,
             "languages": ["multilingual"],
             "speed": {"min": 0.7, "max": 1.3, "default": 1.0},
             "supportsEmotion": False,
@@ -5303,9 +5368,11 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
             "supportsSpeakerWav": False,
             "model": "google-cloud-text-to-speech" if cloud_tts_enabled else model,
             "modelCandidates": model_candidates,
-            "supportsMultiSpeaker": not cloud_tts_enabled,
-            "supportsBatchSynthesis": True,
-            "batchEndpoint": "/synthesize/batch",
+            "supportsTts": _runtime_supports_tts(),
+            "supportsText": _runtime_supports_text(),
+            "supportsMultiSpeaker": supports_multi_speaker,
+            "supportsBatchSynthesis": supports_batch_synthesis,
+            "batchEndpoint": batch_endpoint,
             "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
             "batchDefaultParallelism": GEMINI_BATCH_DEFAULT_PARALLEL,
             "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
@@ -5314,14 +5381,15 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
             "metadata": {
                 "apiKeyConfigured": bool(configured_pool),
                 "keyPoolSize": len(configured_pool),
-                "mode": "cloud-text-to-speech" if cloud_tts_enabled else ("gemini-only" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex"),
+                "mode": mode,
                 "authMode": auth_mode,
+                "runtimeRole": VF_RUNTIME_ROLE,
                 "ttsAllocatorRateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
                 "device": "hosted",
                 "deviceMode": "remote",
                 "provider": provider,
-                "textProvider": "vertex-ai" if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX else "gemini-api",
-                "ttsProvider": provider,
+                "textProvider": text_provider,
+                "ttsProvider": tts_provider,
                 "providerPreference": ["hosted"],
                 "gpuEnabled": False,
                 "openvinoEnabled": False,
@@ -5335,14 +5403,14 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
                     "hi": hindi_segmentation_profile,
                 },
                 "multiSpeakerMaxSpeakers": 0 if cloud_tts_enabled else 2,
-                "supportsBatchSynthesis": True,
-                "batchEndpoint": "/synthesize/batch",
-                "structuredEndpoint": "/synthesize/structured",
+                "supportsBatchSynthesis": supports_batch_synthesis,
+                "batchEndpoint": batch_endpoint,
+                "structuredEndpoint": structured_endpoint,
                 "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
                 "batchDefaultParallelism": GEMINI_BATCH_DEFAULT_PARALLEL,
                 "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
                 "multiSpeakerMaxSpeakersPerCall": 0 if cloud_tts_enabled else 2,
-                "multiSpeakerBatchingMode": "single_speaker_windows" if cloud_tts_enabled else "studio_pair_groups_with_line_map_windows",
+                "multiSpeakerBatchingMode": "single_speaker_windows" if cloud_tts_enabled else ("studio_pair_groups_with_line_map_windows" if _runtime_supports_tts() else "disabled"),
             },
         }
     )
@@ -5544,6 +5612,7 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
 
 
 def admin_api_pools_reload(request: Request) -> JSONResponse:
+    _require_runtime_text_support()
     _require_runtime_admin(request)
     raise HTTPException(status_code=405, detail="Gemini pool management has been removed.")
     config, _ = _load_api_pool_config(force=True)
@@ -5557,12 +5626,14 @@ def admin_api_pools_reload(request: Request) -> JSONResponse:
 
 @app.get("/v1/admin/api-pools/usage")
 def admin_api_pools_usage(request: Request) -> JSONResponse:
+    _require_runtime_text_support()
     _require_runtime_admin(request)
     return JSONResponse(_admin_api_pools_usage_payload())
 
 
 @app.post("/v1/generate-text")
 def generate_text(payload: TextGenerateRequest) -> JSONResponse:
+    _require_runtime_text_support()
     user_prompt = str(payload.userPrompt or "").strip()
     if not user_prompt:
         raise HTTPException(status_code=400, detail="userPrompt is required.")
@@ -5772,6 +5843,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
 
 @app.post("/v1/count-tokens")
 def count_tokens(payload: CountTokensRequest) -> JSONResponse:
+    _require_runtime_text_support()
     contents = str(payload.contents or "").strip()
     if not contents:
         raise HTTPException(status_code=400, detail="contents is required.")
@@ -5847,6 +5919,7 @@ def count_tokens(payload: CountTokensRequest) -> JSONResponse:
 
 @app.post("/synthesize")
 def synthesize(payload: SynthesizeRequest) -> Response:
+    _require_runtime_tts_support()
     synthesis_result = _synthesize_text_to_wav(payload)
     headers = {
         "X-VFlowAI-Trace-Id": str(synthesis_result.get("traceId") or ""),
@@ -5878,6 +5951,7 @@ def synthesize(payload: SynthesizeRequest) -> Response:
 
 @app.post("/synthesize/structured")
 def synthesize_structured(payload: SynthesizeRequest) -> JSONResponse:
+    _require_runtime_tts_support()
     payload_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     payload_data["return_line_chunks"] = True
     structured_payload = SynthesizeRequest(**payload_data)
@@ -5924,6 +5998,7 @@ def synthesize_structured(payload: SynthesizeRequest) -> JSONResponse:
 
 @app.post("/synthesize/batch")
 def synthesize_batch(payload: BatchSynthesizeRequest) -> JSONResponse:
+    _require_runtime_tts_support()
     items = list(payload.items or [])
     if not items:
         raise HTTPException(status_code=400, detail="items must contain at least one request.")

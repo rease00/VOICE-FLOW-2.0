@@ -5,8 +5,6 @@ param(
     [string]$Profile = "",
     [string]$Tag = "",
     [string]$RedisUrl = $env:VF_REDIS_URL,
-    [string]$DunoRuntimeUrl = $env:VF_DUNO_RUNTIME_URL,
-    [string]$DunoRuntimeToken = $env:VF_DUNO_RUNTIME_TOKEN,
     [string]$KokoroRuntimeUrl = $env:VF_KOKORO_RUNTIME_URL,
     [string]$KokoroRuntimeToken = $env:VF_KOKORO_RUNTIME_TOKEN,
     [string]$VoiceCloneRuntimeUrl = $env:VF_VOICE_CLONE_MODAL_RUNTIME_URL,
@@ -29,29 +27,17 @@ if (-not $OpenVoiceRuntimeUrl) {
 if (-not $VoiceCloneRuntimeUrl) {
     $VoiceCloneRuntimeUrl = [string]$env:VF_VOICE_CLONE_RUNTIME_URL
 }
-if (-not $VoiceCloneRuntimeUrl) {
-    $VoiceCloneRuntimeUrl = [string]$env:VF_OPENVOICE_RUNTIME_URL
-}
-if (-not $VoiceCloneRuntimeUrl -and $OpenVoiceRuntimeUrl) {
-    $VoiceCloneRuntimeUrl = [string]$OpenVoiceRuntimeUrl
-}
 if (-not $VoiceCloneRuntimeToken) {
     $VoiceCloneRuntimeToken = [string]$env:VF_VOICE_CLONE_RUNTIME_TOKEN
-}
-if (-not $VoiceCloneRuntimeToken) {
-    $VoiceCloneRuntimeToken = [string]$env:VF_OPENVOICE_RUNTIME_TOKEN
-}
-if (-not $VoiceCloneRuntimeToken -and $OpenVoiceRuntimeToken) {
-    $VoiceCloneRuntimeToken = [string]$OpenVoiceRuntimeToken
 }
 if (-not $VoiceCloneArtifactSecret) {
     $VoiceCloneArtifactSecret = [string]$env:VF_VOICE_CLONE_ARTIFACT_SECRET
 }
-if (-not $VoiceCloneArtifactSecret) {
-    $VoiceCloneArtifactSecret = [string]$env:VF_OPENVOICE_ARTIFACT_SECRET
+if (-not $OpenVoiceRuntimeToken) {
+    $OpenVoiceRuntimeToken = [string]$env:VF_OPENVOICE_RUNTIME_TOKEN
 }
-if (-not $VoiceCloneArtifactSecret -and $OpenVoiceArtifactSecret) {
-    $VoiceCloneArtifactSecret = [string]$OpenVoiceArtifactSecret
+if (-not $OpenVoiceArtifactSecret) {
+    $OpenVoiceArtifactSecret = [string]$env:VF_OPENVOICE_ARTIFACT_SECRET
 }
 
 function Invoke-Gcloud {
@@ -177,6 +163,17 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
+            "__VERTEX_TEXT_RUNTIME_URL__" {
+                $runtimeUrl = [string]$RuntimeUrls["voiceflow-vertex-text-runtime"]
+                if (-not $runtimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = "https://voiceflow-vertex-text-runtime.a.run.app"
+                        break
+                    }
+                    throw "Vertex text runtime URL is not available yet."
+                }
+                $resolved[$key] = $runtimeUrl
+            }
             "__VOICEFLOW_WORKER_URL__" {
                 $runtimeUrl = [string]$RuntimeUrls["voiceflow-worker"]
                 if (-not $runtimeUrl) {
@@ -195,17 +192,6 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
-            "__DUNO_RUNTIME_URL__" {
-                if (-not $DunoRuntimeUrl) {
-                    if ($DryRun) {
-                        $resolved[$key] = "https://modal-duno-runtime.example"
-                        break
-                    }
-                    $resolved[$key] = ""
-                    break
-                }
-                $resolved[$key] = [string]$DunoRuntimeUrl
-            }
             "__KOKORO_RUNTIME_URL__" {
                 if (-not $KokoroRuntimeUrl) {
                     if ($DryRun) {
@@ -222,8 +208,7 @@ function Resolve-EnvMap {
                         $resolved[$key] = ""
                         break
                     }
-                    $resolved[$key] = ""
-                    break
+                    throw "Modal Voice Clone runtime URL is required. Pass -VoiceCloneRuntimeUrl or set VF_VOICE_CLONE_RUNTIME_URL."
                 }
                 $resolved[$key] = [string]$VoiceCloneRuntimeUrl
             }
@@ -233,32 +218,29 @@ function Resolve-EnvMap {
                         $resolved[$key] = ""
                         break
                     }
-                    $resolved[$key] = ""
-                    break
+                    throw "Modal Voice Clone runtime URL is required. Pass -VoiceCloneRuntimeUrl or set VF_VOICE_CLONE_RUNTIME_URL."
                 }
                 $resolved[$key] = [string]$VoiceCloneRuntimeUrl
             }
             "__OPENVOICE_RUNTIME_URL__" {
-                if (-not $VoiceCloneRuntimeUrl) {
+                if (-not $OpenVoiceRuntimeUrl) {
                     if ($DryRun) {
                         $resolved[$key] = ""
                         break
                     }
-                    $resolved[$key] = ""
-                    break
+                    throw "Modal OpenVoice runtime URL is required. Pass -OpenVoiceRuntimeUrl or set VF_OPENVOICE_RUNTIME_URL."
                 }
-                $resolved[$key] = [string]$VoiceCloneRuntimeUrl
+                $resolved[$key] = [string]$OpenVoiceRuntimeUrl
             }
             "__OPENVOICE_MODAL_RUNTIME_URL__" {
-                if (-not $VoiceCloneRuntimeUrl) {
+                if (-not $OpenVoiceRuntimeUrl) {
                     if ($DryRun) {
                         $resolved[$key] = ""
                         break
                     }
-                    $resolved[$key] = ""
-                    break
+                    throw "Modal OpenVoice runtime URL is required. Pass -OpenVoiceRuntimeUrl or set VF_OPENVOICE_RUNTIME_URL."
                 }
-                $resolved[$key] = [string]$VoiceCloneRuntimeUrl
+                $resolved[$key] = [string]$OpenVoiceRuntimeUrl
             }
             "__VOICE_CLONE_RUNTIME_TOKEN__" {
                 if ($VoiceCloneRuntimeToken) {
@@ -282,15 +264,15 @@ function Resolve-EnvMap {
                 $resolved[$key] = ""
             }
             "__OPENVOICE_RUNTIME_TOKEN__" {
-                if ($VoiceCloneRuntimeToken) {
-                    $resolved[$key] = [string]$VoiceCloneRuntimeToken
+                if ($OpenVoiceRuntimeToken) {
+                    $resolved[$key] = [string]$OpenVoiceRuntimeToken
                     break
                 }
                 $resolved[$key] = ""
             }
             "__OPENVOICE_MODAL_RUNTIME_TOKEN__" {
-                if ($VoiceCloneRuntimeToken) {
-                    $resolved[$key] = [string]$VoiceCloneRuntimeToken
+                if ($OpenVoiceRuntimeToken) {
+                    $resolved[$key] = [string]$OpenVoiceRuntimeToken
                     break
                 }
                 $resolved[$key] = ""
@@ -303,8 +285,8 @@ function Resolve-EnvMap {
                 $resolved[$key] = ""
             }
             "__OPENVOICE_ARTIFACT_SECRET__" {
-                if ($VoiceCloneArtifactSecret) {
-                    $resolved[$key] = [string]$VoiceCloneArtifactSecret
+                if ($OpenVoiceArtifactSecret) {
+                    $resolved[$key] = [string]$OpenVoiceArtifactSecret
                     break
                 }
                 $resolved[$key] = ""
@@ -329,7 +311,7 @@ function Resolve-SecretReference {
         return $token
     }
 
-    return "$token`:1"
+    return "$token`:latest"
 }
 
 function Get-ServiceOrderingRank {
@@ -768,7 +750,7 @@ foreach ($svc in $deployOrder) {
 Write-Host ""
 Write-Host "Cloud Run deployment completed."
 Write-Host "Runtime URLs:"
-foreach ($key in @("voiceflow-gemini-runtime")) {
+foreach ($key in @("voiceflow-gemini-runtime", "voiceflow-vertex-text-runtime")) {
     $value = [string]$runtimeUrls[$key]
     if ($value) {
         Write-Host "  $key = $value"

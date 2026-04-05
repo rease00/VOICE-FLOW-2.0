@@ -2,14 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Mic2, Upload, X } from 'lucide-react';
 import type { ClonedVoice } from '../../../types';
 import { Button } from '../../../components/Button';
-import { getEngineDisplayName } from '../../../services/engineDisplay';
 import { fileToBase64, fetchUrlToBase64, base64ToArrayBuffer } from '../../shared/audio/base64';
 import { getSharedAudioContext } from '../../shared/audio/audioContext';
-import { buildDunoClonePreviewUrl } from './dunoPreview';
-import { cloneVoiceWithDunoNative, renderVoiceClone } from './api';
+import { renderVoiceClone } from './api';
 
 export interface VoiceCloneModalResult {
-  cloneMode: 'modal_reference' | 'duno_native';
+  cloneMode: 'modal_reference';
   engine: string;
   referenceArtifactId: string;
   referenceAudioUrl: string;
@@ -128,8 +126,6 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     () => String(sourceVoiceEngine || '').trim().toUpperCase() || 'PRIME',
     [sourceVoiceEngine]
   );
-  const isDunoNativeClone = normalizedSourceEngine === 'DUNO';
-  const dunoLabel = getEngineDisplayName('DUNO');
   const currentSourceLabel = useMemo(
     () => String(sourceVoiceLabel || '').trim() || 'Selected speaker',
     [sourceVoiceLabel]
@@ -139,10 +135,8 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     [sourceVoiceId]
   );
   const canSubmit = Boolean(referenceFile) && !isSubmitting;
-  const modalTitle = isDunoNativeClone ? `Create ${dunoLabel} Native Clone` : 'Attach Modal VC Reference';
-  const modalDescription = isDunoNativeClone
-    ? `Upload a consented reference clip to create a ${dunoLabel}-native cloned voice.`
-    : 'Upload a consented reference clip and bind it to this speaker for Modal voice conversion.';
+  const modalTitle = 'Attach Modal VC Reference';
+  const modalDescription = 'Upload a consented reference clip and bind it to this speaker for Modal voice conversion.';
 
   const handleOverlayClick = () => {
     if (!isSubmitting) onClose();
@@ -256,72 +250,6 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
         fileToBase64(referenceFile),
       ]);
 
-      if (isDunoNativeClone) {
-        const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-          ? crypto.randomUUID()
-          : `duno_clone_${Date.now()}`;
-        const response = await cloneVoiceWithDunoNative(
-          {
-            referenceAudioBase64,
-            referenceAudioName,
-            sourceVoiceId: currentSourceId,
-            sourceVoiceName: currentSourceLabel,
-            sourceVoiceEngine: 'DUNO',
-            speaker: currentSourceLabel,
-            requestId,
-            traceId: requestId,
-          },
-          backendBaseUrl ? { baseUrl: backendBaseUrl } : undefined
-        );
-
-        const backendClonedVoice = (response.clonedVoice || {}) as Partial<ClonedVoice>;
-        let previewUrl = String(backendClonedVoice.previewUrl || '').trim();
-        if (!previewUrl) {
-          previewUrl = await buildDunoClonePreviewUrl({
-            backendBaseUrl,
-            voiceId: String(backendClonedVoice.geminiVoiceName || response.voiceId || currentSourceId || '').trim() || String(response.voiceId || currentSourceId || '').trim(),
-            voiceName: String(backendClonedVoice.name || `${currentSourceLabel} Clone`).trim() || `${currentSourceLabel} Clone`,
-            voiceModel: String(response.model || '').trim(),
-          });
-        }
-        const clonedVoice: ClonedVoice = {
-          id: String(response.voiceId || backendClonedVoice.id || '').trim(),
-          name: String(backendClonedVoice.name || `${currentSourceLabel} Clone`).trim() || `${currentSourceLabel} Clone`,
-          gender: backendClonedVoice.gender || 'Unknown',
-          accent: backendClonedVoice.accent || 'Neutral',
-          geminiVoiceName: String(backendClonedVoice.geminiVoiceName || response.voiceId || currentSourceLabel).trim() || currentSourceLabel,
-          engine: 'DUNO',
-          source: String(backendClonedVoice.source || 'duno_native').trim() || 'duno_native',
-          isDownloaded: true,
-          isCloned: true,
-          previewUrl,
-          accessTier: backendClonedVoice.accessTier || 'pro',
-          isPlanRestricted: Boolean(backendClonedVoice.isPlanRestricted),
-          dateCreated: Math.max(0, Number(backendClonedVoice.dateCreated || Date.now())),
-          description: String(backendClonedVoice.description || `Native ${getEngineDisplayName('DUNO')} clone of ${currentSourceLabel}`).trim() || `Native ${getEngineDisplayName('DUNO')} clone of ${currentSourceLabel}`,
-          originalSampleUrl: String(backendClonedVoice.originalSampleUrl || referenceAudioUrl).trim() || referenceAudioUrl,
-          referenceAudioUrl,
-          referenceAudioName,
-          sourceVoiceId: currentSourceId,
-          sourceVoiceName: currentSourceLabel,
-          sourceVoiceEngine: 'DUNO',
-        };
-
-        onCloneCreated({
-          cloneMode: 'duno_native',
-          engine: 'DUNO',
-          referenceArtifactId: '',
-          referenceAudioUrl,
-          referenceAudioName,
-          sourceVoiceId: currentSourceId,
-          sourceVoiceName: currentSourceLabel,
-          sourceVoiceEngine: 'DUNO',
-          consumedVcUnits: 0,
-          clonedVoice,
-        });
-        return;
-      }
-
       const { sourceAudioBase64, sourceAudioName, durationSec } = await resolveSourceSamplePayload();
       const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
@@ -419,9 +347,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
               <span>{currentSourceLabel}</span>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              {isDunoNativeClone
-                ? `A new ${dunoLabel}-native cloned voice will be created from this speaker and reference sample.`
-                : 'This speaker will use Modal voice conversion with the uploaded reference during generation.'}
+              This speaker will use Modal voice conversion with the uploaded reference during generation.
             </p>
           </div>
 
@@ -501,7 +427,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
                 variant="primary"
               disabled={!canSubmit}
             >
-                {isDunoNativeClone ? `Create ${dunoLabel} Clone` : 'Attach Modal Reference'}
+                Attach Modal Reference
               </Button>
             </div>
           </form>

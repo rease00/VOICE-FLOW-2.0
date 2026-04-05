@@ -1,6 +1,6 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { GenerationSettings, RemoteSpeaker, ClonedVoice, CharacterProfile, VoiceOption, VoiceSampleAnalysis } from "../types";
-import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, DUNO_DEFAULT_VOICE_ID, DUNO_LEGACY_PRESET_IDS, DUNO_VOICES } from "../constants";
+import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES } from "../constants";
 import { getEngineDisplayName } from "./engineDisplay";
 import { getSharedAudioContext } from "../src/shared/audio/audioContext";
 import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisContractService";
@@ -55,24 +55,6 @@ export {
   normalizeSpeakerMapKey,
   parseScriptToSegments,
   resolveSpeakerMappedVoiceId,
-};
-
-const DUNO_LEGACY_PRESET_ID_SET = new Set(DUNO_LEGACY_PRESET_IDS.map((voiceId) => String(voiceId || '').trim().toLowerCase()));
-
-const normalizeDunoVoiceIdForRuntime = (value: unknown): string => {
-  const token = String(value || '').trim();
-  if (!token) return DUNO_DEFAULT_VOICE_ID;
-  const lowered = token.toLowerCase();
-  if (
-    DUNO_LEGACY_PRESET_ID_SET.has(lowered)
-    || lowered === 'default duno'
-    || lowered === 'duno default'
-    || lowered === 'default chatterbox'
-    || lowered === 'chatterbox default'
-  ) {
-    return DUNO_DEFAULT_VOICE_ID;
-  }
-  return token;
 };
 
 interface RuntimeDiagnosticsPayload {
@@ -2375,7 +2357,6 @@ export const generateSpeech = async (
     engine?: string;
     backendUrl?: string;
     backendApiKey?: string;
-    chatterboxId?: string;
     openaiModel?: string;
     f5Model?: string;
     enableWebGpu?: boolean;
@@ -2388,14 +2369,14 @@ export const generateSpeech = async (
     : [];
   const allowPersonalGeminiBypass = false;
   const rawEngine = String(runtimeSettings.engine || 'PRIME').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  if (rawEngine !== 'DUNO' && rawEngine !== 'VECTOR' && rawEngine !== 'PRIME') {
-    throw new Error(`Unsupported TTS engine "${String(runtimeSettings.engine || '').trim()}". Use ${getEngineDisplayName('DUNO')}, ${getEngineDisplayName('VECTOR')}, or ${getEngineDisplayName('PRIME')}.`);
+  const canonicalEngine = rawEngine;
+  if (canonicalEngine !== 'VECTOR' && canonicalEngine !== 'PRIME') {
+    throw new Error(`Unsupported TTS engine "${String(runtimeSettings.engine || '').trim()}". Use ${getEngineDisplayName('VECTOR')} or ${getEngineDisplayName('PRIME')}.`);
   }
-  const activeEngine: GenerationSettings['engine'] = rawEngine;
+  const activeEngine: GenerationSettings['engine'] = canonicalEngine;
   const runtimeProvider = String(runtimeSettings.runtimeProvider || '').trim().toUpperCase();
   const usesGemRuntime = activeEngine === 'PRIME' || activeEngine === 'VECTOR';
   const runtimeSupportsStructuredGeminiMultiSpeaker = usesGemRuntime;
-  const usesModalRuntime = activeEngine === 'DUNO';
   const runtimeEngine: GenerationSettings['engine'] = activeEngine;
   const primaryEngine = isPrimaryTtsEngine(activeEngine) ? activeEngine : null;
   const configuredTraceId = String(options?.traceId || '').trim();
@@ -2425,6 +2406,12 @@ export const generateSpeech = async (
     return 'en';
   };
 
+  const isHindiFamilyLanguage = (value: string): boolean => (
+    new Set(['hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'or', 'ur', 'ne', 'si']).has(
+      normalizeLanguageCode(value)
+    )
+  );
+
   let lang = 'en';
   if (settings.language && settings.language !== 'Auto') {
     const langObj = LANGUAGES.find(
@@ -2435,6 +2422,7 @@ export const generateSpeech = async (
     lang = inferLanguageFromText(text);
   }
   if (lang === 'hi-latn') lang = 'hi';
+  const runtimeLanguage = lang;
   
   // Clean text helper (removes metadata)
   const cleanText = (rawText: string) => {
@@ -2562,7 +2550,7 @@ export const generateSpeech = async (
   };
 
   const synthesizeViaBackendGateway = async (
-    engine: 'PRIME' | 'VECTOR' | 'DUNO',
+    engine: 'PRIME' | 'VECTOR',
     runtimeUrl: string,
     endpointPath: string,
     payload: Record<string, unknown>,
@@ -2573,7 +2561,6 @@ export const generateSpeech = async (
     const livePayload = {
       ...payload,
       engine,
-      post_tts_disable: engine === 'DUNO',
       stream: true,
       live_chunk_chars: liveChunkRequest.liveChunkChars,
       live_chunk_words: liveChunkRequest.liveChunkWords,
@@ -2788,7 +2775,6 @@ export const generateSpeech = async (
     spokenText: string,
     cloneTarget?: OpenVoiceCloneTarget
   ): Promise<AudioBuffer> => {
-    if (activeEngine === 'DUNO') return buffer;
     if (useGeminiBuiltInMultiSpeaker) return buffer;
 
     const fallbackMappedCloneTarget = (() => {
@@ -2939,7 +2925,7 @@ export const generateSpeech = async (
   };
 
   const maybeSynthesizePrimaryLongText = async (
-    engine: 'PRIME' | 'VECTOR' | 'DUNO',
+    engine: 'PRIME' | 'VECTOR',
     candidateText: string,
     synthesizeChunk: (
       chunkText: string,
@@ -2985,9 +2971,7 @@ export const generateSpeech = async (
         } catch (error) {
           lastError = error;
           const detail = error instanceof Error ? error.message : String(error);
-          const shouldFailFast =
-            String(engine).trim().toUpperCase() !== 'DUNO' &&
-            shouldFailFastOnGeminiRuntimeError(detail);
+          const shouldFailFast = shouldFailFastOnGeminiRuntimeError(detail);
           if (shouldFailFast) {
             break;
           }
@@ -3041,18 +3025,13 @@ export const generateSpeech = async (
     });
   };
   const activeSessionClone = resolveSessionClonedVoice(settings.voiceId, voiceName);
-  const isDunoNativeSessionClone = Boolean(
-    activeSessionClone &&
-    (
-      String(activeSessionClone.engine || activeSessionClone.sourceVoiceEngine || '').trim().toUpperCase() === 'DUNO' ||
-      String(activeSessionClone.source || '').trim().toLowerCase() === 'duno_native'
-    )
-  );
   const resolvedVoiceInput = String(
     (
-      isDunoNativeSessionClone
-        ? activeSessionClone?.id || activeSessionClone?.geminiVoiceName || activeSessionClone?.name
-        : activeSessionClone?.sourceVoiceId || activeSessionClone?.sourceVoiceName
+      activeSessionClone?.sourceVoiceId ||
+      activeSessionClone?.sourceVoiceName ||
+      activeSessionClone?.id ||
+      activeSessionClone?.geminiVoiceName ||
+      activeSessionClone?.name
     ) ||
     voiceName ||
     settings.voiceId ||
@@ -3241,7 +3220,7 @@ export const generateSpeech = async (
           runtimeProvider === 'COQ' ||
           runtimeProvider === 'OPENAI' ||
           runtimeProvider === 'F5' ||
-          (usesModalRuntime ? hasTrueMultiSpeakerScript : studioSegments.length > 1)
+          studioSegments.length > 1
         )
     )
   );
@@ -3254,7 +3233,7 @@ export const generateSpeech = async (
     const segmentResults: { index: number, buffer: AudioBuffer }[] = [];
     const expectedSegmentCount = validSegments.length;
     const autoSpeakerVoiceCache = new Map<string, { voiceId: string; voiceName: string }>();
-    const BATCH_SIZE = usesModalRuntime ? 1 : 2;
+    const BATCH_SIZE = 2;
 
       const processSegment = async (seg: typeof validSegments[number]): Promise<void> => {
         if (signal?.aborted) throw createAbortError();
@@ -3305,13 +3284,7 @@ export const generateSpeech = async (
           if (hasExplicitSpeaker) {
             const mappedId = mappedSpeakerVoiceId;
             if (mappedId) {
-               if (usesModalRuntime && runtimeVoiceCatalog.length > 0) {
-                 const validIds = new Set(runtimeVoiceCatalog.map((voice) => voice.id));
-                 const fallbackRuntimeVoiceId = runtimeVoiceCatalog[0]?.id || mappedId;
-                 effectiveVoiceId = validIds.has(mappedId) ? mappedId : fallbackRuntimeVoiceId;
-               } else {
-                 effectiveVoiceId = mappedId;
-               }
+               effectiveVoiceId = mappedId;
 
                if (usesGemRuntime) {
                  const v = VOICES.find(x => x.id === mappedId) || availableClones.find(x => x.id === mappedId);
@@ -3340,20 +3313,10 @@ export const generateSpeech = async (
                let candidates: any[] = [];
                if (runtimeProvider === 'OPENAI') candidates = OPENAI_VOICES;
                else if (runtimeProvider === 'F5') candidates = F5_VOICES;
-               else if (usesModalRuntime) candidates = runtimeVoiceCatalog.length > 0 ? runtimeVoiceCatalog : DUNO_VOICES;
                else candidates = VOICES;
 
-               if (usesModalRuntime) {
-                 const isHindiTarget = lang.startsWith('hi');
-                 const hindiCandidates = candidates.filter((v) => /hindi|hinglish|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.name || ''}`));
-                 const englishCandidates = candidates.filter((v) => !/hindi|hinglish|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.name || ''}`));
-                 if (isHindiTarget && hindiCandidates.length > 0) candidates = hindiCandidates;
-                 if (!isHindiTarget && englishCandidates.length > 0) candidates = englishCandidates;
-               }
-
                if (candidates.length === 0) {
-                 if (usesModalRuntime) candidates = DUNO_VOICES;
-                 else candidates = VOICES;
+                 candidates = VOICES;
                }
 
                const detectedAgeGroup = guessAgeGroupFromSpeaker(speakerName);
@@ -3413,7 +3376,6 @@ export const generateSpeech = async (
           // Create segment-specific settings
           const segSettings = { 
             ...settings, 
-            chatterboxId: effectiveVoiceId, 
             voiceId: effectiveVoiceId,
             emotion: normalizedSegmentEmotion,
             speed: effectiveSpeed,
@@ -3468,7 +3430,7 @@ export const generateSpeech = async (
     await runSegmentedBatchRunner({
       segments: validSegments,
       batchSize: BATCH_SIZE,
-      runSerially: usesModalRuntime,
+      runSerially: usesGemRuntime,
       processSegment,
       ...(signal ? { signal } : {}),
     });
@@ -3561,60 +3523,6 @@ export const generateSpeech = async (
         throw new Error("Personal Gemini key mode is enabled, but API key is missing.");
       }
       console.warn('Gemini runtime synthesis failed; personal-key mode enabled, switching to direct Gemini API.', runtimeError);
-    }
-  }
-
-  // --- DUNO RUNTIME ENDPOINT ---
-  if (usesModalRuntime) {
-    const targetVoiceId = normalizeDunoVoiceIdForRuntime(
-      settings.voiceId || resolvedVoiceInput || voiceName || DUNO_DEFAULT_VOICE_ID
-    );
-    const targetVoiceLabel = String(
-      availableClones.find((voice) => voice.id === targetVoiceId)?.name
-      || runtimeVoiceCatalog.find((voice) => voice.id === targetVoiceId)?.name
-      || DUNO_VOICES.find((voice) => voice.id === targetVoiceId)?.name
-      || voiceName
-      || (targetVoiceId === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName('DUNO')}` : targetVoiceId)
-    ).trim() || (targetVoiceId === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName('DUNO')}` : targetVoiceId);
-    const modalEngine: 'DUNO' = 'DUNO';
-    const normalizedRequest = normalizeSynthesisRequest({
-      engine: modalEngine,
-      text: processedText,
-      voiceId: targetVoiceId,
-      language: lang,
-      speed: settings.speed,
-      emotion: settings.emotion,
-      style: settings.style,
-      traceId,
-      requestId: requestIdBase,
-    });
-
-    try {
-      return await synthesizeViaBackendGateway(
-        modalEngine,
-        resolveMediaBackendBaseUrl(settings),
-        '/synthesize',
-        {
-          text: normalizedRequest.text,
-          voiceName: targetVoiceLabel,
-          voice_id: normalizedRequest.voice_id,
-          model: String(settings.voiceModel || '').trim() || undefined,
-          language: normalizedRequest.language,
-          speed: normalizedRequest.speed,
-          emotion: normalizedRequest.emotion,
-          style: normalizedRequest.style,
-          trace_id: normalizedRequest.trace_id,
-          request_id: normalizedRequest.request_id,
-          mode: 'single_speaker',
-        },
-        `${modalEngine} runtime synthesis`,
-      );
-    } catch (runtimeError: any) {
-      if (runtimeError?.name === 'AbortError') {
-        throw runtimeError;
-      }
-      const message = String(runtimeError?.message || '').trim();
-      throw new Error(message || `${modalEngine} runtime synthesis failed.`);
     }
   }
 
@@ -3785,12 +3693,12 @@ export const generateSpeech = async (
       
       let speakerId = resolvedVoiceInput || voiceName;
       
-      // If voiceName is a Gemini name (or present in our list of known Gemini voices), 
-      // we should prefer the stored Chatterbox ID if available, unless speakerId is explicitly set.
+      // If voiceName is a Gemini name (or present in our list of known Gemini voices),
+      // we should prefer the stored runtime voice id unless speakerId is explicitly set.
       const isGeminiName = VOICES.some(v => v.geminiVoiceName === speakerId || v.id === speakerId) || VALID_VOICE_NAMES.includes(String(speakerId || '').toLowerCase());
       
       if (!speakerId || isGeminiName) {
-        speakerId = runtimeSettings.chatterboxId || resolvedVoiceInput || settings.voiceId || '';
+        speakerId = resolvedVoiceInput || settings.voiceId || '';
       }
       
       // Fallback if empty

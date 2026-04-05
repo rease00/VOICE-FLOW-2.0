@@ -53,6 +53,8 @@ Single frontend policy (permanent):
 - Required Worker env: `VF_MEDIA_BACKEND_URL=https://<your-backend-origin>`
 - Browser API base should remain `/api/backend`; set `NEXT_PUBLIC_API_BASE_URL=/api/backend` only if you want the value explicit in the environment.
 - The preflight blocks Worker deployments that still point at localhost or omit the backend origin.
+- Site-lock enforcement is production-host only through `SITE_LOCK_PROTECTED_HOSTS`; preview/local hosts bypass auth, while configured production hosts fail closed if `SITE_LOCK_USER` or `SITE_LOCK_PASS` are missing.
+- Validate Cloudflare site-lock config with `node infra/cloudflare/site-lock/validate-config.mjs`.
 - Security headers now come from `frontend/next.config.mjs` and the Worker runtime, not from `public/_headers`.
 - This repo no longer uses a static SPA fallback or Pages-style `404.html`.
 - Optional dashboard optimization for this monorepo: limit build watch paths to `frontend/*`, `.env.production`, and `.env.example`.
@@ -146,7 +148,8 @@ python scripts/firebase_project_wipe.py --apply --confirm WIPE_FIREBASE_NOW
 The local backend services run in isolated Python virtual environments:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
-- `Duno` is served through the backend TTS gateway and the Modal-hosted runtime configured by `VF_DUNO_RUNTIME_URL`
+- `Cloud TTS runtime` serves speech synthesis on `http://127.0.0.1:7810`
+- `Vertex text runtime` serves text and AI endpoints on `http://127.0.0.1:7820`
 - `Voice Clone/Seed-VC` is served through the backend voice-clone routes and the Modal-hosted runtime configured by `VF_VOICE_CLONE_RUNTIME_URL` (legacy `VF_OPENVOICE_RUNTIME_URL` is still accepted)
 - `Voice Clone Demucs separation` can be pinned to a dedicated Modal endpoint via `VF_VOICE_CLONE_SEPARATION_MODAL_RUNTIME_URL` + `VF_VOICE_CLONE_SEPARATION_MODAL_RUNTIME_TOKEN` (falls back to local demucs when `VF_VOICE_CLONE_SEPARATION_MODAL_ALLOW_LOCAL_FALLBACK=1`)
 - Separation GPU scheduling is controlled with `VF_VOICE_CLONE_SEPARATION_MODAL_GPU` (for example `L4,A10G`) and can be enforced with `VF_VOICE_CLONE_SEPARATION_FORCE_GPU=1`
@@ -154,14 +157,14 @@ The local backend services run in isolated Python virtual environments:
 - Modal scale-to-zero and request parallelism are controlled with `VF_VOICE_CLONE_SEPARATION_MODAL_MIN_CONTAINERS` (set `0` for scale-to-zero) and `VF_VOICE_CLONE_SEPARATION_MODAL_CONCURRENCY` (for example `2`)
 - Separation billing defaults to `1.2 INR/min` and `1 VC unit/min` using `VF_VOICE_CLONE_SEPARATION_INR_PER_MIN` and `VF_VOICE_CLONE_SEPARATION_VC_UNITS_PER_MIN`
 
-Runtime/backend URLs are wired internally to local defaults for the backend and Gemini runtime, while Duno resolves through the backend gateway.
+Runtime/backend URLs are wired internally to local defaults for the backend, Cloud TTS runtime, and Vertex text runtime.
 
 ### One-click backend + TTS bootstrap
 
 Create/update venvs, start all local services, and validate endpoints:
 - `npm run services:bootstrap`
 
-GPU-capable host (Gemini can prefer GPU; Duno stays on the Modal-hosted endpoint):
+GPU-capable host (Cloud TTS stays on the dedicated TTS runtime while Vertex text handles AI/text):
 - `npm run services:bootstrap:gpu`
 
 Validate endpoints only:
@@ -174,7 +177,7 @@ Stop all bootstrapped services:
 - `npm run services:down`
 
 Dev orchestration env knobs (optional):
-- `VF_DEV_BOOTSTRAP_MODE=cpu|gpu` (default `cpu`; Duno still uses the Modal-hosted endpoint in both modes)
+- `VF_DEV_BOOTSTRAP_MODE=cpu|gpu` (default `cpu`; Cloud TTS + Vertex text keep their split in both modes)
 - `VF_DEV_BOOTSTRAP_RETRIES=<n>` (default `3`)
 - `VF_DEV_RETRY_BASE_MS=<ms>` (default `1500`)
 - `VF_DEV_RETRY_MAX_MS=<ms>` (default `10000`)
@@ -188,15 +191,15 @@ Dev orchestration env knobs (optional):
 
 Health and capability checks include:
 - `http://127.0.0.1:7800/health` (media backend)
-- `http://127.0.0.1:7810/health` (Gemini runtime)
-- `http://127.0.0.1:7800/tts/engines/capabilities` (Duno via backend gateway)
+- `http://127.0.0.1:7810/health` (Cloud TTS runtime)
+- `http://127.0.0.1:7820/health` (Vertex text runtime)
+- `http://127.0.0.1:7800/tts/engines/capabilities` (backend engine capability gateway)
 
 Notes:
 - Each runtime gets an isolated venv under `backend/.venvs/`.
 - First bootstrap installs Python dependencies for each runtime.
-- `services:bootstrap:gpu` sets GPU-first runtime envs for eligible local runtimes; Duno uses the Modal-hosted endpoint either way.
-- Duno voice coverage includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and follows the backend gateway's no-fallback behavior.
-- Duno is served through the backend TTS gateway and Modal-hosted runtime; there is no local/browser Duno execution path in the app.
+- `services:bootstrap:gpu` keeps the Cloud TTS and Vertex text runtimes split while enabling GPU-first settings for eligible local runtimes.
+- Legacy retired-engine selections are normalized onto VECTOR at the backend/frontend boundary for compatibility.
 - Runtime PID files are reconciled against live port listeners to avoid Windows launcher-PID drift.
 - Service logs auto-rotate on startup/restart.
 
@@ -246,7 +249,7 @@ Audit report output:
 - `backend/artifacts/frontend_backend_connectivity_audit.json`
 - `backend/artifacts/k8s_manifest_validation_report.json`
 
-### TTS Audits (PRIME + DUNO)
+### TTS Audits (PRIME + VECTOR)
 
 Run Hindi emotion coverage audit:
 - `npm run audit:tts:hindi`
@@ -266,7 +269,7 @@ Primary outputs:
 
 Notes:
 - Reliability runbook: `docs/RELIABILITY_RUNBOOK.md`
-- Duno now uses the backend TTS gateway and Modal endpoint configured in the backend env; the browser audit harness and `/duno-assets/` local inference path have been removed.
+- TTS now routes through the Cloud TTS runtime only, while Vertex is reserved for text and AI endpoints.
 - ASR scoring uses `backend/scripts/transcribe-audio-asr.py` with the media-backend venv when present (`backend/.venvs/media-backend`) or falls back to `python` on `PATH`.
 - Auth-first audit scripts:
   - `AUDIT_BEARER_TOKEN=<firebase_id_token>` (primary)
@@ -293,7 +296,7 @@ Notes:
 
 - Canonical plans: `Free`, `Starter`, `Creator`, `Pro`, `Scale`.
 - TTS engine access:
-  - Free: `DUNO`, `VECTOR` only (Prime `PRIME` blocked).
+  - Free: `VECTOR` only (Prime `PRIME` blocked).
   - Paid (`Starter|Creator|Pro|Scale`): all engines.
 - Per-generation character cap:
   - Free: `8,000`

@@ -236,7 +236,6 @@ describe('voice clone stress api', () => {
     const {
       fetchOpenVoiceCloneStatus,
       cloneVoiceWithOpenVoice,
-      cloneVoiceWithDunoNative,
       separateVoiceAndBackgroundWithDemucs,
     } = await import('../src/features/voice-cloning/api');
 
@@ -253,30 +252,20 @@ describe('voice clone stress api', () => {
       sourceAudioBase64: 'src',
       sourceAudioName: 'src.mp3',
     } as any);
-    await cloneVoiceWithDunoNative({
-      referenceAudioBase64: 'ref',
-      referenceAudioName: 'ref.mp3',
-      sourceVoiceName: 'Narrator',
-      sourceVoiceEngine: 'DUNO',
-      speaker: 'Narrator',
-    } as any);
     await separateVoiceAndBackgroundWithDemucs({
       sourceAudioBase64: 'mix',
       sourceAudioName: 'mix.mp3',
     });
 
-    expect(requestJsonMock).toHaveBeenCalledTimes(4);
+    expect(requestJsonMock).toHaveBeenCalledTimes(3);
     const statusCall = requestJsonMock.mock.calls[0] as [string, RequestInit | undefined, { requireAuth: boolean }];
     const cloneCall = requestJsonMock.mock.calls[1] as [string, RequestInit, { requireAuth: boolean }];
-    const dunoCall = requestJsonMock.mock.calls[2] as [string, RequestInit, { requireAuth: boolean }];
-    const separateCall = requestJsonMock.mock.calls[3] as [string, RequestInit, { requireAuth: boolean }];
+    const separateCall = requestJsonMock.mock.calls[2] as [string, RequestInit, { requireAuth: boolean }];
     expect(statusCall[0]).toBe('/voice-clone/status');
     expect(cloneCall[0]).toBe('/voice-clone/render');
-    expect(dunoCall[0]).toBe('/voice-clone/duno/native');
     expect(separateCall[0]).toBe('/voice-clone/separate');
     expect(statusCall[2]).toMatchObject({ requireAuth: true });
     expect(cloneCall[2]).toMatchObject({ requireAuth: true });
-    expect(dunoCall[2]).toMatchObject({ requireAuth: true });
     expect(separateCall[2]).toMatchObject({ requireAuth: true });
   });
 
@@ -305,7 +294,6 @@ describe('voice clone stress api', () => {
     const {
       fetchOpenVoiceCloneStatus,
       cloneVoiceWithOpenVoice,
-      cloneVoiceWithDunoNative,
       separateVoiceAndBackgroundWithDemucs,
     } = await import('../src/features/voice-cloning/api');
 
@@ -323,58 +311,21 @@ describe('voice clone stress api', () => {
       sourceAudioBase64: 'src',
       sourceAudioName: 'src.mp3',
     } as any, { signal: controller.signal });
-    await cloneVoiceWithDunoNative({
-      referenceAudioBase64: 'ref',
-      referenceAudioName: 'ref.mp3',
-      sourceVoiceName: 'Narrator',
-      sourceVoiceEngine: 'DUNO',
-      speaker: 'Narrator',
-    } as any, { signal: controller.signal });
     await separateVoiceAndBackgroundWithDemucs({
       sourceAudioBase64: 'mix',
       sourceAudioName: 'mix.mp3',
     }, { signal: controller.signal });
 
-    expect(requestJsonMock).toHaveBeenCalledTimes(4);
-    for (const call of requestJsonMock.mock.calls.slice(0, 4)) {
+    expect(requestJsonMock).toHaveBeenCalledTimes(3);
+    for (const call of requestJsonMock.mock.calls.slice(0, 3)) {
       const init = call[1] as RequestInit | undefined;
       expect(init?.signal).toBe(controller.signal);
     }
   });
 
-  it('omits referenceAudioUrl from DUNO native clone requests to avoid oversized payloads', async () => {
-    const { cloneVoiceWithDunoNative } = await import('../src/features/voice-cloning/api');
-    requestJsonMock.mockResolvedValueOnce({ ok: true, engine: 'DUNO', voiceId: 'duno_voice_1' });
-
-    await cloneVoiceWithDunoNative({
-      referenceAudioBase64: 'ref-audio',
-      referenceAudioName: 'reference.wav',
-      referenceAudioUrl: `data:audio/wav;base64,${'A'.repeat(10_000)}`,
-      sourceVoiceId: 'voice_1',
-      sourceVoiceName: 'Narrator',
-      sourceVoiceEngine: 'DUNO',
-      speaker: 'Narrator',
-      requestId: 'req-1',
-      traceId: 'req-1',
-    });
-
-    expect(requestJsonMock).toHaveBeenCalledTimes(1);
-    const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { requireAuth: boolean }];
-    expect(path).toBe('/voice-clone/duno/native');
-    expect(options).toMatchObject({ requireAuth: true });
-
-    const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
-    expect(body.referenceAudioBase64).toBe('ref-audio');
-    expect(body.referenceAudioName).toBe('reference.wav');
-    expect(body.referenceAudioUrl).toBeUndefined();
-    expect(body.sourceVoiceEngine).toBe('DUNO');
-  });
-
-  it('prefers the app proxy before retrying a local absolute backend URL for clone submission', async () => {
+  it('uses the app proxy and adds idempotency headers for local clone submissions', async () => {
     const { cloneVoiceWithOpenVoice } = await import('../src/features/voice-cloning/api');
-    requestJsonMock
-      .mockRejectedValueOnce({ status: 404, detail: 'Not Found' })
-      .mockResolvedValueOnce({ ok: true, status: 'completed' });
+    requestJsonMock.mockResolvedValueOnce({ ok: true, status: 'completed' });
 
     const response = await cloneVoiceWithOpenVoice({
       referenceAudioBase64: 'ref',
@@ -388,14 +339,10 @@ describe('voice clone stress api', () => {
     });
 
     expect(response).toMatchObject({ ok: true, status: 'completed' });
-    expect(requestJsonMock).toHaveBeenCalledTimes(2);
-    const firstCall = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
-    const secondCall = requestJsonMock.mock.calls[1] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
-    expect(firstCall[0]).toBe('/voice-clone/render');
-    expect(firstCall[2]).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
-    expect(secondCall[0]).toBe('/voice-clone/render');
-    expect(secondCall[2]).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
-    expect(new Headers(firstCall[1].headers).get('Idempotency-Key')).toBe('clone_req_123');
-    expect(new Headers(secondCall[1].headers).get('Idempotency-Key')).toBe('clone_req_123');
+    expect(requestJsonMock).toHaveBeenCalledTimes(1);
+    const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
+    expect(path).toBe('/voice-clone/render');
+    expect(options).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
+    expect(new Headers(init.headers).get('Idempotency-Key')).toBe('clone_req_123');
   });
 });

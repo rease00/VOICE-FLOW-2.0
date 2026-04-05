@@ -35,11 +35,11 @@ def test_tts_engines_status_contract(monkeypatch) -> None:
     assert "runtimeUrl" in payload["engines"]["PRIME"]
 
 
-@pytest.mark.parametrize("legacy_engine", ["KOKORO", "BASIC", "NEURAL2", "GEM", "GEM1", "GEM PRO"])
+@pytest.mark.parametrize("legacy_engine", ["NEURAL2", "GEM", "GEM1", "GEM PRO"])
 def test_tts_engines_status_rejects_legacy_engine_tokens(legacy_engine: str) -> None:
     response = client.get("/tts/engines/status", params={"engine": legacy_engine})
     assert response.status_code == 400
-    assert "DUNO, VECTOR, or PRIME" in str(response.json().get("detail") or response.text)
+    assert "VECTOR or PRIME" in str(response.json().get("detail") or response.text)
 
 
 def test_tts_engines_status_all_uses_canonical_keys(monkeypatch) -> None:
@@ -49,7 +49,7 @@ def test_tts_engines_status_all_uses_canonical_keys(monkeypatch) -> None:
     response = client.get("/tts/engines/status", params={"engine": "all"})
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload["engines"].keys()) == {"DUNO", "VECTOR", "PRIME"}
+    assert set(payload["engines"].keys()) == {"VECTOR", "PRIME"}
 
 
 def test_tts_engines_status_uses_cache_within_ttl(monkeypatch) -> None:
@@ -276,7 +276,7 @@ def test_legacy_tts_routes_return_410() -> None:
         assert response.status_code == 410
 
 
-@pytest.mark.parametrize("engine", ["GEMINI", "NEURAL2", "DUNO_RUNTIME", "KOKORO"])
+@pytest.mark.parametrize("engine", ["GEMINI", "NEURAL2"])
 def test_tts_v2_job_create_rejects_non_canonical_engines(monkeypatch, engine: str) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
 
@@ -307,17 +307,7 @@ def test_tts_v2_job_create_rejects_non_canonical_engines(monkeypatch, engine: st
         },
     )
     assert response.status_code == 400
-    assert "Invalid engine. Use DUNO, VECTOR, or PRIME." in str(response.json().get("detail") or response.text)
-
-
-def test_removed_local_duno_model_routes_return_404() -> None:
-    routes = [
-        "/models/duno/status",
-        "/models/onnx-community/Duno-82M-v1.0-ONNX/config.json",
-    ]
-    for path in routes:
-        response = client.get(path, headers={"x-dev-uid": "route_check_user"})
-        assert response.status_code == 404
+    assert "Invalid engine. Use VECTOR or PRIME." in str(response.json().get("detail") or response.text)
 
 
 def test_phase2_startup_does_not_start_legacy_tts_workers(monkeypatch) -> None:
@@ -403,166 +393,10 @@ def test_probe_runtime_health_treats_explicit_unhealthy_payload_as_offline(monke
 
 def test_runtime_health_probe_timeout_prefers_remote_budget() -> None:
     local_timeout = backend_app._runtime_health_probe_timeout_sec("http://127.0.0.1:7820/health")
-    remote_timeout = backend_app._runtime_health_probe_timeout_sec("https://duno-modal.example/health")
+    remote_timeout = backend_app._runtime_health_probe_timeout_sec("https://remote-runtime.example/health")
     assert local_timeout == backend_app.VF_TTS_STATUS_PROBE_TIMEOUT_LOCAL_SEC
     assert remote_timeout == backend_app.VF_TTS_STATUS_PROBE_TIMEOUT_REMOTE_SEC
     assert remote_timeout >= local_timeout
-
-
-def test_probe_runtime_health_forwards_duno_runtime_token(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def _fake_urlopen(request, timeout=0):
-        captured["url"] = request.full_url
-        captured["authorization"] = request.headers.get("Authorization")
-        captured["timeout"] = timeout
-        return _FakeResponse()
-
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://duno-modal.example")
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_TOKEN", "secret-token")
-    monkeypatch.setattr(backend_app.urllib_request, "urlopen", _fake_urlopen)
-
-    online, detail = backend_app._probe_runtime_health("https://duno-modal.example/health", timeout_sec=4.0)
-
-    assert online is True
-    assert detail == "Runtime online"
-    assert captured["url"] == "https://duno-modal.example/health"
-    assert captured["authorization"] == "Bearer secret-token"
-    assert captured["timeout"] == 4.0
-
-
-def test_fetch_runtime_json_forwards_duno_runtime_token(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return b'{"ready": true, "engine": "DUNO"}'
-
-    def _fake_urlopen(request, timeout=0):
-        captured["url"] = request.full_url
-        captured["authorization"] = request.headers.get("Authorization")
-        captured["timeout"] = timeout
-        return _FakeResponse()
-
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://duno-modal.example")
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_TOKEN", "Bearer already-prefixed")
-    monkeypatch.setattr(backend_app.urllib_request, "urlopen", _fake_urlopen)
-
-    ok, payload, detail = backend_app._fetch_runtime_json(
-        "https://duno-modal.example/v1/capabilities?engine=DUNO",
-        timeout_sec=5.0,
-    )
-
-    assert ok is True
-    assert detail == "ok"
-    assert payload == {"ready": True, "engine": "DUNO"}
-    assert captured["authorization"] == "Bearer already-prefixed"
-    assert captured["timeout"] == 5.0
-
-
-def test_duno_runtime_voice_catalog_forwards_modal_token(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeResponse:
-        ok = True
-
-        def json(self):
-            return {
-                "voices": [
-                    {
-                        "voice_id": "di_voice_123",
-                        "voice": "di_voice_123",
-                        "name": "Narrator Clone",
-                        "language": "en",
-                        "gender": "female",
-                    }
-                ]
-            }
-
-    def _fake_runtime_request(method: str, url: str, **kwargs):
-        captured["method"] = method
-        captured["url"] = url
-        captured["headers"] = kwargs.get("headers")
-        return _FakeResponse()
-
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://api.deepinfra.com/v1/inference/ResembleAI/chatterbox-turbo")
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_TOKEN", "voice-token")
-    monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
-
-    voices = backend_app._duno_runtime_voice_catalog()
-
-    assert voices
-    by_id = {str(item.get("voice_id") or ""): item for item in voices}
-    assert captured["method"] == "GET"
-    assert captured["url"] == "https://api.deepinfra.com/v1/voices"
-    assert captured["headers"] == {
-        "Accept": "application/json",
-        "ngrok-skip-browser-warning": "true",
-        "Authorization": "Bearer voice-token",
-    }
-    assert by_id["deepinfra_default"]["access_tier"] == "free"
-    assert by_id["deepinfra_default"]["is_plan_restricted"] is False
-    assert by_id["di_voice_123"]["access_tier"] == "pro"
-    assert by_id["di_voice_123"]["is_plan_restricted"] is True
-    assert by_id["di_voice_123"]["name"] == "Narrator Clone"
-
-
-def test_duno_modal_client_synthesize_forwards_modal_token(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeResponse:
-        ok = True
-        content = b"RIFF"
-        headers = {"content-type": "audio/wav"}
-        text = ""
-
-    def _fake_request(method: str, url: str, **kwargs):
-        captured["method"] = method
-        captured["url"] = url
-        captured["json"] = kwargs.get("json")
-        captured["timeout"] = kwargs.get("timeout")
-        captured["authorization"] = client._session.headers.get("authorization")
-        return _FakeResponse()
-
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://api.deepinfra.com/v1/inference/ResembleAI/chatterbox-turbo")
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_TOKEN", "synth-token")
-    client = backend_app.DunoModalClient(timeout_sec=12.0)
-    monkeypatch.setattr(client._session, "request", _fake_request)
-
-    audio_bytes, meta = client.synthesize(
-        text="Hello modal world.",
-        voice_id="di_voice_123",
-        language="en",
-        trace_id="trace-123",
-    )
-
-    assert audio_bytes == b"RIFF"
-    assert meta["provider"] == "deepinfra"
-    assert captured["method"] == "POST"
-    assert captured["url"] == "https://api.deepinfra.com/v1/inference/ResembleAI/chatterbox-turbo"
-    assert captured["authorization"] == "Bearer synth-token"
-    assert captured["timeout"] == 12.0
-    assert captured["json"]["voice_id"] == "di_voice_123"
 
 
 def test_tts_engines_voices_contract_gem_fallback() -> None:
@@ -583,73 +417,6 @@ def test_tts_engines_voices_contract_gem_fallback() -> None:
     assert fenrir["name"] == "Arjun India Male"
     assert fenrir["voice"] == "Fenrir"
     assert fenrir["mapped_name"] == "Arjun India Male"
-
-
-def test_tts_engines_voices_contract_duno_access_tiers(monkeypatch) -> None:
-    class _FakeResponse:
-        def __init__(self) -> None:
-            self.ok = True
-
-        def json(self):
-            return {
-                "voices": [
-                    {"voice_id": "di_voice_free", "name": "Free Clone", "language": "en", "gender": "female"},
-                    {"voice_id": "di_voice_paid", "name": "Paid Clone", "language": "hi", "gender": "female"},
-                ]
-            }
-
-    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *args, **kwargs: _FakeResponse())
-    response = client.get("/tts/engines/voices", params={"engine": "DUNO"})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["engine"] == "DUNO"
-    assert isinstance(payload["voices"], list)
-    assert payload["voices"]
-    by_id = {str(item.get("voice_id") or ""): item for item in payload["voices"]}
-    assert by_id["deepinfra_default"]["access_tier"] == "free"
-    assert by_id["deepinfra_default"]["is_plan_restricted"] is False
-    assert by_id["di_voice_free"]["access_tier"] == "pro"
-    assert by_id["di_voice_free"]["is_plan_restricted"] is True
-    assert by_id["di_voice_paid"]["access_tier"] == "pro"
-    assert by_id["di_voice_paid"]["is_plan_restricted"] is True
-
-
-def test_tts_engines_voices_contract_duno_preserves_runtime_identity(monkeypatch) -> None:
-    class _FakeResponse:
-        def __init__(self) -> None:
-            self.ok = True
-
-        def json(self):
-            return {
-                "voices": [
-                    {
-                        "voice_id": "di_voice_789",
-                        "voice": "di_voice_789",
-                        "name": "Narrator Clone",
-                        "language": "en",
-                        "accent": "American English",
-                        "gender": "female",
-                    }
-                ]
-            }
-
-    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *args, **kwargs: _FakeResponse())
-    response = client.get("/tts/engines/voices", params={"engine": "DUNO"})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    by_id = {str(item.get("voice_id") or ""): item for item in payload["voices"]}
-    voice = by_id["di_voice_789"]
-    assert voice["voice_id"] == "di_voice_789"
-    assert voice["name"] == "Narrator Clone"
-    assert voice["displayName"] == "Narrator Clone"
-    assert voice["voice"] == "di_voice_789"
-    assert voice["accent"] == "American English"
-    assert voice["access_tier"] == "pro"
-    assert "mapped_name" not in voice
-    assert "country" not in voice
-    assert "age_group" not in voice
 
 
 def test_tts_voice_mapping_catalog_contract() -> None:

@@ -44,63 +44,6 @@ export const VOICES: VoiceOption[] = [
 ];
 
 // ============================================================================
-// DUNO VOICES - DeepInfra default plus runtime/native clones
-// ============================================================================
-export const DUNO_DEFAULT_VOICE_ID = 'deepinfra_default';
-export const DUNO_LEGACY_PRESET_IDS = [
-  'af_heart',
-  'af_bella',
-  'af_nova',
-  'af_sarah',
-  'am_fenrir',
-  'am_michael',
-  'am_onyx',
-  'am_echo',
-  'bf_emma',
-  'bf_isabella',
-  'bm_george',
-  'bm_fable',
-  'hf_alpha',
-  'hf_beta',
-  'hm_omega',
-  'hm_psi',
-] as const;
-
-export const DUNO_VOICES: VoiceOption[] = [
-  {
-    id: DUNO_DEFAULT_VOICE_ID,
-    name: 'Default Duno',
-    gender: 'Unknown',
-    accent: 'DeepInfra default',
-    geminiVoiceName: DUNO_DEFAULT_VOICE_ID,
-    country: 'Global',
-    ageGroup: 'Adult',
-    source: 'deepinfra_default',
-    accessTier: 'free',
-    isPlanRestricted: false,
-  },
-];
-
-export const LEGACY_DUNO_VOICE_LABELS: Record<string, string> = {
-  af_heart: 'Lyra US',
-  af_bella: 'Kaia US',
-  af_nova: 'Mira US',
-  af_sarah: 'Zoya US',
-  am_fenrir: 'Rian US',
-  am_michael: 'Lucan US',
-  am_onyx: 'Soren US',
-  am_echo: 'Darian US',
-  bf_emma: 'Elara UK',
-  bf_isabella: 'Cora UK',
-  bm_george: 'Alden UK',
-  bm_fable: 'Osric UK',
-  hf_alpha: 'Kavya IN',
-  hf_beta: 'Isha IN',
-  hm_omega: 'Aarav IN',
-  hm_psi: 'Veer IN',
-};
-
-// ============================================================================
 // OPENAI COMPATIBLE VOICES
 // Standard voices often supported by local OpenAI-compatible backends
 // ============================================================================
@@ -342,7 +285,7 @@ export const INITIAL_STATS: UserStats = {
   wallet: createEmptyWalletStats(),
   limits: {
     maxCharsPerGeneration: 8000,
-    allowedEngines: ['DUNO', 'VECTOR'],
+    allowedEngines: ['VECTOR'],
   },
   features: {
     earlyAccess: false,

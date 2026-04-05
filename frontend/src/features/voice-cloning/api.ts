@@ -30,7 +30,7 @@ export interface VoiceCloneRenderResponse extends VoiceCloneBenchmarkResponse {
 
 export type OpenVoiceCloneResponse = VoiceCloneRenderResponse;
 
-export type VoiceCloneJobKind = 'voice_clone' | 'openvoice' | 'duno_native';
+export type VoiceCloneJobKind = 'voice_clone' | 'openvoice';
 
 export interface VoiceCloneJobProgress {
   percent?: number;
@@ -60,37 +60,8 @@ export interface VoiceCloneJobStatusResponse {
   startedAt?: string;
   finishedAt?: string;
   progress?: VoiceCloneJobProgress;
-  result?: VoiceCloneRenderResponse | DunoNativeCloneResponse;
+  result?: VoiceCloneRenderResponse;
   error?: VoiceCloneJobError;
-}
-
-export interface DunoNativeCloneRequest {
-  referenceAudioBase64: string;
-  referenceAudioName: string;
-  referenceAudioUrl?: string;
-  sourceVoiceId?: string;
-  sourceVoiceName?: string;
-  sourceVoiceEngine?: string;
-  speaker?: string;
-  model?: string;
-  requestId?: string;
-  traceId?: string;
-}
-
-export interface DunoNativeCloneResponse {
-  ok?: boolean;
-  status?: string;
-  provider?: string;
-  engine?: 'DUNO' | string;
-  voiceId?: string;
-  voiceName?: string;
-  model?: string;
-  cached?: boolean;
-  sourceVoiceId?: string;
-  sourceVoiceName?: string;
-  sourceVoiceEngine?: 'DUNO' | string;
-  referenceAudioName?: string;
-  clonedVoice?: ClonedVoice;
 }
 
 export interface VoiceCloneStemSeparationRequest {
@@ -200,51 +171,6 @@ export const startVoiceCloneRenderJob = async (
 );
 
 export const startOpenVoiceCloneJob = startVoiceCloneRenderJob;
-
-export const cloneVoiceWithDunoNative = async (
-  payload: DunoNativeCloneRequest,
-  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
-): Promise<DunoNativeCloneResponse> => {
-  const { referenceAudioUrl: _referenceAudioUrl, ...safePayload } = payload;
-
-  return requestVoiceCloneJson<DunoNativeCloneResponse>(
-    '/voice-clone/duno/native',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // Keep the native DUNO payload lean. The browser still uses the local
-      // data URL for preview state, but the backend only needs the base64 audio.
-      body: JSON.stringify(safePayload),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    },
-    {
-      requireAuth: true,
-      ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
-      ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
-    }
-  );
-};
-
-export const startDunoNativeCloneJob = async (
-  payload: DunoNativeCloneRequest,
-  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
-): Promise<VoiceCloneJobStatusResponse> => {
-  const { referenceAudioUrl: _referenceAudioUrl, ...safePayload } = payload;
-  return requestVoiceCloneJson<VoiceCloneJobStatusResponse>(
-    '/voice-clone/duno/native/jobs',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(safePayload),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    },
-    {
-      requireAuth: true,
-      ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
-      ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
-    }
-  );
-};
 
 export const separateVoiceAndBackgroundWithDemucs = async (
   payload: VoiceCloneStemSeparationRequest,

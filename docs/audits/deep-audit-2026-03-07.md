@@ -40,7 +40,7 @@ The highest-risk issues are deployment drift in the Cloud Run rollout path after
 
 ## Environment Snapshot
 
-- Local stack expected in scope: `3000`, `5173`, `7800`, `7810`, `7830`, plus the Modal-hosted Duno endpoint configured via `VF_DUNO_RUNTIME_URL`
+- Local stack expected in scope: `3000`, `5173`, `7800`, `7810`, `7820`, `7830`, with Cloud TTS on `7810` and Vertex text runtime on `7820`
 - Major churn areas in this release candidate:
   - `backend/app.py`
   - `backend/engines/**`
@@ -101,7 +101,7 @@ The highest-risk issues are deployment drift in the Cloud Run rollout path after
   - `manual-probe-media-capabilities-curl.txt` shows `http://127.0.0.1:7800/tts/engines/capabilities` timing out
   - Direct child runtime probes stayed healthy:
     - `manual-probe-gemini-health.txt`
-    - `manual-probe-duno-health.txt`
+    - `manual-probe-vertex-text-health.txt`
     - `manual-probe-voice-transfer-health.txt`
   - The backend health route in `backend/app.py` performs synchronous downstream checks, including `llvc_runtime.ensure_engine()` and source-separation/video asset status work, instead of staying shallow
 - Impact:

@@ -1,19 +1,19 @@
-import { GenerationSettings } from '../types';
+import { ActiveTtsEngineKey, GenerationSettings } from '../types';
 
-export const ENGINE_DISPLAY_NAMES: Record<GenerationSettings['engine'], string> = {
-  DUNO: 'Duno',
+const normalizeActiveEngine = (engine: GenerationSettings['engine']): ActiveTtsEngineKey =>
+  engine === 'PRIME' ? 'PRIME' : 'VECTOR';
+
+export const ENGINE_DISPLAY_NAMES: Record<ActiveTtsEngineKey, string> = {
   VECTOR: 'Vector',
   PRIME: 'Prime',
 };
 
-export const ENGINE_COMPACT_LABELS: Record<GenerationSettings['engine'], string> = {
-  DUNO: 'Duno',
+export const ENGINE_COMPACT_LABELS: Record<ActiveTtsEngineKey, string> = {
   VECTOR: 'Vector',
   PRIME: 'Prime',
 };
 
-export const ENGINE_RUNTIME_SUBLABELS: Record<GenerationSettings['engine'], string> = {
-  DUNO: 'Duno voice engine',
+export const ENGINE_RUNTIME_SUBLABELS: Record<ActiveTtsEngineKey, string> = {
   VECTOR: 'Vector voice engine',
   PRIME: 'Prime voice engine',
 };
@@ -21,22 +21,21 @@ export const ENGINE_RUNTIME_SUBLABELS: Record<GenerationSettings['engine'], stri
 const TTS_ENGINE_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bvector runtime\b/gi, 'Vector Runtime'],
   [/\bprime runtime\b/gi, 'Prime Runtime'],
-  [/\bduno runtime\b/gi, 'Duno Runtime'],
   [/\bvector\b/gi, 'Vector'],
   [/\bprime\b/gi, 'Prime'],
-  [/\bduno\b/gi, 'Duno'],
 ];
 
-export const getEngineDisplayName = (engine: GenerationSettings['engine']): string => ENGINE_DISPLAY_NAMES[engine] || engine;
+export const getEngineDisplayName = (engine: GenerationSettings['engine']): string =>
+  ENGINE_DISPLAY_NAMES[normalizeActiveEngine(engine)] || 'Vector';
 
 export const getEngineCompactLabel = (engine: GenerationSettings['engine']): string =>
-  ENGINE_COMPACT_LABELS[engine] || getEngineDisplayName(engine);
+  ENGINE_COMPACT_LABELS[normalizeActiveEngine(engine)] || getEngineDisplayName(engine);
 
 export const getEngineRuntimeLabel = (engine: GenerationSettings['engine']): string =>
   `${getEngineDisplayName(engine)} Runtime`;
 
 export const getEngineRuntimeSubLabel = (engine: GenerationSettings['engine']): string =>
-  ENGINE_RUNTIME_SUBLABELS[engine] || 'Voice engine';
+  ENGINE_RUNTIME_SUBLABELS[normalizeActiveEngine(engine)] || 'Voice engine';
 
 export const sanitizeTtsEngineText = (input: string): string => {
   let value = String(input || '');

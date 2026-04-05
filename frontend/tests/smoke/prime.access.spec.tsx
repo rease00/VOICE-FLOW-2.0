@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 import { PRIME_ACCESS_LOCK_MESSAGE } from '../../src/app/workspace/mainAppHelpers';
 
-type Engine = 'DUNO' | 'VECTOR' | 'PRIME';
+type Engine = 'VECTOR' | 'PRIME';
 
-const engineOrder: Engine[] = ['DUNO', 'VECTOR', 'PRIME'];
+const engineOrder: Engine[] = ['VECTOR', 'PRIME'];
 
 const renderRuntimeStripFixture = (allowedEngines: Engine[]): string => {
   const lockedTitle = `Locked: ${PRIME_ACCESS_LOCK_MESSAGE}`;
@@ -44,7 +44,7 @@ const renderRuntimeStripFixture = (allowedEngines: Engine[]): string => {
 
 test.describe('prime access runtime strip', () => {
   test('locks PRIME for unpaid accounts', async ({ page }) => {
-    await page.setContent(renderRuntimeStripFixture(['DUNO', 'VECTOR']));
+    await page.setContent(renderRuntimeStripFixture(['VECTOR']));
 
     await expect(page.getByTestId('prime-locked-copy')).toHaveText(`Locked: ${PRIME_ACCESS_LOCK_MESSAGE}`);
     await expect(page.locator('button')).toHaveCount(3);
@@ -53,7 +53,7 @@ test.describe('prime access runtime strip', () => {
   });
 
   test('unlocks PRIME when paid access is available', async ({ page }) => {
-    await page.setContent(renderRuntimeStripFixture(['DUNO', 'VECTOR', 'PRIME']));
+    await page.setContent(renderRuntimeStripFixture(['VECTOR', 'PRIME']));
 
     await expect(page.getByTestId('prime-locked-copy')).toHaveText('');
     await expect(page.locator('button')).toHaveCount(3);

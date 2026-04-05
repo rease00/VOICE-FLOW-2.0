@@ -244,7 +244,7 @@ const main = async () => {
     }
 
     const engines = payload.engines;
-    for (const engine of ['PRIME', 'VECTOR', 'DUNO']) {
+    for (const engine of ['PRIME', 'VECTOR']) {
       const cap = engines[engine];
       const violations = validateCapabilitiesPayload(engine, cap);
       report.checks.push({

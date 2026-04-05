@@ -14,7 +14,7 @@ import app as backend_app
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Rewrite legacy engine tokens to canonical DUNO/VECTOR/PRIME values.")
+    parser = argparse.ArgumentParser(description="Rewrite legacy engine tokens to canonical VECTOR/PRIME values.")
     parser.add_argument("--mode", choices=("dry_run", "apply", "verify"), default="dry_run")
     parser.add_argument("--requested-by", dest="requested_by", default="cli")
     args = parser.parse_args()

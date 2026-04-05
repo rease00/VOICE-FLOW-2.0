@@ -102,26 +102,26 @@ const maxOldestQueuedAgeMs = Math.max(
   )
 );
 
-const splitRaw = String(args.get('engine-split') || process.env.VF_LOAD_ENGINE_SPLIT || 'gem=0.6,duno=0.4').toLowerCase();
+const splitRaw = String(args.get('engine-split') || process.env.VF_LOAD_ENGINE_SPLIT || 'prime=0.6,vector=0.4').toLowerCase();
 const splitTokens = splitRaw
   .split(',')
   .map((token) => token.trim())
   .filter(Boolean);
-let gemWeight = 0.6;
-let dunoWeight = 0.4;
+let primeWeight = 0.6;
+let vectorWeight = 0.4;
 for (const token of splitTokens) {
   const [k, v] = token.split('=');
   const value = Number.parseFloat(String(v || ''));
   if (!Number.isFinite(value) || value < 0) continue;
-  if (k === 'gem') gemWeight = value;
-  if (k === 'duno') dunoWeight = value;
+  if (k === 'prime') primeWeight = value;
+  if (k === 'vector') vectorWeight = value;
 }
-const weightSum = gemWeight + dunoWeight;
+const weightSum = primeWeight + vectorWeight;
 if (weightSum <= 0) {
-  gemWeight = 0.5;
-  dunoWeight = 0.5;
+  primeWeight = 0.5;
+  vectorWeight = 0.5;
 }
-const gemRatio = gemWeight / (gemWeight + dunoWeight);
+const primeRatio = primeWeight / (primeWeight + vectorWeight);
 
 const { headers: authHeaders, auth: authContext } = buildAuditHeaders(
   { Accept: 'application/json' },
@@ -135,7 +135,7 @@ const headers = {
 
 const pickEngine = (index) => {
   const frac = (index % 100) / 100;
-  return frac < gemRatio ? 'PRIME' : 'DUNO';
+  return frac < primeRatio ? 'PRIME' : 'VECTOR';
 };
 
 const pickModeForRequest = (index) => {
@@ -278,7 +278,7 @@ const pollJobUntilTerminal = async (jobId, deadlineMs) => {
 const makePayload = (engine, requestId) => {
   const text = engine === 'PRIME'
     ? buildExactLengthText('Load test payload for Gemini runtime queue hardening.', textChars)
-    : buildExactLengthText('Load test payload for Duno runtime queue hardening.', textChars);
+    : buildExactLengthText('Load test payload for vector runtime queue hardening.', textChars);
   if (engine === 'PRIME') {
     return {
       engine,
@@ -482,7 +482,7 @@ const summarize = (results, startedAt, finishedAt, preflight, queueTelemetry = [
   const terminal = { completed: 0, failed: 0, cancelled: 0, timeout: 0, unknown: 0 };
   const latencyValues = [];
   const modes = { jobs: 0, sync: 0 };
-  const engines = { PRIME: 0, DUNO: 0 };
+  const engines = { PRIME: 0, VECTOR: 0 };
   let http5xx = 0;
   let failures = 0;
   let accepted = 0;
@@ -498,7 +498,7 @@ const summarize = (results, startedAt, finishedAt, preflight, queueTelemetry = [
     const modeKey = String(item.mode || 'sync');
     if (modeKey === 'jobs' || modeKey === 'sync') modes[modeKey] += 1;
     const engineKey = String(item.engine || 'PRIME').toUpperCase();
-    if (engineKey === 'PRIME' || engineKey === 'DUNO') engines[engineKey] += 1;
+    if (engineKey === 'PRIME' || engineKey === 'VECTOR') engines[engineKey] += 1;
     const terminalStatus = String(item.terminalStatus || '').toLowerCase();
     if (terminalStatus in terminal) {
       terminal[terminalStatus] += 1;
@@ -565,7 +565,7 @@ const summarize = (results, startedAt, finishedAt, preflight, queueTelemetry = [
       textChars,
       engineSplit: {
         gem: Number(gemRatio.toFixed(4)),
-        duno: Number((1 - gemRatio).toFixed(4)),
+        vector: Number((1 - primeRatio).toFixed(4)),
       },
       minCompletionRate,
       retryMax,

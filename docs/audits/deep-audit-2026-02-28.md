@@ -23,7 +23,7 @@ Target state: current dirty working tree (no reverts)
 ## System Surfaces Audited
 - Backend API: `backend/app.py`
 - Gemini runtime: `backend/engines/gemini-runtime/app.py`
-- Duno runtime: Modal-hosted endpoint configured via `VF_DUNO_RUNTIME_URL`
+- Text runtime: Vertex-hosted endpoint configured via `VF_VERTEX_TEXT_RUNTIME_URL`
 - CI/reliability gate: `backend/scripts/ci-reliability.mjs`
 - Frontend build/type/audit/test harness + Playwright smoke surfaces
 

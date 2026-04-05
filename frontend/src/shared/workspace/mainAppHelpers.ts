@@ -48,7 +48,16 @@ export const formatMobileAvailableCreditsPercent = (input: {
   return `${percent}%`;
 };
 
-const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['DUNO', 'VECTOR', 'PRIME']);
+const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['VECTOR', 'PRIME']);
+const LEGACY_ENGINE_TOKEN_MAP: Record<string, GenerationSettings['engine']> = {
+  KOKORO: 'VECTOR',
+  KOKORO_RUNTIME: 'VECTOR',
+  BASIC: 'VECTOR',
+  GEMINI: 'PRIME',
+  GEMINI_RUNTIME: 'PRIME',
+  GEMINI_PRO: 'PRIME',
+  GEMINI_V2: 'PRIME',
+};
 
 const normalizeEngineTokenKey = (value: unknown): string => (
   String(value || '')
@@ -62,6 +71,8 @@ export const resolveEngineToken = (value: unknown): string => {
   const raw = String(value || '').trim();
   if (!raw) return '';
   const canonical = normalizeEngineTokenKey(raw);
+  const legacy = LEGACY_ENGINE_TOKEN_MAP[canonical];
+  if (legacy) return legacy;
   return CANONICAL_ENGINE_TOKENS.has(canonical as GenerationSettings['engine'])
     ? canonical
     : raw;
@@ -72,7 +83,7 @@ export const normalizeEngineToken = (
   fallback: GenerationSettings['engine'] = 'PRIME'
 ): GenerationSettings['engine'] => {
   const token = resolveEngineToken(value);
-  if (token === 'DUNO' || token === 'VECTOR' || token === 'PRIME') return token;
+  if (token === 'VECTOR' || token === 'PRIME') return token;
   return fallback;
 };
 
@@ -81,7 +92,7 @@ export const normalizeAllowedEngines = (value: unknown): GenerationSettings['eng
   const out = new Set<GenerationSettings['engine']>();
   value.forEach((item) => {
     const normalized = resolveEngineToken(item);
-    if (normalized === 'DUNO' || normalized === 'VECTOR' || normalized === 'PRIME') {
+    if (normalized === 'VECTOR' || normalized === 'PRIME') {
       out.add(normalized);
     }
   });
@@ -103,7 +114,7 @@ export const resolvePrimeAllowedEngines = (input: {
   isPaidBillingPlan?: boolean;
   paidVfBalance?: number;
 }): GenerationSettings['engine'][] => (
-  isPrimeAccessUnlocked(input) ? ['DUNO', 'VECTOR', 'PRIME'] : ['DUNO', 'VECTOR']
+  isPrimeAccessUnlocked(input) ? ['VECTOR', 'PRIME'] : ['VECTOR']
 );
 
 export interface EngineSelectorCopy {
@@ -114,11 +125,9 @@ export interface EngineSelectorCopy {
 export const getEngineSelectorCopy = (engine: GenerationSettings['engine']): EngineSelectorCopy =>
   ({
     title: getEngineDisplayName(engine),
-    description: engine === 'DUNO'
-      ? 'Expressive voice with built-in cloning.'
-      : engine === 'VECTOR'
-        ? 'Balanced quality with reliable performance.'
-        : engine === 'PRIME'
-          ? 'Premium synthesis for natural, polished output.'
-          : 'Voice engine',
+    description: engine === 'VECTOR'
+      ? 'Balanced quality with reliable performance.'
+      : engine === 'PRIME'
+        ? 'Premium synthesis for natural, polished output.'
+        : 'Voice engine',
   } as EngineSelectorCopy);

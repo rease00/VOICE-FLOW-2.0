@@ -276,40 +276,6 @@
         "v30": "p30_ru_f_adult",
         "Zubenelgenubi": "p30_ru_f_adult"
       }
-    },
-    "DUNO": {
-      "runtimeVoices": [
-        {
-          "voice_id": "deepinfra_default",
-          "voice": "deepinfra_default",
-          "name": "Default DUNO",
-          "language": "en",
-          "gender": "unknown",
-          "accent": "DeepInfra default",
-          "access_tier": "free",
-          "is_plan_restricted": false,
-          "source": "deepinfra_default"
-        }
-      ],
-      "voiceToProfile": {
-        "af_heart": "p02_india_f_adult",
-        "af_bella": "p04_us_f_adult",
-        "af_nova": "p06_uk_f_adult",
-        "af_sarah": "p08_canada_f_adult",
-        "am_fenrir": "p01_india_m_adult",
-        "am_michael": "p03_us_m_adult",
-        "am_onyx": "p05_uk_m_adult",
-        "am_echo": "p07_canada_m_adult",
-        "bf_emma": "p10_au_f_adult",
-        "bf_isabella": "p18_india_girl",
-        "bm_george": "p09_au_m_adult",
-        "bm_fable": "p17_india_boy",
-        "hf_alpha": "p02_india_f_adult",
-        "hf_beta": "p20_uk_old_woman",
-        "hm_omega": "p27_ae_m_adult",
-        "hm_psi": "p19_india_old_man"
-      }
     }
   }
 }
-

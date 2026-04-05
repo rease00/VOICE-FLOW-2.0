@@ -614,7 +614,7 @@ def test_tts_v2_queue_admission_timeout_returns_standardized_503(monkeypatch) ->
     assert response.status_code == 503
     detail = dict(response.json().get("detail") or {})
     assert detail.get("errorCode") == backend_app.QUEUE_WAIT_TIMEOUT
-    assert detail.get("message") == "Network connection issue. Please retry."
+    assert detail.get("message") == "Servers are busy right now. Please try again in a little while."
     assert int(detail.get("waitTimeoutMs") or 0) == 250
     assert any(
         uid == "queue_timeout_user"
@@ -992,12 +992,12 @@ def test_tts_v2_gemini_jobs_honor_pinned_lane_and_slot_metadata(monkeypatch) -> 
     assert slot_id == "slot_2"
 
 
-def test_tts_v2_duno_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
+def test_tts_v2_vector_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    session_key = _issue_session_key("duno_pin_user")
+    session_key = _issue_session_key("vector_pin_user")
     with backend_app._TTS_V2_SESSION_LOCK:
         backend_app._INMEMORY_TTS_V2_SESSIONS[session_key] = {
-            "uid": "duno_pin_user",
+            "uid": "vector_pin_user",
             "sessionKey": session_key,
             "createdAtMs": int(time.time() * 1000),
             "expiresAtMs": int(time.time() * 1000) + 1800_000,
@@ -1008,7 +1008,7 @@ def test_tts_v2_duno_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
             "latencyMs": 6,
             "pinSource": "session-sticky",
         }
-        backend_app._INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID["duno_pin_user"] = session_key
+        backend_app._INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID["vector_pin_user"] = session_key
 
     captured: list[tuple[str, str]] = []
 
@@ -1023,15 +1023,15 @@ def test_tts_v2_duno_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
     response = client.post(
         "/tts/v2/jobs",
         headers={
-            "x-dev-uid": "duno_pin_user",
+            "x-dev-uid": "vector_pin_user",
             "x-vf-tts-session-key": session_key,
             "Idempotency-Key": request_id,
         },
         json={
             "request_id": request_id,
             "mode": "single_speaker",
-            "engine": "DUNO",
-            "text": "Duno should not receive pin metadata.",
+            "engine": "VECTOR",
+            "text": "Vector should not receive pin metadata.",
         },
     )
     assert response.status_code == 202
@@ -1040,7 +1040,7 @@ def test_tts_v2_duno_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
     while time.time() < deadline:
         poll = client.get(
             f"/tts/v2/jobs/{response.json().get('jobId')}",
-            headers={"x-dev-uid": "duno_pin_user"},
+            headers={"x-dev-uid": "vector_pin_user"},
         )
         assert poll.status_code in {200, 202}
         if str(poll.json().get("status") or "").lower() == "completed":

@@ -5,19 +5,17 @@ import {
 } from '../src/shared/runtime/runtimeAutoSelection';
 
 describe('runtimeAutoSelection', () => {
-  it('allows Basic/DUNO to participate in server runtime auto-selection', () => {
+  it('prefers the lowest-latency active engine from the supported set', () => {
     const selected = pickLowestLatencyServerRuntimeEngine({
-      DUNO: { state: 'online', latencyMs: 12 },
       VECTOR: { state: 'online', latencyMs: 20 },
       PRIME: { state: 'online', latencyMs: 25 },
     });
 
-    expect(selected).toBe('DUNO');
+    expect(selected).toBe('VECTOR');
   });
 
   it('still respects the lowest latency ordering across all engines', () => {
     const selected = pickLowestLatencyRuntimeEngine({
-      DUNO: { state: 'online', latencyMs: 15 },
       VECTOR: { state: 'online', latencyMs: 8 },
       PRIME: { state: 'online', latencyMs: 13 },
     });
@@ -27,7 +25,6 @@ describe('runtimeAutoSelection', () => {
 
   it('does not treat standby runtimes as online candidates', () => {
     const selected = pickLowestLatencyRuntimeEngine({
-      DUNO: { state: 'standby', latencyMs: 0 },
       VECTOR: { state: 'online', latencyMs: 12 },
       PRIME: { state: 'online', latencyMs: 25 },
     });

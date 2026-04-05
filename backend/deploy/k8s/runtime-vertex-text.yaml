@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: voiceflow-gemini-runtime
+  name: voiceflow-vertex-text-runtime
   namespace: voiceflow
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
-      app: voiceflow-gemini-runtime
+      app: voiceflow-vertex-text-runtime
   template:
     metadata:
       labels:
-        app: voiceflow-gemini-runtime
+        app: voiceflow-vertex-text-runtime
     spec:
       containers:
-        - name: gemini-runtime
-          image: ghcr.io/voiceflow/gemini-runtime:latest
+        - name: vertex-text-runtime
+          image: ghcr.io/voiceflow/vertex-text-runtime:latest
           imagePullPolicy: Always
           command:
             - python
@@ -23,11 +23,11 @@ spec:
             - uvicorn
             - app:app
             - --app-dir
-            - engines/gemini-runtime
+            - engines/vertex-text-runtime
             - --host
             - 0.0.0.0
             - --port
-            - "7810"
+            - "7820"
           envFrom:
             - configMapRef:
                 name: voiceflow-backend-config
@@ -35,13 +35,13 @@ spec:
                 name: voiceflow-runtime-admin
           env:
             - name: VF_RUNTIME_NAME
-              value: tts-runtime
+              value: vertex-text-runtime
             - name: VF_RUNTIME_ROLE
-              value: tts_only
-            - name: VF_TTS_TEXTTOSPEECH_ONLY
-              value: "1"
+              value: text_only
+            - name: VF_RUNTIME_FORCE_AUTH_MODE
+              value: vertex
           ports:
-            - containerPort: 7810
+            - containerPort: 7820
               name: http
           readinessProbe:
             httpGet:
@@ -57,41 +57,21 @@ spec:
             periodSeconds: 15
           resources:
             requests:
-              cpu: "750m"
-              memory: "2Gi"
+              cpu: "500m"
+              memory: "1Gi"
             limits:
-              cpu: "3000m"
-              memory: "6Gi"
+              cpu: "2000m"
+              memory: "4Gi"
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: voiceflow-gemini-runtime
+  name: voiceflow-vertex-text-runtime
   namespace: voiceflow
 spec:
   selector:
-    app: voiceflow-gemini-runtime
+    app: voiceflow-vertex-text-runtime
   ports:
     - name: http
-      port: 7810
+      port: 7820
       targetPort: http
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: voiceflow-gemini-runtime-hpa
-  namespace: voiceflow
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: voiceflow-gemini-runtime
-  minReplicas: 3
-  maxReplicas: 20
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 65

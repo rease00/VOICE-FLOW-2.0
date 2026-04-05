@@ -213,40 +213,6 @@ def test_openvoice_async_job_registry_survives_restart_and_dedupes_via_redis(mon
     assert by_request_body["status"] == "completed"
 
 
-def test_duno_async_job_returns_retryable_failure_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    _run_jobs_inline(monkeypatch)
-
-    def _fail_duno_payload(*, uid: str, payload):  # noqa: ANN001
-        assert uid == "test_uid"
-        assert str(payload.requestId or "").strip() == "req_async_duno_001"
-        raise HTTPException(status_code=502, detail="DUNO runtime unavailable")
-
-    monkeypatch.setattr(backend_app, "_voice_clone_duno_payload", _fail_duno_payload)
-
-    started = client.post(
-        "/voice-clone/duno/native/jobs",
-        json={
-            "referenceAudioBase64": "dGVzdA==",
-            "referenceAudioName": "reference.wav",
-            "sourceVoiceEngine": "DUNO",
-            "speaker": "Narrator",
-            "requestId": "req_async_duno_001",
-            "traceId": "req_async_duno_001",
-        },
-    )
-    assert started.status_code == 202
-    assert started.json()["status"] == "queued"
-
-    status = client.get("/voice-clone/jobs/by-request/req_async_duno_001")
-    assert status.status_code == 200
-    status_body = status.json()
-    assert status_body["kind"] == "duno_native"
-    assert status_body["status"] == "failed"
-    assert status_body["error"]["status"] == 502
-    assert status_body["error"]["retryable"] is True
-    assert "runtime unavailable" in str(status_body["error"]["message"]).lower()
-
-
 def test_voice_clone_cancel_endpoint_wins_over_inflight_success(monkeypatch: pytest.MonkeyPatch) -> None:
     started_event = threading.Event()
     release = threading.Event()
@@ -308,58 +274,3 @@ def test_voice_clone_cancel_endpoint_wins_over_inflight_success(monkeypatch: pyt
     assert str(error.get("detail") or error.get("message") or "").strip()
     assert int(final.get("finishedAtMs") or 0) > 0
     assert str(final.get("finishedAt") or "").strip()
-
-
-def test_duno_voice_clone_cancel_alias_endpoint_sets_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
-    started_event = threading.Event()
-    release = threading.Event()
-
-    def _slow_duno(*, uid: str, payload):  # noqa: ANN001
-        _ = payload
-        assert uid == "test_uid"
-        started_event.set()
-        release.wait(timeout=2.0)
-        return {
-            "ok": True,
-            "status": "completed",
-            "voiceId": "duno_cancel_alias_voice",
-            "previewUrl": "/artifacts/duno.wav",
-            "artifact": {"downloadUrl": "/artifacts/duno.wav", "contentType": "audio/wav"},
-        }
-
-    monkeypatch.setattr(backend_app, "_voice_clone_duno_payload", _slow_duno)
-    started_response = client.post(
-        "/voice-clone/duno/native/jobs",
-        json={
-            "referenceAudioBase64": "dGVzdA==",
-            "referenceAudioName": "reference.wav",
-            "sourceVoiceEngine": "DUNO",
-            "speaker": "Narrator",
-            "requestId": "req_duno_cancel_alias_001",
-            "traceId": "req_duno_cancel_alias_001",
-        },
-    )
-    assert started_response.status_code == 202
-    job_id = str(started_response.json().get("jobId") or "").strip()
-    assert job_id
-    assert started_event.wait(timeout=2.0), "Expected DUNO worker to start before cancel."
-
-    cancel = client.post(f"/voice-clone/duno/native/jobs/{job_id}/cancel")
-    assert cancel.status_code in {200, 202}
-    release.set()
-
-    deadline = time.time() + 4.0
-    final_status = ""
-    final_payload = {}
-    while time.time() < deadline:
-        status = client.get(f"/voice-clone/jobs/{job_id}")
-        assert status.status_code in {200, 202}
-        final_payload = status.json()
-        final_status = str(final_payload.get("status") or "").lower()
-        if final_status in {"cancelled", "completed", "failed"} and status.status_code == 200:
-            break
-        time.sleep(0.05)
-
-    assert final_status == "cancelled"
-    assert int(final_payload.get("finishedAtMs") or 0) > 0
-    assert str(final_payload.get("finishedAt") or "").strip()

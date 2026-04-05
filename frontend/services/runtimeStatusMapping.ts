@@ -40,7 +40,6 @@ const RUNTIME_PROVIDER_LABELS: Record<string, string> = {
 };
 
 const RUNTIME_LANE_LABELS: Record<string, string> = {
-  duno: 'DUNO',
   vector: 'VECTOR',
   vec: 'VECTOR',
   prime: 'PRIME',

@@ -9,7 +9,7 @@ flowchart LR
     FE -->|GET /tts/voice-mapping/catalog| MB
 
     MB -->|"engine=PRIME"| PRIME["gemini-runtime :7810"]
-    MB -->|"engine=DUNO"| KOK["duno-modal endpoint"]
+    MB -->|"engine=VECTOR"| KOK["cloud-tts runtime"]
 
     PRIME -->|"WAV bytes"| MB
     KOK -->|"WAV bytes"| MB
@@ -20,7 +20,7 @@ flowchart LR
     MB -->|"audio/wav + x-vf-post-tts-conversion=disabled* "| FE
 ```
 
-\* For Duno responses, `x-vf-post-tts-conversion=disabled_for_duno`.
+\* Cloud TTS responses continue through the standard post-TTS conversion path.
 
 ## Multi-Speaker (PRIME) Internal Flow
 

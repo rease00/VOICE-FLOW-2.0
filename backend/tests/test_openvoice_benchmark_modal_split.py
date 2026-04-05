@@ -33,23 +33,19 @@ def _build_wav_bytes(*, duration_sec: float = 0.25, sample_rate: int = 24_000) -
     return buffer.getvalue()
 
 
-def test_openvoice_benchmark_uses_modal_duno_and_openvoice_vc(monkeypatch, tmp_path):
+def test_openvoice_benchmark_uses_cloud_tts_and_openvoice_vc(monkeypatch, tmp_path):
     tts_audio = _build_wav_bytes(duration_sec=0.25)
     vc_audio = _build_wav_bytes(duration_sec=0.25)
 
-    class FakeDunoClient:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
+    tts_calls: list[dict[str, object]] = []
 
-        def health(self) -> dict[str, object]:
-            return {"ok": True, "state": "online", "detail": "duno ready", "device": "cpu", "warm": True}
-
-        def capabilities(self) -> dict[str, object]:
-            return {"ok": True, "engine": "DUNO"}
-
-        def synthesize(self, **kwargs):
-            self.calls.append(dict(kwargs))
-            return tts_audio, {"provider": "duno-modal"}
+    def _fake_tts_synthesize(payload, text=None, lane_id=None):  # noqa: ANN001
+        tts_calls.append({
+            "payload": dict(payload or {}),
+            "text": text,
+            "laneId": lane_id,
+        })
+        return {"audioBytes": tts_audio, "mediaType": "audio/wav", "headers": {}}
 
     class FakeOpenVoiceClient:
         def __init__(self) -> None:
@@ -124,8 +120,8 @@ def test_openvoice_benchmark_uses_modal_duno_and_openvoice_vc(monkeypatch, tmp_p
     monkeypatch.setattr(backend_app, "_request_is_admin", lambda request, uid: True)
     monkeypatch.setattr(backend_app, "save_openvoice_artifact", _save_artifact)
     monkeypatch.setattr(backend_app, "build_openvoice_artifact_url", lambda artifact_id, **_: f"/artifacts/{artifact_id}")
+    monkeypatch.setattr(backend_app, "_tts_v2_synthesize_chunk", _fake_tts_synthesize)
     fake_openvoice_client = FakeOpenVoiceClient()
-    monkeypatch.setattr(backend_app, "DUNO_MODAL_CLIENT", FakeDunoClient())
     monkeypatch.setattr(backend_app, "_resolve_openvoice_client", lambda provider=None: ("cloud_run", fake_openvoice_client))
 
     request = OpenVoiceBenchmarkRequest(
@@ -159,7 +155,8 @@ def test_openvoice_benchmark_uses_modal_duno_and_openvoice_vc(monkeypatch, tmp_p
     assert result["cost"]["estimatedOneHourUsd"] > result["cost"]["estimatedCostUsd"]
     assert str(result["artifact"]["downloadUrl"]).startswith("/artifacts/")
     assert str(result["artifact"]["downloadUrl"]).endswith("_req-1")
-    assert backend_app.DUNO_MODAL_CLIENT.calls[0]["text"] == "Hello modal world."
+    assert tts_calls[0]["payload"]["text"] == "Hello modal world."
+    assert tts_calls[0]["payload"]["engine"] == "VECTOR"
     assert fake_openvoice_client.calls[0]["sourceAudioBase64"] == base64.b64encode(tts_audio).decode("ascii")
 
 

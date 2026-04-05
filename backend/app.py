@@ -503,9 +503,16 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
     2.0,
     float((os.getenv("VF_TTS_EMOTION_HELPER_TIMEOUT_SEC") or "14").strip() or "14"),
 )
-GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
-DUNO_RUNTIME_URL = (os.getenv("VF_DUNO_RUNTIME_URL") or "").strip().rstrip("/")
-DUNO_RUNTIME_TOKEN = (os.getenv("VF_DUNO_RUNTIME_TOKEN") or "").strip()
+TTS_RUNTIME_URL = (
+    os.getenv("VF_TTS_RUNTIME_URL")
+    or os.getenv("VF_GEMINI_RUNTIME_URL")
+    or "http://127.0.0.1:7810"
+).strip().rstrip("/")
+VERTEX_TEXT_RUNTIME_URL = (
+    os.getenv("VF_VERTEX_TEXT_RUNTIME_URL")
+    or "http://127.0.0.1:7820"
+).strip().rstrip("/")
+GEMINI_RUNTIME_URL = TTS_RUNTIME_URL
 LLVC_RUNTIME_URL = (os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
 GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
 VF_VOICE_CLONE_ARTIFACT_ONE_TIME = (
@@ -765,6 +772,10 @@ VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR = max(
     0.01,
     float((os.getenv("VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR") or "0.28").strip() or "0.28"),
 )
+VF_AI_DIRECTOR_MARKUP_MULTIPLIER = max(
+    1.0,
+    float((os.getenv("VF_AI_DIRECTOR_MARKUP_MULTIPLIER") or "1.30").strip() or "1.30"),
+)
 VF_BILLING_USAGE_RECONCILIATION_STALE_MINUTES = max(
     5,
     int((os.getenv("VF_BILLING_USAGE_RECONCILIATION_STALE_MINUTES") or "30").strip() or "30"),
@@ -836,13 +847,32 @@ VC_FREE_MONTHLY_GRANT_BY_PLAN: dict[str, float] = {
     "scale": max(0.0, float((os.getenv("VC_FREE_MONTHLY_GRANT_SCALE") or "1200").strip() or "1200")),
 }
 VC_TOKEN_PACK_CATALOG: dict[str, dict[str, int]] = {
+    "starter": {
+        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_STARTER_VC") or "55").strip() or "55")),
+        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_STARTER_INR") or "110").strip() or "110")),
+    },
     "standard": {
-        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_STANDARD_VC") or "750").strip() or "750")),
-        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_STANDARD_INR") or "699").strip() or "699")),
-    }
+        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_STANDARD_VC") or "200").strip() or "200")),
+        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_STANDARD_INR") or "400").strip() or "400")),
+    },
+    "growth": {
+        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_GROWTH_VC") or "500").strip() or "500")),
+        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_GROWTH_INR") or "1000").strip() or "1000")),
+    },
+    "pro": {
+        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_PRO_VC") or "1500").strip() or "1500")),
+        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_PRO_INR") or "3000").strip() or "3000")),
+    },
+    "scale": {
+        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_SCALE_VC") or "2600").strip() or "2600")),
+        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_SCALE_INR") or "5000").strip() or "5000")),
+    },
+}
+VC_TOKEN_PACK_DISCOUNT_PCT_BY_KEY: dict[str, int] = {
+    "pro": 5,
+    "scale": 5,
 }
 ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
-    "DUNO": {"label": "DUNO", "rate": 0.5},
     "VECTOR": {"label": "VECTOR", "rate": 1.2},
     "PRIME": {"label": "PRIME", "rate": 1.5},
 }
@@ -864,7 +894,6 @@ VECTOR_RUNTIME_ENGINE_KEYS = frozenset({"VECTOR", "PRIME"})
 FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
     "VECTOR": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
     "PRIME": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
-    "DUNO": ("deepinfra_default",),
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 1000},
@@ -890,7 +919,7 @@ PLAN_RECURRING_DISCOUNT_PCT_BY_KEY: dict[str, int] = {
     "scale": 15,
 }
 PLAN_FEATURE_FLAGS: dict[str, dict[str, Any]] = {
-    "free": {"allowedEngines": ("DUNO", "VECTOR"), "earlyAccess": False},
+    "free": {"allowedEngines": ("VECTOR",), "earlyAccess": False},
     "launcher": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "starter": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "creator": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
@@ -911,11 +940,11 @@ PLAN_KEY_ALIASES: dict[str, str] = {
     "proplus": "scale",
 }
 TTS_PLAN_GUARDRAILS: dict[str, dict[str, int]] = {
-    "free": {"rpm": 5, "maxChars": 8000},
-    "launcher": {"rpm": 5, "maxChars": 9000},
-    "starter": {"rpm": 5, "maxChars": 10000},
-    "creator": {"rpm": 5, "maxChars": 10000},
-    "pro": {"rpm": 5, "maxChars": 10000},
+    "free": {"rpm": 10, "maxChars": 8000},
+    "launcher": {"rpm": 10, "maxChars": 9000},
+    "starter": {"rpm": 10, "maxChars": 10000},
+    "creator": {"rpm": 10, "maxChars": 10000},
+    "pro": {"rpm": 10, "maxChars": 10000},
     "scale": {"rpm": 10, "maxChars": 15000},
 }
 TTS_PLAN_BURST_WINDOW_SECONDS = 60
@@ -973,11 +1002,35 @@ VF_FREE_MONTHLY_VFF_CAP = max(
     int((os.getenv("VF_FREE_MONTHLY_VFF_CAP") or str(VF_FREE_MONTHLY_VFF_GRANT)).strip() or str(VF_FREE_MONTHLY_VFF_GRANT)),
 )
 TOKEN_PACK_CATALOG: dict[str, dict[str, int]] = {
-    "micro": {"vf": 50000, "priceInr": 550},
-    "standard": {"vf": 150000, "priceInr": 1450},
-    "mega": {"vf": 300000, "priceInr": 2900},
-    "ultra": {"vf": 600000, "priceInr": 5200},
+    "micro": {"vf": 50000, "priceInr": 550, "benefitPercent": 0},
+    "standard": {"vf": 150000, "priceInr": 1450, "benefitPercent": 12},
+    "mega": {"vf": 300000, "priceInr": 2900, "benefitPercent": 12},
+    "ultra": {"vf": 600000, "priceInr": 5200, "benefitPercent": 21},
 }
+
+
+def _default_ai_director_vf_per_inr() -> float:
+    standard_pack = TOKEN_PACK_CATALOG.get("standard") if isinstance(TOKEN_PACK_CATALOG, dict) else {}
+    vf_amount = float((standard_pack or {}).get("vf") or 0.0)
+    price_inr = float((standard_pack or {}).get("priceInr") or 0.0)
+    if vf_amount > 0 and price_inr > 0:
+        return vf_amount / price_inr
+    return 100.0
+
+
+VF_AI_DIRECTOR_VF_PER_INR = max(
+    0.01,
+    float((os.getenv("VF_AI_DIRECTOR_VF_PER_INR") or str(_default_ai_director_vf_per_inr())).strip() or str(_default_ai_director_vf_per_inr())),
+)
+GEMINI_STANDARD_PRICE_BOOK_USD_PER_1M: dict[str, dict[str, float]] = {
+    "gemini-2.5-flash-lite": {"inputUsdPer1M": 0.10, "outputUsdPer1M": 0.40},
+    "gemini-2.5-flash": {"inputUsdPer1M": 0.30, "outputUsdPer1M": 2.50},
+    "gemini-2.5-pro": {"inputUsdPer1M": 1.25, "outputUsdPer1M": 10.00},
+}
+VF_EXPENSIVE_REQUESTS_PER_MINUTE = max(
+    1,
+    int((os.getenv("VF_EXPENSIVE_REQUESTS_PER_MINUTE") or "10").strip() or "10"),
+)
 TOKEN_PACK_DISCOUNT_PCT_BY_KEY: dict[str, int] = {
     "launcher": 0,
     "starter": 5,
@@ -1189,26 +1242,26 @@ def _runtime_endpoint(base_url: str, suffix: str) -> str:
 TTS_ENGINE_HEALTH_URLS = {
     "VECTOR": _runtime_endpoint(GEMINI_RUNTIME_URL, "/health"),
     "PRIME": _runtime_endpoint(GEMINI_RUNTIME_URL, "/health"),
-    "DUNO": _runtime_endpoint(DUNO_RUNTIME_URL, "/health"),
 }
 TTS_ENGINE_CAPABILITIES_URLS = {
     "VECTOR": _runtime_endpoint(GEMINI_RUNTIME_URL, "/v1/capabilities"),
     "PRIME": _runtime_endpoint(GEMINI_RUNTIME_URL, "/v1/capabilities"),
-    "DUNO": _runtime_endpoint(DUNO_RUNTIME_URL, "/v1/capabilities"),
 }
 DUBBING_PREPARE_ENGINE_WAIT_MS = {
     "VECTOR": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
     "PRIME": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
-    "DUNO": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_DUNO_MS") or "90000").strip() or "90000")),
 }
 DUBBING_PREPARE_POLL_INTERVAL_MS = max(
     250,
     int((os.getenv("VF_DUBBING_PREPARE_POLL_INTERVAL_MS") or "1200").strip() or "1200"),
 )
 TTS_ENGINE_ALIASES = {
-    "DUNO": "DUNO",
     "VECTOR": "VECTOR",
     "PRIME": "PRIME",
+    "KOKORO": "VECTOR",
+    "KOKORO_RUNTIME": "VECTOR",
+    "BASIC": "VECTOR",
+    "DUN": "VECTOR",
 }
 ENGINE_DISPLAY_NAMES = {
     engine: str(meta.get("label") or engine).strip().upper() or engine
@@ -1222,7 +1275,6 @@ EXECUTED_ENGINE_DISPLAY_NAMES = {
 RUNTIME_LOG_FILES = {
     "media-backend": RUNTIME_LOG_DIR / "media-backend.log",
     "gemini-runtime": RUNTIME_LOG_DIR / "gemini-runtime.log",
-    "duno-runtime": RUNTIME_LOG_DIR / "duno-runtime.log",
 }
 RUNTIME_LOG_ALIASES = {
     "backend": "media-backend",
@@ -1231,8 +1283,6 @@ RUNTIME_LOG_ALIASES = {
     "gem": "gemini-runtime",
     "gemini": "gemini-runtime",
     "gemini-runtime": "gemini-runtime",
-    "duno": "duno-runtime",
-    "duno-runtime": "duno-runtime",
 }
 RUNTIME_LOG_MAX_BYTES = 262_144
 RUNTIME_LOG_MAX_LINES = 400
@@ -1374,10 +1424,6 @@ VF_TTS_ENGINE_CONCURRENCY_PRIME, _VF_TTS_ENGINE_CONCURRENCY_PRIME_SOURCE = _reso
     default_value="16",
     aliases=("VF_TTS_ENGINE_CONCURRENCY_GEM",),
 )
-VF_TTS_ENGINE_CONCURRENCY_DUNO = max(
-    1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_DUNO") or "12").strip() or "12"),
-)
 for _engine_name, _source_name in {
     "VECTOR": _VF_TTS_ENGINE_CONCURRENCY_VECTOR_SOURCE,
     "PRIME": _VF_TTS_ENGINE_CONCURRENCY_PRIME_SOURCE,
@@ -1399,10 +1445,6 @@ VF_TTS_ENGINE_RETRY_LIMIT_PRIME = max(
     1,
     int((os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_PRIME") or str(VF_TTS_QUEUE_MAX_ATTEMPTS)).strip() or str(VF_TTS_QUEUE_MAX_ATTEMPTS)),
 )
-VF_TTS_ENGINE_RETRY_LIMIT_DUNO = max(
-    1,
-    int((os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_DUNO") or str(VF_TTS_QUEUE_MAX_ATTEMPTS)).strip() or str(VF_TTS_QUEUE_MAX_ATTEMPTS)),
-)
 VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_VECTOR = max(
     1,
     int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_VECTOR") or "8").strip() or "8"),
@@ -1411,10 +1453,6 @@ VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_PRIME = max(
     1,
     int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_PRIME") or "8").strip() or "8"),
 )
-VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_DUNO = max(
-    1,
-    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_DUNO") or "8").strip() or "8"),
-)
 VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR = max(
     500,
     int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR") or "15000").strip() or "15000"),
@@ -1422,10 +1460,6 @@ VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR = max(
 VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_PRIME = max(
     500,
     int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_PRIME") or "15000").strip() or "15000"),
-)
-VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_DUNO = max(
-    500,
-    int((os.getenv("VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_DUNO") or "10000").strip() or "10000"),
 )
 VF_TTS_QUEUE_METRICS_WINDOW = max(
     20,
@@ -2219,8 +2253,6 @@ def _sanitize_tts_voice_selection_for_plan(
     raw_voice_id = str(voice_id or "").strip()
     raw_voice_name = str(voice_name or "").strip()
     requested_token = raw_voice_name or raw_voice_id
-    if normalized_engine == "DUNO":
-        requested_token = _canonicalize_duno_voice_token(raw_voice_id or raw_voice_name)
     allow_tokens, fallback_token = _plan_allowed_voice_tokens(normalized_engine, plan_key)
     gated = False
 
@@ -2237,652 +2269,8 @@ def _sanitize_tts_voice_selection_for_plan(
         resolved = _resolve_gem_runtime_voice_name(requested_token, fallback="Fenrir")
         return resolved, resolved, gated
 
-    if normalized_engine == "DUNO":
-        resolved = _canonicalize_duno_voice_token(
-            requested_token or fallback_token or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
-        ) or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
-        return resolved, raw_voice_name or _duno_public_voice_label(resolved), gated
-
     resolved = requested_token or raw_voice_id or raw_voice_name
     return resolved, raw_voice_name or resolved, gated
-
-
-DUNO_DEFAULT_MODEL = str(os.getenv("VF_DUNO_RUNTIME_MODEL") or "ResembleAI/chatterbox-turbo").strip() or "ResembleAI/chatterbox-turbo"
-_DUNO_DEEPINFRA_DEFAULT_VOICE_ID = "deepinfra_default"
-_DUNO_LEGACY_PRESET_VOICE_IDS = frozenset(
-    {
-        "af_heart",
-        "af_bella",
-        "af_nova",
-        "af_sarah",
-        "am_fenrir",
-        "am_michael",
-        "am_onyx",
-        "am_echo",
-        "bf_emma",
-        "bf_isabella",
-        "bm_george",
-        "bm_fable",
-        "hf_alpha",
-        "hf_beta",
-        "hm_omega",
-        "hm_psi",
-        _DUNO_DEEPINFRA_DEFAULT_VOICE_ID,
-        "default",
-        "duno_default",
-    }
-)
-_DUNO_EMOTION_TAG_MAP: dict[str, str] = {
-    "happy": "laugh",
-    "playful": "chuckle",
-    "sad": "sigh",
-    "fearful": "gasp",
-    "shocked": "gasp",
-    "surprised": "gasp",
-    "angry": "clearthroat",
-    "furious": "clearthroat",
-}
-_DUNO_SUPPORTED_TAGS = frozenset({"laugh", "chuckle", "sigh", "cough", "gasp", "clearthroat"})
-_DUNO_MULTILINGUAL_EMOTION_CUE_MAP: dict[str, tuple[str, ...]] = {
-    "neutral": ("tone:neutral", "pace:steady"),
-    "calm": ("tone:calm", "pace:steady", "energy:low"),
-    "relaxed": ("tone:relaxed", "pace:easy", "energy:low"),
-    "happy": ("tone:happy", "energy:bright", "delivery:smiling"),
-    "joyful": ("tone:joyful", "energy:bright", "delivery:uplifted"),
-    "cheerful": ("tone:cheerful", "energy:light", "delivery:smiling"),
-    "excited": ("tone:excited", "energy:high", "pace:brisk"),
-    "energetic": ("tone:energetic", "energy:high", "pace:brisk"),
-    "optimistic": ("tone:optimistic", "delivery:encouraging", "energy:bright"),
-    "hopeful": ("tone:hopeful", "delivery:uplifting", "energy:light"),
-    "grateful": ("tone:grateful", "delivery:warm", "energy:gentle"),
-    "confident": ("tone:confident", "delivery:assured", "pace:steady"),
-    "determined": ("tone:determined", "delivery:firm", "pace:steady"),
-    "heroic": ("tone:heroic", "delivery:grand", "energy:elevated"),
-    "proud": ("tone:proud", "delivery:assured", "energy:elevated"),
-    "serious": ("tone:serious", "delivery:focused", "pace:steady"),
-    "authoritative": ("tone:authoritative", "delivery:commanding", "pace:steady"),
-    "formal": ("tone:formal", "delivery:polished", "pace:measured"),
-    "persuasive": ("tone:persuasive", "delivery:convincing", "energy:steady"),
-    "motivational": ("tone:motivational", "delivery:uplifting", "energy:high"),
-    "warm storytelling": ("tone:warm", "delivery:narrative", "texture:intimate"),
-    "cinematic narration": ("tone:cinematic", "delivery:narrative", "texture:dramatic"),
-    "dark storytelling": ("tone:dark", "delivery:narrative", "texture:brooding"),
-    "mystical": ("tone:mystical", "delivery:airy", "texture:ethereal"),
-    "devotional": ("tone:devotional", "delivery:reverent", "pace:measured"),
-    "spiritual": ("tone:spiritual", "delivery:reverent", "texture:airy"),
-    "romantic": ("tone:romantic", "delivery:tender", "texture:soft"),
-    "loving": ("tone:loving", "delivery:tender", "texture:warm"),
-    "affectionate": ("tone:affectionate", "delivery:warm", "texture:soft"),
-    "empathetic": ("tone:empathetic", "delivery:caring", "pace:steady"),
-    "compassionate": ("tone:compassionate", "delivery:caring", "texture:gentle"),
-    "reflective": ("tone:reflective", "delivery:thoughtful", "pace:measured"),
-    "nostalgic": ("tone:nostalgic", "delivery:soft", "texture:wistful"),
-    "melancholic": ("tone:melancholic", "delivery:soft", "texture:wistful"),
-    "sad": ("tone:sad", "delivery:soft", "energy:low"),
-    "tearful": ("tone:sad", "delivery:fragile", "texture:tearful"),
-    "crying": ("tone:sad", "delivery:broken", "event:crying"),
-    "anxious": ("tone:anxious", "pace:uneven", "texture:tense"),
-    "fearful": ("tone:fearful", "delivery:hushed", "texture:tense"),
-    "tense": ("tone:tense", "pace:tight", "texture:strained"),
-    "suspenseful": ("tone:suspenseful", "delivery:hushed", "texture:tense"),
-    "surprised": ("tone:surprised", "energy:lifted", "event:startled"),
-    "shocked": ("tone:shocked", "delivery:stunned", "event:startled"),
-    "disgusted": ("tone:disgusted", "delivery:sharp", "texture:grimacing"),
-    "angry": ("tone:angry", "delivery:sharp", "energy:high"),
-    "furious": ("tone:furious", "delivery:forceful", "energy:intense"),
-    "frustrated": ("tone:frustrated", "delivery:clipped", "texture:strained"),
-    "sarcastic": ("tone:sarcastic", "delivery:dry", "texture:wry"),
-    "taunting": ("tone:taunting", "delivery:provocative", "texture:wry"),
-    "mocking": ("tone:mocking", "delivery:derisive", "texture:wry"),
-    "playful": ("tone:playful", "delivery:light", "energy:bright"),
-    "childlike": ("tone:childlike", "delivery:light", "energy:curious"),
-    "elderly gentle": ("tone:gentle", "delivery:aged", "pace:measured"),
-    "whispering": ("tone:hushed", "delivery:whispered", "energy:low"),
-    "soft spoken": ("tone:soft", "delivery:gentle", "energy:low"),
-    "breathless": ("tone:urgent", "delivery:breathy", "pace:uneven"),
-    "panting": ("tone:urgent", "delivery:breathy", "event:panting"),
-    "laughing": ("tone:playful", "delivery:smiling", "event:laughing"),
-    "sighing": ("tone:weary", "delivery:soft", "event:sighing"),
-    "gasping": ("tone:startled", "delivery:breathy", "event:gasping"),
-    "shouting": ("tone:forceful", "delivery:projected", "energy:high"),
-    "screaming": ("tone:intense", "delivery:projected", "energy:max"),
-    "coughing": ("tone:strained", "delivery:rough", "event:coughing"),
-    "yawning": ("tone:drowsy", "pace:slow", "event:yawning"),
-    "throat clearing": ("tone:reset", "delivery:rough", "event:throat_clearing"),
-    "sneezing": ("tone:startled", "delivery:sharp", "event:sneezing"),
-    "moaning": ("tone:pained", "delivery:drawn", "texture:strained"),
-}
-
-
-def _default_duno_runtime_voice_entry() -> dict[str, Any]:
-    return {
-        "voice_id": _DUNO_DEEPINFRA_DEFAULT_VOICE_ID,
-        "voice": _DUNO_DEEPINFRA_DEFAULT_VOICE_ID,
-        "name": "Default DUNO",
-        "displayName": "Default DUNO",
-        "language": "en",
-        "gender": "unknown",
-        "accent": "DeepInfra default",
-        "source": "deepinfra_default",
-        "accessTier": "free",
-        "isPlanRestricted": False,
-    }
-
-
-def _canonicalize_duno_voice_token(value: object) -> str:
-    token = str(value or "").strip()
-    if not token:
-        return ""
-    lowered = token.lower()
-    if lowered in _DUNO_LEGACY_PRESET_VOICE_IDS:
-        return _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
-    if lowered in {"default duno", "default chatterbox", "chatterbox default"}:
-        return _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
-    return token
-
-
-def _duno_public_voice_label(value: object) -> str:
-    token = _canonicalize_duno_voice_token(value)
-    if not token or token.lower() == _DUNO_DEEPINFRA_DEFAULT_VOICE_ID:
-        return "Default DUNO"
-    return token
-
-
-def _is_duno_deepinfra_runtime(value: str | None = None) -> bool:
-    safe_value = str(value or DUNO_RUNTIME_URL or "").strip()
-    if not safe_value:
-        return False
-    parsed = urlparse(safe_value)
-    host = str(parsed.netloc or "").strip().lower()
-    path = str(parsed.path or "").strip().lower()
-    return "deepinfra.com" in host or path.startswith("/v1/inference/")
-
-
-def _is_duno_runtime_auth_rejection(detail: object) -> bool:
-    message = str(detail or "").strip().lower()
-    if not message:
-        return False
-    return any(
-        token in message
-        for token in (
-            "unauthorized",
-            "not authorized",
-            "invalid api key",
-            "invalid token",
-            "forbidden",
-            "permission denied",
-            "http 401",
-            "http 403",
-            "status code 401",
-            "status code 403",
-        )
-    )
-
-
-def _duno_runtime_origin(base_url: str | None = None) -> str:
-    safe_base = str(base_url or DUNO_RUNTIME_URL or "").strip().rstrip("/")
-    if not safe_base:
-        return ""
-    if not _is_duno_deepinfra_runtime(safe_base):
-        return safe_base
-    parsed = urlparse(safe_base)
-    if parsed.scheme and parsed.netloc:
-        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-    return safe_base
-
-
-def _duno_inference_url(base_url: str | None = None, *, model: str | None = None) -> str:
-    safe_base = str(base_url or DUNO_RUNTIME_URL or "").strip().rstrip("/")
-    if not safe_base:
-        return ""
-    if not _is_duno_deepinfra_runtime(safe_base):
-        return safe_base
-    safe_model = quote(str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL, safe="/")
-    if "/v1/inference/" in safe_base.lower():
-        return f"{_duno_runtime_origin(safe_base)}/v1/inference/{safe_model}"
-    if safe_base.lower().endswith("/v1"):
-        return f"{safe_base}/inference/{safe_model}"
-    return f"{_duno_runtime_origin(safe_base)}/v1/inference/{safe_model}"
-
-
-def _duno_voice_api_url(path: str, *, base_url: str | None = None) -> str:
-    safe_base = str(base_url or DUNO_RUNTIME_URL or "").strip().rstrip("/")
-    if not safe_base:
-        return ""
-    prefix = _duno_runtime_origin(safe_base) if _is_duno_deepinfra_runtime(safe_base) else safe_base
-    safe_path = f"/{str(path or '').lstrip('/')}"
-    return f"{prefix}{safe_path}"
-
-
-def _duno_runtime_auth_url_prefixes() -> tuple[str, ...]:
-    prefixes: list[str] = []
-    for candidate in (
-        str(DUNO_RUNTIME_URL or "").strip().rstrip("/"),
-        _duno_runtime_origin(),
-        _duno_inference_url(),
-    ):
-        safe_candidate = str(candidate or "").strip().rstrip("/")
-        if safe_candidate and safe_candidate not in prefixes:
-            prefixes.append(safe_candidate)
-    return tuple(prefixes)
-
-
-def _decode_duno_audio_base64(value: object) -> bytes:
-    token = str(value or "").strip()
-    if not token:
-        return b""
-    if token.startswith("data:") and "," in token:
-        token = token.split(",", 1)[1]
-    return decode_openvoice_audio_base64(token)
-
-
-def _decode_duno_reference_audio_bytes(*, reference_audio_base64: str = "", reference_audio_url: str = "") -> bytes:
-    safe_base64 = str(reference_audio_base64 or "").strip()
-    if safe_base64:
-        return _decode_duno_audio_base64(safe_base64)
-    safe_url = str(reference_audio_url or "").strip()
-    if safe_url.startswith("data:") and "," in safe_url:
-        return _decode_duno_audio_base64(safe_url.split(",", 1)[1])
-    if safe_url and safe_url.lower().startswith(("http://", "https://")):
-        response = _runtime_http_request(
-            "GET",
-            safe_url,
-            timeout=max(8, int(VF_TTS_RUNTIME_TIMEOUT_SEC)),
-        )
-        if bool(getattr(response, "ok", False)):
-            return bytes(response.content or b"")
-    return b""
-
-
-def _duno_reference_audio_mime_type(*, reference_audio_name: str = "", reference_audio_url: str = "") -> str:
-    safe_url = str(reference_audio_url or "").strip()
-    if safe_url.startswith("data:"):
-        media_type = safe_url.split(";", 1)[0].removeprefix("data:").strip()
-        if media_type:
-            return media_type
-    guessed_type = mimetypes.guess_type(str(reference_audio_name or "").strip())[0]
-    return str(guessed_type or "audio/wav").strip() or "audio/wav"
-
-
-def _duno_audio_format_media_type(fmt: str) -> str:
-    normalized = str(fmt or "wav").strip().lower() or "wav"
-    return {
-        "wav": "audio/wav",
-        "mp3": "audio/mpeg",
-        "opus": "audio/opus",
-        "flac": "audio/flac",
-        "pcm": "audio/L16",
-    }.get(normalized, "audio/wav")
-
-
-def _normalize_duno_runtime_voice_id(value: object) -> str:
-    token = _canonicalize_duno_voice_token(value)
-    if not token:
-        return ""
-    if _is_duno_deepinfra_runtime() and token.lower() == _DUNO_DEEPINFRA_DEFAULT_VOICE_ID:
-        return ""
-    return token
-
-
-def _duno_clone_cache_key(uid: str, speaker: str, reference_hash: str, model: str) -> str:
-    safe_uid = str(uid or "").strip().lower()
-    safe_speaker = str(speaker or "").strip().lower() or "default"
-    safe_reference_hash = str(reference_hash or "").strip().lower()
-    safe_model = str(model or DUNO_DEFAULT_MODEL).strip().lower() or DUNO_DEFAULT_MODEL.lower()
-    return f"{safe_uid}:{safe_speaker}:{safe_reference_hash}:{safe_model}"
-
-
-def _duno_reference_hash(*, reference_audio_url: str = "", reference_audio_name: str = "", reference_audio_base64: str = "") -> str:
-    safe_url = str(reference_audio_url or "").strip()
-    safe_name = str(reference_audio_name or "").strip()
-    safe_base64 = str(reference_audio_base64 or "").strip()
-    if not (safe_url or safe_name or safe_base64):
-        return ""
-    digest = hashlib.sha256()
-    digest.update(safe_url.encode("utf-8"))
-    digest.update(b"\n")
-    digest.update(safe_name.encode("utf-8"))
-    digest.update(b"\n")
-    digest.update(safe_base64.encode("utf-8"))
-    return digest.hexdigest()
-
-
-def _duno_lookup_cached_voice_id(*, uid: str, speaker: str, reference_hash: str, model: str) -> str:
-    safe_uid = str(uid or "").strip()
-    safe_reference_hash = str(reference_hash or "").strip()
-    if not safe_uid or not safe_reference_hash:
-        return ""
-    entitlement = _normalize_entitlement_wallet(_load_entitlement(safe_uid))
-    clone_map = entitlement.get("dunoVoiceCloneMap") if isinstance(entitlement.get("dunoVoiceCloneMap"), dict) else {}
-    key = _duno_clone_cache_key(safe_uid, speaker, safe_reference_hash, model)
-    row = clone_map.get(key) if isinstance(clone_map, dict) else {}
-    if not isinstance(row, dict):
-        return ""
-    return str(row.get("voiceId") or row.get("voice_id") or "").strip()
-
-
-def _duno_store_cached_voice_id(
-    *,
-    uid: str,
-    speaker: str,
-    reference_hash: str,
-    model: str,
-    voice_id: str,
-) -> None:
-    safe_uid = str(uid or "").strip()
-    safe_reference_hash = str(reference_hash or "").strip()
-    safe_voice_id = str(voice_id or "").strip()
-    if not safe_uid or not safe_reference_hash or not safe_voice_id:
-        return
-    entitlement = _normalize_entitlement_wallet(_load_entitlement(safe_uid))
-    clone_map = entitlement.get("dunoVoiceCloneMap") if isinstance(entitlement.get("dunoVoiceCloneMap"), dict) else {}
-    next_clone_map = dict(clone_map or {})
-    key = _duno_clone_cache_key(safe_uid, speaker, safe_reference_hash, model)
-    next_clone_map[key] = {
-        "voiceId": safe_voice_id,
-        "speaker": str(speaker or "").strip(),
-        "referenceHash": safe_reference_hash,
-        "model": str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
-        "updatedAt": _utc_now().isoformat(),
-    }
-    _write_entitlement(safe_uid, {"dunoVoiceCloneMap": next_clone_map})
-
-
-def _extract_voice_id_from_payload(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    for key in ("voice_id", "voiceId", "id"):
-        token = str(payload.get(key) or "").strip()
-        if token:
-            return token
-    nested = payload.get("voice")
-    if isinstance(nested, dict):
-        nested_id = _extract_voice_id_from_payload(nested)
-        if nested_id:
-            return nested_id
-    voices = payload.get("voices")
-    if isinstance(voices, list):
-        for row in voices:
-            nested_id = _extract_voice_id_from_payload(row)
-            if nested_id:
-                return nested_id
-    return ""
-
-
-def _duno_create_voice_via_runtime(
-    *,
-    model: str,
-    speaker: str,
-    reference_audio_url: str,
-    reference_audio_name: str,
-    reference_audio_base64: str,
-    source_voice_id: str,
-    source_voice_name: str,
-) -> str:
-    runtime_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
-    if not runtime_base:
-        return ""
-    if _is_duno_deepinfra_runtime(runtime_base):
-        upload_url = _duno_voice_api_url("/v1/voices/add", base_url=runtime_base)
-        if not upload_url:
-            return ""
-        try:
-            reference_audio_bytes = _decode_duno_reference_audio_bytes(
-                reference_audio_base64=reference_audio_base64,
-                reference_audio_url=reference_audio_url,
-            )
-        except ValueError:
-            reference_audio_bytes = b""
-        if not reference_audio_bytes:
-            return ""
-        speaker_label = str(speaker or source_voice_name or source_voice_id or "V FLOW AI DUNO Clone").strip() or "V FLOW AI DUNO Clone"
-        source_label = str(source_voice_name or source_voice_id or speaker_label).strip() or speaker_label
-        audio_name = str(reference_audio_name or "reference.wav").strip() or "reference.wav"
-        audio_mime_type = _duno_reference_audio_mime_type(
-            reference_audio_name=audio_name,
-            reference_audio_url=reference_audio_url,
-        )
-        description = f"Native DUNO clone of {source_label}"
-        try:
-            response = _runtime_http_request(
-                "POST",
-                upload_url,
-                timeout=max(8, int(VF_TTS_RUNTIME_TIMEOUT_SEC)),
-                data={
-                    "name": speaker_label[:120],
-                    "description": description[:240],
-                },
-                files={
-                    "audio": (
-                        audio_name,
-                        reference_audio_bytes,
-                        audio_mime_type,
-                    ),
-                },
-                headers={
-                    "ngrok-skip-browser-warning": "true",
-                    **_runtime_auth_headers_for_url(upload_url, include_accept=True),
-                },
-            )
-            if not bool(getattr(response, "ok", False)):
-                return ""
-            parsed_payload = response.json() if hasattr(response, "json") else {}
-            return _extract_voice_id_from_payload(parsed_payload)
-        except Exception:
-            return ""
-    request_payload = {
-        "model": str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
-        "speaker": str(speaker or "").strip(),
-        "referenceAudioUrl": str(reference_audio_url or "").strip(),
-        "referenceAudioName": str(reference_audio_name or "").strip(),
-        "referenceAudioBase64": str(reference_audio_base64 or "").strip(),
-        "sourceVoiceId": str(source_voice_id or "").strip(),
-        "sourceVoiceName": str(source_voice_name or "").strip(),
-    }
-    request_payload = {
-        key: value
-        for key, value in request_payload.items()
-        if str(value or "").strip()
-    }
-    endpoints = ("/v1/voices/add", "/v1/voices/clone", "/v1/voices")
-    for endpoint in endpoints:
-        url = f"{runtime_base}{endpoint}"
-        try:
-            headers = {
-                "content-type": "application/json",
-                "ngrok-skip-browser-warning": "true",
-            }
-            auth_headers = _runtime_auth_headers_for_url(url, include_accept=True)
-            headers.update(auth_headers)
-            response = _runtime_http_request(
-                "POST",
-                url,
-                timeout=max(8, int(VF_TTS_RUNTIME_TIMEOUT_SEC)),
-                json=request_payload,
-                headers=headers,
-            )
-            if not bool(getattr(response, "ok", False)):
-                continue
-            parsed_payload = response.json() if hasattr(response, "json") else {}
-            voice_id = _extract_voice_id_from_payload(parsed_payload)
-            if not voice_id:
-                voice_id = str(
-                    response.headers.get("x-voice-id")
-                    or response.headers.get("x-voiceflow-voice-id")
-                    or ""
-                ).strip()
-            if voice_id:
-                return voice_id
-        except Exception:
-            continue
-    return ""
-
-
-def _duno_clone_preview_url(
-    *,
-    voice_id: str,
-    source_label: str,
-    model: str,
-    trace_id: str,
-) -> str:
-    safe_voice_id = str(voice_id or "").strip()
-    if not safe_voice_id:
-        return ""
-    preview_text = f"Hello, this is a preview of {str(source_label or 'your cloned voice').strip() or 'your cloned voice'}."
-    try:
-        audio_bytes, meta = DUNO_MODAL_CLIENT.synthesize(
-            text=preview_text,
-            voice_id=safe_voice_id,
-            language="en",
-            model=str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
-            trace_id=str(trace_id or "").strip(),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(
-            "[voice-clone.duno] preview synthesis unavailable "
-            f"voice_id={safe_voice_id} detail={str(exc).strip()}"
-        )
-        return ""
-
-    if not audio_bytes:
-        return ""
-    content_type = str(meta.get("contentType") or "audio/wav").strip() or "audio/wav"
-    audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
-    if not audio_base64:
-        return ""
-    return f"data:{content_type};base64,{audio_base64}"
-
-
-def _resolve_duno_expressive_tag(*, emotion: str, cue: str) -> str:
-    safe_emotion = str(_canonical_emotion_label(emotion) or "Neutral").strip().lower()
-    safe_cue = str(cue or "").strip().lower()
-    for tag in _DUNO_SUPPORTED_TAGS:
-        if tag in safe_cue:
-            return tag
-    return str(_DUNO_EMOTION_TAG_MAP.get(safe_emotion) or "").strip()
-
-
-def _duno_model_supports_native_paralinguistic_tags(*, model: object, language: object = "") -> bool:
-    token = str(model or "").strip().lower()
-    language_token = str(language or "").strip().lower()
-    if not token or "turbo" not in token:
-        return False
-    return language_token in {"", "en", "en-us", "english", "auto"}
-
-
-def _normalize_duno_multilingual_cue_token(value: str) -> str:
-    safe = re.sub(r"[^a-z0-9 _:-]+", " ", str(value or "").strip().lower())
-    safe = re.sub(r"\s+", " ", safe).strip()
-    return safe.replace(" ", "_")
-
-
-def _build_duno_text_emotion_cue(*, emotion: str, cue: str) -> str:
-    parts: list[str] = []
-    seen: set[str] = set()
-    canonical_emotion = str(_canonical_emotion_label(emotion) or "").strip()
-    canonical_key = canonical_emotion.lower()
-    if canonical_key:
-        for token in _DUNO_MULTILINGUAL_EMOTION_CUE_MAP.get(canonical_key, ()):
-            safe_token = _normalize_duno_multilingual_cue_token(token)
-            if safe_token and safe_token not in seen:
-                parts.append(f"[{safe_token}]")
-                seen.add(safe_token)
-    if not parts and canonical_key and canonical_key != "neutral":
-        fallback_tone = _normalize_duno_multilingual_cue_token(f"tone:{canonical_key}")
-        if fallback_tone:
-            parts.append(f"[{fallback_tone}]")
-            seen.add(fallback_tone)
-    safe_cue = str(cue or "").strip()
-    lowered_cue = safe_cue.lower()
-    if safe_cue and lowered_cue not in {"default", canonical_key if canonical_key else "", "neutral"}:
-        style_token = _normalize_duno_multilingual_cue_token(f"style:{safe_cue}")
-        if style_token and style_token not in seen:
-            parts.append(f"[{style_token}]")
-    return " ".join(parts).strip()
-
-
-def _prepare_duno_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    safe_payload = dict(payload or {})
-    engine = _resolve_internal_engine_token(str(safe_payload.get("engine") or "PRIME")) or "PRIME"
-    if engine != "DUNO":
-        return safe_payload
-
-    text = str(safe_payload.get("text") or "").strip()
-    emotion = str(safe_payload.get("emotion") or "").strip()
-    cue = str(safe_payload.get("cue") or safe_payload.get("style") or "").strip()
-    language = str(
-        safe_payload.get("language_id")
-        or safe_payload.get("languageId")
-        or safe_payload.get("language")
-        or ""
-    ).strip()
-    expressive_tag = _resolve_duno_expressive_tag(emotion=emotion, cue=cue)
-    model = str(safe_payload.get("model") or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
-    if text:
-        if _duno_model_supports_native_paralinguistic_tags(model=model, language=language):
-            if expressive_tag and expressive_tag in _DUNO_SUPPORTED_TAGS:
-                tag_token = f"[{expressive_tag}]"
-                if tag_token.lower() not in text.lower():
-                    safe_payload["text"] = f"{tag_token} {text}".strip()
-        else:
-            cue_prefix = _build_duno_text_emotion_cue(emotion=emotion, cue=cue)
-            if cue_prefix and not text.lower().startswith(cue_prefix.lower()):
-                safe_payload["text"] = f"{cue_prefix} {text}".strip()
-    if not emotion:
-        safe_payload["emotion"] = "Neutral"
-    else:
-        safe_payload["emotion"] = _canonical_emotion_label(emotion)
-
-    uid = str(safe_payload.get("uid") or "").strip()
-    speaker = str(safe_payload.get("speaker_name") or safe_payload.get("speaker") or "").strip()
-    safe_payload["model"] = model
-
-    reference_audio_url = str(safe_payload.get("referenceAudioUrl") or safe_payload.get("reference_audio_url") or "").strip()
-    reference_audio_name = str(safe_payload.get("referenceAudioName") or safe_payload.get("reference_audio_name") or "").strip()
-    reference_audio_base64 = str(safe_payload.get("referenceAudioBase64") or safe_payload.get("reference_audio_base64") or "").strip()
-    source_voice_id = str(safe_payload.get("sourceVoiceId") or safe_payload.get("source_voice_id") or "").strip()
-    source_voice_name = str(safe_payload.get("sourceVoiceName") or safe_payload.get("source_voice_name") or "").strip()
-
-    reference_hash = _duno_reference_hash(
-        reference_audio_url=reference_audio_url,
-        reference_audio_name=reference_audio_name,
-        reference_audio_base64=reference_audio_base64,
-    )
-    if not reference_hash:
-        return safe_payload
-
-    resolved_voice_id = _normalize_duno_runtime_voice_id(
-        safe_payload.get("voice_id") or safe_payload.get("voiceId") or ""
-    )
-    if not resolved_voice_id:
-        resolved_voice_id = _duno_lookup_cached_voice_id(
-            uid=uid,
-            speaker=speaker,
-            reference_hash=reference_hash,
-            model=model,
-        )
-    if not resolved_voice_id and (reference_audio_url or reference_audio_base64):
-        resolved_voice_id = _duno_create_voice_via_runtime(
-            model=model,
-            speaker=speaker,
-            reference_audio_url=reference_audio_url,
-            reference_audio_name=reference_audio_name,
-            reference_audio_base64=reference_audio_base64,
-            source_voice_id=source_voice_id,
-            source_voice_name=source_voice_name,
-        )
-    if resolved_voice_id:
-        safe_payload["voice_id"] = resolved_voice_id
-        safe_payload["voiceId"] = resolved_voice_id
-        if uid:
-            _duno_store_cached_voice_id(
-                uid=uid,
-                speaker=speaker,
-                reference_hash=reference_hash,
-                model=model,
-                voice_id=resolved_voice_id,
-            )
-    return safe_payload
 
 
 def _profile_index() -> dict[str, dict[str, Any]]:
@@ -3043,28 +2431,19 @@ def _resolve_history_voice_fields(
 
     if _is_gem_runtime_engine(safe_engine):
         canonical_voice_id = _resolve_gem_runtime_voice_name(raw_voice_id or raw_voice_name, fallback="Fenrir")
-    elif safe_engine == "DUNO":
-        canonical_voice_id = _canonicalize_duno_voice_token(
-            raw_voice_id or raw_voice_name or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
-        ) or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
     else:
         canonical_voice_id = raw_voice_id or raw_voice_name
 
-    profile = None
-    if not (safe_engine == "DUNO" and str(raw_voice_id or "").strip().lower() in _DUNO_LEGACY_PRESET_VOICE_IDS):
-        profile = _resolve_mapped_profile(
-            safe_engine,
-            canonical_voice_id,
-            voice_name=raw_voice_name or canonical_voice_id,
-        )
+    profile = _resolve_mapped_profile(
+        safe_engine,
+        canonical_voice_id,
+        voice_name=raw_voice_name or canonical_voice_id,
+    )
     display_voice_name = str((profile or {}).get("displayName") or "").strip()
     if not display_voice_name and raw_voice_name and raw_voice_name.lower() != "ai voice":
         display_voice_name = raw_voice_name
     if not display_voice_name:
-        if safe_engine == "DUNO":
-            display_voice_name = _duno_public_voice_label(canonical_voice_id)
-        else:
-            display_voice_name = str(canonical_voice_id or raw_voice_name or "Unknown voice").strip() or "Unknown voice"
+        display_voice_name = str(canonical_voice_id or raw_voice_name or "Unknown voice").strip() or "Unknown voice"
 
     return str(canonical_voice_id or "").strip(), display_voice_name
 
@@ -3423,6 +2802,36 @@ def _canonical_emotion_label(value: str) -> str:
         "surprise": "Surprised",
         "fear": "Fearful",
         "disgust": "Disgusted",
+        "heroic veera": "Heroic",
+        "sorrowful karuna": "Sad",
+        "terrified bhayanaka": "Fearful",
+        "disgusted bibhatsa": "Disgusted",
+        "wonderstruck adbhuta": "Surprised",
+        "peaceful shanta": "Calm",
+        "furious raudra": "Furious",
+        "romantic shringara": "Romantic",
+        "devotional bhakti": "Devotional",
+        "stern": "Serious",
+        "melodramatic": "Cinematic Narration",
+        "sleepy": "Relaxed",
+        "smiling": "Cheerful",
+        "joking": "Playful",
+        "whisper": "Whispering",
+        "shout": "Shouting",
+        "yell": "Shouting",
+        "yelling": "Shouting",
+        "cry": "Crying",
+        "sobbing": "Crying",
+        "weeping": "Crying",
+        "panic": "Anxious",
+        "gasp": "Gasping",
+        "laugh": "Laughing",
+        "soft": "Soft Spoken",
+        "gentle": "Calm",
+        "dramatic": "Cinematic Narration",
+        "cinematic": "Cinematic Narration",
+        "storytelling": "Warm Storytelling",
+        "romance": "Romantic",
     }
     if token in alias_map:
         return alias_map[token]
@@ -3921,248 +3330,6 @@ def _mix_audio_arrays(speech: Any, background: Optional[Any]) -> Any:
         return speech
 
 
-class DunoModalClient:
-    def __init__(
-        self,
-        base_url: str | None = None,
-        *,
-        token: str | None = None,
-        timeout_sec: float = 90.0,
-    ) -> None:
-        resolved_base_url = str(base_url or DUNO_RUNTIME_URL).strip().rstrip("/")
-        resolved_token = (
-            str(token).strip()
-            if token is not None and str(token).strip()
-            else str(DUNO_RUNTIME_TOKEN or "").strip()
-        )
-        self.base_url = resolved_base_url
-        self.token = resolved_token
-        self.timeout_sec = max(3.0, float(timeout_sec or 90.0))
-        self._session = requests.Session()
-        self._session.headers.update({"user-agent": "voiceflow-duno-modal-client/1.0"})
-        if self.token:
-            auth_header = (
-                self.token
-                if self.token.lower().startswith("bearer ")
-                else f"Bearer {self.token}"
-            )
-            self._session.headers.update({"authorization": auth_header})
-
-    @property
-    def is_deepinfra(self) -> bool:
-        return _is_duno_deepinfra_runtime(self.base_url)
-
-    def _request_json(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_payload: Optional[dict[str, Any]] = None,
-        timeout_sec: Optional[float] = None,
-    ) -> dict[str, Any]:
-        if not self.base_url:
-            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
-        url = f"{self.base_url}{path}"
-        try:
-            response = self._session.request(
-                method.upper(),
-                url,
-                json=json_payload or {},
-                timeout=float(timeout_sec or self.timeout_sec),
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
-        if not response.ok:
-            detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"DUNO runtime {path} failed: {detail}")
-        try:
-            payload = response.json()
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"DUNO runtime {path} returned invalid JSON: {exc}") from exc
-        return payload if isinstance(payload, dict) else {"value": payload}
-
-    def health(self) -> dict[str, Any]:
-        if not self.base_url:
-            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
-        if not self.is_deepinfra:
-            return self._request_json("GET", "/health")
-        list_url = _duno_voice_api_url("/v1/voices", base_url=self.base_url)
-        try:
-            response = self._session.request(
-                "GET",
-                list_url,
-                timeout=min(12.0, float(self.timeout_sec)),
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
-        if not response.ok:
-            detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"DUNO DeepInfra voices endpoint failed: {detail}")
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {}
-        voice_rows = payload.get("voices") if isinstance(payload, dict) else []
-        voice_count = len(voice_rows) if isinstance(voice_rows, list) else 0
-        return {
-            "ok": True,
-            "state": "online",
-            "detail": "DeepInfra DUNO runtime ready.",
-            "warm": True,
-            "engine": "DUNO",
-            "provider": "deepinfra",
-            "model": DUNO_DEFAULT_MODEL,
-            "voiceCount": voice_count,
-            "inferenceUrl": _duno_inference_url(self.base_url),
-        }
-
-    def capabilities(self) -> dict[str, Any]:
-        if not self.base_url:
-            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
-        if not self.is_deepinfra:
-            return self._request_json("GET", "/v1/capabilities")
-        health_payload = self.health()
-        payload = _capability_fallback("DUNO", health_payload=health_payload)
-        payload["engine"] = "DUNO"
-        payload["runtime"] = "deepinfra"
-        payload["ready"] = True
-        payload["model"] = DUNO_DEFAULT_MODEL
-        payload["supportsEmotion"] = True
-        payload["metadata"] = {
-            **(payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}),
-            "source": "deepinfra",
-            "provider": "deepinfra",
-            "modelEndpoint": _duno_inference_url(self.base_url),
-            "voiceManagementEndpoint": _duno_voice_api_url("/v1/voices", base_url=self.base_url),
-            "apiKeyConfigured": bool(self.token),
-            "supportsNativeCloning": True,
-        }
-        return payload
-
-    def synthesize(
-        self,
-        *,
-        text: str,
-        voice_id: str,
-        speed: float = 1.0,
-        language: str = "en",
-        trace_id: str = "",
-        **kwargs: Any,
-    ) -> tuple[bytes, dict[str, Any]]:
-        if not self.base_url:
-            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
-        request_model = str(kwargs.get("model") or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
-        request_language = str(kwargs.get("language_id") or kwargs.get("languageId") or language or "").strip()
-        request_cue = str(kwargs.get("cue") or kwargs.get("style") or "").strip()
-        request_emotion = str(kwargs.get("emotion") or "").strip()
-        rendered_text = text
-        if request_emotion or request_cue:
-            rendered_text = _prepare_duno_runtime_payload(
-                {
-                    "engine": "DUNO",
-                    "text": text,
-                    "emotion": request_emotion,
-                    "cue": request_cue,
-                    "style": request_cue,
-                    "language": request_language,
-                    "model": request_model,
-                }
-            ).get("text") or text
-        if not self.is_deepinfra:
-            payload: dict[str, Any] = {
-                "text": str(rendered_text or ""),
-                "voiceId": str(voice_id or ""),
-                "voice_id": str(voice_id or ""),
-                "speed": float(speed or 1.0),
-                "language": str(language or "en"),
-                "trace_id": str(trace_id or ""),
-            }
-            payload.update({key: value for key, value in kwargs.items() if value is not None})
-            try:
-                response = self._session.request(
-                    "POST",
-                    f"{self.base_url}/synthesize",
-                    json=payload,
-                    timeout=float(self.timeout_sec),
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
-            if not response.ok:
-                detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-                raise RuntimeError(f"DUNO runtime /synthesize failed: {detail}")
-            audio_bytes = bytes(response.content or b"")
-            meta = {
-                "contentType": str(response.headers.get("content-type") or "audio/wav"),
-                "headers": {str(key): str(value) for key, value in dict(response.headers or {}).items()},
-                "traceId": str(response.headers.get("x-voiceflow-trace-id") or trace_id or ""),
-                "provider": "duno-modal",
-            }
-            return audio_bytes, meta
-
-        payload: dict[str, Any] = {
-            "text": str(rendered_text or ""),
-            "response_format": "wav",
-        }
-        safe_voice_id = _normalize_duno_runtime_voice_id(
-            voice_id or kwargs.get("voiceId") or kwargs.get("voice_id") or ""
-        )
-        if safe_voice_id:
-            payload["voice_id"] = safe_voice_id
-        safe_language_id = str(kwargs.get("language_id") or kwargs.get("languageId") or language or "").strip()
-        if safe_language_id and safe_language_id.lower() not in {"en", "en-us", "english"}:
-            payload["language_id"] = safe_language_id.lower()
-        try:
-            response = self._session.request(
-                "POST",
-                _duno_inference_url(self.base_url, model=request_model),
-                json=payload,
-                timeout=float(self.timeout_sec),
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
-        if not response.ok:
-            detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"DUNO DeepInfra inference failed: {detail}")
-
-        response_headers = {str(key): str(value) for key, value in dict(response.headers or {}).items()}
-        content_type = str(response.headers.get("content-type") or "").strip().lower()
-        audio_bytes = bytes(response.content or b"")
-        trace_token = str(response.headers.get("x-request-id") or trace_id or "").strip()
-        output_format = "wav"
-        inference_meta: dict[str, Any] = {}
-        words_payload: list[dict[str, Any]] = []
-        if "json" in content_type:
-            try:
-                parsed_payload = response.json()
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"DUNO DeepInfra inference returned invalid JSON: {exc}") from exc
-            audio_payload = parsed_payload.get("audio") if isinstance(parsed_payload, dict) else ""
-            if not audio_payload:
-                raise RuntimeError("DUNO DeepInfra inference did not return audio.")
-            try:
-                audio_bytes = _decode_duno_audio_base64(audio_payload)
-            except ValueError as exc:
-                raise RuntimeError(f"DUNO DeepInfra inference returned invalid audio: {exc}") from exc
-            output_format = str(parsed_payload.get("output_format") or "wav").strip().lower() or "wav"
-            trace_token = str(parsed_payload.get("request_id") or trace_token).strip()
-            inference_status = parsed_payload.get("inference_status")
-            if isinstance(inference_status, dict):
-                inference_meta = inference_status
-            words_payload = parsed_payload.get("words") if isinstance(parsed_payload.get("words"), list) else []
-            content_type = _duno_audio_format_media_type(output_format)
-        meta = {
-            "contentType": content_type or "audio/wav",
-            "headers": response_headers,
-            "traceId": trace_token,
-            "provider": "deepinfra",
-            "outputFormat": output_format,
-            "inferenceStatus": inference_meta,
-            "words": words_payload,
-            "model": request_model,
-        }
-        return audio_bytes, meta
-
-
 class LlvcRuntime:
     def __init__(self) -> None:
         self.base_url = LLVC_RUNTIME_URL
@@ -4357,27 +3524,6 @@ class SourceSeparationRuntime:
             model.eval()
             self._models[normalized] = model
             return model
-
-
-def _log_duno_runtime_bootstrap_status() -> None:
-    runtime_base = str(_duno_inference_url() or DUNO_RUNTIME_URL or "").strip().rstrip("/")
-    if not runtime_base:
-        print("[runtime.duno] configured=False detail=Set VF_DUNO_RUNTIME_URL to enable DUNO runtime.")
-        return
-    try:
-        health_payload = DUNO_MODAL_CLIENT.health()
-        healthy = bool(health_payload.get("ok"))
-        detail = str(health_payload.get("detail") or "").strip() or "Runtime status checked."
-    except Exception as exc:
-        healthy = False
-        detail = str(exc or "Runtime status checked.").strip() or "Runtime status checked."
-    print(
-        "[runtime.duno] "
-        f"configured=True "
-        f"url={runtime_base} "
-        f"healthy={healthy} "
-        f"detail={str(detail or 'Runtime status checked.').strip()}"
-    )
 
 
 llvc_runtime = LlvcRuntime()
@@ -4596,10 +3742,6 @@ def _phase2_background_warmups() -> None:
         _init_firebase_clients()
     except Exception:
         pass
-    try:
-        _log_duno_runtime_bootstrap_status()
-    except Exception:
-        pass
     if VF_SERVICE_IS_API and VF_SUPPORT_INBOX_ENABLED:
         try:
             _support_ai_policy_get()
@@ -4714,6 +3856,19 @@ _TTS_SUCCESS_LIMITER = SuccessQuotaLimiter(
     window_seconds=VF_TTS_SUCCESS_WINDOW_SECONDS,
     idempotency_ttl_seconds=VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS,
 )
+_EXPENSIVE_REQUEST_LIMITER = SuccessQuotaLimiter(
+    redis_url=VF_REDIS_URL,
+    plan_limits={
+        "free": VF_EXPENSIVE_REQUESTS_PER_MINUTE,
+        "starter": VF_EXPENSIVE_REQUESTS_PER_MINUTE,
+        "creator": VF_EXPENSIVE_REQUESTS_PER_MINUTE,
+        "pro": VF_EXPENSIVE_REQUESTS_PER_MINUTE,
+        "scale": VF_EXPENSIVE_REQUESTS_PER_MINUTE,
+    },
+    window_seconds=60,
+    idempotency_ttl_seconds=300,
+    key_prefix="vf:expensive-request-limit",
+)
 _TTS_GATEWAY_CONTROLLER = TtsGatewayController(
     max_active=VF_TTS_GATEWAY_MAX_ACTIVE,
     queue_max=VF_TTS_GATEWAY_QUEUE_MAX,
@@ -4781,22 +3936,18 @@ _TTS_JOB_WORKER_THREADS: list[threading.Thread] = []
 _TTS_ENGINE_CONCURRENCY_LIMITS: dict[str, int] = {
     "VECTOR": int(VF_TTS_ENGINE_CONCURRENCY_VECTOR),
     "PRIME": int(VF_TTS_ENGINE_CONCURRENCY_PRIME),
-    "DUNO": int(VF_TTS_ENGINE_CONCURRENCY_DUNO),
 }
 _TTS_ENGINE_RETRY_LIMITS: dict[str, int] = {
     "VECTOR": int(VF_TTS_ENGINE_RETRY_LIMIT_VECTOR),
     "PRIME": int(VF_TTS_ENGINE_RETRY_LIMIT_PRIME),
-    "DUNO": int(VF_TTS_ENGINE_RETRY_LIMIT_DUNO),
 }
 _TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLDS: dict[str, int] = {
     "VECTOR": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_VECTOR),
     "PRIME": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_PRIME),
-    "DUNO": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_THRESHOLD_DUNO),
 }
 _TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS: dict[str, int] = {
     "VECTOR": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_VECTOR),
     "PRIME": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_PRIME),
-    "DUNO": int(VF_TTS_ENGINE_CIRCUIT_BREAKER_OPEN_MS_DUNO),
 }
 _TTS_ENGINE_SEMAPHORES: dict[str, threading.Semaphore] = {
     engine: threading.Semaphore(max(1, int(limit)))
@@ -4830,12 +3981,10 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
     "runtimeLatencyByEngine": {
         "VECTOR": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
         "PRIME": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-        "DUNO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
     "semaphoreWaitByEngine": {
         "VECTOR": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
         "PRIME": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-        "DUNO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
     "apiLatencyByOperation": {
         "sessionCreate": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
@@ -4859,7 +4008,6 @@ _REQUESTS_PUT_BASE = requests.put
 _REQUESTS_PATCH_BASE = requests.patch
 _REQUESTS_DELETE_BASE = requests.delete
 _RUNTIME_HTTP_CLIENT = RuntimeHttpClient(pool_connections=64, pool_maxsize=64)
-DUNO_MODAL_CLIENT = DunoModalClient()
 OPENVOICE_PROVIDER_MODAL = "modal"
 OPENVOICE_PROVIDER_VALUES = frozenset({OPENVOICE_PROVIDER_MODAL})
 OPENVOICE_PROVIDER_DEFAULT = str(
@@ -5526,8 +4674,6 @@ def _voice_clone_job_kind_token(value: object) -> str:
     token = str(value or "").strip().lower()
     if token in {"openvoice", "voice_clone", "voice-clone", "vc"}:
         return "voice_clone"
-    if token in {"duno_native", "duno"}:
-        return "duno_native"
     return token
 
 
@@ -5702,13 +4848,6 @@ def _voice_clone_job_finalize(
 
 
 def _voice_clone_job_build_running_progress(kind: str) -> dict[str, str | float]:
-    safe_kind = str(kind or "").strip().lower()
-    if safe_kind == "duno_native":
-        return {
-            "percent": 64.0,
-            "stage": "Creating reusable clone",
-            "detail": "The backend is creating the DUNO voice and preparing a reusable preview.",
-        }
     return {
         "percent": 56.0,
         "stage": "Processing voice conversion",
@@ -5779,11 +4918,6 @@ def _run_voice_clone_job(job_id: str) -> None:
             result = _openvoice_benchmark_payload(
                 OpenVoiceBenchmarkRequest(**payload_data),
                 uid=uid,
-            )
-        elif kind == "duno_native":
-            result = _voice_clone_duno_payload(
-                uid=uid,
-                payload=DunoVoiceCloneRequest(**payload_data),
             )
         else:
             raise RuntimeError(f"Unsupported voice clone job kind: {kind or 'unknown'}")
@@ -5902,24 +5036,28 @@ def _openvoice_benchmark_payload(
     if not source_audio_base64 and text:
         synth_start = time.perf_counter()
         try:
-            source_audio_bytes, _ = DUNO_MODAL_CLIENT.synthesize(
-                text=text,
-                voice_id=source_voice_id or source_voice_name or "Fenrir",
-                speed=speed,
-                language=language.lower(),
-                trace_id=trace_id,
-                requestId=request_id,
-                request_id=request_id,
-                sourceVoiceId=source_voice_id,
-                sourceVoiceName=source_voice_name,
-                sourceVoiceEngine=source_voice_engine,
-                durationSec=duration_sec,
-                uid=uid,
+            source_engine = _resolve_internal_engine_token(source_voice_engine) or "VECTOR"
+            synth_result = _tts_v2_synthesize_chunk(
+                {
+                    "engine": source_engine,
+                    "text": text,
+                    "voice_id": source_voice_id or source_voice_name or "Fenrir",
+                    "voiceId": source_voice_id or source_voice_name or "Fenrir",
+                    "voiceName": source_voice_name or source_voice_id or "Fenrir",
+                    "speed": speed,
+                    "language": language.lower(),
+                    "trace_id": trace_id,
+                    "requestId": request_id,
+                    "request_id": request_id,
+                    "durationSec": duration_sec,
+                    "uid": uid,
+                }
             )
+            source_audio_bytes = bytes(synth_result.get("audioBytes") or b"")
             source_audio_generated = True
             source_tts_elapsed_ms = max(1, int((time.perf_counter() - synth_start) * 1000))
             source_audio_base64 = encode_openvoice_audio_base64(source_audio_bytes)
-            notes.append("source_audio_synthesized_with_duno")
+            notes.append(f"source_audio_synthesized_with_{source_engine.lower()}")
         except Exception as exc:  # noqa: BLE001
             if mode in {"vc", "tts_then_vc"}:
                 raise HTTPException(
@@ -6304,6 +5442,7 @@ voice_clone_openvoice_status = voice_clone_status
 @app.post("/voice-clone/openvoice")
 def voice_clone_render(payload: OpenVoiceBenchmarkRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    plan_key = _plan_key_from_name(str(_load_entitlement(uid).get("plan") or "free"))
     _maybe_run_openvoice_retention_cleanup()
     payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     payload_data.update({"mode": "vc", "runKind": "warm"})
@@ -6311,6 +5450,12 @@ def voice_clone_render(payload: OpenVoiceBenchmarkRequest, request: Request) -> 
     trace_id = str(payload_data.get("traceId") or payload.traceId or request_id).strip() or request_id
     payload_data["requestId"] = request_id
     payload_data["traceId"] = trace_id
+    _enforce_expensive_generation_rate_limit(
+        uid=uid,
+        plan_key=plan_key,
+        request_fingerprint=request_id,
+        feature="voice_clone_submit",
+    )
     raw_idempotency_key = _read_request_idempotency_key(request) or request_id
     scoped_idempotency_key = _scoped_checkout_idempotency_key(
         uid=uid,
@@ -6358,12 +5503,19 @@ voice_clone_openvoice = voice_clone_render
 @app.post("/voice-clone/openvoice/jobs")
 def voice_clone_render_job_start(payload: OpenVoiceBenchmarkRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    plan_key = _plan_key_from_name(str(_load_entitlement(uid).get("plan") or "free"))
     payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     payload_data.update({"mode": "vc", "runKind": "warm"})
     request_id = str(payload_data.get("requestId") or "").strip() or f"vc_{uuid.uuid4().hex[:12]}"
     trace_id = str(payload_data.get("traceId") or request_id).strip() or request_id
     payload_data["requestId"] = request_id
     payload_data["traceId"] = trace_id
+    _enforce_expensive_generation_rate_limit(
+        uid=uid,
+        plan_key=plan_key,
+        request_fingerprint=request_id,
+        feature="voice_clone_submit",
+    )
     forced_payload = OpenVoiceBenchmarkRequest(**payload_data)
     safe_payload_data = forced_payload.model_dump(exclude_none=True) if hasattr(forced_payload, "model_dump") else forced_payload.dict(exclude_none=True)
     response_headers = _voice_clone_alias_headers(request)
@@ -6409,171 +5561,6 @@ def voice_clone_render_job_start(payload: OpenVoiceBenchmarkRequest, request: Re
 
 
 voice_clone_openvoice_job_start = voice_clone_render_job_start
-
-
-class DunoVoiceCloneRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    referenceAudioBase64: str = Field(default="", max_length=20_000_000)
-    referenceAudioName: str = Field(default="reference.wav", max_length=256)
-    referenceAudioUrl: str = Field(default="", max_length=20_000_000)
-    sourceVoiceId: str = Field(default="", max_length=256)
-    sourceVoiceName: str = Field(default="", max_length=256)
-    sourceVoiceEngine: str = Field(default="DUNO", max_length=32)
-    speaker: str = Field(default="", max_length=256)
-    model: str = Field(default=DUNO_DEFAULT_MODEL, max_length=256)
-    requestId: str = Field(default="", max_length=128)
-    traceId: str = Field(default="", max_length=128)
-
-
-def _voice_clone_duno_payload(*, uid: str, payload: DunoVoiceCloneRequest) -> dict[str, Any]:
-    safe_uid = str(uid or "").strip()
-    if not safe_uid:
-        raise HTTPException(status_code=401, detail="Authentication is required.")
-    safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
-    source_voice_engine = str(safe_payload.get("sourceVoiceEngine") or payload.sourceVoiceEngine or "DUNO").strip().upper() or "DUNO"
-    if source_voice_engine != "DUNO":
-        raise HTTPException(status_code=400, detail="DUNO native cloning only supports DUNO voices.")
-
-    reference_audio_base64 = str(safe_payload.get("referenceAudioBase64") or payload.referenceAudioBase64 or "").strip()
-    reference_audio_name = str(safe_payload.get("referenceAudioName") or payload.referenceAudioName or "reference.wav").strip() or "reference.wav"
-    reference_audio_url = str(safe_payload.get("referenceAudioUrl") or payload.referenceAudioUrl or "").strip()
-    if not reference_audio_base64 and not reference_audio_url:
-        raise HTTPException(status_code=400, detail="Reference audio is required.")
-
-    source_voice_id = str(safe_payload.get("sourceVoiceId") or payload.sourceVoiceId or "").strip()
-    source_voice_name = str(safe_payload.get("sourceVoiceName") or payload.sourceVoiceName or "").strip()
-    speaker = str(safe_payload.get("speaker") or payload.speaker or source_voice_name or source_voice_id or "speaker").strip()
-    model = str(safe_payload.get("model") or payload.model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
-
-    reference_hash = _duno_reference_hash(
-        reference_audio_url=reference_audio_url,
-        reference_audio_name=reference_audio_name,
-        reference_audio_base64=reference_audio_base64,
-    )
-    cached_voice_id = _duno_lookup_cached_voice_id(
-        uid=safe_uid,
-        speaker=speaker,
-        reference_hash=reference_hash,
-        model=model,
-    ) if reference_hash else ""
-
-    voice_id = cached_voice_id or _duno_create_voice_via_runtime(
-        model=model,
-        speaker=speaker,
-        reference_audio_url=reference_audio_url,
-        reference_audio_name=reference_audio_name,
-        reference_audio_base64=reference_audio_base64,
-        source_voice_id=source_voice_id,
-        source_voice_name=source_voice_name,
-    )
-    if not voice_id:
-        raise HTTPException(status_code=502, detail="DUNO voice cloning runtime did not return a cloned voice id.")
-
-    if reference_hash:
-        _duno_store_cached_voice_id(
-            uid=safe_uid,
-            speaker=speaker,
-            reference_hash=reference_hash,
-            model=model,
-            voice_id=voice_id,
-        )
-
-    source_label = source_voice_name or source_voice_id or "DUNO speaker"
-    preview_url = _duno_clone_preview_url(
-        voice_id=voice_id,
-        source_label=source_label,
-        model=model,
-        trace_id=str(safe_payload.get("traceId") or payload.traceId or "").strip() or str(safe_payload.get("requestId") or payload.requestId or "").strip(),
-    )
-    cloned_voice = {
-        "id": voice_id,
-        "name": f"{source_label} Clone",
-        "gender": "Unknown",
-        "accent": "Neutral",
-        "geminiVoiceName": voice_id,
-        "engine": "DUNO",
-        "source": "duno_native",
-        "isDownloaded": True,
-        "isCloned": True,
-        "previewUrl": preview_url,
-        "accessTier": "free",
-        "isPlanRestricted": False,
-        "dateCreated": int(time.time() * 1000),
-        "description": f"Native DUNO clone of {source_label}",
-        "originalSampleUrl": reference_audio_url,
-        "referenceAudioUrl": reference_audio_url,
-        "referenceAudioName": reference_audio_name,
-        "sourceVoiceId": source_voice_id,
-        "sourceVoiceName": source_label,
-        "sourceVoiceEngine": "DUNO",
-    }
-    return {
-        "ok": True,
-        "engine": "DUNO",
-        "voiceId": voice_id,
-        "model": model,
-        "cached": bool(cached_voice_id),
-        "referenceHash": reference_hash,
-        "sourceVoiceId": source_voice_id,
-        "sourceVoiceName": source_label,
-        "sourceVoiceEngine": "DUNO",
-        "referenceAudioName": reference_audio_name,
-        "clonedVoice": cloned_voice,
-    }
-
-
-@app.post("/voice-clone/duno")
-@app.post("/voice-clone/duno/native")
-def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...)) -> JSONResponse:
-    uid = _require_request_uid(request)
-    return JSONResponse(content=_voice_clone_duno_payload(uid=uid, payload=payload))
-
-
-@app.post("/voice-clone/duno/native/jobs")
-def voice_clone_duno_job_start(request: Request, payload: DunoVoiceCloneRequest = Body(...)) -> JSONResponse:
-    uid = _require_request_uid(request)
-    payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
-    request_id = str(payload_data.get("requestId") or "").strip() or f"duno_{uuid.uuid4().hex[:12]}"
-    trace_id = str(payload_data.get("traceId") or request_id).strip() or request_id
-    payload_data["requestId"] = request_id
-    payload_data["traceId"] = trace_id
-    normalized_payload = DunoVoiceCloneRequest(**payload_data)
-    safe_payload_data = normalized_payload.model_dump(exclude_none=True) if hasattr(normalized_payload, "model_dump") else normalized_payload.dict(exclude_none=True)
-    with _VOICE_CLONE_JOB_LOCK:
-        now_ms = int(time.time() * 1000)
-        now_iso = _voice_clone_job_now_iso()
-        job_id = f"vcjob_{uuid.uuid4().hex[:20]}"
-        row = {
-            "jobId": job_id,
-            "requestId": request_id,
-            "kind": "duno_native",
-            "status": "queued",
-            "progress": {
-                "percent": 12.0,
-                "stage": "Queued for reconnect-safe processing",
-                "detail": "The backend accepted the DUNO clone request and will keep it reconnectable.",
-            },
-            "createdAtMs": now_ms,
-            "updatedAtMs": now_ms,
-            "startedAtMs": 0,
-            "finishedAtMs": 0,
-            "createdAt": now_iso,
-            "updatedAt": now_iso,
-            "startedAt": "",
-            "finishedAt": "",
-            "result": {},
-            "error": {},
-            "expiresAtUnix": 0,
-            "_uid": uid,
-            "_payload": safe_payload_data,
-            "_cancelRequested": False,
-        }
-        persisted, is_new = _voice_clone_job_create_or_get_locked(row)
-        payload_out = _voice_clone_job_status_payload(persisted)
-        if not is_new:
-            return JSONResponse(payload_out, status_code=_voice_clone_job_response_status(persisted))
-    _launch_voice_clone_job(job_id)
-    return JSONResponse(payload_out, status_code=202)
 
 
 @app.get("/voice-clone/jobs/{job_id}")
@@ -6666,7 +5653,6 @@ def _voice_clone_job_cancel(job_id: str, *, uid: str, is_admin: bool) -> dict[st
 
 @app.post("/voice-clone/jobs/{job_id}/cancel")
 @app.post("/voice-clone/openvoice/jobs/{job_id}/cancel")
-@app.post("/voice-clone/duno/native/jobs/{job_id}/cancel")
 def voice_clone_job_cancel(job_id: str, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
     is_admin = _request_is_admin(request, uid)
@@ -6843,11 +5829,18 @@ class VoiceCloneProviderPatchRequest(BaseModel):
 @app.post("/voice-clone/openvoice/separate")
 def voice_clone_separate(payload: OpenVoiceStemSeparationRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    plan_key = _plan_key_from_name(str(_load_entitlement(uid).get("plan") or "free"))
     _maybe_run_openvoice_retention_cleanup()
     response_headers = _voice_clone_alias_headers(request)
     safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"sep_{uuid.uuid4().hex[:12]}"
     trace_id = str(safe_payload.get("traceId") or payload.traceId or request_id).strip() or request_id
+    _enforce_expensive_generation_rate_limit(
+        uid=uid,
+        plan_key=plan_key,
+        request_fingerprint=request_id,
+        feature="source_separation_submit",
+    )
     scoped_request_id = _openvoice_scoped_artifact_id(uid, request_id)
     source_audio_name = str(safe_payload.get("sourceAudioName") or payload.sourceAudioName or "source.wav").strip() or "source.wav"
     source_separation_model = str(
@@ -8555,7 +7548,6 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "vcGrantMonthKey": month_key,
         "launcherOfferConsumed": False,
         "allowedEngines": list(_plan_allowed_engines("free")),
-        "dunoVoiceCloneMap": {},
         "updatedAt": _safe_now_iso(),
     }
 
@@ -8625,7 +7617,7 @@ def _entitlement_allows_prime(entitlement: dict[str, Any]) -> bool:
 
 
 def _allowed_engines_for_entitlement(entitlement: dict[str, Any]) -> tuple[str, ...]:
-    allowed_keys = {"DUNO", "VECTOR"}
+    allowed_keys = {"VECTOR"}
     if _entitlement_allows_prime(entitlement):
         allowed_keys.add("PRIME")
     return tuple(engine for engine in TTS_ENGINE_KEYS if engine in allowed_keys)
@@ -8678,6 +7670,257 @@ def _tts_guardrail_for_plan(plan_name: str) -> tuple[str, dict[str, int]]:
         "rpm": _TTS_SUCCESS_LIMITER.quota_for_plan(success_bucket),
         "maxChars": max(1, int(guardrails.get("maxChars") or 1)),
     }
+
+
+def _normalize_gemini_model_id(model: str) -> str:
+    token = str(model or "").strip().lower()
+    if token.startswith("models/"):
+        token = token.split("/", 1)[1]
+    return token
+
+
+def _gemini_price_catalog_entry(model: str) -> Optional[dict[str, float]]:
+    normalized = _normalize_gemini_model_id(model)
+    if not normalized:
+        return None
+    if normalized in GEMINI_STANDARD_PRICE_BOOK_USD_PER_1M:
+        return dict(GEMINI_STANDARD_PRICE_BOOK_USD_PER_1M[normalized])
+    for key, value in GEMINI_STANDARD_PRICE_BOOK_USD_PER_1M.items():
+        if normalized.startswith(f"{key}-"):
+            return dict(value)
+    return None
+
+
+def _normalize_ai_director_usage_metadata(value: Any) -> dict[str, Any]:
+    payload = dict(value or {}) if isinstance(value, dict) else {}
+    prompt_tokens = max(
+        0,
+        _safe_int(
+            payload.get("promptTokens")
+            or payload.get("promptTokenCount")
+            or payload.get("prompt_token_count"),
+            0,
+        ),
+    )
+    output_tokens = max(
+        0,
+        _safe_int(
+            payload.get("outputTokens")
+            or payload.get("candidatesTokenCount")
+            or payload.get("output_token_count")
+            or payload.get("completionTokens"),
+            0,
+        ),
+    )
+    total_tokens = max(
+        0,
+        _safe_int(
+            payload.get("totalTokens")
+            or payload.get("totalTokenCount")
+            or payload.get("total_token_count"),
+            prompt_tokens + output_tokens,
+        ),
+    )
+    if total_tokens <= 0:
+        total_tokens = max(0, prompt_tokens + output_tokens)
+    if output_tokens <= 0 and total_tokens > prompt_tokens:
+        output_tokens = max(0, total_tokens - prompt_tokens)
+    normalized = {
+        "promptTokens": prompt_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "providerReported": bool(
+            payload.get("providerReported")
+            if "providerReported" in payload
+            else (prompt_tokens > 0 or output_tokens > 0 or total_tokens > 0)
+        ),
+    }
+    model = _normalize_gemini_model_id(payload.get("model"))
+    if model:
+        normalized["model"] = model
+    trace_id = str(payload.get("traceId") or payload.get("trace_id") or "").strip()
+    if trace_id:
+        normalized["traceId"] = trace_id
+    return normalized
+
+
+def _gemini_usage_cost_inr(
+    *,
+    prompt_tokens: int,
+    output_tokens: int,
+    model: str,
+    warnings: Optional[set[str]] = None,
+) -> tuple[float, str]:
+    entry = _gemini_price_catalog_entry(model)
+    if entry:
+        provider_cost_usd = (
+            (float(max(0, prompt_tokens)) * float(entry.get("inputUsdPer1M") or 0.0))
+            + (float(max(0, output_tokens)) * float(entry.get("outputUsdPer1M") or 0.0))
+        ) / 1_000_000.0
+        return _accounting_to_inr(provider_cost_usd, "USD", warnings=warnings), "catalog"
+    legacy_cost_inr = (
+        (float(max(0, prompt_tokens)) / 1000.0) * float(VF_ACCOUNTING_GEMINI_PROMPT_INR_PER_1K)
+        + (float(max(0, output_tokens)) / 1000.0) * float(VF_ACCOUNTING_GEMINI_OUTPUT_INR_PER_1K)
+    )
+    return legacy_cost_inr, "legacy"
+
+
+def _build_ai_director_billing_payload(
+    *,
+    prompt_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    model: str,
+    billed_chars: int,
+    user_key_billed: bool = False,
+) -> dict[str, Any]:
+    safe_billed_chars = max(0, int(billed_chars or 0))
+    if user_key_billed:
+        return {
+            "feature": "ai_director",
+            "billingMode": "user_key_billed",
+            "userKeyBilled": True,
+            "providerCostInr": 0.0,
+            "markupMultiplier": VF_AI_DIRECTOR_MARKUP_MULTIPLIER,
+            "vfPerInr": VF_AI_DIRECTOR_VF_PER_INR,
+            "billedChars": safe_billed_chars,
+            "promptTokens": max(0, int(prompt_tokens or 0)),
+            "outputTokens": max(0, int(output_tokens or 0)),
+            "totalTokens": max(0, int(total_tokens or 0)),
+            "model": _normalize_gemini_model_id(model),
+            "billedVfCost": 0.0,
+            "vfPerChar": 0.0,
+            "pricingSource": "user_key",
+        }
+    if max(0, int(total_tokens or 0)) <= 0:
+        return {
+            "feature": "ai_director",
+            "billingMode": "platform_billed",
+            "userKeyBilled": False,
+            "providerCostInr": 0.0,
+            "markupMultiplier": VF_AI_DIRECTOR_MARKUP_MULTIPLIER,
+            "vfPerInr": VF_AI_DIRECTOR_VF_PER_INR,
+            "billedChars": safe_billed_chars,
+            "promptTokens": max(0, int(prompt_tokens or 0)),
+            "outputTokens": max(0, int(output_tokens or 0)),
+            "totalTokens": max(0, int(total_tokens or 0)),
+            "model": _normalize_gemini_model_id(model),
+            "billedVfCost": 0.0,
+            "vfPerChar": 0.0,
+            "pricingSource": "missing_usage",
+        }
+    provider_cost_inr, pricing_source = _gemini_usage_cost_inr(
+        prompt_tokens=max(0, int(prompt_tokens or 0)),
+        output_tokens=max(0, int(output_tokens or 0)),
+        model=model,
+    )
+    billed_vf_cost = _as_positive_number(provider_cost_inr * VF_AI_DIRECTOR_MARKUP_MULTIPLIER * VF_AI_DIRECTOR_VF_PER_INR)
+    vf_per_char = (billed_vf_cost / float(safe_billed_chars)) if safe_billed_chars > 0 else 0.0
+    return {
+        "feature": "ai_director",
+        "billingMode": "platform_billed",
+        "userKeyBilled": False,
+        "providerCostInr": round(provider_cost_inr, 6),
+        "markupMultiplier": VF_AI_DIRECTOR_MARKUP_MULTIPLIER,
+        "vfPerInr": VF_AI_DIRECTOR_VF_PER_INR,
+        "billedChars": safe_billed_chars,
+        "promptTokens": max(0, int(prompt_tokens or 0)),
+        "outputTokens": max(0, int(output_tokens or 0)),
+        "totalTokens": max(0, int(total_tokens or 0)),
+        "model": _normalize_gemini_model_id(model),
+        "billedVfCost": round(billed_vf_cost, 6),
+        "vfPerChar": round(vf_per_char, 8),
+        "pricingSource": pricing_source,
+    }
+
+
+def _count_gemini_tokens_via_runtime(*, contents: str, model: str, api_key: str = "") -> int:
+    safe_contents = str(contents or "").strip()
+    if not safe_contents:
+        return 0
+    req_payload: dict[str, Any] = {
+        "contents": safe_contents,
+        "task": "text",
+    }
+    safe_model = _normalize_gemini_model_id(model)
+    if safe_model:
+        req_payload["model"] = safe_model
+        req_payload["modelCandidates"] = [safe_model]
+    if str(api_key or "").strip():
+        req_payload["apiKey"] = str(api_key or "").strip()
+    response = requests.post(
+        f"{VERTEX_TEXT_RUNTIME_URL}/v1/count-tokens",
+        json=req_payload,
+        timeout=30,
+        headers=_runtime_auth_headers_for_url(VERTEX_TEXT_RUNTIME_URL, include_accept=True),
+    )
+    if not response.ok:
+        raise RuntimeError(f"Gemini countTokens failed ({response.status_code}): {response.text[:240]}")
+    payload = response.json()
+    return max(0, _safe_int(payload.get("totalTokens"), 0))
+
+
+def _emit_ai_director_cost_alert(
+    *,
+    request_id: str,
+    uid: str,
+    trace_id: str,
+    model: str,
+    reason: str,
+) -> None:
+    try:
+        _notification_emit_admin_broadcast(
+            event_code="admin.billing.ai_director.usage_missing",
+            title="AI Director usage data missing",
+            message="AI Director finished without billable token usage. The request was settled at 0 VF.",
+            details=(
+                f"requestId={str(request_id or '').strip()}\n"
+                f"uid={str(uid or '').strip()}\n"
+                f"traceId={str(trace_id or '').strip()}\n"
+                f"model={_normalize_gemini_model_id(model)}\n"
+                f"reason={str(reason or '').strip()}"
+            ).strip(),
+            severity="warning",
+            required_permission="billing.read",
+            metadata={
+                "requestId": str(request_id or "").strip(),
+                "uid": str(uid or "").strip(),
+                "traceId": str(trace_id or "").strip(),
+                "model": _normalize_gemini_model_id(model),
+                "reason": str(reason or "").strip(),
+            },
+        )
+    except Exception:
+        return
+
+
+def _enforce_expensive_generation_rate_limit(
+    *,
+    uid: str,
+    plan_key: str,
+    request_fingerprint: str,
+    feature: str,
+) -> SuccessQuotaDecision:
+    safe_feature = str(feature or "generation").strip().lower() or "generation"
+    decision = _EXPENSIVE_REQUEST_LIMITER.commit_success(
+        str(uid or "").strip(),
+        str(plan_key or "free").strip().lower() or "free",
+        request_fingerprint=f"{safe_feature}:{str(request_fingerprint or '').strip()}",
+    )
+    if not decision.allowed:
+        snapshot = decision.snapshot
+        retry_after_seconds = max(1, int(math.ceil(max(0, int(snapshot.reset_at_ms) - _now_ms()) / 1000.0)))
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "Too many requests. Please wait a moment and try again.",
+                "message": "Too many requests. Please wait a moment and try again.",
+                "errorCode": "EXPENSIVE_REQUEST_RATE_LIMIT",
+                "retryAfterMs": retry_after_seconds * 1000,
+            },
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+    return decision
 
 
 def _success_rate_limit_headers(snapshot: Any) -> dict[str, str]:
@@ -9027,6 +8270,8 @@ def _auth_exempt_path(path: str) -> bool:
             }
         )
     if normalized in public_paths:
+        return True
+    if normalized.startswith("/tts/voice-profiles/"):
         return True
     return bool(VF_DOCS_ENABLE and normalized.startswith("/docs"))
 
@@ -10986,21 +10231,29 @@ def _notification_normalize_item(uid: str, row: dict[str, Any]) -> dict[str, Any
     audience = str(row.get("audience") or "user").strip().lower()
     if audience not in {"user", "admin", "all"}:
         audience = "user"
+    channel = str(row.get("channel") or "inbox").strip().lower()
+    if channel not in {"inbox", "toast", "silent"}:
+        channel = "inbox"
     status = str(row.get("status") or "active").strip().lower()
     if status not in {"active", "resolved"}:
         status = "active"
+    user_message = str(row.get("userMessage") or row.get("message") or "Notification").strip()[:1200] or "Notification"
+    admin_detail = str(row.get("adminDetail") or row.get("details") or "").strip()[:6000]
     normalized = {
         "id": str(row.get("id") or "").strip() or f"notif_{uuid.uuid4().hex[:12]}",
         "uid": str(uid or "").strip(),
         "eventCode": str(row.get("eventCode") or "custom.message").strip() or "custom.message",
         "entityKey": str(row.get("entityKey") or "").strip(),
         "title": str(row.get("title") or "Notification").strip()[:160] or "Notification",
-        "message": str(row.get("message") or "Notification").strip()[:1200] or "Notification",
+        "message": user_message,
+        "userMessage": user_message,
         "details": str(row.get("details") or "").strip()[:6000],
+        "adminDetail": admin_detail,
         "severity": severity,
         "category": category,
         "audience": audience,
-        "channel": "inbox",
+        "roleScope": str(row.get("roleScope") or "").strip() or None,
+        "channel": channel,
         "scope": "persisted",
         "status": status,
         "resolvedAt": str(row.get("resolvedAt") or "").strip() or None,
@@ -11030,6 +10283,10 @@ def _notification_normalize_item(uid: str, row: dict[str, Any]) -> dict[str, Any
         normalized["entityKey"] = None
     if not normalized["details"]:
         normalized["details"] = None
+    if not normalized["adminDetail"]:
+        normalized["adminDetail"] = None
+    if not normalized["roleScope"]:
+        normalized["roleScope"] = None
     return normalized
 
 
@@ -11412,10 +10669,14 @@ def _notification_emit_persisted(
     event_code: str,
     title: str,
     message: str,
+    user_message: str = "",
     details: str = "",
+    admin_detail: str = "",
     severity: str = "info",
     category: str = "activity",
     audience: str = "user",
+    role_scope: str = "",
+    channel: str = "inbox",
     entity_key: str = "",
     dedupe_key: str = "",
     sticky: bool = False,
@@ -11437,11 +10698,15 @@ def _notification_emit_persisted(
             "eventCode": event_code,
             "entityKey": entity_key,
             "title": title,
-            "message": message,
+            "message": user_message or message,
+            "userMessage": user_message or message,
             "details": details,
+            "adminDetail": admin_detail or details,
             "severity": severity,
             "category": category,
             "audience": audience,
+            "roleScope": role_scope or None,
+            "channel": channel or "inbox",
             "status": status,
             "sticky": bool(sticky),
             "dedupeKey": dedupe_key or f"{event_code}::{entity_key or 'global'}",
@@ -12129,26 +11394,6 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
     normalized["vcGrantMonthKey"] = vc_grant_month or month_key
     normalized["launcherOfferConsumed"] = bool(normalized.get("launcherOfferConsumed"))
 
-    raw_clone_map = normalized.get("dunoVoiceCloneMap")
-    if isinstance(raw_clone_map, dict):
-        normalized_clone_map: dict[str, dict[str, Any]] = {}
-        for raw_key, raw_value in raw_clone_map.items():
-            key = str(raw_key or "").strip()
-            if not key or not isinstance(raw_value, dict):
-                continue
-            voice_id = str(raw_value.get("voiceId") or raw_value.get("voice_id") or "").strip()
-            if not voice_id:
-                continue
-            normalized_clone_map[key] = {
-                "voiceId": voice_id,
-                "speaker": str(raw_value.get("speaker") or "").strip(),
-                "referenceHash": str(raw_value.get("referenceHash") or "").strip(),
-                "model": str(raw_value.get("model") or "").strip(),
-                "updatedAt": str(raw_value.get("updatedAt") or "").strip() or current.isoformat(),
-            }
-        normalized["dunoVoiceCloneMap"] = normalized_clone_map
-    else:
-        normalized["dunoVoiceCloneMap"] = {}
     return normalized
 
 
@@ -12414,11 +11659,28 @@ def _reserve_usage(
     char_count: int,
     bypass_limits: bool = False,
     bypass_reason: str = "",
+    *,
+    explicit_vf_cost: Optional[float] = None,
+    feature: str = "",
+    model: str = "",
+    trace_id: str = "",
+    runtime_usage: Optional[dict[str, Any]] = None,
+    user_key_billed: bool = False,
+    billing_mode: str = "",
 ) -> dict[str, Any]:
+    normalized_feature = str(feature or "").strip().lower()
     safe_engine = str(engine or "").strip().upper()
-    if safe_engine not in VF_ENGINE_RATES:
+    if explicit_vf_cost is None and safe_engine not in VF_ENGINE_RATES:
         safe_engine = "PRIME"
+    if not safe_engine:
+        safe_engine = (normalized_feature.upper() or "CUSTOM") if explicit_vf_cost is not None else "PRIME"
     safe_chars = _as_positive_int(char_count)
+    safe_model = _normalize_gemini_model_id(model)
+    safe_trace_id = str(trace_id or "").strip()
+    normalized_runtime_usage = _normalize_ai_director_usage_metadata(runtime_usage) if isinstance(runtime_usage, dict) else {}
+    resolved_billing_mode = str(
+        billing_mode or ("explicit_vf" if explicit_vf_cost is not None else "chars")
+    ).strip().lower() or "chars"
     now = _utc_now()
     monthly_doc_id = _inmemory_usage_month_doc_id(uid, now)
     daily_doc_id = _inmemory_usage_day_doc_id(uid, now)
@@ -12436,8 +11698,12 @@ def _reserve_usage(
 
             monthly.setdefault("monthlyFreeVfUsed", _as_positive_number(monthly.get("monthlyFreeVfUsed")))
 
-            rate = _engine_rate(safe_engine)
-            vf_cost = _as_positive_number(float(safe_chars) * float(rate))
+            rate = _engine_rate(safe_engine) if explicit_vf_cost is None else (
+                _as_positive_number(float(explicit_vf_cost) / float(safe_chars)) if safe_chars > 0 else 0.0
+            )
+            vf_cost = _as_positive_number(
+                float(explicit_vf_cost) if explicit_vf_cost is not None else (float(safe_chars) * float(rate))
+            )
 
             charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
             covered = (
@@ -12491,7 +11757,10 @@ def _reserve_usage(
                 "engine": safe_engine,
                 "chars": safe_chars,
                 "vfCost": vf_cost,
+                "reservedChars": safe_chars,
+                "reservedVfCost": vf_cost,
                 "rate": rate,
+                "billingMode": resolved_billing_mode,
                 "monthDocId": monthly_doc_id,
                 "dayDocId": daily_doc_id,
                 "chargeBreakdown": {
@@ -12507,6 +11776,17 @@ def _reserve_usage(
                 "createdAt": now.isoformat(),
                 "updatedAt": now.isoformat(),
             }
+            if normalized_feature:
+                event_payload["feature"] = normalized_feature
+            if safe_model:
+                event_payload["model"] = safe_model
+            if safe_trace_id:
+                event_payload["traceId"] = safe_trace_id
+            if normalized_runtime_usage:
+                event_payload["runtimeUsage"] = normalized_runtime_usage
+                event_payload["runtimeUsageUpdatedAt"] = now.isoformat()
+            if user_key_billed:
+                event_payload["userKeyBilled"] = True
 
             _INMEMORY_ENTITLEMENTS[uid] = entitlement
             _INMEMORY_USAGE_MONTHLY[monthly_doc_id] = monthly
@@ -12542,8 +11822,12 @@ def _reserve_usage(
         entitlement_doc = entitlements_ref.get(transaction=transaction_obj)
         entitlement = entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
         entitlement = _normalize_entitlement_wallet(entitlement, now)
-        rate = _engine_rate(safe_engine)
-        vf_cost = _as_positive_number(float(safe_chars) * float(rate))
+        rate = _engine_rate(safe_engine) if explicit_vf_cost is None else (
+            _as_positive_number(float(explicit_vf_cost) / float(safe_chars)) if safe_chars > 0 else 0.0
+        )
+        vf_cost = _as_positive_number(
+            float(explicit_vf_cost) if explicit_vf_cost is not None else (float(safe_chars) * float(rate))
+        )
 
         monthly_doc = monthly_ref.get(transaction=transaction_obj)
         daily_doc = daily_ref.get(transaction=transaction_obj)
@@ -12610,7 +11894,10 @@ def _reserve_usage(
             "engine": safe_engine,
             "chars": safe_chars,
             "vfCost": vf_cost,
+            "reservedChars": safe_chars,
+            "reservedVfCost": vf_cost,
             "rate": rate,
+            "billingMode": resolved_billing_mode,
             "monthDocId": monthly_doc_id,
             "dayDocId": daily_doc_id,
             "chargeBreakdown": {
@@ -12626,6 +11913,17 @@ def _reserve_usage(
             "createdAt": now.isoformat(),
             "updatedAt": now.isoformat(),
         }
+        if normalized_feature:
+            event_payload["feature"] = normalized_feature
+        if safe_model:
+            event_payload["model"] = safe_model
+        if safe_trace_id:
+            event_payload["traceId"] = safe_trace_id
+        if normalized_runtime_usage:
+            event_payload["runtimeUsage"] = normalized_runtime_usage
+            event_payload["runtimeUsageUpdatedAt"] = now.isoformat()
+        if user_key_billed:
+            event_payload["userKeyBilled"] = True
 
         transaction_obj.set(entitlements_ref, entitlement, merge=True)
         transaction_obj.set(monthly_ref, monthly, merge=True)
@@ -13029,6 +12327,7 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 1)),
             "allowedEngines": allowed_engines,
             "tokenPackDiscountPercent": _token_pack_discount_percent_for_plan(plan_name),
+            "vcTokenPackDiscountPercent": _vc_token_pack_discount_percent_for_plan(plan_name),
         },
         "features": {
             "earlyAccess": _plan_has_early_access(plan_key),
@@ -13813,8 +13112,8 @@ def _admin_usage_record_runtime_call(
     status_code: int,
     elapsed_ms: int,
 ) -> None:
-    engine_key = str(engine or "").strip().upper()
-    integration = "gemini-runtime" if _is_gem_runtime_engine(engine_key) else "duno-runtime" if engine_key == "DUNO" else "tts-runtime"
+    engine_key = _resolve_internal_engine_token(str(engine or ""))
+    integration = "gemini-runtime" if _is_gem_runtime_engine(engine_key) else "tts-runtime"
     _admin_usage_record_event(
         integration=integration,
         endpoint=str(endpoint or "/synthesize"),
@@ -14965,11 +14264,7 @@ def _ai_ops_execute_action(
         if normalized_action == "restart_runtime":
             engine = _normalize_engine_name(str(safe_payload.get("engine") or ""))
             effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
-            command_output = (
-                ""
-                if engine == "DUNO" and _is_duno_deepinfra_runtime()
-                else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-            )
+            command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
             healthy, detail, health_url = _probe_engine_runtime_health(engine)
             execution.update(
                 {
@@ -15014,14 +14309,10 @@ def _ai_ops_execute_action(
         elif normalized_action == "restart_all_runtimes":
             items: list[dict[str, Any]] = []
             overall_ok = True
-            for engine in ["PRIME", "VECTOR", "DUNO"]:
+            for engine in TTS_ENGINE_KEYS:
                 try:
                     effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
-                    command_output = (
-                        ""
-                        if engine == "DUNO" and _is_duno_deepinfra_runtime()
-                        else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-                    )
+                    command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
                     healthy, detail, probe_url = _probe_engine_runtime_health(engine)
                     item_ok = bool(healthy)
                     overall_ok = overall_ok and item_ok
@@ -16266,7 +15557,7 @@ def _normalize_engine_name(raw_engine: str) -> str:
     normalized = normalized.strip("_")
     engine = TTS_ENGINE_ALIASES.get(normalized)
     if not engine:
-        raise ValueError("Invalid engine. Use DUNO, VECTOR, or PRIME.")
+        raise ValueError("Invalid engine. Use VECTOR or PRIME.")
     return engine
 
 
@@ -16275,7 +15566,7 @@ def _canonicalize_engine_token(raw_engine: str) -> str:
     while "__" in normalized:
         normalized = normalized.replace("__", "_")
     normalized = normalized.strip("_")
-    if normalized in {"DUNO", "VECTOR", "PRIME"}:
+    if normalized in {"VECTOR", "PRIME"}:
         return normalized
     legacy_map = {
         "GEMINI": "PRIME",
@@ -16296,12 +15587,10 @@ def _canonicalize_engine_token(raw_engine: str) -> str:
         "HD": "VECTOR",
         "GEM1": "VECTOR",
         "G1": "VECTOR",
-        "KOKORO": "DUNO",
-        "DUNO": "DUNO",
-        "BASIC": "DUNO",
-        "KOKORO_RUNTIME": "DUNO",
-        "DUN": "DUNO",
-        "DUNO_RUNTIME": "DUNO",
+        "KOKORO": "VECTOR",
+        "BASIC": "VECTOR",
+        "KOKORO_RUNTIME": "VECTOR",
+        "DUN": "VECTOR",
     }
     return legacy_map.get(normalized, "")
 
@@ -16315,11 +15604,9 @@ def _resolve_internal_engine_token(raw_engine: str) -> str:
 
 def _runtime_url_for_engine(engine: str) -> str:
     normalized = _normalize_engine_name(engine)
-    if normalized == "DUNO":
-        return DUNO_RUNTIME_URL
     if _is_gem_runtime_engine(normalized):
         return GEMINI_RUNTIME_URL
-    raise ValueError("Invalid engine. Use DUNO, VECTOR, or PRIME.")
+    raise ValueError("Invalid engine. Use VECTOR or PRIME.")
 
 
 def _runtime_synthesize_path_for_engine(engine: str) -> str:
@@ -16451,6 +15738,47 @@ def _token_pack_amount_inr_for_plan(plan_name: str, pack_key: str) -> int:
 def _token_pack_vf_for_pack(pack_key: str) -> int:
     pack = _token_pack_config(pack_key)
     return max(1, int(pack.get("vf") or 1))
+
+
+def _normalize_vc_token_pack_key(pack_key: str, *, strict: bool = False) -> str:
+    key = str(pack_key or "").strip().lower()
+    if key in VC_TOKEN_PACK_CATALOG:
+        return key
+    if strict:
+        raise ValueError("Invalid VC pack. Use starter, standard, growth, pro, or scale.")
+    return "standard"
+
+
+def _vc_token_pack_config(pack_key: str) -> dict[str, int]:
+    key = _normalize_vc_token_pack_key(pack_key)
+    return VC_TOKEN_PACK_CATALOG[key]
+
+
+def _vc_token_pack_discount_percent_for_plan(plan_name: str) -> int:
+    plan_key = _plan_key_from_name(plan_name)
+    if plan_key not in set(PAID_PLAN_KEYS):
+        return 0
+    return max(0, int(VC_TOKEN_PACK_DISCOUNT_PCT_BY_KEY.get(plan_key, 0)))
+
+
+def _vc_token_pack_pricing_for_plan(plan_name: str, pack_key: str) -> dict[str, int]:
+    pack = _vc_token_pack_config(pack_key)
+    standard_amount_inr = max(1, int(pack.get("priceInr") or 1))
+    discount_percent = _vc_token_pack_discount_percent_for_plan(plan_name)
+    final_amount_inr = standard_amount_inr
+    if discount_percent > 0:
+        discount_factor = max(0.0, 1.0 - (float(discount_percent) / 100.0))
+        final_amount_inr = _round_inr(standard_amount_inr * discount_factor)
+    return {
+        "standardAmountInr": standard_amount_inr,
+        "finalAmountInr": final_amount_inr,
+        "discountPercent": discount_percent,
+    }
+
+
+def _vc_token_pack_vc_for_pack(pack_key: str) -> int:
+    pack = _vc_token_pack_config(pack_key)
+    return max(1, int(pack.get("vc") or 1))
 
 
 COUPON_TYPE_WALLET_CREDIT = "wallet_credit"
@@ -18282,8 +17610,9 @@ def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[di
         updated_at = _parse_optional_datetime(str(row.get("updatedAt") or row.get("createdAt") or ""))
         if updated_at is None or updated_at < from_dt or updated_at > to_dt:
             continue
+        feature = str(row.get("feature") or "").strip().lower()
         engine = str(row.get("engine") or "").strip().upper()
-        if engine not in {"PRIME", "VECTOR"}:
+        if feature != "ai_director" and engine not in {"PRIME", "VECTOR"}:
             continue
         runtime_usage = row.get("runtimeUsage") if isinstance(row.get("runtimeUsage"), dict) else {}
         prompt_tokens = max(0, _safe_int(runtime_usage.get("promptTokens"), 0))
@@ -18295,26 +17624,45 @@ def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[di
             else bool(total_tokens > 0 or prompt_tokens > 0 or output_tokens > 0)
         )
         chars = max(0, _safe_int(row.get("chars"), 0))
+        model = _normalize_gemini_model_id(row.get("model") or runtime_usage.get("model"))
+        user_key_billed = _as_bool(row.get("userKeyBilled"))
         estimated_tokens = 0
         fallback_estimated = False
         if provider_reported:
-            if total_tokens <= 0:
+            if total_tokens <= 0 and chars > 0 and feature != "ai_director":
                 estimated_tokens = max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR)))
                 prompt_tokens = estimated_tokens
                 output_tokens = 0
                 total_tokens = estimated_tokens
                 fallback_estimated = estimated_tokens > 0
         else:
-            estimated_tokens = max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR))) if chars > 0 else 0
+            estimated_tokens = (
+                max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR)))
+                if chars > 0 and feature != "ai_director"
+                else 0
+            )
             prompt_tokens = 0
             output_tokens = 0
             total_tokens = 0
             fallback_estimated = False
+        if user_key_billed:
+            cost_inr = 0.0
+            pricing_source = "user_key"
+        elif total_tokens > 0:
+            cost_inr, pricing_source = _gemini_usage_cost_inr(
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                model=model,
+            )
+        else:
+            cost_inr = 0.0
+            pricing_source = "missing_usage"
         result.append(
             {
                 "id": str(row.get("id") or row.get("requestId") or "").strip() or uuid.uuid4().hex,
                 "uid": str(row.get("uid") or "").strip(),
                 "engine": engine,
+                "feature": feature or ("tts_runtime" if engine in {"PRIME", "VECTOR"} else ""),
                 "chars": chars,
                 "vfCost": _safe_float(row.get("vfCost"), 0.0),
                 "promptTokens": prompt_tokens,
@@ -18323,6 +17671,11 @@ def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[di
                 "estimatedTokens": estimated_tokens,
                 "fallbackEstimated": fallback_estimated,
                 "providerReported": bool(provider_reported),
+                "model": model,
+                "costInr": round(cost_inr, 6),
+                "pricingSource": pricing_source,
+                "userKeyBilled": user_key_billed,
+                "traceId": str(row.get("traceId") or runtime_usage.get("traceId") or "").strip(),
                 "updatedAt": updated_at.isoformat(),
                 "day": _accounting_day_token(updated_at),
             }
@@ -18639,10 +17992,7 @@ def _accounting_compute_report(
         total_tokens = max(0, _safe_int(row.get("totalTokens"), prompt_tokens + output_tokens))
         if total_tokens <= 0:
             continue
-        cost_inr = (
-            (float(prompt_tokens) / 1000.0) * float(VF_ACCOUNTING_GEMINI_PROMPT_INR_PER_1K)
-            + (float(output_tokens) / 1000.0) * float(VF_ACCOUNTING_GEMINI_OUTPUT_INR_PER_1K)
-        )
+        cost_inr = _safe_float(row.get("costInr"), 0.0)
         bucket = day_map[day_token]
         bucket["geminiCostInr"] = _safe_float(bucket.get("geminiCostInr"), 0.0) + cost_inr
         bucket["geminiGenerations"] = int(bucket.get("geminiGenerations") or 0) + 1
@@ -18667,11 +18017,15 @@ def _accounting_compute_report(
                     "metadata": {
                         "uid": row.get("uid"),
                         "engine": row.get("engine"),
+                        "feature": row.get("feature"),
+                        "model": row.get("model"),
                         "chars": row.get("chars"),
                         "promptTokens": prompt_tokens,
                         "outputTokens": output_tokens,
                         "totalTokens": total_tokens,
                         "fallbackEstimated": bool(row.get("fallbackEstimated")),
+                        "pricingSource": row.get("pricingSource"),
+                        "userKeyBilled": bool(row.get("userKeyBilled")),
                     },
                 }
             )
@@ -19570,8 +18924,8 @@ def _select_dubbing_qos_state(
 
 
 def _effective_tts_gpu_mode(engine: str, requested_gpu_mode: bool) -> bool:
-    normalized = _resolve_internal_engine_token(engine) or "PRIME"
-    return bool(requested_gpu_mode) and normalized != "DUNO"
+    _ = _resolve_internal_engine_token(engine) or "PRIME"
+    return bool(requested_gpu_mode)
 
 
 def _trim_media_to_clip_window(
@@ -19746,11 +19100,6 @@ def _runtime_bearer_auth_header_value(token: str) -> str:
     return f"Bearer {safe_token}"
 
 
-def _duno_runtime_auth_header_value() -> str:
-    token = str(DUNO_RUNTIME_TOKEN or "").strip()
-    return _runtime_bearer_auth_header_value(token)
-
-
 def _cloud_run_service_audience(url: str) -> str:
     safe_url = str(url or "").strip().rstrip("/")
     if not safe_url:
@@ -19793,15 +19142,16 @@ def _runtime_auth_headers_for_url(url: str, *, include_accept: bool = False) -> 
     if include_accept:
         headers["Accept"] = "application/json"
     safe_url = str(url or "").strip()
-    duno_prefixes = _duno_runtime_auth_url_prefixes()
-    if duno_prefixes and any(safe_url.lower().startswith(prefix.lower()) for prefix in duno_prefixes):
-        auth_value = _duno_runtime_auth_header_value()
-        if auth_value:
-            headers["Authorization"] = auth_value
-        return headers
-    gemini_audience = _cloud_run_service_audience(GEMINI_RUNTIME_URL)
-    if gemini_audience and safe_url.lower().startswith(gemini_audience.lower()):
-        id_token = _cloud_run_id_token_for_url(gemini_audience)
+    runtime_audiences = [
+        _cloud_run_service_audience(TTS_RUNTIME_URL),
+        _cloud_run_service_audience(VERTEX_TEXT_RUNTIME_URL),
+    ]
+    matching_audience = next(
+        (audience for audience in runtime_audiences if audience and safe_url.lower().startswith(audience.lower())),
+        "",
+    )
+    if matching_audience:
+        id_token = _cloud_run_id_token_for_url(matching_audience)
         if id_token:
             headers["Authorization"] = _runtime_bearer_auth_header_value(id_token)
         admin_token = str(GEMINI_RUNTIME_ADMIN_TOKEN or "").strip()
@@ -19850,18 +19200,6 @@ def _probe_runtime_health(url: str, timeout_sec: float | None = None) -> tuple[b
 
 def _probe_engine_runtime_health(engine: str, *, timeout_sec: float | None = None) -> tuple[bool, str, str]:
     normalized_engine = _normalize_engine_name(engine)
-    if normalized_engine == "DUNO" and _is_duno_deepinfra_runtime():
-        probe_url = _duno_voice_api_url("/v1/voices")
-        try:
-            payload = DUNO_MODAL_CLIENT.health()
-            healthy = bool(payload.get("ok", False))
-            detail = str(
-                payload.get("detail")
-                or ("DeepInfra DUNO runtime ready." if healthy else "DeepInfra DUNO runtime unavailable.")
-            ).strip()
-            return healthy, detail, probe_url
-        except Exception as exc:
-            return False, str(exc or "DUNO runtime unavailable.").strip() or "DUNO runtime unavailable.", probe_url
     probe_url = str(TTS_ENGINE_HEALTH_URLS.get(normalized_engine) or "").strip()
     return (
         *_probe_runtime_health(
@@ -19948,24 +19286,17 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
     ready = bool((health_payload or {}).get("ok", False))
     runtime = str((health_payload or {}).get("engine", "")).strip() or f"{safe_engine.lower()}-runtime"
     model = (health_payload or {}).get("model")
-    default_chunking: dict[str, Any]
-    if safe_engine == "DUNO":
-        default_chunking = {
-            "hi": {"hard_char_cap": 200, "target_char_cap": 150, "max_words_per_chunk": 34},
-            "default": {"hard_char_cap": 180, "target_char_cap": 140, "max_words_per_chunk": 32},
-        }
-    else:
-        default_chunking = {
-            "hi": {"hard_char_cap": 360, "target_char_cap": 260, "max_words_per_chunk": 56},
-            "default": {"hard_char_cap": 360, "target_char_cap": 260, "max_words_per_chunk": 56},
-        }
+    default_chunking = {
+        "hi": {"hard_char_cap": 360, "target_char_cap": 260, "max_words_per_chunk": 56},
+        "default": {"hard_char_cap": 360, "target_char_cap": 260, "max_words_per_chunk": 56},
+    }
     return {
         "engine": safe_engine,
         "runtime": runtime,
         "ready": ready,
-        "languages": ["multilingual"] if safe_engine == "DUNO" else ["multilingual"],
+        "languages": ["multilingual"],
         "speed": {"min": 0.7, "max": 1.35, "default": 1.0},
-        "supportsEmotion": safe_engine == "DUNO",
+        "supportsEmotion": False,
         "supportsStyle": False,
         "supportsSpeakerWav": False,
         "model": model,
@@ -19973,7 +19304,7 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
         "emotionCount": (health_payload or {}).get("emotionCount"),
         "metadata": {
             "source": "fallback",
-            "maxWordsPerRequest": 80 if safe_engine == "DUNO" else 5000,
+            "maxWordsPerRequest": 5000,
             "segmentationProfile": "latency-balanced",
             "chunking": default_chunking,
         },
@@ -19981,20 +19312,6 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
 
 
 def _probe_runtime_capabilities(engine: str, timeout_sec: float = 3.0) -> dict[str, Any]:
-    if engine == "DUNO":
-        try:
-            payload = DUNO_MODAL_CLIENT.capabilities()
-            if isinstance(payload, dict):
-                return payload
-        except Exception as exc:
-            fallback = _capability_fallback(engine, health_payload=None)
-            fallback["ready"] = False
-            fallback_metadata = fallback.get("metadata", {})
-            if isinstance(fallback_metadata, dict):
-                fallback_metadata["capabilityProbeError"] = str(exc)
-                fallback_metadata["provider"] = "deepinfra" if _is_duno_deepinfra_runtime() else "runtime"
-                fallback["metadata"] = fallback_metadata
-            return fallback
     capabilities_url = TTS_ENGINE_CAPABILITIES_URLS[engine]
     health_url = TTS_ENGINE_HEALTH_URLS[engine]
     capabilities_query_url = f"{capabilities_url}?engine={engine}"
@@ -21046,7 +20363,7 @@ def _gemini_runtime_admin_headers() -> dict[str, str]:
 
 def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
     runtime_headers = _gemini_runtime_admin_headers()
-    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools"
+    endpoint = f"{VERTEX_TEXT_RUNTIME_URL}/v1/admin/api-pools"
     try:
         response = _runtime_http_request(
             "GET",
@@ -21083,7 +20400,7 @@ def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
 
 
 def _runtime_gemini_pool_usage(timeout_sec: float = 8.0) -> dict[str, Any]:
-    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/usage"
+    endpoint = f"{VERTEX_TEXT_RUNTIME_URL}/v1/admin/api-pools/usage"
     runtime_headers = _gemini_runtime_admin_headers()
     try:
         response = _runtime_http_request(
@@ -22181,9 +21498,10 @@ def _reader_translate_units(
         "modelCandidates": [VF_READER_TRANSLATION_MODEL],
     }
     response = requests.post(
-        f"{GEMINI_RUNTIME_URL}/v1/generate-text",
+        f"{VERTEX_TEXT_RUNTIME_URL}/v1/generate-text",
         json=payload,
         timeout=(8, 120),
+        headers=_runtime_auth_headers_for_url(VERTEX_TEXT_RUNTIME_URL, include_accept=True),
     )
     response.raise_for_status()
     body = response.json() if response.content else {}
@@ -29450,6 +28768,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             "earlyAccess": bool(feature_flags.get("earlyAccess")),
             "pricing": pricing,
             "tokenPackDiscountPercent": _token_pack_discount_percent_for_plan(plan_name),
+            "vcTokenPackDiscountPercent": _vc_token_pack_discount_percent_for_plan(plan_name),
             "launcherOfferConsumed": bool(entitlement.get("launcherOfferConsumed")),
         },
         "billing": {
@@ -35540,18 +34859,25 @@ def billing_vc_token_pack_checkout_session(payload: BillingTokenPackCheckoutSess
             status_code=503,
             detail={"errorCode": "VC_TOKEN_PACK_CONFIG_REQUIRED", "message": "VC token-pack catalog is not configured."},
         )
-    pack_key = str(payload.pack or "standard").strip().lower() or "standard"
-    if pack_key not in VC_TOKEN_PACK_CATALOG:
-        raise HTTPException(status_code=400, detail="Unknown VC token pack.")
-    pack_cfg = VC_TOKEN_PACK_CATALOG.get(pack_key) or {}
-    pack_vc = max(1, int(pack_cfg.get("vc") or 0))
-    final_amount_inr = max(1, int(pack_cfg.get("priceInr") or 0))
+    try:
+        pack_key = _normalize_vc_token_pack_key(str(payload.pack or "standard"), strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    plan_name = _normalize_plan_name(str(entitlement.get("plan") or "free"))
+    pack_vc = _vc_token_pack_vc_for_pack(pack_key)
+    pricing = _vc_token_pack_pricing_for_plan(plan_name, pack_key)
+    standard_amount_inr = pricing["standardAmountInr"]
+    final_amount_inr = pricing["finalAmountInr"]
+    discount_percent = pricing["discountPercent"]
     notes = {
         "kind": "vc_token_pack",
         "uid": uid,
         "packKey": pack_key,
         "packVc": str(pack_vc),
+        "standardAmountInr": str(standard_amount_inr),
         "finalAmountInr": str(final_amount_inr),
+        "discountPercent": str(discount_percent),
     }
     scoped_idempotency_key = _scoped_checkout_idempotency_key(
         uid=uid,
@@ -35586,7 +34912,9 @@ def billing_vc_token_pack_checkout_session(payload: BillingTokenPackCheckoutSess
             "orderId": order_id or None,
             "packKey": pack_key,
             "packVc": pack_vc,
+            "standardAmountInr": standard_amount_inr,
             "finalAmountInr": final_amount_inr,
+            "discountPercent": discount_percent,
             "checkoutOptions": {
                 "key": _razorpay_key_id(),
                 "order_id": order_id or None,
@@ -35947,9 +35275,15 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         },
                     )
                 elif kind == "vc_token_pack" and uid:
-                    pack_key = str(notes.get("packKey") or "standard").strip().lower() or "standard"
+                    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+                    plan_name = _normalize_plan_name(str(entitlement.get("plan") or "free"))
+                    pack_key = _normalize_vc_token_pack_key(str(notes.get("packKey") or "standard"))
                     pack_cfg = VC_TOKEN_PACK_CATALOG.get(pack_key) if isinstance(VC_TOKEN_PACK_CATALOG, dict) else None
                     pack_vc = _as_positive_int(notes.get("packVc") or ((pack_cfg or {}).get("vc") if isinstance(pack_cfg, dict) else 0))
+                    pricing = _vc_token_pack_pricing_for_plan(plan_name, pack_key)
+                    standard_amount_inr = _as_positive_int(notes.get("standardAmountInr") or pricing["standardAmountInr"])
+                    final_amount_inr = _as_positive_int(notes.get("finalAmountInr") or pricing["finalAmountInr"] or (_as_positive_int(payment.get("amount")) // 100))
+                    discount_percent = _as_positive_int(notes.get("discountPercent") or pricing["discountPercent"])
                     if pack_vc > 0:
                         payment_id = str(payment.get("id") or "").strip()
                         order_id = str(payment.get("order_id") or "").strip()
@@ -35971,6 +35305,9 @@ async def billing_webhook(request: Request) -> JSONResponse:
                                 "orderId": order_id,
                                 "packKey": pack_key,
                                 "packVc": pack_vc,
+                                "standardAmountInr": standard_amount_inr,
+                                "finalAmountInr": final_amount_inr,
+                                "discountPercent": discount_percent,
                                 "amountTotal": _as_positive_int(payment.get("amount")),
                                 "currency": str(payment.get("currency") or "INR"),
                             },
@@ -36229,22 +35566,33 @@ async def billing_webhook(request: Request) -> JSONResponse:
 
 @app.post("/ai/generate-text")
 def ai_generate_text(payload: AiGenerateTextRequest, request: Request) -> JSONResponse:
-    _ = _require_request_uid(request)
-    upstream = f"{GEMINI_RUNTIME_URL}/v1/generate-text"
+    uid = _require_request_uid(request)
+    entitlement = _load_entitlement(uid)
+    plan_key = _plan_key_from_name(str(entitlement.get("plan") or "free"))
+    request_id = f"ai_dir_{uuid.uuid4().hex[:20]}"
+    _enforce_expensive_generation_rate_limit(
+        uid=uid,
+        plan_key=plan_key,
+        request_fingerprint=request_id,
+        feature="ai_director",
+    )
+    upstream = f"{VERTEX_TEXT_RUNTIME_URL}/v1/generate-text"
+    requested_model_candidates = [
+        str(candidate).strip()
+        for candidate in (payload.modelCandidates or [])
+        if str(candidate).strip()
+    ]
     req_payload = {
         "systemPrompt": payload.systemPrompt,
         "userPrompt": payload.userPrompt,
         "jsonMode": bool(payload.jsonMode),
         "temperature": float(payload.temperature),
+        "trace_id": request_id,
     }
     if payload.apiKey:
         req_payload["apiKey"] = payload.apiKey
-    if payload.modelCandidates:
-        req_payload["modelCandidates"] = [
-            str(candidate).strip()
-            for candidate in payload.modelCandidates
-            if str(candidate).strip()
-        ]
+    if requested_model_candidates:
+        req_payload["modelCandidates"] = requested_model_candidates
     try:
         response = requests.post(
             upstream,
@@ -36263,7 +35611,91 @@ def ai_generate_text(payload: AiGenerateTextRequest, request: Request) -> JSONRe
 
     if not response.ok:
         raise HTTPException(status_code=response.status_code, detail=body.get("detail") if isinstance(body, dict) else str(body))
-    return JSONResponse(body)
+    payload_body = dict(body or {}) if isinstance(body, dict) else {}
+    text = str(payload_body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=502, detail="Gemini runtime returned empty text.")
+    trace_id = str(payload_body.get("trace_id") or payload_body.get("traceId") or request_id).strip() or request_id
+    model = _normalize_gemini_model_id(
+        payload_body.get("model")
+        or (requested_model_candidates[0] if requested_model_candidates else "")
+    )
+    usage_metadata = _normalize_ai_director_usage_metadata(payload_body.get("usageMetadata"))
+    if model and not usage_metadata.get("model"):
+        usage_metadata["model"] = model
+    if trace_id and not usage_metadata.get("traceId"):
+        usage_metadata["traceId"] = trace_id
+    user_key_billed = bool(str(payload.apiKey or "").strip())
+    if not user_key_billed and max(
+        int(usage_metadata.get("promptTokens") or 0),
+        int(usage_metadata.get("outputTokens") or 0),
+        int(usage_metadata.get("totalTokens") or 0),
+    ) <= 0:
+        recount_reason = ""
+        try:
+            prompt_text = "\n\n".join(
+                part for part in [str(payload.systemPrompt or "").strip(), str(payload.userPrompt or "").strip()] if part
+            ).strip()
+            prompt_tokens = _count_gemini_tokens_via_runtime(contents=prompt_text, model=model)
+            output_tokens = _count_gemini_tokens_via_runtime(contents=text, model=model) if text else 0
+            usage_metadata = {
+                "promptTokens": prompt_tokens,
+                "outputTokens": output_tokens,
+                "totalTokens": max(0, prompt_tokens + output_tokens),
+                "providerReported": False,
+                **({"model": model} if model else {}),
+                **({"traceId": trace_id} if trace_id else {}),
+            }
+        except Exception as exc:  # noqa: BLE001
+            recount_reason = str(exc)
+            usage_metadata = {
+                "promptTokens": 0,
+                "outputTokens": 0,
+                "totalTokens": 0,
+                "providerReported": False,
+                **({"model": model} if model else {}),
+                **({"traceId": trace_id} if trace_id else {}),
+            }
+        if recount_reason:
+            _emit_ai_director_cost_alert(
+                request_id=request_id,
+                uid=uid,
+                trace_id=trace_id,
+                model=model,
+                reason=recount_reason or "missing_usage_metadata",
+            )
+    billed_chars = max(0, len(text))
+    billing = _build_ai_director_billing_payload(
+        prompt_tokens=max(0, _safe_int(usage_metadata.get("promptTokens"), 0)),
+        output_tokens=max(0, _safe_int(usage_metadata.get("outputTokens"), 0)),
+        total_tokens=max(0, _safe_int(usage_metadata.get("totalTokens"), 0)),
+        model=model,
+        billed_chars=billed_chars,
+        user_key_billed=user_key_billed,
+    )
+    _reserve_usage(
+        uid,
+        request_id,
+        "AI_DIRECTOR",
+        billed_chars,
+        explicit_vf_cost=_safe_float(billing.get("billedVfCost"), 0.0),
+        feature="ai_director",
+        model=model,
+        trace_id=trace_id,
+        runtime_usage=usage_metadata,
+        user_key_billed=user_key_billed,
+        billing_mode=str(billing.get("billingMode") or "explicit_vf"),
+    )
+    _finalize_usage(uid, request_id, success=True, terminal_reason="completed")
+    payload_out = {
+        **payload_body,
+        "requestId": request_id,
+        "trace_id": trace_id,
+        "model": model or payload_body.get("model"),
+        "usageMetadata": usage_metadata,
+        "billing": billing,
+    }
+    return JSONResponse(payload_out)
 
 
 def _decode_runtime_error_detail(response: requests.Response) -> Any:
@@ -36866,8 +36298,6 @@ def _build_tts_upstream_payload(
             pools_config,
             _tts_pool_hint_plan_key(plan_key),
         )
-    elif engine == "DUNO" and voice_id:
-        upstream_payload["voiceId"] = voice_id
 
     multi_speaker_mode = str(payload.multi_speaker_mode or "").strip().lower()
     if multi_speaker_mode:
@@ -36970,9 +36400,6 @@ def _safe_tts_engine_name(engine: str) -> str:
 
 
 def _post_tts_conversion_status_for_engine(*, engine: str) -> str:
-    safe_engine = _safe_tts_engine_name(engine)
-    if safe_engine == "DUNO":
-        return "disabled_for_duno"
     return "disabled"
 
 
@@ -37007,9 +36434,6 @@ def _sample_stats(values: list[int]) -> dict[str, int]:
 
 
 def _default_engine_runtime_ms(engine: str) -> int:
-    safe_engine = _safe_tts_engine_name(engine)
-    if safe_engine == "DUNO":
-        return 2_000
     return 3_200
 
 
@@ -38058,8 +37482,6 @@ def _tts_v2_synthesize_chunk(
 ) -> dict[str, Any]:
     upstream_payload = dict(payload_base or {})
     engine = _resolve_internal_engine_token(str(upstream_payload.get("engine") or "PRIME")) or "PRIME"
-    if engine == "DUNO":
-        upstream_payload = _prepare_duno_runtime_payload(upstream_payload)
     safe_text = str(text if text is not None else upstream_payload.get("text") or "").strip()
     if not safe_text:
         raise V2ValidationError("chunk text is empty.")
@@ -39827,12 +39249,13 @@ def _is_tts_queue_admission_retryable_error(error: Exception) -> bool:
 
 
 def _tts_queue_wait_timeout_detail(*, wait_timeout_ms: int, last_error: str = "") -> dict[str, Any]:
-    message = "Network connection issue. Please retry."
+    message = "Servers are busy right now. Please try again in a little while."
     payload: dict[str, Any] = {
         "error": message,
         "message": message,
+        "summary": message,
         "errorCode": QUEUE_WAIT_TIMEOUT,
-        "reason": "queue_wait_timeout",
+        "reason": "servers_busy",
         "retryAfterMs": 1_000,
         "waitTimeoutMs": max(0, int(wait_timeout_ms)),
     }
@@ -40132,6 +39555,17 @@ def _create_tts_v2_job_response(
         )
     except Exception as exc:
         _mark_submit_audit_failed(failure_code="plan_guardrail_blocked", failure_detail=str(exc))
+        raise
+
+    try:
+        _enforce_expensive_generation_rate_limit(
+            uid=uid,
+            plan_key=plan_key,
+            request_fingerprint=request_id,
+            feature="tts_submit",
+        )
+    except Exception as exc:
+        _mark_submit_audit_failed(failure_code="request_rate_limited", failure_detail=str(exc))
         raise
 
     quota_stage_started_at = time.perf_counter()
@@ -40536,9 +39970,6 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
     raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use POST /tts/v2/jobs/{job_id}/cancel.")
 
 
-@app.get("/models/duno/status")
-def duno_model_status() -> JSONResponse:
-    raise HTTPException(status_code=404, detail="Model file not found.")
 
 
 @app.get("/models/{model_path:path}")
@@ -40667,16 +40098,8 @@ def _engine_status_entry_uncached(engine: str) -> dict[str, Any]:
     runtime_url = health_url.rsplit("/health", 1)[0] if "/health" in health_url else _runtime_url_for_engine(normalized_engine)
     runtime_url = str(runtime_url or "").strip().rstrip("/")
     capabilities_url = str(TTS_ENGINE_CAPABILITIES_URLS.get(normalized_engine) or _runtime_endpoint(runtime_url, "/v1/capabilities"))
-    if normalized_engine == "DUNO":
-        runtime_url = str(_duno_inference_url() or runtime_url).strip().rstrip("/")
-        health_url = str(_duno_voice_api_url("/v1/voices") or health_url).strip()
-        capabilities_url = runtime_url
     if not health_url:
-        detail = (
-            "DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL."
-            if normalized_engine == "DUNO"
-            else "Runtime URL is not configured."
-        )
+        detail = "Runtime URL is not configured."
         return {
             "engine": normalized_engine,
             "runtimeUrl": runtime_url,
@@ -40686,50 +40109,6 @@ def _engine_status_entry_uncached(engine: str) -> dict[str, Any]:
             "state": "not_configured",
             "detail": detail,
             "capabilities": _capability_fallback(normalized_engine),
-        }
-    if normalized_engine == "DUNO":
-        capabilities = _probe_runtime_capabilities(normalized_engine, timeout_sec=3.0)
-        metadata = dict(capabilities.get("metadata") or {}) if isinstance(capabilities.get("metadata"), dict) else {}
-        ready = bool(capabilities.get("ready", False))
-        try:
-            health_payload = DUNO_MODAL_CLIENT.health()
-            healthy = bool(health_payload.get("ok", False))
-            detail = str(
-                health_payload.get("detail")
-                or ("DeepInfra DUNO runtime ready." if healthy else "DeepInfra DUNO runtime is unavailable.")
-            ).strip()
-        except Exception as exc:
-            healthy = False
-            detail = str(exc or "DUNO runtime unavailable.").strip() or "DUNO runtime unavailable."
-        state = "online" if healthy else "offline"
-        if healthy and not ready:
-            state = "warming"
-        auth_rejected = _is_duno_runtime_auth_rejection(detail)
-        if not bool(DUNO_RUNTIME_TOKEN):
-            state = "not_configured"
-            ready = False
-            detail = "DUNO runtime is missing VF_DUNO_RUNTIME_TOKEN for DeepInfra."
-        elif auth_rejected:
-            state = "not_configured"
-            ready = False
-            detail = "DUNO runtime token was rejected by DeepInfra. Verify VF_DUNO_RUNTIME_TOKEN."
-        return {
-            "engine": normalized_engine,
-            "runtimeUrl": runtime_url,
-            "healthUrl": health_url,
-            "capabilitiesUrl": capabilities_url,
-            "ready": ready,
-            "state": state,
-            "detail": detail,
-            "capabilities": {
-                **capabilities,
-                "metadata": {
-                    **metadata,
-                    "provider": "deepinfra" if _is_duno_deepinfra_runtime() else str(metadata.get("provider") or "runtime"),
-                    "apiKeyConfigured": bool(DUNO_RUNTIME_TOKEN),
-                    "authRejected": auth_rejected,
-                },
-            },
         }
     healthy, health_detail = _probe_runtime_health(
         health_url,
@@ -40850,55 +40229,6 @@ def _gem_runtime_voice_catalog() -> list[dict[str, Any]]:
     return decorated
 
 
-def _duno_runtime_voice_catalog() -> list[dict[str, Any]]:
-    runtime_voices: list[dict[str, Any]] = []
-    url = _duno_voice_api_url("/v1/voices")
-    request_headers = {
-        "Accept": "application/json",
-        "ngrok-skip-browser-warning": "true",
-    }
-    auth_header = _duno_runtime_auth_header_value()
-    if auth_header:
-        request_headers["Authorization"] = auth_header
-    try:
-        response = _runtime_http_request(
-            "GET",
-            url,
-            timeout=4,
-            headers=request_headers,
-        )
-        if bool(getattr(response, "ok", False)):
-            payload = response.json()
-            voices_payload = payload.get("voices") if isinstance(payload, dict) else []
-            if isinstance(voices_payload, list):
-                runtime_voices = [item for item in voices_payload if isinstance(item, dict)]
-    except Exception:
-        runtime_voices = []
-
-    if not runtime_voices:
-        mapping = _load_voice_id_map()
-        engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
-        duno_payload = engines.get("DUNO") if isinstance(engines.get("DUNO"), dict) else {}
-        fallback_voices = duno_payload.get("runtimeVoices") if isinstance(duno_payload.get("runtimeVoices"), list) else []
-        runtime_voices = [item for item in fallback_voices if isinstance(item, dict)]
-    if not runtime_voices:
-        runtime_voices = [_default_duno_runtime_voice_entry()]
-
-    normalized: list[dict[str, Any]] = []
-    normalized.append(_annotate_voice_access_fields("DUNO", _default_duno_runtime_voice_entry()))
-    seen_voice_ids = {_DUNO_DEEPINFRA_DEFAULT_VOICE_ID.lower()}
-    for item in runtime_voices:
-        row = _normalize_runtime_voice_entry(item)
-        if not row:
-            continue
-        voice_id = str(row.get("voice_id") or "").strip().lower()
-        if not voice_id or voice_id in seen_voice_ids:
-            continue
-        normalized.append(_annotate_voice_access_fields("DUNO", row))
-        seen_voice_ids.add(voice_id)
-    return normalized
-
-
 @app.get("/tts/engines/status")
 def tts_engines_status(engine: str = Query("all"), force_refresh: bool = Query(False, alias="force")) -> JSONResponse:
     try:
@@ -40945,10 +40275,7 @@ def tts_engines_voices(engine: str = Query("PRIME")) -> JSONResponse:
         normalized_engine = _normalize_engine_name(engine)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if normalized_engine == "DUNO":
-        voices = _duno_runtime_voice_catalog()
-    else:
-        voices = _gem_runtime_voice_catalog()
+    voices = _gem_runtime_voice_catalog()
     return JSONResponse(
         {
             "ok": True,
@@ -40962,6 +40289,21 @@ def tts_engines_voices(engine: str = Query("PRIME")) -> JSONResponse:
 @app.get("/tts/voice-mapping/catalog")
 def tts_voice_mapping_catalog() -> JSONResponse:
     return JSONResponse(_voice_mapping_catalog_payload())
+
+
+@app.get("/tts/voice-profiles/{profile_id}/reference")
+def tts_voice_profile_reference(profile_id: str) -> FileResponse:
+    safe_profile_id = str(profile_id or "").strip()
+    if not safe_profile_id:
+        raise HTTPException(status_code=404, detail="Voice profile reference not found.")
+    profile = _profile_index().get(safe_profile_id)
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=404, detail="Voice profile reference not found.")
+    reference_path, _, exists = _resolve_profile_reference_path(profile)
+    if not exists or reference_path is None:
+        raise HTTPException(status_code=404, detail="Voice profile reference not found.")
+    media_type = str(mimetypes.guess_type(reference_path.name)[0] or "audio/wav").strip() or "audio/wav"
+    return FileResponse(reference_path, media_type=media_type, filename=reference_path.name)
 
 
 @app.post("/tts/engines/switch", response_model=TtsEngineSwitchResponse)
@@ -40987,11 +40329,7 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
                 }
             )
 
-        command_output = (
-            ""
-            if engine == "DUNO" and _is_duno_deepinfra_runtime()
-            else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-        )
+        command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
         is_online, detail, health_url = _probe_engine_runtime_health(engine)
         _invalidate_tts_status_cache()
     except ValueError as exc:
@@ -41059,11 +40397,7 @@ def activate_tts_engine(payload: ActivateTtsEngineRequest, request: Request) -> 
                     "probeDetail": online_detail,
                 }
             )
-        command_output = (
-            ""
-            if engine == "DUNO" and _is_duno_deepinfra_runtime()
-            else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-        )
+        command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
         is_online, detail, health_url = _probe_engine_runtime_health(engine)
         _invalidate_tts_status_cache()
     except HTTPException:
@@ -41122,6 +40456,3 @@ if __name__ == "__main__":
     host = os.getenv("VF_BACKEND_HOST", "0.0.0.0")
     port = int((os.getenv("PORT") or os.getenv("VF_BACKEND_PORT") or "7800").strip() or "7800")
     uvicorn.run(app, host=host, port=port, reload=False)
-
-
-

@@ -12,8 +12,9 @@ import {
     Lock, RefreshCw, Users, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell
 } from 'lucide-react';
 import { Button } from '../../../components/Button';
-import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, DUNO_VOICES } from '../../../constants';
+import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS } from '../../../constants';
 import {
+  ActiveTtsEngineKey,
   GenerationSettings,
   AppScreen,
   ClonedVoice,
@@ -141,7 +142,6 @@ import {
   BACKEND_ROUTING_APPLIED_EVENT,
   applyNearestBackendRoutingOnLogin,
   clearNearestBackendRoutingState,
-  primeLoginTtsSessionKey,
 } from '../../../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../../shared/voices/historyVoiceLabel';
 import { resolvePublicVoiceLabel } from '../../shared/voices/voicePublicName';
@@ -476,6 +476,89 @@ export const hasRecoverableSingleInflightGenerationState = (
   return Boolean(requestId || jobId);
 };
 
+const FRONTEND_PROXY_POLICY_PATTERNS = [
+  'backend path is not allowed by proxy policy',
+  'backend method is not allowed by proxy policy',
+  'backend proxy requires authentication for write methods',
+];
+
+const RUNTIME_EXPLICIT_PERMISSION_SIGNAL_PATTERNS = [
+  'uid_not_allowlisted',
+  'missing permission',
+  'permission denied',
+  'ops.mutate',
+  'x-admin-unlock',
+  'admin session unlock',
+  'admin-unlock',
+];
+
+const AUTH_OR_PROFILE_SIGNAL_PATTERNS = [
+  'authentication required',
+  'missing bearer token',
+  'invalid auth token',
+  'unauthorized',
+  'status code 401',
+  '(401)',
+  'status code 428',
+  '(428)',
+  'complete your user id',
+  'complete your userid',
+  'requireduserid',
+];
+
+const BILLING_OR_QUOTA_SIGNAL_PATTERNS = [
+  'billing',
+  'checkout',
+  'coupon',
+  'low balance',
+  'not enough vf',
+  'rate limit',
+  'quota',
+];
+
+const RESTRICTED_COPY_PATTERNS = [
+  'this action is restricted for your account permissions.',
+  'this action is restricted for your current account permissions.',
+];
+
+export const isFalseFrontendOnlyRuntimeRestriction = (input: {
+  rawMessage?: unknown;
+  publicMessage?: unknown;
+}): boolean => {
+  const raw = String(input.rawMessage || '').trim().toLowerCase();
+  const publicCopy = String(input.publicMessage || '').trim().toLowerCase();
+  if (!raw && !publicCopy) return false;
+
+  if (FRONTEND_PROXY_POLICY_PATTERNS.some((token) => raw.includes(token))) {
+    return true;
+  }
+
+  const hasRestrictedCopy = RESTRICTED_COPY_PATTERNS.some((token) => (
+    raw.includes(token) || publicCopy.includes(token)
+  ));
+  if (!hasRestrictedCopy) return false;
+
+  if (RUNTIME_EXPLICIT_PERMISSION_SIGNAL_PATTERNS.some((token) => raw.includes(token))) {
+    return false;
+  }
+  if (AUTH_OR_PROFILE_SIGNAL_PATTERNS.some((token) => raw.includes(token))) {
+    return false;
+  }
+  if (BILLING_OR_QUOTA_SIGNAL_PATTERNS.some((token) => raw.includes(token))) {
+    return false;
+  }
+  return true;
+};
+
+export const buildVoiceSampleSingleFlightKey = (
+  voiceId: string,
+  engine: GenerationSettings['engine'] = 'PRIME'
+): string => {
+  const normalizedEngine = resolveEngineToken(engine);
+  const normalizedVoiceId = String(voiceId || '').trim();
+  return `${normalizedEngine}:${normalizedVoiceId}`;
+};
+
 const normalizeStoredSingleInflightGenerationLedger = (
   value: unknown
 ): StudioSingleInflightGenerationLedger | null => {
@@ -602,6 +685,7 @@ const TRANSIENT_GENERATION_RETRY_MAX = 1;
 const TRANSIENT_GENERATION_RETRY_DELAY_MS = 700;
 const SINGLE_INFLIGHT_AUTO_RESUME_MAX_AGE_MS = 10 * 60 * 1000;
 const GENERATION_STALL_TIMEOUT_MS = 90000;
+const VOICE_GENERATION_DELAY_NOTICE = "Voice generation may take a little longer right now. We'll start it as soon as a server is free.";
 const RUNTIME_AUTO_SELECT_SESSION_FLAG = 'vf_runtime_auto_select_lowest_engine_v4';
 const DEV_SESSION_HEARTBEAT_ENDPOINT = '/api/dev/session';
 const DEV_SESSION_HEARTBEAT_INTERVAL_MS = 15000;
@@ -756,6 +840,10 @@ const awaitAbortablePromise = async <T,>(promise: Promise<T>, signal?: AbortSign
 };
 
 type EngineRuntimeStatus = EngineRuntimeUiStatus;
+interface RuntimePollSnapshotPayload {
+  activeEngine: GenerationSettings['engine'];
+  engines: Record<ActiveTtsEngineKey, EngineRuntimeStatus>;
+}
 type SelectedEngineTelemetryKind = 'pending' | 'network' | 'local' | 'error';
 
 interface SelectedEngineTelemetry {
@@ -779,11 +867,19 @@ const createSelectedEngineTelemetry = (
   ...overrides,
 });
 
-const createInitialSelectedEngineTelemetry = (): Record<GenerationSettings['engine'], SelectedEngineTelemetry> => ({
+const createInitialSelectedEngineTelemetry = (): Record<ActiveTtsEngineKey, SelectedEngineTelemetry> => ({
   PRIME: createSelectedEngineTelemetry(),
   VECTOR: createSelectedEngineTelemetry(),
-  DUNO: createSelectedEngineTelemetry(),
 });
+
+const normalizeRuntimeSnapshotActiveEngine = (
+  value: unknown,
+  fallback: ActiveTtsEngineKey
+): ActiveTtsEngineKey => {
+  const token = resolveEngineToken(String(value || '').trim());
+  if (token === 'PRIME' || token === 'VECTOR') return token;
+  return fallback;
+};
 
 const ENGINE_RUNTIME_STATE_SET: ReadonlySet<EngineRuntimeState> = new Set([
   'checking',
@@ -970,11 +1066,10 @@ interface DubbingUiState {
   updatedAt: number;
 }
 
-const ENGINE_ORDER: GenerationSettings['engine'][] = ['DUNO', 'VECTOR', 'PRIME'];
-const FALLBACK_RUNTIME_URLS: Record<GenerationSettings['engine'], string> = {
+const ENGINE_ORDER: ActiveTtsEngineKey[] = ['VECTOR', 'PRIME'];
+const FALLBACK_RUNTIME_URLS: Record<ActiveTtsEngineKey, string> = {
   PRIME: 'http://127.0.0.1:7810',
   VECTOR: 'http://127.0.0.1:7810',
-  DUNO: 'http://127.0.0.1:7840',
 };
 const DEFAULT_MEDIA_BACKEND_URL = getDefaultApiBaseUrl();
 const readPositiveIntEnv = (value: unknown, fallback: number): number => { const parsed = Number(value); if (!Number.isFinite(parsed) || parsed <= 0) return fallback; return Math.floor(parsed); };
@@ -985,14 +1080,12 @@ const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(process.env.NEXT_PU
 const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 10000;
 const RUNTIME_STATUS_LEADER_LEASE_MS = 40000;
 const SIMULATED_GENERATION_TICK_MS = 200;
-const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]> = { PRIME: [], VECTOR: [], DUNO: [] };
+const EMPTY_RUNTIME_CATALOG: Record<ActiveTtsEngineKey, VoiceOption[]> = { PRIME: [], VECTOR: [] };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
-const DEFAULT_DUNO_VOICE_ID = DUNO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
-const BUILT_IN_VOICE_IDS = new Set([...VOICES.map((voice) => voice.id), ...DUNO_VOICES.map((voice) => voice.id)]);
-const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
+const BUILT_IN_VOICE_IDS = new Set([...VOICES.map((voice) => voice.id)]);
+const FREE_TIER_ALLOWED_VOICE_IDS: Record<ActiveTtsEngineKey, string[]> = {
   PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  DUNO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
 };
 const STUDIO_CUSTOM_MUSIC_TRACK_ID = 'm_custom_upload';
 const STUDIO_CUSTOM_MUSIC_MAX_FILE_BYTES = 40 * 1024 * 1024;
@@ -1046,9 +1139,7 @@ const normalizeServiceSetting = (value: unknown, fallback: string): string => (
 const normalizeSettings = (input: unknown): GenerationSettings => {
   const value = (input && typeof input === 'object') ? input as Record<string, any> : {};
   const engine = normalizeEngineToken(value.engine, DEFAULT_SETTINGS.engine);
-  const defaultVoice = engine === 'DUNO'
-    ? DEFAULT_DUNO_VOICE_ID
-    : DEFAULT_GEM_VOICE_ID;
+  const defaultVoice = DEFAULT_GEM_VOICE_ID;
   const rawMusicTrackId = typeof value.musicTrackId === 'string'
     ? value.musicTrackId.trim()
     : DEFAULT_SETTINGS.musicTrackId;
@@ -1116,8 +1207,6 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
 
   const validVoiceIds = new Set([
     ...VOICES.map(v => v.id),
-    ...DUNO_VOICES.map(v => v.id),
-
     ...((value.clonedVoices || []) as any[]).map(v => v?.id).filter(Boolean),
   ]);
 
@@ -1535,10 +1624,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioObjectUrlRegistryRef = useRef(
     createStudioObjectUrlRegistry({ maxTracked: STUDIO_OBJECT_URL_REGISTRY_MAX })
   );
-  const lastRuntimeStatesRef = useRef<Record<GenerationSettings['engine'], EngineRuntimeState>>({
+  const lastRuntimeStatesRef = useRef<Record<ActiveTtsEngineKey, EngineRuntimeState>>({
     PRIME: 'checking',
     VECTOR: 'checking',
-    DUNO: 'checking',
   });
   const lastBackendHealthyRef = useRef<boolean | null>(null);
   const quotaNoticeRef = useRef<Record<string, boolean>>({});
@@ -1548,7 +1636,34 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const ttsAccessProbeAbortControllerRef = useRef<AbortController | null>(null);
   const lastTtsAccessBlockedRef = useRef<boolean | null>(null);
   const ttsAccessClockRetryAtRef = useRef<number>(0);
+  const ttsRequestSingleFlightRef = useRef<Map<string, Promise<AudioBuffer>>>(new Map());
   const runtimeAutoSelectProbeInFlightRef = useRef(false);
+  const runtimeAutoSelectAbortControllerRef = useRef<AbortController | null>(null);
+  const runtimeAutoSelectGenerationRef = useRef(0);
+  const runtimeActivationRequestIdRef = useRef(0);
+
+  const runSingleFlightTtsRequest = useCallback(async (
+    requestId: string,
+    run: () => Promise<AudioBuffer>
+  ): Promise<AudioBuffer> => {
+    const safeRequestId = String(requestId || '').trim();
+    if (!safeRequestId) {
+      return run();
+    }
+
+    const inFlight = ttsRequestSingleFlightRef.current.get(safeRequestId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const pending = run().finally(() => {
+      if (ttsRequestSingleFlightRef.current.get(safeRequestId) === pending) {
+        ttsRequestSingleFlightRef.current.delete(safeRequestId);
+      }
+    });
+    ttsRequestSingleFlightRef.current.set(safeRequestId, pending);
+    return pending;
+  }, []);
 
   useEffect(() => {
     if (!isStudioWorkspaceTab || studioWorkspaceBootHydratedRef.current) return;
@@ -1610,6 +1725,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const clearSingleInflightGenerationLedger = useCallback(() => {
     writeSingleInflightGenerationLedger(null);
   }, [writeSingleInflightGenerationLedger]);
+  const cancelRuntimeAutoSelectProbe = useCallback((options?: { lockSession?: boolean }) => {
+    runtimeAutoSelectGenerationRef.current += 1;
+    runtimeAutoSelectProbeInFlightRef.current = false;
+    const activeProbe = runtimeAutoSelectAbortControllerRef.current;
+    runtimeAutoSelectAbortControllerRef.current = null;
+    if (activeProbe) {
+      activeProbe.abort();
+    }
+    if (options?.lockSession) {
+      markRuntimeAutoSelectSessionRun();
+    }
+  }, []);
   const patchSingleInflightGenerationLedger = useCallback((
     patch: Partial<StudioSingleInflightGenerationLedger>
   ): StudioSingleInflightGenerationLedger | null => {
@@ -2021,10 +2148,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const voiceSampleCacheRef = useRef<Map<string, VoiceSampleCacheEntry>>(new Map());
   const [engineSwitchInProgress, setEngineSwitchInProgress] = useState<GenerationSettings['engine'] | null>(null);
   const [managedActiveEngine, setManagedActiveEngine] = useState<GenerationSettings['engine'] | null>(null);
-  const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<GenerationSettings['engine'], EngineRuntimeStatus>>({
+  const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<ActiveTtsEngineKey, EngineRuntimeStatus>>({
     PRIME: { state: 'checking', detail: 'Checking...' },
     VECTOR: { state: 'checking', detail: 'Checking...' },
-    DUNO: { state: 'checking', detail: 'Checking...' },
   });
   const ttsRuntimeStatusRef = useRef(ttsRuntimeStatus);
   const [ttsAccessState, setTtsAccessState] = useState<TtsAccessState>({
@@ -2039,10 +2165,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const runtimePollCooldownUntilRef = useRef(0);
   const runtimePollRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const runtimePollWasBusyRef = useRef(false);
-  const [selectedEngineTelemetry, setSelectedEngineTelemetry] = useState<Record<GenerationSettings['engine'], SelectedEngineTelemetry>>(
+  const [selectedEngineTelemetry, setSelectedEngineTelemetry] = useState<Record<ActiveTtsEngineKey, SelectedEngineTelemetry>>(
     createInitialSelectedEngineTelemetry
   );
-  const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<GenerationSettings['engine'], VoiceOption[]>>(
+  const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<ActiveTtsEngineKey, VoiceOption[]>>(
     EMPTY_RUNTIME_CATALOG
   );
 
@@ -2054,7 +2180,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const isPaidBillingPlan = normalizedPlanToken !== 'free';
   const isFreeTierUser = !hasUnlimitedAccess && !isPaidBillingPlan;
   const walletPaidVfBalance = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
-  const primeAllowedEngines: GenerationSettings['engine'][] = useMemo(
+  const primeAllowedEngines: ActiveTtsEngineKey[] = useMemo(
     () => resolvePrimeAllowedEngines({
       hasUnlimitedAccess,
       isPaidBillingPlan,
@@ -2090,7 +2216,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     0,
     Number(stats.wallet?.spendableNowByEngine?.[managedActiveEngine || settings.engine] || 0)
   );
-  const canRunDunoWithoutWallet = (managedActiveEngine || settings.engine) === 'DUNO';
+  const canRunVectorWithoutWallet = (managedActiveEngine || settings.engine) === 'VECTOR';
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletMonthlyFreeLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
@@ -2110,6 +2236,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       context: 'runtime',
       isAdmin: hasAdminConsoleAccess,
     }).publicMessage;
+  }, [hasAdminConsoleAccess]);
+  const normalizeRuntimeErrorMessage = useCallback((raw: unknown, fallback: string): string => {
+    const formatted = formatFrontendError(raw, {
+      fallback,
+      context: 'runtime',
+      isAdmin: hasAdminConsoleAccess,
+    });
+    const safePublicMessage = sanitizeUiText(String(formatted.publicMessage || '').trim()) || fallback;
+    if (isFalseFrontendOnlyRuntimeRestriction({
+      rawMessage: raw,
+      publicMessage: safePublicMessage,
+    })) {
+      return 'Runtime access could not be verified right now. Please retry in a moment.';
+    }
+    return safePublicMessage;
   }, [hasAdminConsoleAccess]);
   const isAuthOrProfileBlockingMessage = useCallback((raw: unknown): boolean => {
     const lowered = String(raw || '').trim().toLowerCase();
@@ -2147,7 +2288,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     if (isTokenTimingAuthMessage(source)) {
       return 'System clock is out of sync. Sync your device clock, then sign in again to enable AI/TTS requests.';
     }
-    const normalized = toUserFriendlySystemMessage(raw, fallback);
+    const normalized = normalizeRuntimeErrorMessage(raw, fallback);
     const lowered = normalized.toLowerCase();
     if (
       lowered.includes('authentication failed') ||
@@ -2161,7 +2302,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return 'Complete your user ID setup to enable AI/TTS requests.';
     }
     return normalized;
-  }, [isTokenTimingAuthMessage, toUserFriendlySystemMessage]);
+  }, [isTokenTimingAuthMessage, normalizeRuntimeErrorMessage]);
   const probeProtectedTtsAccess = useCallback(
     async (options?: { force?: boolean; signal?: AbortSignal }): Promise<RuntimeAccessProbe> => {
       const now = Date.now();
@@ -2293,12 +2434,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       backendRoutingRediscoveryLastAttemptAtRef.current = now;
       try {
         clearNearestBackendRoutingState();
-        const routingResult = await applyNearestBackendRoutingOnLogin();
-        void primeLoginTtsSessionKey({
-          baseUrl: routingResult.baseUrl || mediaBackendUrl,
-          ...(routingResult.regionHint ? { regionHint: routingResult.regionHint } : {}),
-          ...(routingResult.regionSource ? { regionSource: routingResult.regionSource } : {}),
-        });
+        await applyNearestBackendRoutingOnLogin();
         return true;
       } catch (error: unknown) {
         console.warn('[studio.backend_routing_rediscovery]', reason, error);
@@ -2380,7 +2516,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
     const resolvedContext = options?.context || inferContextFromMessage(msg);
     const formatted = type === 'error'
-      ? formatFrontendError(msg, { context: resolvedContext, isAdmin: hasAdminConsoleAccess })
+      ? formatFrontendError(
+          resolvedContext === 'runtime'
+            ? normalizeRuntimeErrorMessage(
+                msg,
+                'Runtime action is temporarily unavailable. Please try again in a moment.'
+              )
+            : msg,
+          { context: resolvedContext, isAdmin: hasAdminConsoleAccess }
+        )
       : { publicMessage: sanitizeUiText(msg), adminDetails: undefined };
     const safeMessage = formatted.publicMessage;
     if (!safeMessage) return;
@@ -2400,7 +2544,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       category,
       channel: 'toast',
     });
-  }, [emit, hasAdminConsoleAccess]);
+  }, [emit, hasAdminConsoleAccess, normalizeRuntimeErrorMessage]);
 
   useEffect(() => {
       if (text.length <= STUDIO_EDITOR_HARD_CAP) return;
@@ -2529,10 +2673,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (isGemRuntimeEngine(engine)) {
         const configured = normalizeRuntimeUrl(settings.geminiTtsServiceUrl);
         if (configured) return configured;
-      }
-      if (engine === 'DUNO') {
-        const backendGateway = normalizeRuntimeUrl(mediaBackendUrl);
-        if (backendGateway) return backendGateway;
       }
       return normalizeRuntimeUrl(getDefaultRuntimeUrlForEngine(engine));
   };
@@ -2871,7 +3011,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   useEffect(() => {
       if (isPrimeEngineAllowed(settings.engine)) return;
-      const fallbackEngine = primeAllowedEngines[0] || 'DUNO';
+      const fallbackEngine = primeAllowedEngines[0] || 'VECTOR';
       const fallbackVoiceId = getValidVoiceIdForEngine(fallbackEngine, settings.voiceId);
       setSettings((prev) => ({ ...prev, engine: fallbackEngine, voiceId: fallbackVoiceId }));
   }, [
@@ -2920,8 +3060,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const inferred = inferLanguageFromSample(sample);
       if (inferred !== 'unknown') return normalizeLanguageCode(inferred);
       if (detectedLang) return normalizeLanguageCode(detectedLang);
+      if (settings.engine === 'VECTOR') return 'auto';
       return 'en';
-  }, [detectedLang, inferLanguageFromSample, normalizeLanguageCode, settings.language]);
+  }, [detectedLang, inferLanguageFromSample, normalizeLanguageCode, settings.engine, settings.language]);
 
   const isHindiFamilyLanguage = useCallback((code: string): boolean => {
       return new Set(['hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'or', 'ur', 'ne', 'si']).has(code);
@@ -2968,9 +3109,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const voiceMatchesLanguage = useCallback(
       (voice: VoiceOption, engine: GenerationSettings['engine'], languageCode: string): boolean => {
           if (isGemRuntimeEngine(engine)) return true;
+          const normalized = normalizeLanguageCode(languageCode);
           const bucket = resolveVoiceLanguageBucket(voice);
           if (bucket === 'multi') return true;
-          const normalized = normalizeLanguageCode(languageCode);
           if (isHindiFamilyLanguage(normalized)) return bucket === 'hi';
           if (normalized === 'en') return bucket === 'en';
           return bucket === 'en' || bucket === 'other';
@@ -3355,7 +3496,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           metadataSummary: formatRuntimeMetadataSummary(ttsRuntimeStatus[engine]),
         };
         return acc;
-      }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus & { metadataSummary: string }>),
+      }, {} as Record<ActiveTtsEngineKey, EngineRuntimeStatus & { metadataSummary: string }>),
     };
     try {
       (window as any).__vfLastTtsRuntimeStatus = snapshot;
@@ -3422,7 +3563,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             next[engine] = mergeRuntimeStatus(next[engine], { state: 'standby', detail: otherDetail });
           }
           if (shouldBroadcast) {
-            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, next);
+            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, {
+              activeEngine: selectedRuntimeEngine,
+              engines: next,
+            } satisfies RuntimePollSnapshotPayload);
           }
           return next;
         });
@@ -3495,7 +3639,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             });
           }
           if (shouldBroadcast) {
-            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, next);
+            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, {
+              activeEngine: selectedRuntimeEngine,
+              engines: next,
+            } satisfies RuntimePollSnapshotPayload);
           }
           return next;
         });
@@ -3520,12 +3667,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
     if (!isStudioWorkspaceTab) {
       clearRuntimeAutoSelectSessionRun();
-      runtimeAutoSelectProbeInFlightRef.current = false;
+      cancelRuntimeAutoSelectProbe();
       return;
     }
     if (!hasSessionIdentity) {
       clearRuntimeAutoSelectSessionRun();
-      runtimeAutoSelectProbeInFlightRef.current = false;
+      cancelRuntimeAutoSelectProbe();
       return;
     }
     if (hasRuntimeAutoSelectSessionRun()) return;
@@ -3534,20 +3681,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
     let cancelled = false;
     const controller = new AbortController();
+    const probeGeneration = runtimeAutoSelectGenerationRef.current;
     runtimeAutoSelectProbeInFlightRef.current = true;
+    runtimeAutoSelectAbortControllerRef.current = controller;
 
     const probeAllRuntimesAndAutoSelect = async (): Promise<void> => {
       try {
-        const dunoProbeStartedAtMs = Date.now();
         const statusProbeStartedAtMs = Date.now();
-        const [dunoProbeResult, statusResult] = await Promise.allSettled([
-          probeRuntimeStatus('DUNO', {
-            timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-            signal: controller.signal,
-          }).then((status) => ({
-            status,
-            latencyMs: Math.max(0, Date.now() - dunoProbeStartedAtMs),
-          })),
+        const [statusResult] = await Promise.allSettled([
           fetchTtsEnginesStatus(undefined, mediaBackendUrl, {
             timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
             signal: controller.signal,
@@ -3558,26 +3699,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ]);
 
         if (cancelled) return;
+        if (runtimeAutoSelectGenerationRef.current !== probeGeneration) return;
 
-        const dunoProbe = dunoProbeResult.status === 'fulfilled' ? dunoProbeResult.value : null;
         const statusProbe = statusResult.status === 'fulfilled' ? statusResult.value : null;
-        const dunoStatus = dunoProbe?.status || null;
         const statusPayload = statusProbe?.payload || null;
         const statusPayloadLatencyMs = statusProbe ? Math.max(0, Math.floor(statusProbe.latencyMs)) : null;
-        if (!dunoStatus && !statusPayload) return;
+        if (!statusPayload) return;
 
         const nextStatuses = { ...ttsRuntimeStatusRef.current };
-        const candidateLatencies: Partial<Record<GenerationSettings['engine'], { state?: string; latencyMs?: number | null }>> = {};
-
-        if (dunoStatus) {
-          nextStatuses.DUNO = mergeRuntimeStatus(nextStatuses.DUNO, dunoStatus);
-          const dunoAutoSelectState = String(dunoStatus.state || '').trim().toLowerCase();
-          const dunoLatencyMs = Math.max(0, Math.floor(Number(dunoProbe?.latencyMs || 0)));
-          candidateLatencies.DUNO = {
-            state: dunoAutoSelectState,
-            latencyMs: dunoAutoSelectState === 'online' ? dunoLatencyMs : null,
-          };
-        }
+        const candidateLatencies: Partial<Record<ActiveTtsEngineKey, { state?: string; latencyMs?: number | null }>> = {};
 
         const enginePayloads = statusPayload?.engines || {};
         for (const engine of ['PRIME', 'VECTOR'] as const) {
@@ -3606,6 +3736,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           primeAllowedEngines
         );
         if (!bestEngine) return;
+        if (runtimeAutoSelectGenerationRef.current !== probeGeneration) return;
 
         const currentEngine = managedActiveEngine || settings.engine;
         markRuntimeAutoSelectSessionRun();
@@ -3623,17 +3754,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         if ((error as { name?: string } | null)?.name === 'AbortError') return;
         console.warn('[studio.runtime_auto_select]', error);
       } finally {
-        runtimeAutoSelectProbeInFlightRef.current = false;
+        if (runtimeAutoSelectAbortControllerRef.current === controller) {
+          runtimeAutoSelectAbortControllerRef.current = null;
+        }
+        if (runtimeAutoSelectGenerationRef.current === probeGeneration) {
+          runtimeAutoSelectProbeInFlightRef.current = false;
+        }
       }
     };
 
     void probeAllRuntimesAndAutoSelect();
     return () => {
       cancelled = true;
-      runtimeAutoSelectProbeInFlightRef.current = false;
       controller.abort();
+      if (runtimeAutoSelectAbortControllerRef.current === controller) {
+        runtimeAutoSelectAbortControllerRef.current = null;
+      }
+      if (runtimeAutoSelectGenerationRef.current === probeGeneration) {
+        runtimeAutoSelectProbeInFlightRef.current = false;
+      }
     };
   }, [
+    cancelRuntimeAutoSelectProbe,
     engineSwitchInProgress,
     getEngineVoiceCatalog,
     hasSessionIdentity,
@@ -4190,7 +4332,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           lastRuntimeStatesRef.current = ENGINE_ORDER.reduce((acc, engine) => {
               acc[engine] = ttsRuntimeStatus[engine]?.state || 'standby';
               return acc;
-          }, {} as Record<GenerationSettings['engine'], EngineRuntimeState>);
+          }, {} as Record<ActiveTtsEngineKey, EngineRuntimeState>);
           return;
       }
       for (const engine of ENGINE_ORDER) {
@@ -4404,14 +4546,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   await authStateReady.call(firebaseAuth).catch(() => undefined);
               }
               if (cancelled) return;
-              const routingResult = await applyNearestBackendRoutingOnLogin({ signal: startupProbeController.signal });
+              await applyNearestBackendRoutingOnLogin({ signal: startupProbeController.signal });
               if (cancelled) return;
-              void primeLoginTtsSessionKey({
-                baseUrl: routingResult.baseUrl || mediaBackendUrl,
-                ...(routingResult.regionHint ? { regionHint: routingResult.regionHint } : {}),
-                ...(routingResult.regionSource ? { regionSource: routingResult.regionSource } : {}),
-                signal: startupProbeController.signal,
-              });
               await refreshTtsAccessState(true, { signal: startupProbeController.signal });
           } catch (error: unknown) {
               if (error instanceof Error && error.name === 'AbortError') return;
@@ -4454,14 +4590,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const busy = isGenerating || Boolean(engineSwitchInProgress);
       const applySnapshot = () => {
           if (!coordinationAvailable) return;
-          const snapshot = readRuntimePollSnapshot<Record<GenerationSettings['engine'], EngineRuntimeStatus>>();
+          const snapshot = readRuntimePollSnapshot<RuntimePollSnapshotPayload>();
           if (!snapshot || snapshot.tabId === tabId) return;
           const payload = snapshot.payload;
-          if (!payload || typeof payload !== 'object') return;
+          const engineRows = payload?.engines;
+          if (!engineRows || typeof engineRows !== 'object') return;
+          if (!engineSwitchInProgress) {
+              const fallbackEngine = managedActiveEngine || settings.engine;
+              const snapshotActiveEngine = normalizeRuntimeSnapshotActiveEngine(payload.activeEngine, fallbackEngine);
+              setManagedActiveEngine(snapshotActiveEngine);
+          }
           setTtsRuntimeStatus((prev) => {
-              const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
+              const nextStatuses = {} as Record<ActiveTtsEngineKey, EngineRuntimeStatus>;
               for (const engine of ENGINE_ORDER) {
-                  const row = payload[engine];
+                  const row = engineRows[engine];
                   nextStatuses[engine] = hydrateRuntimeStatusSnapshot(
                     prev[engine],
                     row && typeof row === 'object' ? (row as Partial<EngineRuntimeStatus>) : null
@@ -4540,7 +4682,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               releaseRuntimePollLeadership(tabId);
           }
       };
-  }, [engineSwitchInProgress, isGenerating, isStudioWorkspaceTab, refreshTtsRuntimeStatus]);
+  }, [engineSwitchInProgress, isGenerating, isStudioWorkspaceTab, managedActiveEngine, refreshTtsRuntimeStatus, settings.engine]);
 
   useEffect(() => {
       if (!isStudioWorkspaceTab) return undefined;
@@ -4605,7 +4747,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     detail: 'Sign in to measure latency.',
                 });
                 return acc;
-            }, {} as Record<GenerationSettings['engine'], SelectedEngineTelemetry>)
+            }, {} as Record<ActiveTtsEngineKey, SelectedEngineTelemetry>)
           );
       }
   }, [hasSessionIdentity]);
@@ -4797,6 +4939,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const stage = String(detail.stage || '').trim();
           generationActivityAtRef.current = Date.now();
           const stageLower = stage.toLowerCase();
+          if (stageLower.includes('queued') && Number(detail.queueAgeMs || 0) >= 12_000) {
+              const queueNoticeKey = String(detailRequestId || detailJobId || activeRequestId || activeJobId || expectedEngine || 'queue')
+                .trim()
+                || 'queue';
+              emit('custom.message', {
+                  title: 'Generation Delayed',
+                  message: VOICE_GENERATION_DELAY_NOTICE,
+                  details: Number(detail.queueDepth || 0) > 0
+                    ? `Queue position is moving. We'll keep your request and start it as soon as a server is free.`
+                    : `We're holding your request and will start it as soon as a server is free.`,
+                  category: 'activity',
+                  channel: 'toast',
+                  dedupeKey: `generation-delay:${queueNoticeKey}`,
+              }, { cooldownMs: 30_000 });
+          }
           if (
               !generationFirstAudioAtRef.current
               && stageLower.includes('first live chunk ready')
@@ -5829,8 +5986,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                            )),
                        };
                   });
-                  setProcessingStage('Transient runtime issue detected. Retrying queue item once...');
-                  showToast('Transient runtime issue detected. Retrying queue item once...', 'info');
+                  setProcessingStage('Temporary delay detected. Retrying this queue item now...');
+                  showToast('We hit a temporary delay. Retrying this queued item now.', 'info');
                   await waitForAbortableDelay(TRANSIENT_GENERATION_RETRY_DELAY_MS, controller.signal);
               }
           }
@@ -6175,7 +6332,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           syncRuntimeBlockedStateFromError(generationEngine, error);
           generationFailureBurstRef.current += 1;
           const queueFailureMessage = formatFrontendError(error, {
-              fallback: 'Queue generation failed. Check runtime health and retry.',
+              fallback: 'Queued generation could not finish right now. Please try again.',
               context: 'generation',
               isAdmin: hasAdminConsoleAccess,
           }).publicMessage;
@@ -6189,7 +6346,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   onClick: () => setShowSettings(true),
               },
           });
-          showToast(queueFailureMessage || 'Queue generation failed.', 'error');
+          showToast(queueFailureMessage || 'Queued generation could not finish right now. Please try again.', 'error');
       }
   }, [
       emit,
@@ -6259,11 +6416,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } catch (error: any) {
           if (error?.name !== 'AbortError') {
               const resumeFailureMessage = formatFrontendError(error, {
-                  fallback: 'Queue resume failed.',
+                  fallback: 'Queued generation could not resume right now.',
                   context: 'generation',
                   isAdmin: hasAdminConsoleAccess,
               }).publicMessage;
-              showToast(resumeFailureMessage || 'Queue resume failed.', 'error');
+              showToast(resumeFailureMessage || 'Queued generation could not resume right now.', 'error');
           }
       }
   }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, setStudioRailTab, showToast, text.length]);
@@ -6292,11 +6449,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       void executeStudioQueue(studioQueueState).catch((error: any) => {
           if (error?.name !== 'AbortError') {
               const recoveryFailureMessage = formatFrontendError(error, {
-                  fallback: 'Queue recovery failed.',
+                  fallback: 'Queued generation could not reconnect cleanly.',
                   context: 'generation',
                   isAdmin: hasAdminConsoleAccess,
               }).publicMessage;
-              showToast(recoveryFailureMessage || 'Queue recovery failed.', 'error');
+              showToast(recoveryFailureMessage || 'Queued generation could not reconnect cleanly.', 'error');
           }
       });
   }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, isStudioWorkspaceTab, scheduleStudioQueueMasterRebuild, setStudioRailTab, showToast, studioQueueState]);
@@ -6396,9 +6553,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       );
       const selectedVoice = getVoiceById(voiceId);
       const voiceNameDisplay = selectedVoice?.name || 'AI Voice';
-      const engineVoiceName = studioSettings.engine === 'DUNO'
-        ? voiceId
-        : (selectedVoice?.geminiVoiceName || voiceId || 'Fenrir');
+      const engineVoiceName = selectedVoice?.geminiVoiceName || voiceId || 'Fenrir';
       const generationSettings = {
           ...studioSettings,
           multiSpeakerEnabled: shouldUseMultiSpeakerForRun,
@@ -6415,15 +6570,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ...(options?.requestId ? { requestId: String(options.requestId).trim() } : {}),
           speakerVcReferenceMap,
       };
+      const generationRequestId = String(generationSpeechOptions.requestId || '').trim();
       throwIfSignalAborted(signal);
-      const ttsBuffer = await generateSpeech(
-          scriptText,
-          engineVoiceName,
-          generationSettings,
-          'speech',
-          signal,
-          generationSpeechOptions
-      );
+      const ttsBuffer = await runSingleFlightTtsRequest(generationRequestId, async () => (
+        generateSpeech(
+            scriptText,
+            engineVoiceName,
+            generationSettings,
+            'speech',
+            signal,
+            generationSpeechOptions
+        )
+      ));
       throwIfSignalAborted(signal);
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
       const { applyStudioAudioMix } = await loadStudioMixService();
@@ -6492,7 +6650,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const generationNotificationKey = `single:${generationEngine}`;
       const preparingLabel = options?.treatAsRecovery
           ? 'Reconnecting generation...'
-          : (generationEngine === 'DUNO' ? 'Preparing DUNO synthesis...' : 'Preparing generation...');
+          : 'Preparing generation...';
       startSimulation(estTime, preparingLabel, 'live');
       emit('generation.started', {
         title: 'Generation Started',
@@ -6574,8 +6732,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   });
                   setLiveAudioChunks([]);
                   seenLiveChunkKeysRef.current.clear();
-                  setProcessingStage('Transient runtime issue detected. Retrying once...');
-                  showToast('Transient runtime issue detected. Retrying once...', 'info');
+                  setProcessingStage('Temporary delay detected. Retrying now...');
+                  showToast('We hit a temporary delay. Retrying now.', 'info');
                   await waitForAbortableDelay(TRANSIENT_GENERATION_RETRY_DELAY_MS, controller.signal);
               }
           }
@@ -6628,7 +6786,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               if (generationAbortReasonRef.current === 'manual') {
                   clearSingleInflightGenerationLedger();
               } else if (generationAbortReasonRef.current === 'stall') {
-                  const stallMessage = 'Generation stalled for over 90 seconds. Retry or switch engine/runtime.';
+                  const stallMessage = 'Servers are busy right now. Please try again in a little while.';
                   showToast(stallMessage, 'error');
                   emit('generation.failed', {
                       title: 'Generation Stalled',
@@ -6646,7 +6804,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               syncRuntimeBlockedStateFromError(generationEngine, e);
               generationFailureBurstRef.current += 1;
               const failureMessage = formatFrontendError(e, {
-                  fallback: 'Generation failed. Check runtime health and retry.',
+                  fallback: 'Generation could not finish right now. Please try again.',
                   context: 'generation',
                   isAdmin: hasAdminConsoleAccess,
               }).publicMessage;
@@ -6729,7 +6887,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await startStudioQueuedGeneration();
       return;
     }
-    if (isWalletBlocked && !canRunDunoWithoutWallet) {
+    if (isWalletBlocked && !canRunVectorWithoutWallet) {
       showToast(`Insufficient ${getEngineDisplayName(activeEngineForGeneration)} VF balance. Open Billing to top up or upgrade.`, 'error');
       openBillingCenter();
       return;
@@ -6831,14 +6989,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const buildVoiceSampleCacheKey = useCallback(
       (
           voiceId: string,
-          name: string,
+          _name: string,
           engine: GenerationSettings['engine'] = 'PRIME'
-      ): string => {
-          const normalizedEngine = resolveEngineToken(engine);
-          const normalizedVoiceId = String(voiceId || '').trim();
-          const normalizedName = String(name || '').trim().toLowerCase();
-          return `${normalizedEngine}:${normalizedVoiceId}:${normalizedName}`;
-      },
+      ): string => buildVoiceSampleSingleFlightKey(voiceId, engine),
       []
   );
 
@@ -6898,14 +7051,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const { generateSpeech } = await loadGeminiService();
       const previewRequestId = `voice-preview:${resolveEngineToken(normalizedEngine)}:${String(normalizedVoiceId || normalizedName || 'voice').trim().replace(/\s+/g, '_')}`;
-      const buffer = await generateSpeech(
-          text,
-          voiceParam,
-          previewSettings,
-          'speech',
-          undefined,
-          { context: 'preview', preferLiveChunks: true, requestId: previewRequestId }
-      );
+      const buffer = await runSingleFlightTtsRequest(previewRequestId, async () => (
+        generateSpeech(
+            text,
+            voiceParam,
+            previewSettings,
+            'speech',
+            undefined,
+            { context: 'preview', preferLiveChunks: true, requestId: previewRequestId }
+        )
+      ));
       const blob = audioBufferToWav(buffer);
       return { url: URL.createObjectURL(blob), needsCleanup: true };
       })();
@@ -6922,7 +7077,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           throw error;
       }
-  }, [buildVoiceSampleCacheKey, clonedVoices, ensureEngineOnline, getVoiceById, isGemRuntimeEngine, resolveClonedVoicePlaybackUrl, resolveVoicePreviewUrl, settings]);
+  }, [buildVoiceSampleCacheKey, clonedVoices, ensureEngineOnline, getVoiceById, isGemRuntimeEngine, resolveClonedVoicePlaybackUrl, resolveVoicePreviewUrl, runSingleFlightTtsRequest, settings]);
 
   const warmVoiceSample = useCallback(async (
       voiceId: string,
@@ -7313,7 +7468,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleGenerateDub = async () => {
       if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
       const activeEngineForDubbing = managedActiveEngine || settings.engine;
-      if (isWalletBlocked && !canRunDunoWithoutWallet) {
+      if (isWalletBlocked && !canRunVectorWithoutWallet) {
           showToast(`Insufficient ${getEngineDisplayName(activeEngineForDubbing)} VF balance. Open Billing to top up or upgrade.`, 'error');
           openBillingCenter();
           return;
@@ -8324,26 +8479,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [speakerPreviewWarmTargets, warmVoiceSample]);
   const getEngineLabel = (engine: GenerationSettings['engine']) => getEngineDisplayName(engine);
   const getEngineSubLabel = (engine: GenerationSettings['engine']) => (
-    engine === 'DUNO'
-      ? 'DeepInfra Runtime'
-      : engine === 'VECTOR'
+    engine === 'VECTOR'
       ? 'Cloud Runtime'
       : 'Cloud Runtime'
   );
   const getEngineDescription = (engine: GenerationSettings['engine']) => {
-    if (engine === 'DUNO') return 'Backend-routed DUNO engine tuned for fast startup, built-in voice cloning, and low-latency playback.';
     if (engine === 'VECTOR') return 'Balanced cloud engine for clear narration and dependable multilingual output.';
     return 'Premium cloud engine for richer expression, stronger direction follow-through, and complex scenes.';
   };
   const getRuntimeOfflineMessage = (engine: GenerationSettings['engine']) => (
-    engine === 'DUNO'
-      ? 'DUNO runtime is unavailable. Check the runtime endpoint or retry once it recovers.'
-      : `${getEngineDisplayName(engine)} runtime is offline. Start services or retry activation.`
+    `${getEngineDisplayName(engine)} runtime is offline. Start services or retry activation.`
   );
   const getRuntimeNotConfiguredMessage = (engine: GenerationSettings['engine']) => (
-    engine === 'DUNO'
-      ? 'DUNO runtime is not configured. Add `VF_DUNO_RUNTIME_URL` in backend settings.'
-      : `${getEngineDisplayName(engine)} runtime is not configured.`
+    `${getEngineDisplayName(engine)} runtime is not configured.`
   );
   const formatCompactRate = (value: number): string => {
     const safe = Math.max(0, Number(value || 0));
@@ -8390,6 +8538,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const targetEngine = resolveEngineToken(engine) as GenerationSettings['engine'];
       if (engineSwitchInProgress) return;
       const previousActiveEngine = managedActiveEngine || settings.engine;
+      const activationRequestId = runtimeActivationRequestIdRef.current + 1;
+      runtimeActivationRequestIdRef.current = activationRequestId;
       if (!isPrimeEngineAllowed(targetEngine)) {
           if (!hasUnlimitedAccess && !isPaidBillingPlan && walletPaidVfBalance <= 0) {
               setShowSubscriptionModal(true);
@@ -8400,11 +8550,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return;
       }
       if (targetEngine === settings.engine && ttsRuntimeStatus[targetEngine].state === 'online') return;
+      cancelRuntimeAutoSelectProbe({ lockSession: true });
 
       const nextVoiceId = getValidVoiceIdForEngine(targetEngine, settings.voiceId);
 
       try {
-          setManagedActiveEngine(targetEngine);
           setTtsRuntimeStatus((prev) => ({
               ...prev,
               [targetEngine]: mergeRuntimeStatus(prev[targetEngine], { state: 'starting', detail: 'Starting runtime...' }),
@@ -8412,9 +8562,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
           const activation = await ensureEngineOnline(targetEngine, {
               syncVoiceId: nextVoiceId,
-              waitForOnline: false,
-              commitSettings: false,
+              waitForOnline: true,
+              commitSettings: true,
           });
+          if (runtimeActivationRequestIdRef.current !== activationRequestId) return;
           const runtimeCatalog = activation.catalog.length > 0
               ? activation.catalog
               : getEngineVoiceCatalog(targetEngine);
@@ -8438,7 +8589,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               };
           });
       } catch (error: any) {
-          showToast(`Failed to activate ${getEngineLabel(targetEngine)}: ${error?.message || 'Unknown error'}`, 'error');
+          if (runtimeActivationRequestIdRef.current !== activationRequestId) return;
+          showToast(`${getEngineLabel(targetEngine)} could not start right now. Please try again.`, 'error');
           setManagedActiveEngine(previousActiveEngine);
       }
   };
@@ -9097,52 +9249,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <label className={settingsLabelClass}>Appearance</label>
                       <div className={settingsCardClass}>
                           <div>
-                              <div className={`text-[10px] font-bold uppercase mb-2 flex items-center gap-1 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                  <Palette size={12} /> Theme
-                              </div>
-                              <div className="grid grid-cols-3 gap-2">
-                                  <button
-                                      onClick={() => setUiTheme('light')}
-                                      className={`px-2.5 py-2 rounded-lg text-[11px] font-semibold border transition-colors flex items-center justify-center gap-1 ${
-                                          uiTheme === 'light'
-                                            ? isDarkUi
-                                              ? 'border-indigo-400/70 bg-indigo-500/20 text-indigo-200'
-                                              : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                            : isDarkUi
-                                              ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-                                              : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
-                                      }`}
-                                  >
-                                      <Sun size={12} /> Light
-                                  </button>
-                                  <button
-                                      onClick={() => setUiTheme('dark')}
-                                      className={`px-2.5 py-2 rounded-lg text-[11px] font-semibold border transition-colors flex items-center justify-center gap-1 ${
-                                          uiTheme === 'dark'
-                                            ? isDarkUi
-                                              ? 'border-indigo-400/70 bg-indigo-500/20 text-indigo-200'
-                                              : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                            : isDarkUi
-                                              ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-                                              : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
-                                      }`}
-                                  >
-                                      <Moon size={12} /> Dark
-                                  </button>
-                                  <button
-                                      onClick={() => setUiTheme('system')}
-                                      className={`px-2.5 py-2 rounded-lg text-[11px] font-semibold border transition-colors flex items-center justify-center gap-1 ${
-                                          uiTheme === 'system'
-                                            ? isDarkUi
-                                              ? 'border-indigo-400/70 bg-indigo-500/20 text-indigo-200'
-                                              : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                            : isDarkUi
-                                              ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-                                              : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
-                                      }`}
-                                  >
-                                      <Laptop size={12} /> System
-                                  </button>
+                              <div className="hidden">
+                                  {/* Light/Dark theme selector removed per request. Forced to dark. */}
                               </div>
                               <div className="mt-4">
                                   <div className={`mb-2 flex items-center gap-1 text-[10px] font-bold uppercase ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
@@ -9278,7 +9386,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   >
                                       {engine === 'PRIME' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       {engine === 'VECTOR' && <Zap size={18} className={`shrink-0 ${isActive ? 'text-amber-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
-                                      {engine === 'DUNO' && <Cpu size={18} className={`shrink-0 ${isActive ? 'text-cyan-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       <div className="flex-1 min-w-0">
                                           <div className={`font-semibold text-xs ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
                                           <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{getEngineSubLabel(engine)}</div>
@@ -9335,8 +9442,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
               </div>
 
-              <div className={`p-4 border-t ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
-                  <Button fullWidth onClick={() => setShowSettings(false)}>Save Changes</Button>
+              <div className={`p-4 border-t flex justify-end ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
+                  <Button className="px-6" size="sm" onClick={() => setShowSettings(false)}>Save Changes</Button>
               </div>
           </div>
       </div>
@@ -9497,26 +9604,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         ref={creditsSurfaceTriggerRef}
                         onClick={openBillingCenter}
                         aria-label="Open billing"
-                        className={`inline-flex items-center rounded-full border font-bold ${isPhone ? 'gap-1 px-1.5 py-0.5 text-[9px]' : 'gap-1.5 sm:gap-2 px-2 py-1 sm:px-2.5 text-[10px]'} ${
+                        className={`inline-flex items-center rounded-full border font-bold gap-1.5 px-3 py-1.5 text-[11px] ${
                           resolvedTheme === 'dark'
-                            ? 'border-slate-700 bg-slate-900/85 text-slate-200 hover:bg-slate-800'
-                            : 'border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            ? 'border-slate-700 bg-slate-900/85 text-slate-300 hover:bg-slate-800'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                         }`}
                       >
-                        <Box size={13} className="hidden sm:inline" />
-                        <Coins size={12} className="sm:hidden" />
-                        <span className="sm:hidden">{`Credits ${availableCreditsPercentLabel}`}</span>
-                        <span className="hidden sm:inline">
+                        <Coins size={14} className="text-amber-500" />
+                        <span>
                           {hasUnlimitedAccess
-                            ? `Unlimited (${availableCreditsPercentLabel})`
-                            : `${currentEngineSpendable.toLocaleString()} VF (${availableCreditsPercentLabel})`}
-                        </span>
-                        <span className={`hidden sm:inline rounded-full px-2 py-0.5 text-[9px] ${
-                          isPaidBillingPlan
-                            ? (resolvedTheme === 'dark' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-50 text-cyan-700')
-                            : (resolvedTheme === 'dark' ? 'bg-amber-400 text-slate-950' : 'bg-amber-500 text-white')
-                        }`}>
-                          {isPaidBillingPlan ? 'Manage' : 'Upgrade'}
+                            ? '✨ Unlimited'
+                            : `${currentEngineSpendable.toLocaleString()} VF`}
                         </span>
                       </button>
 
@@ -10053,11 +10151,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speaker</h3>
                                             <div className="flex items-center gap-2">
                                                 <span className={`text-xs font-bold ${
-                                                        settings.engine === 'DUNO'
-                                                          ? 'text-cyan-600'
-                                                          : settings.engine === 'VECTOR'
-                                                            ? 'text-amber-600'
-                                                            : 'text-indigo-600'
+                                                        settings.engine === 'VECTOR'
+                                                          ? 'text-amber-600'
+                                                          : 'text-indigo-600'
                                                     }`}>
 	                                                {getEngineDisplayName(settings.engine)}
 	                                            </span>
@@ -10088,6 +10184,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
                                     {(!isPhone || studioMobilePanels.speaker) && (
                                     <>
+	                                <div className={`mb-3 rounded-2xl border px-3 py-2 text-[11px] font-medium ${
+                                          isDarkUi
+                                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+                                            : 'border-amber-200 bg-amber-50 text-amber-800'
+                                        }`}>
+                                          {VOICE_GENERATION_DELAY_NOTICE}
+                                        </div>
 	                                <div className={`max-h-60 overflow-y-auto studio-scrollbar space-y-3 pr-1 ${isPhone ? 'mt-4 mb-3' : 'mb-4'}`}>
                                         <div>
                                             <div className="mb-2 flex items-center justify-between">
@@ -10756,11 +10859,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             {history.map((item, index) => {
                               const itemKey = `${item.id || 'history'}_${index}`;
                               const isExpanded = expandedHistoryItemKey === itemKey;
-                              const historyEngine: GenerationSettings['engine'] = item.engine === 'DUNO'
-                                ? 'DUNO'
-                                : item.engine === 'VECTOR'
-                                  ? 'VECTOR'
-                                  : 'PRIME';
+                              const historyEngine: GenerationSettings['engine'] = item.engine === 'VECTOR'
+                                ? 'VECTOR'
+                                : 'PRIME';
                               const voiceLabel = resolveHistoryVoiceLabel(item);
                               const normalizedPreview = String(item.text || '').replace(/\s+/g, ' ').trim();
                               const previewText = normalizedPreview || 'No text preview.';
@@ -10781,14 +10882,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     }`}
                                   >
                                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                      historyEngine === 'DUNO'
+                                      historyEngine === 'VECTOR'
                                         ? isDarkUi
-                                          ? 'bg-emerald-500/20 text-emerald-200'
-                                          : 'bg-emerald-100 text-emerald-700'
-                                        : historyEngine === 'VECTOR'
-                                          ? isDarkUi
-                                            ? 'bg-amber-500/20 text-amber-100'
-                                            : 'bg-amber-100 text-amber-700'
+                                          ? 'bg-amber-500/20 text-amber-100'
+                                          : 'bg-amber-100 text-amber-700'
                                         : isDarkUi
                                           ? 'bg-cyan-500/20 text-cyan-100'
                                           : 'bg-cyan-100 text-cyan-700'
@@ -10912,9 +11009,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         initialOpsTab={initialAdminOpsTab}
                       />
                     </Suspense>
-                  </div>
-                )}
+                   </div>
+                 )}
                 
+                {/* Mobile Safe Area Spacer for generate dock collision avoidance */}
+                {usesFloatingStudioDock && (
+                  <div className={`w-full shrink-0 ${isPhone ? 'h-32' : 'h-24'}`} aria-hidden="true" />
+                )}
             </div>
         </div>
 
@@ -11125,5 +11226,4 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     </div>
   );
 };
-
 

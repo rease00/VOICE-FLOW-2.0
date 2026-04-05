@@ -6,7 +6,8 @@ export enum AppScreen {
   PROFILE = 'PROFILE',
 }
 
-export type TtsEngineKey = 'DUNO' | 'VECTOR' | 'PRIME';
+export type TtsEngineKey = 'VECTOR' | 'PRIME';
+export type ActiveTtsEngineKey = TtsEngineKey;
 
 export interface VoiceOption {
   id: string;
@@ -367,12 +368,12 @@ export interface VfUsageWindow {
   key: string;
   totalChars: number;
   totalVf: number;
-  byEngine: Record<GenerationSettings['engine'], VfEngineUsage>;
+  byEngine: Record<ActiveTtsEngineKey, VfEngineUsage>;
 }
 
 export interface VfUsageStats {
   unit: 'VF';
-  rates: Record<GenerationSettings['engine'], number>;
+  rates: Record<ActiveTtsEngineKey, number>;
   daily: VfUsageWindow;
   monthly: VfUsageWindow;
   lifetime: VfUsageWindow;
@@ -384,7 +385,7 @@ export interface UserWalletStats {
   monthlyFreeLimit: number;
   vffBalance: number;
   paidVfBalance: number;
-  spendableNowByEngine: Record<GenerationSettings['engine'], number>;
+  spendableNowByEngine: Record<ActiveTtsEngineKey, number>;
   vffMonthKey?: string | undefined;
 }
 
@@ -393,12 +394,14 @@ export interface UserStats {
   isPremium: boolean;
   planName: 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | 'Plus' | 'Enterprise';
   lastResetDate?: string | undefined;
+  billingCountry?: string | undefined;
   vfUsage: VfUsageStats;
   wallet: UserWalletStats;
   limits?: {
     maxCharsPerGeneration: number;
-    allowedEngines: GenerationSettings['engine'][];
+    allowedEngines: ActiveTtsEngineKey[];
     tokenPackDiscountPercent?: number | undefined;
+    vcTokenPackDiscountPercent?: number | undefined;
   };
   features?: {
     earlyAccess: boolean;

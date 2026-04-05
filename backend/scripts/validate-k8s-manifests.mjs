@@ -77,6 +77,7 @@ const validateApiManifest = (manifest) => {
 const main = async () => {
   const files = await Promise.all([
     readFileText('runtime-gemini.yaml'),
+    readFileText('runtime-vertex-text.yaml'),
     readFileText('worker-deployment.yaml'),
     readFileText('api-deployment.yaml'),
     readFileText('kustomization.yaml'),
@@ -98,6 +99,12 @@ const main = async () => {
   report.checks.push({
     file: 'runtime-gemini.yaml',
     ...geminiValidation,
+  });
+
+  const vertexTextValidation = validateRuntimeManifest(index['runtime-vertex-text.yaml'], { runtimeName: 'vertex-text', port: 7820 });
+  report.checks.push({
+    file: 'runtime-vertex-text.yaml',
+    ...vertexTextValidation,
   });
 
   const workerText = index['worker-deployment.yaml'].content;
@@ -123,8 +130,11 @@ const main = async () => {
   if (!has(kustomizationText, /runtime-admin-secret\.example\.yaml/i)) {
     kustomizationFailures.push('kustomization.yaml is missing runtime-admin-secret.example.yaml resource.');
   }
-  if (has(kustomizationText, /runtime-duno\.yaml/i)) {
-    kustomizationFailures.push('kustomization.yaml still references runtime-duno.yaml.');
+  if (has(kustomizationText, /runtime-(?:basic|legacy|kokoro)\.yaml/i)) {
+    kustomizationFailures.push('kustomization.yaml still references a removed legacy TTS runtime manifest.');
+  }
+  if (!has(kustomizationText, /runtime-vertex-text\.yaml/i)) {
+    kustomizationFailures.push('kustomization.yaml is missing runtime-vertex-text.yaml resource.');
   }
   report.checks.push({ file: 'kustomization.yaml', failures: kustomizationFailures, warnings: [] });
 

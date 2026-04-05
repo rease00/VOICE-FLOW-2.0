@@ -1,20 +1,21 @@
-import { DUNO_DEFAULT_VOICE_ID, DUNO_VOICES, VOICES } from '../constants';
-import { GenerationSettings, VoiceOption } from '../types';
+import { VOICES } from '../constants';
+import { ActiveTtsEngineKey, GenerationSettings, VoiceOption } from '../types';
 import { getEngineDisplayName } from './engineDisplay';
 import { fetchTtsEngineVoices } from '../src/shared/api/gatewayClient';
 
-export type RuntimeVoiceCatalogMap = Record<GenerationSettings['engine'], VoiceOption[]>;
+const normalizeActiveEngine = (engine: GenerationSettings['engine']): ActiveTtsEngineKey =>
+  engine === 'PRIME' ? 'PRIME' : 'VECTOR';
+
+export type RuntimeVoiceCatalogMap = Record<ActiveTtsEngineKey, VoiceOption[]>;
 
 const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
   PRIME: [],
   VECTOR: [],
-  DUNO: [],
 };
 
-const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
+const FREE_TIER_ALLOWED_VOICE_IDS: Record<ActiveTtsEngineKey, string[]> = {
   PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  DUNO: [DUNO_DEFAULT_VOICE_ID],
 };
 
 const inferCountryFromAccent = (accent?: string): string => {
@@ -72,33 +73,27 @@ const normalizeAgeGroup = (raw: unknown): string => {
 };
 
 const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption): VoiceOption => {
-  const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
+  const canonicalEngine = normalizeActiveEngine(engine);
+  const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[canonicalEngine] || []).map((token) => String(token || '').trim().toLowerCase()));
   const explicitTier = String(voice.accessTier || '').trim().toLowerCase();
   const accessTier: 'free' | 'pro' =
     explicitTier === 'free'
       ? 'free'
       : explicitTier === 'pro'
         ? 'pro'
-        : (
-          engine === 'DUNO'
-            ? 'free'
-            : (allowlist.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro')
-        );
+        : (allowlist.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro');
   return {
     ...voice,
     country: voice.country || inferCountryFromAccent(voice.accent),
     ageGroup: voice.ageGroup || 'Unknown',
-    engine,
+    engine: canonicalEngine,
     accessTier,
     isPlanRestricted: typeof voice.isPlanRestricted === 'boolean' ? voice.isPlanRestricted : accessTier === 'pro',
   };
 };
 
 export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => {
-  if (engine === 'PRIME' || engine === 'VECTOR') {
-    return VOICES.map((voice) => asEngineVoice(engine, voice));
-  }
-  return DUNO_VOICES.map((voice) => asEngineVoice('DUNO', voice));
+  return VOICES.map((voice) => asEngineVoice(engine, voice));
 };
 
 const toVoiceOption = (
@@ -106,6 +101,7 @@ const toVoiceOption = (
   raw: any,
   index: number
 ): VoiceOption => {
+  const canonicalEngine = normalizeActiveEngine(engine);
   const id = String(raw.voice_id || raw.id || raw.voiceId || raw.voice || `voice_${index}`).trim();
   const runtimeVoiceName = String(raw.voice || raw.runtimeVoice || raw.voiceName || raw.voice_id || raw.id || '').trim();
   const mappedDisplayName = String(
@@ -118,10 +114,9 @@ const toVoiceOption = (
   const name = String(
     mappedDisplayName
     || runtimeVoiceName
-    || (engine === 'DUNO' && id === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName(engine)}` : '')
     || id
   ).trim();
-  const accent = String(raw.accent || raw.language || (engine === 'DUNO' && id === DUNO_DEFAULT_VOICE_ID ? 'DeepInfra default' : 'Unknown')).trim();
+  const accent = String(raw.accent || raw.language || 'Unknown').trim();
   const gender = normalizeGender(raw.gender);
   const ageGroup = String(normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age)).trim() || 'Unknown';
   const country = String(
@@ -131,17 +126,13 @@ const toVoiceOption = (
   ).trim() || 'Unknown';
   const geminiVoiceName = String(raw.voice || raw.voice_id || raw.id || id).trim();
   const explicitTier = String(raw.access_tier || raw.accessTier || '').trim().toLowerCase();
-  const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
+  const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[canonicalEngine] || []).map((token) => String(token || '').trim().toLowerCase()));
   const accessTier: 'free' | 'pro' =
     explicitTier === 'free'
       ? 'free'
       : explicitTier === 'pro'
         ? 'pro'
-        : (
-          engine === 'DUNO'
-            ? 'free'
-            : (allowlist.has(id.toLowerCase()) ? 'free' : 'pro')
-        );
+        : (allowlist.has(id.toLowerCase()) ? 'free' : 'pro');
 
   const output: VoiceOption = {
     id,
@@ -151,7 +142,7 @@ const toVoiceOption = (
     geminiVoiceName,
     country,
     ageGroup,
-    engine,
+    engine: canonicalEngine,
     accessTier,
     isPlanRestricted: typeof raw.is_plan_restricted === 'boolean' ? raw.is_plan_restricted : accessTier === 'pro',
   };
@@ -177,13 +168,14 @@ export const fetchEngineRuntimeVoices = async (
   _runtimeUrl: string,
   _timeoutMs: number = 7000
 ): Promise<VoiceOption[]> => {
-  const payload = await fetchTtsEngineVoices(engine);
+  const canonicalEngine = normalizeActiveEngine(engine);
+  const payload = await fetchTtsEngineVoices(canonicalEngine);
   const voices = Array.isArray(payload?.voices) ? payload.voices : [];
-  return voices.map((voice, index: number) => toVoiceOption(engine, voice, index));
+  return voices.map((voice, index: number) => toVoiceOption(canonicalEngine, voice, index));
 };
 
 export const fetchRuntimeVoiceRegistry = async (
-  _runtimeUrls: Partial<Record<GenerationSettings['engine'], string>>,
+  _runtimeUrls: Partial<Record<ActiveTtsEngineKey, string>>,
   _timeoutMs: number = 7000
 ): Promise<RuntimeVoiceCatalogMap> => {
   const entries: RuntimeVoiceCatalogMap = {
@@ -200,12 +192,6 @@ export const fetchRuntimeVoiceRegistry = async (
     entries.VECTOR = await fetchEngineRuntimeVoices('VECTOR', '');
   } catch {
     entries.VECTOR = entries.PRIME.map((voice) => ({ ...voice, engine: 'VECTOR' }));
-  }
-
-  try {
-    entries.DUNO = await fetchEngineRuntimeVoices('DUNO', '');
-  } catch {
-    entries.DUNO = getStaticVoiceFallback('DUNO');
   }
 
   return entries;

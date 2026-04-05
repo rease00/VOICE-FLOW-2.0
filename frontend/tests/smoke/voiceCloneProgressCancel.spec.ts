@@ -99,32 +99,11 @@ test('voice-clone root progress card supports cancel from the top level', async 
     });
   });
 
-  await page.route(/\/voice-clone\/duno\/native\/jobs(?:\?.*)?$/, async (route) => {
-    await fulfillAfterDelay(route, {
-      ok: true,
-      status: 'queued',
-      requestId: 'mock-duno-request',
-      traceId: 'mock-duno-request',
-      jobId: 'mock-duno-job',
-      kind: 'duno_native',
-      progress: {
-        percent: 12,
-        stage: 'Queued for reconnect-safe processing',
-        detail: 'The backend accepted the DUNO clone request and will keep it reconnectable.',
-      },
-    });
-  });
-
   await page.route(/\/voice-clone\/jobs\/by-request\/[^/?]+(?:\?.*)?$/i, async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue();
       return;
     }
-    const requestUrl = route.request().url();
-    const isDunoRequest = /\/by-request\/mock-duno-request(?:\?|$)/i.test(requestUrl);
-    const requestId = isDunoRequest ? 'mock-duno-request' : 'mock-voice-clone-request';
-    const jobId = isDunoRequest ? 'mock-duno-job' : 'mock-voice-clone-job';
-    const kind = isDunoRequest ? 'duno_native' : 'voice_clone';
     if (cancelRequested) {
       await route.fulfill({
         status: 200,
@@ -132,9 +111,9 @@ test('voice-clone root progress card supports cancel from the top level', async 
         body: JSON.stringify({
           ok: true,
           status: 'cancelled',
-          requestId,
-          jobId,
-          kind,
+          requestId: 'mock-voice-clone-request',
+          jobId: 'mock-voice-clone-job',
+          kind: 'voice_clone',
           error: {
             detail: 'Cloning cancelled.',
             reason: 'cancelled_by_user',
@@ -149,9 +128,9 @@ test('voice-clone root progress card supports cancel from the top level', async 
       body: JSON.stringify({
         ok: true,
         status: 'running',
-        requestId,
-        jobId,
-        kind,
+        requestId: 'mock-voice-clone-request',
+        jobId: 'mock-voice-clone-job',
+        kind: 'voice_clone',
         progress: {
           percent: 48,
           stage: 'Processing voice clone',
@@ -161,7 +140,7 @@ test('voice-clone root progress card supports cancel from the top level', async 
     });
   });
 
-  await page.route(/\/voice-clone\/jobs\/mock-(?:voice-clone|duno)-job(?:\?.*)?$/, async (route) => {
+  await page.route(/\/voice-clone\/jobs\/mock-voice-clone-job(?:\?.*)?$/, async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue();
       return;
@@ -173,9 +152,9 @@ test('voice-clone root progress card supports cancel from the top level', async 
         body: JSON.stringify({
           ok: true,
           status: 'cancelled',
-          requestId: route.request().url().includes('voice-clone') ? 'mock-voice-clone-request' : 'mock-duno-request',
-          jobId: route.request().url().includes('voice-clone') ? 'mock-voice-clone-job' : 'mock-duno-job',
-          kind: route.request().url().includes('voice-clone') ? 'voice_clone' : 'duno_native',
+          requestId: 'mock-voice-clone-request',
+          jobId: 'mock-voice-clone-job',
+          kind: 'voice_clone',
           error: {
             detail: 'Cloning cancelled.',
             reason: 'cancelled_by_user',
@@ -190,9 +169,9 @@ test('voice-clone root progress card supports cancel from the top level', async 
       body: JSON.stringify({
         ok: true,
         status: 'running',
-        requestId: route.request().url().includes('voice-clone') ? 'mock-voice-clone-request' : 'mock-duno-request',
-        jobId: route.request().url().includes('voice-clone') ? 'mock-voice-clone-job' : 'mock-duno-job',
-        kind: route.request().url().includes('voice-clone') ? 'voice_clone' : 'duno_native',
+        requestId: 'mock-voice-clone-request',
+        jobId: 'mock-voice-clone-job',
+        kind: 'voice_clone',
         progress: {
           percent: 48,
           stage: 'Processing voice clone',
@@ -202,7 +181,7 @@ test('voice-clone root progress card supports cancel from the top level', async 
     });
   });
 
-  await page.route(/\/voice-clone\/(?:duno\/native\/)?jobs\/mock-(?:voice-clone|duno)-job\/cancel(?:\?.*)?$/i, async (route) => {
+  await page.route(/\/voice-clone\/jobs\/mock-voice-clone-job\/cancel(?:\?.*)?$/i, async (route) => {
     if (route.request().method().toUpperCase() !== 'POST') {
       await route.continue();
       return;

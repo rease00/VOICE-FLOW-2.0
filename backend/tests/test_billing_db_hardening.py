@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+import pytest
 
 import app as backend_app
 
@@ -334,7 +335,11 @@ def test_vc_token_pack_checkout_reuses_idempotent_result(monkeypatch) -> None:
         backend_app,
         "VC_TOKEN_PACK_CATALOG",
         {
-            "starter": {"vc": 650, "priceInr": 499},
+            "starter": {"vc": 55, "priceInr": 110},
+            "standard": {"vc": 200, "priceInr": 400},
+            "growth": {"vc": 500, "priceInr": 1000},
+            "pro": {"vc": 1500, "priceInr": 3000},
+            "scale": {"vc": 2600, "priceInr": 5000},
         },
     )
 
@@ -355,6 +360,60 @@ def test_vc_token_pack_checkout_reuses_idempotent_result(monkeypatch) -> None:
     assert second.status_code == 200
     assert len(order_calls) == 1
     assert first.json().get("orderId") == second.json().get("orderId")
+    assert int(first.json().get("packVc") or 0) == 55
+    assert int(first.json().get("standardAmountInr") or 0) == 110
+    assert int(first.json().get("discountPercent") or 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("pack_key", "expected_vc", "expected_price"),
+    [
+        ("starter", 55, 110),
+        ("standard", 200, 400),
+        ("growth", 500, 1000),
+        ("pro", 1500, 3000),
+        ("scale", 2600, 5000),
+    ],
+)
+def test_vc_token_pack_checkout_accepts_all_catalog_keys(monkeypatch, pack_key, expected_vc, expected_price) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "VC_TOKEN_PACK_CATALOG",
+        {
+            "starter": {"vc": 55, "priceInr": 110},
+            "standard": {"vc": 200, "priceInr": 400},
+            "growth": {"vc": 500, "priceInr": 1000},
+            "pro": {"vc": 1500, "priceInr": 3000},
+            "scale": {"vc": 2600, "priceInr": 5000},
+        },
+    )
+
+    captured_orders: list[dict[str, object]] = []
+
+    def _fake_create_one_time_order(**kwargs):
+        captured_orders.append(dict(kwargs))
+        return {"id": f"order_{pack_key}_catalog", "order_id": f"order_{pack_key}_catalog"}
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_one_time_order", _fake_create_one_time_order)
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/vc-token-pack/checkout-session",
+        headers={"x-dev-uid": f"catalog_{pack_key}_user", "Idempotency-Key": f"catalog_{pack_key}_user:vc:{pack_key}:1"},
+        json={"pack": pack_key},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["packKey"] == pack_key
+    assert int(body["packVc"]) == expected_vc
+    assert int(body["standardAmountInr"]) == expected_price
+    assert int(body["finalAmountInr"]) == expected_price
+    assert int(body["discountPercent"]) == 0
+    assert len(captured_orders) == 1
 
 
 def test_checkout_scopes_same_client_idempotency_key_per_user(monkeypatch) -> None:

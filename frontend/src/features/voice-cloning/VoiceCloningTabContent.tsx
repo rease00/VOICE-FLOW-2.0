@@ -24,14 +24,12 @@ import { UploadDropzone } from '../../../components/ui/UploadDropzone';
 import { VoiceClonePreviewPlayer } from './VoiceClonePreviewPlayer';
 import { VoiceCloneTaskProgressCard } from './VoiceCloneTaskProgressCard';
 import { useUser } from '../../../contexts/UserContext';
-import { getEngineDisplayName } from '../../../services/engineDisplay';
 import { getSharedAudioContext } from '../../../src/shared/audio/audioContext';
 import { arrayBufferToBase64 } from '../../../src/shared/audio/base64';
 import { audioBufferToWav } from '../../../src/shared/audio/wav';
 import { resolvePublicVoiceLabel } from '../../../src/shared/voices/voicePublicName';
 import { useManagedTabs } from '../../../src/shared/ui/tabs';
 import type { ClonedVoice, TtsEngineKey, UserProfile, VoiceOption } from '../../../types';
-import { buildDunoClonePreviewUrl } from './dunoPreview';
 import { resolveVoiceClonePlayableAudioUrlWithFallback } from './audio';
 import {
   canViewVoiceCloneStressControls,
@@ -48,14 +46,11 @@ import {
 import {
   cancelVoiceCloneJob,
   cancelVoiceCloneStressTest,
-  cloneVoiceWithDunoNative,
-  type DunoNativeCloneResponse,
   fetchVoiceCloneStatus,
   fetchVoiceCloneJobStatus,
   fetchVoiceCloneJobStatusByRequest,
   fetchVoiceCloneStressTestStatus,
   separateVoiceAndBackgroundWithDemucs,
-  startDunoNativeCloneJob,
   startVoiceCloneRenderJob,
   startVoiceCloneStressTest,
   type VoiceCloneJobError,
@@ -100,14 +95,14 @@ interface VoiceCloningTabContentProps {
   onDiagnosticsExpandedChange?: (expanded: boolean) => void;
 }
 
-type VoiceCloneResponse = VoiceCloneRenderResponse | DunoNativeCloneResponse;
+type VoiceCloneResponse = VoiceCloneRenderResponse;
 
 interface CloningResultState {
   previewUrl: string;
   downloadUrl: string;
   fileName: string;
   response: VoiceCloneResponse;
-  cloneMode: 'modal_vc' | 'duno_native';
+  cloneMode: 'modal_vc';
 }
 
 interface StemExtractionResultState {
@@ -240,7 +235,7 @@ const normalizeVoiceCloneJobRuntimeState = (
   const requestId = String(job.requestId || '').trim();
   const rawKind = String((job as { kind?: unknown }).kind || '').trim().toLowerCase();
   const kind = rawKind === 'openvoice' ? 'voice_clone' : rawKind;
-  if (!requestId || (kind !== 'voice_clone' && kind !== 'duno_native')) return null;
+  if (!requestId || kind !== 'voice_clone') return null;
   const typedJob = job as VoiceCloneJobStatusResponse;
   const result = typedJob.result && typeof typedJob.result === 'object'
     ? (typedJob.result as VoiceCloneResponse)
@@ -275,7 +270,7 @@ const mergeVoiceCloneRuntimeJobState = (
     ...(nextStatus ? { status: nextStatus } : {}),
     ...(nextJobId ? { jobId: nextJobId } : {}),
   };
-  if (nextKind === 'voice_clone' || nextKind === 'duno_native') {
+  if (nextKind === 'voice_clone') {
     merged.kind = nextKind as VoiceCloneJobRuntimeState['kind'];
   }
   return merged;
@@ -417,10 +412,6 @@ const toAudioFileName = (label: string, fallback: string): string => {
   const safeLabel = String(label || '').trim().replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
   return `${safeLabel || fallback}.wav`;
 };
-
-const isDunoCloneResponse = (response: VoiceCloneResponse | null | undefined): response is DunoNativeCloneResponse => (
-  String((response as { engine?: unknown } | null | undefined)?.engine || '').trim().toUpperCase() === 'DUNO'
-);
 
 const makeRequestId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -1351,9 +1342,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   diagnosticsExpanded,
   onDiagnosticsExpandedChange,
 }) => {
-  const { user, addClonedVoice, clonedVoices } = useUser();
-  const isDunoCloneMode = String(selectedEngine || '').trim().toUpperCase() === 'DUNO';
-  const dunoLabel = getEngineDisplayName('DUNO');
+  const { user, clonedVoices } = useUser();
   const isWorkspaceLayout = layout === 'workspace';
   const shouldShowWorkspaceRail = isWorkspaceLayout && showRail;
   const [activeToolTab, setActiveToolTab] = useState<VoiceUtilityTab>('clone');
@@ -1414,8 +1403,8 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     [user]
   );
   const cloneWorkspaceScopeKey = useMemo(
-    () => `${cloneConsentUserKey}::${isDunoCloneMode ? 'duno' : 'voice-clone'}`,
-    [cloneConsentUserKey, isDunoCloneMode]
+    () => `${cloneConsentUserKey}::voice-clone`,
+    [cloneConsentUserKey]
   );
 
   const showRuntimeDiagnostics = diagnosticsExpanded ?? localRuntimeDiagnosticsExpanded;
@@ -1452,13 +1441,13 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const canStartCloning = useMemo(
     () => Boolean(
       referenceAudio
+      && targetAudio
       && !isVoiceCloneActionBusy
-      && (isDunoCloneMode || targetAudio)
-      && (isDunoCloneMode || isVoiceCloneRuntimeReady)
+      && isVoiceCloneRuntimeReady
       && cloneConsentAccepted
       && cloneSafetyAccepted
     ),
-    [cloneConsentAccepted, cloneSafetyAccepted, isDunoCloneMode, isVoiceCloneRuntimeReady, isVoiceCloneActionBusy, referenceAudio, targetAudio]
+    [cloneConsentAccepted, cloneSafetyAccepted, isVoiceCloneRuntimeReady, isVoiceCloneActionBusy, referenceAudio, targetAudio]
   );
 
   const canExtractStems = useMemo(
@@ -1903,82 +1892,33 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       throw new Error('Voice clone job completed without a result payload.');
     }
 
-    if (job.kind === 'duno_native' || isDunoCloneResponse(response)) {
-      const dunoResponse = (isDunoCloneResponse(response) ? response : (response as DunoNativeCloneResponse));
-      const clonedVoice: ClonedVoice | null = dunoResponse.clonedVoice
-        ? { ...dunoResponse.clonedVoice }
-        : null;
-      if (clonedVoice && !String(clonedVoice.previewUrl || '').trim()) {
-        const clonedVoiceId = String(clonedVoice.geminiVoiceName || dunoResponse.voiceId || clonedVoice.id || '').trim();
-        const clonedVoiceName = String(clonedVoice.name || clonedVoice.sourceVoiceName || clonedVoiceId || 'DUNO Clone').trim() || 'DUNO Clone';
-        clonedVoice.previewUrl = await buildDunoClonePreviewUrl({
-          backendBaseUrl,
-          voiceId: clonedVoiceId || String(dunoResponse.voiceId || clonedVoice.id || '').trim(),
-          voiceName: clonedVoiceName,
-          voiceModel: String(dunoResponse.model || '').trim(),
-        });
-      }
-      if (clonedVoice) {
-        addClonedVoice(clonedVoice);
-      }
-      const previewUrl = String(clonedVoice?.previewUrl || '').trim();
-      setResult({
-        previewUrl,
-        downloadUrl: previewUrl,
-        fileName: toAudioFileName(String(clonedVoice?.name || clonedVoice?.sourceVoiceName || 'DUNO Clone').trim() || 'DUNO Clone', 'duno-clone'),
-        response: clonedVoice ? { ...dunoResponse, clonedVoice } : dunoResponse,
-        cloneMode: 'duno_native',
-      });
-    } else {
-      const contentType = String(response.artifact?.contentType || targetAudio?.type || referenceAudio?.type || 'audio/wav').trim() || 'audio/wav';
-      const resolvedUrl = await resolveVoiceClonePlayableAudioUrlWithFallback(response, contentType, {
-        ...(backendBaseUrl ? { backendBaseUrl } : {}),
-      });
-      setResult({
-        previewUrl: resolvedUrl,
-        downloadUrl: resolvedUrl,
-        fileName: targetAudio?.name || 'voice-clone.wav',
-        response,
-        cloneMode: 'modal_vc',
-      });
-    }
+    const contentType = String(response.artifact?.contentType || targetAudio?.type || referenceAudio?.type || 'audio/wav').trim() || 'audio/wav';
+    const resolvedUrl = await resolveVoiceClonePlayableAudioUrlWithFallback(response, contentType, {
+      ...(backendBaseUrl ? { backendBaseUrl } : {}),
+    });
+    setResult({
+      previewUrl: resolvedUrl,
+      downloadUrl: resolvedUrl,
+      fileName: targetAudio?.name || 'voice-clone.wav',
+      response,
+      cloneMode: 'modal_vc',
+    });
 
     setErrorMessage('');
     setIsCloning(false);
     clearVoiceCloneTask();
     setActiveCloneJob(null);
-  }, [addClonedVoice, backendBaseUrl, clearVoiceCloneTask, referenceAudio, targetAudio]);
+  }, [backendBaseUrl, clearVoiceCloneTask, referenceAudio, targetAudio]);
 
   const submitCloneJob = useCallback(async (
     requestId: string,
     signal?: AbortSignal
   ): Promise<VoiceCloneJobStatusResponse> => {
-    if (!referenceAudio || (!isDunoCloneMode && !targetAudio)) {
-      throw new Error(
-        isDunoCloneMode
-          ? `Upload a reference audio clip before creating a ${dunoLabel} clone.`
-          : 'Upload both reference audio and target audio before cloning.'
-      );
+    if (!referenceAudio || !targetAudio) {
+      throw new Error('Upload both reference audio and target audio before cloning.');
     }
 
     const referenceAudioBase64 = await referenceAudio.arrayBuffer().then((buffer) => arrayBufferToBase64(buffer));
-    if (isDunoCloneMode) {
-      const requestOptions = backendBaseUrl
-        ? { baseUrl: backendBaseUrl, ...(signal ? { signal } : {}) }
-        : (signal ? { signal } : undefined);
-      return await startDunoNativeCloneJob(
-        {
-          referenceAudioBase64,
-          referenceAudioName: referenceAudio.name || 'reference-audio.wav',
-          sourceVoiceEngine: 'DUNO',
-          speaker: 'Voice cloning workspace',
-          requestId,
-          traceId: requestId,
-        },
-        requestOptions
-      );
-    }
-
     const targetAudioFile = targetAudio;
     if (!targetAudioFile) {
       throw new Error('Upload both reference audio and target audio before cloning.');
@@ -2015,7 +1955,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       },
       requestOptions
     );
-  }, [backendBaseUrl, dunoLabel, isDunoCloneMode, referenceAudio, targetAudio]);
+  }, [backendBaseUrl, referenceAudio, targetAudio]);
 
   useEffect(() => {
     if (!activeCloneJob) return;
@@ -2082,10 +2022,10 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           return;
         }
         if (
-          isVoiceCloneJobNotFoundError(error)
-          && referenceAudio
-          && (isDunoCloneMode || targetAudio)
-        ) {
+        isVoiceCloneJobNotFoundError(error)
+        && referenceAudio
+        && targetAudio
+      ) {
           try {
             if (String(activeCloneJob.jobId || '').trim()) {
               const byRequestJob = await fetchVoiceCloneJobStatusByRequest(
@@ -2168,7 +2108,6 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     backendBaseUrl,
     clearVoiceCloneTask,
     isCloneWorkspaceHydrated,
-    isDunoCloneMode,
     referenceAudio,
     submitCloneJob,
     targetAudio,
@@ -2440,17 +2379,13 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       cloneSubmitLockRef.current = false;
       return;
     }
-    if (!isDunoCloneMode && !isVoiceCloneRuntimeReady) {
+    if (!isVoiceCloneRuntimeReady) {
       setErrorMessage('Voice Clone runtime is not ready. Wait for readiness, then retry.');
       cloneSubmitLockRef.current = false;
       return;
     }
-    if (!referenceAudio || (!isDunoCloneMode && !targetAudio)) {
-      setErrorMessage(
-        isDunoCloneMode
-          ? `Upload a reference audio clip before creating a ${dunoLabel} clone.`
-          : 'Upload both reference audio and target audio before cloning.'
-      );
+    if (!referenceAudio || !targetAudio) {
+      setErrorMessage('Upload both reference audio and target audio before cloning.');
       cloneSubmitLockRef.current = false;
       return;
     }
@@ -2467,7 +2402,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     setResult(null);
     setActiveCloneJob({
       requestId,
-      kind: isDunoCloneMode ? 'duno_native' : 'voice_clone',
+      kind: 'voice_clone',
       status: 'starting',
     });
     const controller = startVoiceCloneTask(
@@ -2496,7 +2431,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         normalizeVoiceCloneJobRuntimeState(job) || {
           requestId,
           ...(String(job.jobId || '').trim() ? { jobId: String(job.jobId || '').trim() } : {}),
-          kind: isDunoCloneMode ? 'duno_native' : 'voice_clone',
+          kind: 'voice_clone',
           status: String(job.status || '').trim() || 'queued',
         }
       );
@@ -2524,8 +2459,6 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     clearVoiceCloneTask,
     cloneConsentAccepted,
     cloneSafetyAccepted,
-    dunoLabel,
-    isDunoCloneMode,
     isVoiceCloneRuntimeReady,
     isVoiceCloneActionBusy,
     referenceAudio,
@@ -2881,18 +2814,14 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     if (activeToolTab === 'clone') {
       if (!result) {
         return {
-          title: isDunoCloneMode ? 'Waiting for reference audio' : 'Waiting for source files',
-        detail: isDunoCloneMode
-            ? `Upload a reference clip and confirm consent to create a reusable ${dunoLabel} clone.`
-            : 'Upload reference and target audio to create a converted preview.',
-          status: isDunoCloneMode ? `${dunoLabel} native` : openVoiceProviderStatus.readyLabel,
+          title: 'Waiting for source files',
+          detail: 'Upload reference and target audio to create a converted preview.',
+          status: openVoiceProviderStatus.readyLabel,
         };
       }
       return {
         title: 'Clone ready',
-        detail: isDunoCloneResponse(result.response)
-          ? `The reusable ${dunoLabel} voice is ready for this session.`
-          : 'Converted audio is ready to preview and download.',
+        detail: 'Converted audio is ready to preview and download.',
         status: String(result.response.status || 'Ready').trim() || 'Ready',
       };
     }
@@ -2912,8 +2841,6 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     };
   }, [
     activeToolTab,
-    dunoLabel,
-    isDunoCloneMode,
     openVoiceProviderStatus.readyLabel,
     result,
     selectedEngine,
@@ -2923,7 +2850,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   ]);
 
   const cloneTabStatusTone: VoiceUtilityTabStatusTone =
-    (!isDunoCloneMode && !isVoiceCloneRuntimeReady)
+    (!isVoiceCloneRuntimeReady)
       ? 'down'
       : canStartCloning
         ? 'usable'
@@ -2986,7 +2913,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                 <span className="sr-only">{getVoiceUtilityTabStatusLabel(cloneTabStatusTone)}</span>
               </span>
               <span className={`${denseTabs ? 'hidden' : 'mt-0.5 block text-[10px] text-slate-500 sm:text-[11px]'}`}>
-                {isDunoCloneMode ? `Reusable ${dunoLabel} native clones` : 'Reference + target conversion'}
+                Reference + target conversion
               </span>
             </button>
             <button
@@ -3029,32 +2956,28 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           className={`mt-2.5 space-y-2.5 sm:mt-3 sm:space-y-3 ${isWorkspaceLayout ? 'pb-28 sm:pb-32' : ''}`}
           {...voiceUtilityTabs.getPanelProps('clone')}
         >
-          <div className={`grid gap-1.5 sm:gap-2 ${isDunoCloneMode ? '' : 'lg:grid-cols-2'}`}>
+          <div className="grid gap-1.5 sm:gap-2 lg:grid-cols-2">
               <UploadDropzone
                 accept="audio/*"
                 file={referenceAudio}
-              label="Drop reference audio"
-              hint={isDunoCloneMode
-                ? `This sample creates a reusable ${dunoLabel} voice clone.`
-                : 'This voice will be used as the cloning reference.'}
+                label="Drop reference audio"
+                hint="This voice will be used as the cloning reference."
               className="px-2 py-2 sm:px-3 sm:py-3"
               disabled={isVoiceCloneActionBusy}
               onFilesSelected={handleReferenceChange}
             />
-            {!isDunoCloneMode ? (
-              <UploadDropzone
-                accept="audio/*"
-                file={targetAudio}
-                label="Drop target audio"
-                hint="This clip will be converted to match the reference voice."
-                className="px-2 py-2 sm:px-3 sm:py-3"
-                disabled={isVoiceCloneActionBusy}
-                onFilesSelected={handleTargetChange}
-              />
-            ) : null}
+            <UploadDropzone
+              accept="audio/*"
+              file={targetAudio}
+              label="Drop target audio"
+              hint="This clip will be converted to match the reference voice."
+              className="px-2 py-2 sm:px-3 sm:py-3"
+              disabled={isVoiceCloneActionBusy}
+              onFilesSelected={handleTargetChange}
+            />
           </div>
 
-          <div className={`grid gap-1.5 sm:gap-2 ${isDunoCloneMode ? '' : 'sm:grid-cols-2'}`}>
+          <div className="grid gap-1.5 sm:gap-2 sm:grid-cols-2">
             <VoiceClonePreviewPlayer
               label="Reference audio"
               name={referenceAudio?.name || 'Not selected'}
@@ -3063,19 +2986,17 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
               fallback="Upload a reference clip to preview it here."
               tone="source"
             />
-            {!isDunoCloneMode ? (
-              <VoiceClonePreviewPlayer
-                label="Target audio"
-                name={targetAudio?.name || 'Not selected'}
-                meta={formatFileSize(targetAudio)}
-                previewUrl={targetPreviewUrl}
-                fallback="Upload a target clip to preview it here."
-                tone="source"
-              />
-            ) : null}
+            <VoiceClonePreviewPlayer
+              label="Target audio"
+              name={targetAudio?.name || 'Not selected'}
+              meta={formatFileSize(targetAudio)}
+              previewUrl={targetPreviewUrl}
+              fallback="Upload a target clip to preview it here."
+              tone="source"
+            />
           </div>
 
-          {showRuntimeDiagnosticsUi && !isDunoCloneMode ? (
+          {showRuntimeDiagnosticsUi ? (
           <section className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-800 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-xs sm:leading-5">
             <button
               type="button"
@@ -3137,7 +3058,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           </section>
           ) : null}
 
-          {showRuntimeDiagnosticsUi && !isDunoCloneMode && openVoiceStatusError ? (
+          {showRuntimeDiagnosticsUi && openVoiceStatusError ? (
             <div className="rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-[10px] leading-4 text-gray-700 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5">
               {openVoiceStatusError}
             </div>
@@ -3229,12 +3150,10 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
 
           <form className={`flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 sm:rounded-2xl sm:px-3.5 sm:py-3 sm:flex-row sm:items-center sm:justify-between ${isWorkspaceLayout ? 'vf-voice-clone-actionbar' : ''}`} onSubmit={handleSubmit}>
             <div className="text-[10px] leading-4 text-slate-500 sm:text-[11px] sm:leading-5">
-              {isDunoCloneMode
-                ? `${dunoLabel} native cloning creates a reusable voice for ${dunoLabel} synthesis in this session.`
-                : 'Modal VC requests are billed by the backend and require runtime readiness.'}
+              Modal VC requests are billed by the backend and require runtime readiness.
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
-              {!isWorkspaceLayout && !isDunoCloneMode && canSeeStressControls ? (
+              {!isWorkspaceLayout && canSeeStressControls ? (
                 <Button
                   type="button"
                   variant="secondary"
@@ -3252,7 +3171,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                 type="submit"
                 variant="primary"
               >
-                {isDunoCloneMode ? `Create ${dunoLabel} Clone` : 'Start Cloning'}
+                Start Cloning
               </Button>
             </div>
           </form>
@@ -3622,15 +3541,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             <div>
               <h3 className="text-[14px] font-semibold text-slate-900 sm:text-[15px]">Cloning result</h3>
               <p className="mt-0.5 text-[10px] leading-4 text-slate-600 sm:text-[11px] sm:leading-5">
-                {isDunoCloneResponse(result.response)
-                  ? `The ${dunoLabel} clone is ready and available for ${dunoLabel} synthesis in this session.`
-                  : 'The converted audio is ready to preview and download.'}
+                The converted audio is ready to preview and download.
               </p>
-              {!isDunoCloneResponse(result.response) ? (
-                <p className="mt-0.5 text-[10px] text-slate-500 sm:text-[11px]">
-                  VC used: {Math.max(0, Number(result.response.consumedVcUnits || result.response.vcBilling?.consumedUnits || 0)).toFixed(2)} units
-                </p>
-              ) : null}
+              <p className="mt-0.5 text-[10px] text-slate-500 sm:text-[11px]">
+                VC used: {Math.max(0, Number(result.response.consumedVcUnits || result.response.vcBilling?.consumedUnits || 0)).toFixed(2)} units
+              </p>
             </div>
             {result.response.status ? (
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 sm:px-2.5 sm:py-1 sm:text-[11px]">
@@ -3642,11 +3557,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           <VoiceClonePreviewPlayer
             label="Output audio"
             name={result.fileName || 'Generated output'}
-            meta={isDunoCloneResponse(result.response)
-              ? `${dunoLabel} voice id: ${String(result.response.voiceId || '').trim() || 'unavailable'}`
-              : (result.response.artifact?.downloadUrl
-                  ? 'Backend artifact URL available'
-                  : 'Inline audio data generated locally')}
+            meta={result.response.artifact?.downloadUrl
+              ? 'Backend artifact URL available'
+              : 'Inline audio data generated locally'}
             previewUrl={result.previewUrl}
             fallback="Output was generated, but no preview URL was returned by the backend."
             tone="output"
@@ -3808,16 +3721,14 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                     fallback="Upload a reference clip to preview it here."
                     tone="source"
                   />
-                  {!isDunoCloneMode ? (
-                    <VoiceClonePreviewPlayer
-                      label="Target audio"
-                      name={targetAudio?.name || 'Not selected'}
-                      meta={formatFileSize(targetAudio)}
-                      previewUrl={targetPreviewUrl}
-                      fallback="Upload a target clip to preview it here."
-                      tone="source"
-                    />
-                  ) : null}
+                  <VoiceClonePreviewPlayer
+                    label="Target audio"
+                    name={targetAudio?.name || 'Not selected'}
+                    meta={formatFileSize(targetAudio)}
+                    previewUrl={targetPreviewUrl}
+                    fallback="Upload a target clip to preview it here."
+                    tone="source"
+                  />
                 </div>
               </div>
 
@@ -3903,7 +3814,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             </div>
           )}
 
-          {showRuntimeDiagnosticsUi && !isDunoCloneMode ? (
+          {showRuntimeDiagnosticsUi ? (
             <div className="vf-voice-clone-rail-card">
               <button
                 type="button"
@@ -3939,7 +3850,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                     >
                       Check Availability
                     </Button>
-                    {!isDunoCloneMode && canSeeStressControls ? (
+                    {canSeeStressControls ? (
                       <Button type="button" variant="secondary" icon={<Gauge size={14} />} onClick={openStressModal}>
                         Stress Test
                       </Button>

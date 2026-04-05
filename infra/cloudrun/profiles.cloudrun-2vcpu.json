@@ -32,10 +32,21 @@
       "allowUnauthenticated": false,
       "ingress": "internal",
       "sessionAffinity": false
+    },
+    "voiceflow-vertex-text-runtime": {
+      "cpu": "2",
+      "memory": "2Gi",
+      "minInstances": 0,
+      "maxInstances": 10,
+      "concurrency": 2,
+      "allowUnauthenticated": false,
+      "ingress": "internal",
+      "sessionAffinity": false
     }
   },
   "rolloutOrder": [
     "voiceflow-gemini-runtime",
+    "voiceflow-vertex-text-runtime",
     "voiceflow-worker",
     "voiceflow-api"
   ],

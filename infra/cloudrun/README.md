@@ -5,8 +5,9 @@ This folder contains Cloud Run production deployment assets for the split topolo
 - `voiceflow-api` (public ingress, unauthenticated at Cloud Run, scale-to-zero, single primary region, no session affinity by default)
 - `voiceflow-worker` (internal ingress, authenticated, drained by Cloud Tasks, regional only)
 - `voiceflow-gemini-runtime` (internal ingress, authenticated, scale-to-zero, regional only)
-- DUNO runtime is provided by DeepInfra and configured via `VF_DUNO_RUNTIME_URL=https://api.deepinfra.com/v1`, `VF_DUNO_RUNTIME_MODEL=ResembleAI/chatterbox-turbo`, plus `VF_DUNO_RUNTIME_TOKEN` on the backend.
-- Voice Clone is Modal-only in production and is configured via `VF_VOICE_CLONE_PROVIDER_DEFAULT=modal` plus `VF_VOICE_CLONE_MODAL_RUNTIME_URL` on the backend.
+- `voiceflow-gemini-runtime` is the dedicated Cloud TTS runtime for speech synthesis.
+- `voiceflow-vertex-text-runtime` is the dedicated Vertex text runtime for text and AI endpoints.
+- Voice Clone, OpenVoice compatibility, and Demucs separation stay Modal-backed in production and are configured through the backend Modal runtime env set.
 
 The API and worker use the same backend image with role-based startup:
 
@@ -19,6 +20,7 @@ The API and worker use the same backend image with role-based startup:
 - `services.default.json`: service defaults, scaling, env mapping, Secret Manager bindings.
 - `profiles.cloudrun-2vcpu.json`: named capacity contract used by deploy and load-test tooling.
 - `deploy.ps1`: build + deploy script for all services.
+- `validate-provider-drift.mjs`: lightweight drift check for provider mapping, docs wording, and secret references.
 - `rollout-traffic.ps1`: staged traffic rollout (`10% -> 50% -> 100%`) with optional auto-rollback checks.
 - `docker/`: container definitions.
 - `../../.gcloudignore`: Cloud Build upload filter to avoid sending local dev artifacts/media.
@@ -33,7 +35,6 @@ The API and worker use the same backend image with role-based startup:
    - `stripe-webhook-secret`
    - `vf-admin-unlock-signing-secret`
    - `gemini-runtime-admin-token`
-   - `duno-runtime-token` (DeepInfra API token for the configured DUNO model, default `ResembleAI/chatterbox-turbo`)
    - `voice-clone-runtime-token`
    - `voice-clone-artifact-secret`
    - Legacy compatibility aliases: `openvoice-runtime-token`, `openvoice-artifact-secret`
@@ -49,11 +50,11 @@ cd infra/cloudrun
 .\deploy.ps1 -ProjectId "<gcp-project-id>" -Region "us-central1" -VpcConnector "<connector-name>" -RedisUrl "redis://10.0.0.3:6379/0"
 ```
 
-For DeepInfra DUNO plus Modal VC, also set:
+For Cloud TTS + Vertex text plus Modal VC, also set:
 
 ```powershell
-$env:VF_DUNO_RUNTIME_URL="https://api.deepinfra.com/v1"
-$env:VF_DUNO_RUNTIME_MODEL="ResembleAI/chatterbox-turbo"
+$env:VF_TTS_RUNTIME_URL="__GEMINI_RUNTIME_URL__"
+$env:VF_VERTEX_TEXT_RUNTIME_URL="__VERTEX_TEXT_RUNTIME_URL__"
 $env:VF_VOICE_CLONE_MODAL_RUNTIME_URL="https://your-voice-clone-modal-endpoint"
 ```
 
@@ -61,6 +62,12 @@ Dry run:
 
 ```powershell
 .\deploy.ps1 -ProjectId "<gcp-project-id>" -DryRun
+```
+
+Validate provider/env drift before deploy:
+
+```powershell
+node .\validate-provider-drift.mjs
 ```
 
 Deploy without rebuilding images:

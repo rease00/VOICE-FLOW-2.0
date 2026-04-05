@@ -9,23 +9,23 @@ const MODE = process.argv.includes('--mode')
   : 'smoke';
 
 const REPORT_PATH = path.join(ROOT, 'artifacts', 'tts_longtext_5000_audit_report.json');
-const GEM_URL = normalizeBaseUrl(process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
-const DUNO_URL = normalizeBaseUrl(
-  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL,
-  ''
+const PRIME_URL = normalizeBaseUrl(process.env.VF_PRIME_RUNTIME_URL || process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
+const VECTOR_URL = normalizeBaseUrl(
+  process.env.VF_VECTOR_RUNTIME_URL || process.env.VF_GEM_RUNTIME_URL || process.env.VF_GEMINI_RUNTIME_URL,
+  'http://127.0.0.1:7810'
 );
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_LONGTEXT_TIMEOUT_MS || 240000);
-const DUNO_REQUEST_TIMEOUT_MS = Math.max(
+const VECTOR_REQUEST_TIMEOUT_MS = Math.max(
   REQUEST_TIMEOUT_MS,
-  Number(process.env.VF_TTS_LONGTEXT_DUNO_TIMEOUT_MS || 300000),
+  Number(process.env.VF_TTS_LONGTEXT_VECTOR_TIMEOUT_MS || 300000),
 );
-const GEM_MAX_WORDS_PER_REQUEST = Math.max(
+const PRIME_MAX_WORDS_PER_REQUEST = Math.max(
   120,
-  Number(process.env.VF_TTS_LONGTEXT_GEM_MAX_WORDS_PER_REQUEST || 160),
+  Number(process.env.VF_TTS_LONGTEXT_PRIME_MAX_WORDS_PER_REQUEST || 160),
 );
-const DUNO_MAX_WORDS_PER_REQUEST = Math.max(
+const VECTOR_MAX_WORDS_PER_REQUEST = Math.max(
   80,
-  Number(process.env.VF_TTS_LONGTEXT_DUNO_MAX_WORDS_PER_REQUEST || 80),
+  Number(process.env.VF_TTS_LONGTEXT_VECTOR_MAX_WORDS_PER_REQUEST || 80),
 );
 const MAX_ACCEPTABLE_WORDS_PER_SEC = Math.max(
   1.0,
@@ -66,15 +66,15 @@ const HI_UNITS = [
 
 const ENGINES = {
   PRIME: {
-    url: `${GEM_URL}/synthesize`,
+    url: `${PRIME_URL}/synthesize`,
     voice: 'Fenrir',
     language: { en: 'en', hi: 'hi' },
   },
-  ...(DUNO_URL
+  ...(VECTOR_URL
     ? {
-        DUNO: {
-          url: `${DUNO_URL}/synthesize`,
-          voice: 'deepinfra_default',
+        VECTOR: {
+          url: `${VECTOR_URL}/synthesize`,
+          voice: 'Fenrir',
           language: { en: 'en', hi: 'hi' },
         },
       }
@@ -85,13 +85,13 @@ const requestedLongtextEngines = String(process.env.VF_TTS_LONGTEXT_ENGINES || '
   .split(',')
   .map((item) => String(item || '').trim().toUpperCase())
   .filter(Boolean);
-const defaultLongtextEngines = MODE === 'matrix' && DUNO_URL ? ['PRIME', 'DUNO'] : ['PRIME'];
+const defaultLongtextEngines = MODE === 'matrix' && VECTOR_URL ? ['PRIME', 'VECTOR'] : ['PRIME'];
 const ACTIVE_ENGINES = Array.from(new Set(requestedLongtextEngines.length > 0 ? requestedLongtextEngines : defaultLongtextEngines))
   .filter((engine) => Object.prototype.hasOwnProperty.call(ENGINES, engine));
-const PRIMARY_GEM_ENGINE = ACTIVE_ENGINES.find((engine) => engine !== "DUNO") || ACTIVE_ENGINES[0] || "PRIME";
+const PRIMARY_ENGINE = ACTIVE_ENGINES[0] || 'PRIME';
 const ENGINE_MAX_WORDS_PER_REQUEST = {
-  PRIME: GEM_MAX_WORDS_PER_REQUEST,
-  ...(DUNO_URL ? { DUNO: DUNO_MAX_WORDS_PER_REQUEST } : {}),
+  PRIME: PRIME_MAX_WORDS_PER_REQUEST,
+  ...(VECTOR_URL ? { VECTOR: VECTOR_MAX_WORDS_PER_REQUEST } : {}),
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -344,8 +344,8 @@ const postJsonWithTimeout = async (url, payload, timeoutMs = REQUEST_TIMEOUT_MS)
 
 const runRuntimePreflight = async () => {
   const runtimes = [
-    { name: 'PRIME', url: `${GEM_URL}/health` },
-    ...(DUNO_URL ? [{ name: 'DUNO', url: `${DUNO_URL}/health` }] : []),
+    { name: 'PRIME', url: `${PRIME_URL}/health` },
+    ...(VECTOR_URL ? [{ name: 'VECTOR', url: `${VECTOR_URL}/health` }] : []),
   ];
   const checks = [];
 
@@ -467,7 +467,7 @@ const synthesizeSingle = async ({
 };
 
 const synthesize = async ({ engine, language, words, traceId }) => {
-  const timeoutMs = engine === 'DUNO' ? DUNO_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+  const timeoutMs = engine === 'VECTOR' ? VECTOR_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
   const maxWordsPerRequest = Math.max(
     1,
     Number(ENGINE_MAX_WORDS_PER_REQUEST[engine] || words || 1),
@@ -562,10 +562,10 @@ const synthesize = async ({ engine, language, words, traceId }) => {
   };
 };
 
-const runGeminiQuotaPrecheck = async () => {
+const runPrimeQuotaPrecheck = async () => {
   const traceId = `vf_longtxt_quota_precheck_${Date.now().toString(36)}`;
   const result = await synthesizeSingle({
-    engine: PRIMARY_GEM_ENGINE,
+    engine: PRIMARY_ENGINE,
     language: 'en',
     words: GEMINI_QUOTA_PREFLIGHT_WORDS,
     traceId,
@@ -644,21 +644,21 @@ const main = async () => {
     },
     tuning: {
       requestTimeoutMs: REQUEST_TIMEOUT_MS,
-      dunoRequestTimeoutMs: DUNO_REQUEST_TIMEOUT_MS,
-      dunoMaxWordsPerRequest: DUNO_MAX_WORDS_PER_REQUEST,
-      geminiQuotaPrecheckWords: GEMINI_QUOTA_PREFLIGHT_WORDS,
-      geminiQuotaPrecheckTimeoutMs: GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS,
+      vectorRequestTimeoutMs: VECTOR_REQUEST_TIMEOUT_MS,
+      vectorMaxWordsPerRequest: VECTOR_MAX_WORDS_PER_REQUEST,
+      primeQuotaPrecheckWords: GEMINI_QUOTA_PREFLIGHT_WORDS,
+      primeQuotaPrecheckTimeoutMs: GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS,
       engines: ACTIVE_ENGINES,
-      quotaPrecheckEngine: PRIMARY_GEM_ENGINE,
+      quotaPrecheckEngine: PRIMARY_ENGINE,
       allowPrecheckFailure: ALLOW_PREFLIGHT_FAILURE,
       quotaHardFail: QUOTA_HARD_FAIL,
-      gemMaxWordsPerRequest: GEM_MAX_WORDS_PER_REQUEST,
+      primeMaxWordsPerRequest: PRIME_MAX_WORDS_PER_REQUEST,
       smokeMaxExecutedChunks: SMOKE_MAX_EXECUTED_CHUNKS,
       maxAcceptableWordsPerSec: MAX_ACCEPTABLE_WORDS_PER_SEC,
     },
     runtimes: {
-      PRIME: GEM_URL,
-      DUNO: DUNO_URL,
+      PRIME: PRIME_URL,
+      VECTOR: VECTOR_URL,
     },
     tests: [],
     quotaPrecheck: null,
@@ -681,7 +681,7 @@ const main = async () => {
     return 1;
   }
 
-  const quotaPrecheck = await runGeminiQuotaPrecheck();
+  const quotaPrecheck = await runPrimeQuotaPrecheck();
   report.quotaPrecheck = quotaPrecheck;
   if (!quotaPrecheck.ok) {
     const precheckClass = String(quotaPrecheck.classification || 'unknown');

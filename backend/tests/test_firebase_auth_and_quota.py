@@ -389,7 +389,7 @@ def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     assert detail.get("errorCode") == "VF_TTS_ENGINE_PLAN_FORBIDDEN"
     assert detail.get("plan") == "Free"
     assert detail.get("engine") == "PRIME"
-    assert set(detail.get("allowedEngines") or []) == {"DUNO", "VECTOR"}
+    assert set(detail.get("allowedEngines") or []) == {"VECTOR"}
 
 
 def test_prime_is_allowed_for_paid_wallet_balance(monkeypatch) -> None:
@@ -583,19 +583,19 @@ def test_admin_reconcile_allowed_engines_dry_run_and_apply(monkeypatch) -> None:
         **backend_app._default_entitlement(free_uid),
         "plan": "Free",
         "paidVfBalance": 0,
-        "allowedEngines": ["DUNO", "VECTOR", "PRIME"],
+        "allowedEngines": ["VECTOR", "PRIME"],
     }
     backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid] = {
         **backend_app._default_entitlement(paid_wallet_uid),
         "plan": "Free",
         "paidVfBalance": 50,
-        "allowedEngines": ["DUNO", "VECTOR"],
+        "allowedEngines": ["VECTOR"],
     }
     backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid] = {
         **backend_app._default_entitlement(paid_plan_uid),
         "plan": "Pro",
         "paidVfBalance": 0,
-        "allowedEngines": ["DUNO", "VECTOR"],
+        "allowedEngines": ["VECTOR"],
     }
 
     client = TestClient(backend_app.app)
@@ -608,9 +608,9 @@ def test_admin_reconcile_allowed_engines_dry_run_and_apply(monkeypatch) -> None:
     assert dry_run_payload["unchanged"] == 0
     assert dry_run_payload["failures"] == 0
     assert set(dry_run_payload["sampleUserIds"]) == {free_uid, paid_wallet_uid, paid_plan_uid}
-    assert backend_app._INMEMORY_ENTITLEMENTS[free_uid]["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
-    assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["DUNO", "VECTOR"]
-    assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["DUNO", "VECTOR"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[free_uid]["allowedEngines"] == ["VECTOR", "PRIME"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["VECTOR"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["VECTOR"]
 
     apply_run = client.post("/admin/entitlements/reconcile-allowed-engines", json={"dryRun": False})
     assert apply_run.status_code == 200
@@ -620,9 +620,9 @@ def test_admin_reconcile_allowed_engines_dry_run_and_apply(monkeypatch) -> None:
     assert apply_payload["unchanged"] == 0
     assert apply_payload["failures"] == 0
     assert set(apply_payload["sampleUserIds"]) == {free_uid, paid_wallet_uid, paid_plan_uid}
-    assert backend_app._INMEMORY_ENTITLEMENTS[free_uid]["allowedEngines"] == ["DUNO", "VECTOR"]
-    assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
-    assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[free_uid]["allowedEngines"] == ["VECTOR"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["VECTOR", "PRIME"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["VECTOR", "PRIME"]
 
 
 def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> None:
@@ -1143,6 +1143,7 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     assert payload["plan"]["key"] == "pro"
     assert "dailyGenerationLimit" not in payload["plan"]
     assert payload["plan"]["pricing"]["discountPercent"] == 0
+    assert payload["plan"]["vcTokenPackDiscountPercent"] == 5
     assert int(payload["plan"]["ttsSuccessRpm"]) == int(
         backend_app._TTS_SUCCESS_LIMITER.quota_for_plan(backend_app._tts_success_bucket_for_plan("pro"))
     )
@@ -1322,12 +1323,14 @@ def test_vc_token_pack_webhook_credits_vc_wallet(monkeypatch) -> None:
                     "notes": {
                         "kind": "vc_token_pack",
                         "uid": "vc_wallet_user_1",
-                        "packKey": "standard",
-                        "packVc": "750",
-                        "finalAmountInr": "699",
+                        "packKey": "pro",
+                        "packVc": "1500",
+                        "standardAmountInr": "3000",
+                        "finalAmountInr": "2850",
+                        "discountPercent": "5",
                     },
                     "customer_id": "cus_vc_wallet_1",
-                    "amount": 69900,
+                    "amount": 285000,
                     "currency": "INR",
                 }
             }
@@ -1338,7 +1341,7 @@ def test_vc_token_pack_webhook_credits_vc_wallet(monkeypatch) -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     entitlement = backend_app._load_entitlement("vc_wallet_user_1")
-    assert entitlement["vcPaidBalance"] == 750
+    assert entitlement["vcPaidBalance"] == 1500
 
 
 def test_wallet_vc_convert_requires_config(monkeypatch) -> None:
@@ -1428,7 +1431,11 @@ def test_vc_token_pack_checkout_session_returns_razorpay_payload(monkeypatch) ->
         backend_app,
         "VC_TOKEN_PACK_CATALOG",
         {
-            "starter": {"vc": 650, "priceInr": 499},
+            "starter": {"vc": 55, "priceInr": 110},
+            "standard": {"vc": 200, "priceInr": 400},
+            "growth": {"vc": 500, "priceInr": 1000},
+            "pro": {"vc": 1500, "priceInr": 3000},
+            "scale": {"vc": 2600, "priceInr": 5000},
         },
     )
     captured_orders: list[dict] = []
@@ -1448,11 +1455,83 @@ def test_vc_token_pack_checkout_session_returns_razorpay_payload(monkeypatch) ->
     assert response.status_code == 200
     body = response.json()
     assert body["packKey"] == "starter"
-    assert int(body["packVc"]) == 650
-    assert int(body["finalAmountInr"]) == 499
+    assert int(body["packVc"]) == 55
+    assert int(body["standardAmountInr"]) == 110
+    assert int(body["finalAmountInr"]) == 110
+    assert int(body["discountPercent"]) == 0
     assert len(captured_orders) == 1
     notes = captured_orders[0].get("notes") or {}
     assert str(notes.get("kind") or "") == "vc_token_pack"
+    assert int(notes.get("packVc") or 0) == 55
+    assert int(notes.get("standardAmountInr") or 0) == 110
+    assert int(notes.get("finalAmountInr") or 0) == 110
+    assert int(notes.get("discountPercent") or 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("plan_name", "pack_key", "expected_vc", "expected_standard", "expected_final"),
+    [
+        ("Pro", "growth", 500, 1000, 950),
+        ("Scale", "scale", 2600, 5000, 4750),
+    ],
+)
+def test_vc_token_pack_checkout_applies_plan_discount(
+    monkeypatch,
+    plan_name,
+    pack_key,
+    expected_vc,
+    expected_standard,
+    expected_final,
+) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "VC_TOKEN_PACK_CATALOG",
+        {
+            "starter": {"vc": 55, "priceInr": 110},
+            "standard": {"vc": 200, "priceInr": 400},
+            "growth": {"vc": 500, "priceInr": 1000},
+            "pro": {"vc": 1500, "priceInr": 3000},
+            "scale": {"vc": 2600, "priceInr": 5000},
+        },
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda uid: {
+            **backend_app._default_entitlement(uid),
+            "plan": plan_name,
+        },
+    )
+    captured_orders: list[dict] = []
+
+    def _fake_create_one_time_order(**kwargs):
+        captured_orders.append(dict(kwargs))
+        return {"id": f"order_{pack_key}_discount", "order_id": f"order_{pack_key}_discount"}
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_one_time_order", _fake_create_one_time_order)
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/vc-token-pack/checkout-session",
+        json={"pack": pack_key},
+        headers={"x-dev-uid": f"{pack_key}_discount_user", "Idempotency-Key": f"{pack_key}_discount_user:vc:{pack_key}:1"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["packKey"] == pack_key
+    assert int(body["packVc"]) == expected_vc
+    assert int(body["standardAmountInr"]) == expected_standard
+    assert int(body["finalAmountInr"]) == expected_final
+    assert int(body["discountPercent"]) == 5
+    assert len(captured_orders) == 1
+    notes = captured_orders[0].get("notes") or {}
+    assert int(notes.get("standardAmountInr") or 0) == expected_standard
+    assert int(notes.get("finalAmountInr") or 0) == expected_final
+    assert int(notes.get("discountPercent") or 0) == 5
 
 
 def test_vc_monthly_grants_normalized_for_pro_and_scale() -> None:

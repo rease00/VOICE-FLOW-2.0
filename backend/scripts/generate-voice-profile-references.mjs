@@ -13,10 +13,9 @@ const REF_DIR = path.join(ROOT, "assets", "voice_profiles", "reference");
 const MANIFEST_PATH = path.join(ROOT, "data", "voice-profile-generated-manifest.json");
 const REF_DIR_RELATIVE = "assets/voice_profiles/reference";
 
-const GEM_RUNTIME_URL = String(process.env.VF_GEMINI_RUNTIME_URL || "http://127.0.0.1:7810").trim().replace(/\/+$/, "");
-const DUNO_RUNTIME_URL = String(
-  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL || ""
-).trim().replace(/\/+$/, "");
+const PRIME_RUNTIME_URL = String(process.env.VF_PRIME_RUNTIME_URL || process.env.VF_GEMINI_RUNTIME_URL || "http://127.0.0.1:7810")
+  .trim()
+  .replace(/\/+$/, "");
 
 function parseJson(raw) {
   const clean = String(raw || "").replace(/^\uFEFF/, "");
@@ -54,8 +53,8 @@ function canonicalVoiceIdEntries(voiceToProfile) {
   return pairs;
 }
 
-async function synthesizeGemReference({ text, voiceId, traceId }) {
-  const endpoint = `${GEM_RUNTIME_URL}/synthesize`;
+async function synthesizePrimeReference({ text, voiceId, traceId }) {
+  const endpoint = `${PRIME_RUNTIME_URL}/synthesize`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -79,59 +78,17 @@ async function synthesizeGemReference({ text, voiceId, traceId }) {
   return bytes;
 }
 
-async function synthesizeDunoReference({ text, voiceId, traceId }) {
-  const endpoint = `${DUNO_RUNTIME_URL}/synthesize`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      text,
-      voiceId,
-      voice_id: voiceId,
-      language: "en",
-      trace_id: traceId,
-    }),
-  });
-  if (!response.ok) {
-    const raw = await response.text().catch(() => "");
-    const detail = raw ? raw.slice(0, 240) : `http_${response.status}`;
-    throw new Error(detail);
-  }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length < 128) {
-    throw new Error("empty_or_tiny_audio");
-  }
-  return bytes;
-}
-
 function buildProfileMappings(voiceMapPayload) {
-  const gemVoiceToProfile = voiceMapPayload?.engines?.PRIME?.voiceToProfile || {};
-  const dunoVoiceToProfile = voiceMapPayload?.engines?.DUNO?.voiceToProfile || {};
+  const primeVoiceToProfile = voiceMapPayload?.engines?.PRIME?.voiceToProfile || {};
 
-  const gemPairs = canonicalVoiceIdEntries(gemVoiceToProfile);
-  const gemProfileToVoice = new Map();
-  for (const item of gemPairs) {
-    if (!gemProfileToVoice.has(item.profileId)) {
-      gemProfileToVoice.set(item.profileId, item.voiceId);
+  const primePairs = canonicalVoiceIdEntries(primeVoiceToProfile);
+  const primeProfileToVoice = new Map();
+  for (const item of primePairs) {
+    if (!primeProfileToVoice.has(item.profileId)) {
+      primeProfileToVoice.set(item.profileId, item.voiceId);
     }
   }
-
-  const dunoProfileToVoice = new Map();
-  for (const [voiceId, profileId] of Object.entries(dunoVoiceToProfile || {})) {
-    const v = String(voiceId || "").trim();
-    const p = String(profileId || "").trim();
-    if (!v || !p) continue;
-    if (!dunoProfileToVoice.has(p)) {
-      dunoProfileToVoice.set(p, v);
-    }
-  }
-  return { gemProfileToVoice, dunoProfileToVoice };
-}
-
-function dunoGenderFallbackVoice(profile) {
-  const gender = String(profile?.gender || "").trim().toLowerCase();
-  if (gender === "male") return "hm_omega";
-  return "hf_alpha";
+  return { primeProfileToVoice };
 }
 
 async function main() {
@@ -140,15 +97,15 @@ async function main() {
   const bank = await readJson(PROFILE_BANK_PATH);
   const map = await readJson(VOICE_MAP_PATH);
 
-  if (!DUNO_RUNTIME_URL) {
-    throw new Error("VF_DUNO_RUNTIME_URL must point to the Modal Duno endpoint.");
+  if (!PRIME_RUNTIME_URL) {
+    throw new Error("VF_PRIME_RUNTIME_URL or VF_GEMINI_RUNTIME_URL must point to the PRIME runtime endpoint.");
   }
 
   if (!Array.isArray(bank?.profiles)) {
     throw new Error("Invalid profile bank. Expected profiles[]");
   }
 
-  const { gemProfileToVoice, dunoProfileToVoice } = buildProfileMappings(map);
+  const { primeProfileToVoice } = buildProfileMappings(map);
 
   await fs.mkdir(REF_DIR, { recursive: true });
   const rows = [];
@@ -160,9 +117,7 @@ async function main() {
       continue;
     }
 
-    const gemVoiceId = String(gemProfileToVoice.get(profileId) || "").trim();
-    const dunoVoiceId = String(dunoProfileToVoice.get(profileId) || "").trim();
-    const dunoFallbackVoiceId = dunoGenderFallbackVoice(profile);
+    const primeVoiceId = String(primeProfileToVoice.get(profileId) || "").trim();
 
     const targetPath = path.join(REF_DIR, `${profileId}.wav`);
     if (!force) {
@@ -172,7 +127,7 @@ async function main() {
           profileId,
           status: "skip",
           reason: "exists",
-          voiceId: gemVoiceId || dunoVoiceId || dunoFallbackVoiceId,
+          voiceId: primeVoiceId,
           targetPath: path.relative(ROOT, targetPath),
         });
         console.log(`[skip] ${profileId} exists`);
@@ -186,38 +141,19 @@ async function main() {
     let bytes = null;
     let engineUsed = "";
     let voiceUsed = "";
-    let gemError = "";
-    let dunoError = "";
+    let primeError = "";
 
-    if (gemVoiceId) {
+    if (primeVoiceId) {
       try {
-        bytes = await synthesizeGemReference({
+        bytes = await synthesizePrimeReference({
           text,
-          voiceId: gemVoiceId,
-          traceId: `vf_profile_ref_${profileId}_gem`,
+          voiceId: primeVoiceId,
+          traceId: `vf_profile_ref_${profileId}_prime`,
         });
         engineUsed = "PRIME";
-        voiceUsed = gemVoiceId;
+        voiceUsed = primeVoiceId;
       } catch (error) {
-        gemError = error instanceof Error ? error.message : String(error);
-      }
-    }
-
-    if (!bytes) {
-      const fallbackOrder = [dunoVoiceId, dunoFallbackVoiceId].filter(Boolean);
-      for (const dunoCandidate of fallbackOrder) {
-        try {
-          bytes = await synthesizeDunoReference({
-            text,
-            voiceId: dunoCandidate,
-            traceId: `vf_profile_ref_${profileId}_duno`,
-          });
-          engineUsed = "DUNO";
-          voiceUsed = dunoCandidate;
-          break;
-        } catch (error) {
-          dunoError = error instanceof Error ? error.message : String(error);
-        }
+        primeError = error instanceof Error ? error.message : String(error);
       }
     }
 
@@ -230,16 +166,16 @@ async function main() {
         voiceId: voiceUsed,
         bytes: bytes.length,
         targetPath: path.relative(ROOT, targetPath),
-        gemError: gemError || undefined,
+        primeError: primeError || undefined,
       });
       console.log(`[ok] ${profileId} (${engineUsed}:${voiceUsed}) -> ${path.relative(ROOT, targetPath)}`);
     } else {
-      const reason = [gemError, dunoError].filter(Boolean).join(" | ") || "no_runtime_available";
+      const reason = primeError || "no_runtime_available";
       rows.push({
         profileId,
         status: "fail",
         engine: "none",
-        voiceId: gemVoiceId || dunoVoiceId || dunoFallbackVoiceId || "",
+        voiceId: primeVoiceId || "",
         reason,
       });
       console.log(`[fail] ${profileId} ${reason}`);
@@ -287,10 +223,9 @@ async function main() {
 
   const summary = {
     generatedAt: new Date().toISOString(),
-    note: "Voice profile reference clips generated from runtime mappings with PRIME primary and Duno fallback.",
+    note: "Voice profile reference clips generated from PRIME runtime mappings.",
     runtimeUrls: {
-      gem: GEM_RUNTIME_URL,
-      duno: DUNO_RUNTIME_URL,
+      prime: PRIME_RUNTIME_URL,
     },
     rows,
   };

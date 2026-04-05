@@ -75,7 +75,6 @@ def test_runtime_contract_script_allows_auth_challenge_preflight() -> None:
                     "engines": {
                         "PRIME": _engine_capability("GEMINI"),
                         "VECTOR": _engine_capability("VECTOR"),
-                        "DUNO": _engine_capability("DUNO"),
                     }
                 }
                 body = json.dumps(payload).encode("utf-8")
@@ -129,7 +128,6 @@ def test_runtime_contract_script_retries_timeout_and_recovers() -> None:
                     "engines": {
                         "PRIME": _engine_capability("GEMINI"),
                         "VECTOR": _engine_capability("VECTOR"),
-                        "DUNO": _engine_capability("DUNO"),
                     }
                 }
                 body = json.dumps(payload).encode("utf-8")

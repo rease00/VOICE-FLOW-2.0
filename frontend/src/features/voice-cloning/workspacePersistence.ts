@@ -1,5 +1,4 @@
 import type {
-  DunoNativeCloneResponse,
   VoiceCloneRenderResponse,
   VoiceCloneJobKind,
 } from './api';
@@ -20,8 +19,8 @@ export interface PersistedVoiceCloneResult {
   previewUrl: string;
   downloadUrl: string;
   fileName: string;
-  response: VoiceCloneRenderResponse | DunoNativeCloneResponse;
-  cloneMode: 'modal_vc' | 'duno_native';
+  response: VoiceCloneRenderResponse;
+  cloneMode: 'modal_vc';
 }
 
 export interface PersistedVoiceCloneActiveJob {
@@ -90,7 +89,7 @@ const normalizePersistedActiveJob = (value: unknown): PersistedVoiceCloneActiveJ
   const requestId = String(source.requestId || '').trim();
   const rawKind = String(source.kind || '').trim().toLowerCase();
   const kind = rawKind === 'openvoice' ? 'voice_clone' : rawKind;
-  if (!requestId || (kind !== 'voice_clone' && kind !== 'duno_native')) return null;
+  if (!requestId || kind !== 'voice_clone') return null;
   return {
     requestId,
     ...(String(source.jobId || '').trim() ? { jobId: String(source.jobId || '').trim() } : {}),
@@ -103,12 +102,12 @@ const normalizePersistedResult = (value: unknown): PersistedVoiceCloneResult | n
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
   const cloneMode = String(source.cloneMode || '').trim();
-  if (cloneMode !== 'modal_vc' && cloneMode !== 'duno_native') return null;
+  if (cloneMode !== 'modal_vc') return null;
   return {
     previewUrl: String(source.previewUrl || '').trim(),
     downloadUrl: String(source.downloadUrl || '').trim(),
     fileName: String(source.fileName || '').trim() || 'voice-clone.wav',
-    response: ((source.response && typeof source.response === 'object') ? source.response : {}) as VoiceCloneRenderResponse | DunoNativeCloneResponse,
+    response: ((source.response && typeof source.response === 'object') ? source.response : {}) as VoiceCloneRenderResponse,
     cloneMode,
   };
 };

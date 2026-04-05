@@ -277,8 +277,8 @@ def _now_ms() -> int:
 
 def _norm_engine(value: Any) -> str:
     token = str(value or "").strip().upper()
-    if token in {"DUNO", "DUNO_RUNTIME"}:
-        return "DUNO"
+    if token in {"KOKORO", "KOKORO_RUNTIME", "BASIC"}:
+        return "VECTOR"
     if token in {"VECTOR", "NEURAL_2", "NURAL2", "NURAL_2"}:
         return "VECTOR"
     return "PRIME"
@@ -286,9 +286,9 @@ def _norm_engine(value: Any) -> str:
 
 def _strict_engine(value: Any) -> str:
     token = str(value or "").strip().upper()
-    if token in {"DUNO", "VECTOR", "PRIME"}:
+    if token in {"VECTOR", "PRIME"}:
         return token
-    raise V2ValidationError("Invalid engine. Use DUNO, VECTOR, or PRIME.")
+    raise V2ValidationError("Invalid engine. Use VECTOR or PRIME.")
 
 
 def _canonicalize_engine_token(value: Any) -> str:
@@ -296,7 +296,7 @@ def _canonicalize_engine_token(value: Any) -> str:
     while "__" in token:
         token = token.replace("__", "_")
     token = token.strip("_")
-    if token in {"DUNO", "VECTOR", "PRIME"}:
+    if token in {"VECTOR", "PRIME"}:
         return token
     legacy_map = {
         "GEMINI": "PRIME",
@@ -315,11 +315,9 @@ def _canonicalize_engine_token(value: Any) -> str:
         "HD": "VECTOR",
         "GEM1": "VECTOR",
         "G1": "VECTOR",
-        "KOKORO": "DUNO",
-        "BASIC": "DUNO",
-        "KOKORO_RUNTIME": "DUNO",
-        "DUN": "DUNO",
-        "DUNO_RUNTIME": "DUNO",
+        "KOKORO": "VECTOR",
+        "BASIC": "VECTOR",
+        "KOKORO_RUNTIME": "VECTOR",
     }
     return legacy_map.get(token, "")
 
@@ -912,6 +910,37 @@ class TtsV2Engine:
             self._cache_job_locked(job)
         return job
 
+    def _resolve_existing_job_with_grace(
+        self,
+        *,
+        request_id: str,
+        uid: str,
+        is_admin: bool,
+        fallback_job: Optional[Job] = None,
+        grace_ms: int = 750,
+        sleep_ms: int = 50,
+    ) -> Optional[Job]:
+        deadline_ms = _now_ms() + max(0, int(grace_ms))
+        while True:
+            with self._jobs_lock:
+                existing_id = str(self._request_to_job.get(request_id) or "").strip()
+                if existing_id:
+                    existing = self._jobs.get(existing_id)
+                    if isinstance(existing, Job):
+                        self._auth(existing, uid, is_admin)
+                        return existing
+            existing = self._resolve_existing_queue_job(
+                request_id=request_id,
+                uid=uid,
+                is_admin=is_admin,
+                fallback_job=fallback_job,
+            )
+            if existing is not None:
+                return existing
+            if _now_ms() >= deadline_ms:
+                return None
+            time.sleep(max(0.01, float(sleep_ms) / 1000.0))
+
     def _claim_idempotency(self, request_id: str, uid: str) -> tuple[bool, str]:
         key = self._idem_key(request_id)
         if self._redis is not None:
@@ -1162,17 +1191,11 @@ class TtsV2Engine:
         token = str(plan_key or "").strip().lower()
         if token in {"launch", "launcher"}:
             token = "launcher"
-        lane = "free"
         if token in {"scale", "pro_plus", "plus"}:
-            lane = "pro_plus"
-        elif token in {"pro", "starter", "creator", "launcher"}:
-            lane = "pro"
-        if live_stream:
-            if lane == "free":
-                lane = "pro"
-            elif lane == "pro":
-                lane = "pro_plus"
-        return lane
+            return "scale"
+        if token in {"pro", "creator", "starter", "launcher", "free"}:
+            return token
+        return "free"
 
     def _job_from_queue_record(self, record: dict[str, Any], *, fallback_job: Optional[Job] = None) -> Job:
         safe_record = dict(record or {})
@@ -1433,15 +1456,14 @@ class TtsV2Engine:
             if not claimed:
                 if owner and owner != uid and not is_admin:
                     raise RequestConflictError("request_id is already associated with a different user.")
-                existing = self._resolve_existing_queue_job(
+                existing = self._resolve_existing_job_with_grace(
                     request_id=request_id,
                     uid=uid,
                     is_admin=is_admin,
                 )
                 if existing is not None:
                     return existing
-                # Fail closed only when the durable queue record is not yet available.
-                raise RequestConflictError("request_id is already in use. Retry after idempotency TTL if needed.")
+                raise RequestConflictError("request_id is already in use by an active job.")
             speaker_profiles = _speaker_profile_index(payload.get("speaker_profiles") or payload.get("speaker_voices") or [])
             default_profile = _default_speaker_profile_from_payload(payload)
             if default_profile.get("speaker"):

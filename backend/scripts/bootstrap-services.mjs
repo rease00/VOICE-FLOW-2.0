@@ -88,7 +88,6 @@ const RUNTIME_CONCURRENCY_ENV = AUTO_TUNE_WORKERS
       VF_HOST_RESERVED_CPUS: String(HOST_RESERVED_CPUS),
       VF_TTS_QUEUE_WORKER_COUNT: String(AUTO_TUNED_CONCURRENCY.queueWorkers),
       VF_TTS_ENGINE_CONCURRENCY_GEM: String(AUTO_TUNED_CONCURRENCY.gemConcurrency),
-      VF_TTS_ENGINE_CONCURRENCY_DUNO: String(AUTO_TUNED_CONCURRENCY.dunoConcurrency),
       GEMINI_BATCH_DEFAULT_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel),
       GEMINI_BATCH_MAX_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel),
     }
@@ -162,13 +161,11 @@ function computeConcurrencyPlan(profile, usableCpu) {
   if (profile === "max") {
     const queueWorkers = clampInt(safeUsableCpu + 1, 4, 12);
     const gemConcurrency = clampInt(queueWorkers + 6, 6, 24);
-    const dunoConcurrency = clampInt(Math.round(queueWorkers * 1.0), 3, 12);
     const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 2, 8);
     const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 3, gemBatchDefaultParallel, 12);
     return {
       queueWorkers,
       gemConcurrency,
-      dunoConcurrency,
       gemBatchDefaultParallel,
       gemBatchMaxParallel,
     };
@@ -177,13 +174,11 @@ function computeConcurrencyPlan(profile, usableCpu) {
   if (profile === "cool") {
     const queueWorkers = clampInt(Math.floor((safeUsableCpu + 1) / 2), 1, 4);
     const gemConcurrency = clampInt(queueWorkers + 2, 3, 8);
-    const dunoConcurrency = clampInt(Math.round(queueWorkers * 0.75), 1, 4);
     const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 1, 3);
     const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 1, gemBatchDefaultParallel, 4);
     return {
       queueWorkers,
       gemConcurrency,
-      dunoConcurrency,
       gemBatchDefaultParallel,
       gemBatchMaxParallel,
     };
@@ -192,13 +187,11 @@ function computeConcurrencyPlan(profile, usableCpu) {
   // balanced profile
   const queueWorkers = clampInt(safeUsableCpu, 2, 8);
   const gemConcurrency = clampInt(queueWorkers + 4, 4, 16);
-  const dunoConcurrency = clampInt(Math.round(queueWorkers * 0.85), 2, 8);
   const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 2, 6);
   const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 2, gemBatchDefaultParallel, 8);
   return {
     queueWorkers,
     gemConcurrency,
-    dunoConcurrency,
     gemBatchDefaultParallel,
     gemBatchMaxParallel,
   };
@@ -257,6 +250,8 @@ const BASE_SERVICES = [
     env: (gpu) => ({
       VF_BACKEND_HOST: "127.0.0.1",
       VF_BACKEND_PORT: "7800",
+      VF_TTS_RUNTIME_URL: "http://127.0.0.1:7810",
+      VF_VERTEX_TEXT_RUNTIME_URL: "http://127.0.0.1:7820",
       VF_WHISPER_DEVICE: "cpu",
       VF_WHISPER_COMPUTE: "int8",
       CUDA_VISIBLE_DEVICES: "",
@@ -284,6 +279,41 @@ const BASE_SERVICES = [
       "7810",
     ],
     env: () => ({
+      VF_RUNTIME_NAME: "tts-runtime",
+      VF_RUNTIME_ROLE: "tts_only",
+      VF_TTS_TEXTTOSPEECH_ONLY: "1",
+      CUDA_VISIBLE_DEVICES: "",
+      ...RUNTIME_CONCURRENCY_ENV,
+    }),
+  },
+  {
+    id: "vertex-text-runtime",
+    name: "Vertex Text Runtime",
+    port: 7820,
+    venv: "vertex-text-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_VERTEX_TEXT_RUNTIME",
+    requirements: ["engines/vertex-text-runtime/requirements.txt"],
+    sourceFiles: [
+      "engines/vertex-text-runtime/app.py",
+      "engines/gemini-runtime/app.py",
+      "scripts/bootstrap-services.mjs",
+    ],
+    command: (pythonBin) => [
+      pythonBin,
+      "-m",
+      "uvicorn",
+      "app:app",
+      "--app-dir",
+      "engines/vertex-text-runtime",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "7820",
+    ],
+    env: () => ({
+      VF_RUNTIME_NAME: "vertex-text-runtime",
+      VF_RUNTIME_ROLE: "text_only",
+      VF_RUNTIME_FORCE_AUTH_MODE: "vertex",
       CUDA_VISIBLE_DEVICES: "",
       ...RUNTIME_CONCURRENCY_ENV,
     }),
@@ -313,6 +343,13 @@ const BASE_CHECKS = [
     serviceId: "gemini-runtime",
     name: "Gemini Runtime",
     url: "http://127.0.0.1:7810/health",
+    timeoutMs: FAST_TIMEOUT_MS,
+    validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
+  },
+  {
+    serviceId: "vertex-text-runtime",
+    name: "Vertex Text Runtime",
+    url: "http://127.0.0.1:7820/health",
     timeoutMs: FAST_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
@@ -889,7 +926,7 @@ function resolveSwitchTarget(rawEngine) {
   const serviceId = ENGINE_TO_SERVICE_ID[normalized];
   if (!serviceId) {
     throw new Error(
-      `Invalid engine "${rawEngine}". Expected one of: PRIME, VECTOR. DUNO is Modal-hosted and is not started by the local bootstrap helper.`
+      `Invalid engine "${rawEngine}". Expected one of: PRIME or VECTOR.`
     );
   }
   const service = SERVICES.find((item) => item.id === serviceId);
@@ -1192,7 +1229,7 @@ async function main() {
       `Concurrency autotune enabled: profile=${CONCURRENCY_PROFILE} logicalCpu=${LOGICAL_CPU_COUNT} reserved=${HOST_RESERVED_CPUS} usable=${USABLE_CPU_COUNT}`
     );
     console.log(
-      `Autotune result: queueWorkers=${AUTO_TUNED_CONCURRENCY.queueWorkers} gemConcurrency=${AUTO_TUNED_CONCURRENCY.gemConcurrency} dunoConcurrency=${AUTO_TUNED_CONCURRENCY.dunoConcurrency} gemBatch=${AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel}`
+      `Autotune result: queueWorkers=${AUTO_TUNED_CONCURRENCY.queueWorkers} gemConcurrency=${AUTO_TUNED_CONCURRENCY.gemConcurrency} gemBatch=${AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel}`
     );
   } else {
     console.log("Concurrency autotune disabled (VF_AUTO_TUNE_WORKERS=0).");

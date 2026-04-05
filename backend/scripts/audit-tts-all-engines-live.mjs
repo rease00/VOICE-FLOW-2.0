@@ -56,19 +56,14 @@ const { headers: AUTH_HEADERS, auth: AUTH } = buildAuditHeaders(
 
 const ENGINES = [
   {
-    engine: 'DUNO',
-    voiceId: String(process.env.VF_TTS_AUDIT_DUNO_VOICE || 'deepinfra_default').trim() || 'deepinfra_default',
-    language: String(process.env.VF_TTS_AUDIT_DUNO_LANGUAGE || 'en').trim() || 'en',
-  },
-  {
     engine: 'VECTOR',
     voiceName: String(process.env.VF_TTS_AUDIT_VECTOR_VOICE || 'Fenrir').trim() || 'Fenrir',
     language: String(process.env.VF_TTS_AUDIT_VECTOR_LANGUAGE || 'en').trim() || 'en',
   },
   {
     engine: 'PRIME',
-    voiceName: String(process.env.VF_TTS_AUDIT_GEM_VOICE || 'Fenrir').trim() || 'Fenrir',
-    language: String(process.env.VF_TTS_AUDIT_GEM_LANGUAGE || 'en').trim() || 'en',
+    voiceName: String(process.env.VF_TTS_AUDIT_PRIME_VOICE || process.env.VF_TTS_AUDIT_GEM_VOICE || 'Fenrir').trim() || 'Fenrir',
+    language: String(process.env.VF_TTS_AUDIT_PRIME_LANGUAGE || process.env.VF_TTS_AUDIT_GEM_LANGUAGE || 'en').trim() || 'en',
   },
 ];
 
@@ -212,15 +207,14 @@ const resolveEngineProvider = (engineStatus, engineCapabilities, engine) => {
       runtimeCapabilities.provider ||
       engineStatus?.provider ||
       ''
-    ).trim() ||
-    (engine === 'DUNO' ? 'cpu' : 'hosted');
+    ).trim() || 'hosted';
   const providerPreference =
     capabilityMeta.providerPreference ||
     engineCapabilities?.provider_preference ||
     runtimeMeta.providerPreference ||
     runtimeCapabilities.providerPreference ||
     engineStatus?.provider_preference ||
-    (engine === 'DUNO' ? ['cpu'] : ['hosted']);
+    ['hosted'];
   const deviceMode =
     String(
       capabilityMeta.deviceMode ||
@@ -229,8 +223,7 @@ const resolveEngineProvider = (engineStatus, engineCapabilities, engine) => {
       runtimeCapabilities.deviceMode ||
       engineStatus?.device_mode ||
       ''
-    ).trim() ||
-    (engine === 'DUNO' ? 'cpu' : 'remote');
+    ).trim() || 'remote';
   return {
     provider,
     providerPreference: Array.isArray(providerPreference) ? providerPreference : [providerPreference].filter(Boolean),
@@ -565,7 +558,6 @@ const main = async () => {
 
   const capabilitiesByEngine = capabilitiesProbe.ok
     ? {
-        DUNO: resolveEngineCapabilities(capabilitiesProbe.payload, 'DUNO'),
         VECTOR: resolveEngineCapabilities(capabilitiesProbe.payload, 'VECTOR'),
         PRIME: resolveEngineCapabilities(capabilitiesProbe.payload, 'PRIME'),
       }

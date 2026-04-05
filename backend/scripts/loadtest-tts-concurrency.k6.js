@@ -7,7 +7,7 @@ const MODE = String(__ENV.VF_LOAD_MODE || 'mixed').toLowerCase();
 const UID = String(__ENV.VF_LOAD_UID || 'k6_load_user');
 const AUDIT_BEARER_TOKEN = String(__ENV.AUDIT_BEARER_TOKEN || '').trim();
 const AUDIT_DEV_UID = String(__ENV.AUDIT_DEV_UID || UID).trim() || UID;
-const GEM_RATIO = Number.parseFloat(String(__ENV.VF_LOAD_ENGINE_SPLIT_GEM || '0.6'));
+const PRIME_RATIO = Number.parseFloat(String(__ENV.VF_LOAD_ENGINE_SPLIT_PRIME || '0.6'));
 const VUS = Math.max(1, Number.parseInt(String(__ENV.VF_LOAD_VUS || '50'), 10) || 50);
 const DURATION = String(__ENV.VF_LOAD_DURATION || '30s');
 const JOB_POLL_MS = Math.max(100, Number.parseInt(String(__ENV.VF_LOAD_POLL_MS || '350'), 10) || 350);
@@ -73,11 +73,11 @@ const parseJsonBody = (response) => {
 };
 
 const makePayload = (engine, requestId) => {
-  if (engine === 'DUNO') {
+  if (engine === 'VECTOR') {
     return {
-      engine: 'DUNO',
-      text: 'k6 queue hardening load payload for Duno path.',
-      voice_id: 'deepinfra_default',
+      engine: 'VECTOR',
+      text: 'k6 queue hardening load payload for vector path.',
+      voice_id: 'Fenrir',
       request_id: requestId,
     };
   }
@@ -90,8 +90,8 @@ const makePayload = (engine, requestId) => {
 };
 
 const pickEngine = () => {
-  const ratio = Number.isFinite(GEM_RATIO) ? GEM_RATIO : 0.6;
-  return Math.random() < ratio ? 'PRIME' : 'DUNO';
+  const ratio = Number.isFinite(PRIME_RATIO) ? PRIME_RATIO : 0.6;
+  return Math.random() < ratio ? 'PRIME' : 'VECTOR';
 };
 
 const pickMode = () => {

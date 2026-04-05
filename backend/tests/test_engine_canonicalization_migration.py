@@ -33,18 +33,9 @@ def test_engine_canonicalization_migration_dry_run_apply_verify(monkeypatch) -> 
     backend_app._INMEMORY_ENTITLEMENTS["user_1"] = {
         "uid": "user_1",
         "plan": "Free",
-        "allowedEngines": ["KOKORO", "NEURAL2", "GEM1", "GEM PRO", "DUNO"],
+        "allowedEngines": ["KOKORO", "NEURAL2", "GEM1", "GEM PRO"],
         "vfRates": {"KOKORO": 0.5, "NEURAL2": 1.2, "GEM": 1.5},
         "spendableNowByEngine": {"KOKORO": 10, "NEURAL2": 20, "GEM": 30},
-        "dunoVoiceCloneMap": {
-            "legacy": {
-                "voiceId": "voice-legacy",
-                "speaker": "speaker-a",
-                "referenceHash": "hash-a",
-                "model": "model-a",
-                "updatedAt": "2026-03-29T00:00:00Z",
-            }
-        },
     }
     backend_app._INMEMORY_USAGE_MONTHLY["user_1_202603"] = {
         "uid": "user_1",
@@ -175,14 +166,14 @@ def test_engine_canonicalization_migration_dry_run_apply_verify(monkeypatch) -> 
     assert verify_result["queueJobMetadata"]["legacyTokensRemaining"] == 0
 
     entitlement = backend_app._INMEMORY_ENTITLEMENTS["user_1"]
-    assert entitlement["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
-    assert entitlement["vfRates"] == {"DUNO": 0.5, "VECTOR": 1.2, "PRIME": 1.5}
-    assert entitlement["spendableNowByEngine"] == {"DUNO": 10, "VECTOR": 20, "PRIME": 30}
+    assert entitlement["allowedEngines"] == ["VECTOR", "PRIME"]
+    assert entitlement["vfRates"] == {"VECTOR": 1.2, "PRIME": 1.5}
+    assert entitlement["spendableNowByEngine"] == {"VECTOR": 20, "PRIME": 30}
 
     monthly = backend_app._INMEMORY_USAGE_MONTHLY["user_1_202603"]
-    assert set(monthly["byEngine"].keys()) == {"DUNO", "VECTOR", "PRIME"}
+    assert set(monthly["byEngine"].keys()) == {"VECTOR", "PRIME"}
     daily = backend_app._INMEMORY_USAGE_DAILY["user_1_20260329"]
-    assert set(daily["byEngine"].keys()) == {"DUNO", "VECTOR"}
+    assert set(daily["byEngine"].keys()) == {"VECTOR"}
 
     event = backend_app._INMEMORY_USAGE_EVENTS["evt_1"]
     assert event["engine"] == "PRIME"
@@ -193,15 +184,15 @@ def test_engine_canonicalization_migration_dry_run_apply_verify(monkeypatch) -> 
     history_items = backend_app._history_decode_items_gzip_b64(
         backend_app._INMEMORY_GENERATION_HISTORY["user_1"]["itemsGzipB64"],
     )
-    assert history_items[0]["engine"] == "DUNO"
+    assert history_items[0]["engine"] == "VECTOR"
 
     migrated_queue_record = backend_app._TTS_V2_ENGINE._queue._jobs["job_legacy"]
     assert migrated_queue_record["engine"] == "PRIME"
-    assert migrated_queue_record["payload"]["engine"] == "DUNO"
+    assert migrated_queue_record["payload"]["engine"] == "VECTOR"
     assert migrated_queue_record["payload"]["sourceEngine"] == "VECTOR"
     assert migrated_queue_record["payload"]["nested"]["fallbackEngine"] == "VECTOR"
     assert migrated_queue_record["liveState"]["engine"] == "PRIME"
-    assert migrated_queue_record["liveState"]["chunks"][0]["engine"] == "DUNO"
+    assert migrated_queue_record["liveState"]["chunks"][0]["engine"] == "VECTOR"
     assert migrated_queue_record["result"]["audioRef"]["engine"] == "PRIME"
     assert backend_app._TTS_V2_ENGINE._jobs["job_legacy"].engine == "PRIME"
-    assert backend_app._TTS_V2_ENGINE._jobs["job_legacy"].payload["engine"] == "DUNO"
+    assert backend_app._TTS_V2_ENGINE._jobs["job_legacy"].payload["engine"] == "VECTOR"

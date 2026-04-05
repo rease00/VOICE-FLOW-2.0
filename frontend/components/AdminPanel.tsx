@@ -526,7 +526,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [audioMetadataFrom, setAudioMetadataFrom] = useState('');
   const [audioMetadataTo, setAudioMetadataTo] = useState('');
   const audioMetadataEngineOptions = useMemo(() => ([
-    'DUNO',
     'VECTOR',
     'PRIME',
   ] as const).map((engine) => ({

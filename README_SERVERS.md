@@ -35,7 +35,7 @@ npm run start:backend
 npm run start:backend:gpu
 ```
 
-`start:backend:gpu` enables GPU mode only for eligible local runtimes; Duno uses the Modal-hosted endpoint either way.
+`start:backend:gpu` keeps the dedicated Cloud TTS runtime and Vertex text runtime split while enabling GPU mode for eligible local runtimes.
 
 `npm run start:backend` is idempotent: it reconciles PID files with active listener PIDs and avoids unnecessary restarts unless runtime code/dependencies changed.
 
@@ -85,7 +85,7 @@ npm run services:down
 Dev orchestration env knobs:
 
 ```powershell
-$env:VF_DEV_BOOTSTRAP_MODE="cpu"   # or "gpu"; Duno still uses the Modal-hosted endpoint
+$env:VF_DEV_BOOTSTRAP_MODE="cpu"   # or "gpu"; Cloud TTS and Vertex text remain split
 $env:VF_DEV_BOOTSTRAP_RETRIES="3"
 $env:VF_DEV_RETRY_BASE_MS="1500"
 $env:VF_DEV_RETRY_MAX_MS="10000"
@@ -180,8 +180,8 @@ By default, allocator rotates one successful request at a time so large key pool
 Cross-request speaker-to-key affinity is disabled by default for the same reason. Set `GEMINI_SPEAKER_KEY_AFFINITY_ENABLED=1` only if you explicitly want repeated speaker groups to prefer the same key.
 After changing allocator limits or key pool files, restart both media backend and gemini runtime so active processes pick up the new effective limits.
 
-Duno is no longer started as a local process. Configure the backend with `VF_DUNO_RUNTIME_URL` pointing to the Modal endpoint and set `VF_DUNO_RUNTIME_TOKEN` if the Modal service is private.
-OpenVoice/Seed-VC is also hosted remotely; configure `VF_OPENVOICE_RUNTIME_URL`, and set `VF_OPENVOICE_RUNTIME_TOKEN` plus `VF_OPENVOICE_ARTIFACT_SECRET` when the Modal service is private.
+The local stack now uses a dedicated Cloud TTS runtime for synthesis and a separate Vertex text runtime for text/AI calls.
+OpenVoice/Seed-VC is also Modal-hosted remotely; configure `VF_OPENVOICE_RUNTIME_URL`, and set `VF_OPENVOICE_RUNTIME_TOKEN` plus `VF_OPENVOICE_ARTIFACT_SECRET` when the Modal service is private.
 
 Media backend TTS gateway concurrency env vars:
 
@@ -235,7 +235,7 @@ node backend/scripts/bootstrap-services.mjs switch PRIME
 node backend/scripts/bootstrap-services.mjs switch VECTOR
 ```
 
-`DUNO` is Modal-hosted and remote-only, so there is no local bootstrap switch target for it.
+Legacy retired-engine selections are normalized to `VECTOR`, so there is no separate bootstrap switch target for the removed engine.
 
 Run strict reliability gate pipeline:
 

@@ -85,39 +85,19 @@ describe('ttsVoiceRegistryService', () => {
     expect(byId.get('v11')?.isPlanRestricted).toBe(true);
   });
 
-  it('preserves DUNO runtime voice metadata instead of overwriting it with legacy presets', async () => {
-    vi.mocked(fetchTtsEngineVoices).mockResolvedValueOnce({
-      ok: true,
-      engine: 'DUNO',
-      voices: [
-        {
-          voice_id: 'di_voice_123',
-          voice: 'di_voice_123',
-          name: 'Narrator Clone',
-          accent: 'American English',
-          gender: 'female',
-          country: 'United States',
-          age_group: 'Adult',
-        },
-      ],
-      fetchedAt: new Date().toISOString(),
-    });
+  it('uses the vector catalog as the compatibility fallback', () => {
+    const voices = getStaticVoiceFallback('VECTOR');
+    const byId = new Map(voices.map((voice) => [voice.id, voice]));
 
-    const voices = await fetchEngineRuntimeVoices('DUNO', '');
-    expect(voices).toHaveLength(1);
-    expect(voices[0]).toMatchObject({
-      id: 'di_voice_123',
-      name: 'Narrator Clone',
-      accent: 'American English',
-      gender: 'Female',
-      country: 'United States',
-      ageGroup: 'Adult',
+    expect(voices.length).toBeGreaterThanOrEqual(30);
+    expect(byId.get('v2')).toMatchObject({
+      name: 'Meera India Female',
       accessTier: 'free',
       isPlanRestricted: false,
     });
   });
 
-  it('fetches DUNO runtime voices and falls back to the DUNO static catalog', async () => {
+  it('fetches runtime voices for supported engines and returns a stable catalog', async () => {
     vi.mocked(fetchTtsEngineVoices)
       .mockResolvedValueOnce({
         ok: true,
@@ -133,26 +113,22 @@ describe('ttsVoiceRegistryService', () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        engine: 'DUNO',
+        engine: 'VECTOR',
         voices: [
           {
-            voice_id: 'di_voice_123',
-            voice: 'di_voice_123',
-            name: 'Narrator Clone',
+            voice_id: 'v2',
+            voice: 'Kore',
+            name: 'Free Voice',
           },
         ],
         fetchedAt: new Date().toISOString(),
-      })
-      .mockRejectedValueOnce(new Error('duno runtime unavailable'));
+      });
 
     const registry = await fetchRuntimeVoiceRegistry({});
-    expect(fetchTtsEngineVoices).toHaveBeenCalledWith('DUNO');
-    expect(registry.DUNO).toEqual(getStaticVoiceFallback('DUNO'));
-    expect(registry.DUNO[0]).toMatchObject({
-      engine: 'DUNO',
-      id: 'deepinfra_default',
-      accessTier: 'free',
-    });
+    expect(fetchTtsEngineVoices).toHaveBeenNthCalledWith(1, 'PRIME');
+    expect(fetchTtsEngineVoices).toHaveBeenNthCalledWith(2, 'VECTOR');
+    expect(registry.PRIME).toHaveLength(1);
+    expect(registry.VECTOR).toHaveLength(1);
   });
 });
 

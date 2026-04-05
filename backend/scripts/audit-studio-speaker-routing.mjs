@@ -155,11 +155,10 @@ for (const row of runtimeVoices) {
 const freeAllowlist = {
   PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  DUNO: ['deepinfra_default'],
 };
 
 for (const [engine, ids] of Object.entries(freeAllowlist)) {
-  const minimumVoices = engine === 'DUNO' ? 1 : 10;
+  const minimumVoices = 10;
   if (ids.length < minimumVoices) {
     issues.push({
       severity: 'error',

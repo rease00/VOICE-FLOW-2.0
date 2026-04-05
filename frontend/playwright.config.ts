@@ -59,17 +59,14 @@ const fullTestMatch = [
   /reader\.device-check\.spec\.ts$/,
   /reader\.tabs\.spec\.ts$/,
   /studio\.director-chip\.spec\.ts$/,
-  /duno-switch-3devices\.spec\.ts$/,
   /toolbar\.one-line\.devices\.spec\.ts$/,
   /workspace\.launch\.spec\.ts$/,
   /voices\.gcp-mapping\.spec\.ts$/,
-  /voices\.duno\.spec\.ts$/,
   /voiceCloneProgressCancel\.spec\.ts$/,
   /voiceCloneDropzoneInteractions\.spec\.ts$/,
 ];
 const desktopMobileTestMatch = fullTestMatch.filter((entry) => (
   entry.toString() !== /reader\.device-check\.spec\.ts$/.toString()
-  && entry.toString() !== /duno-switch-3devices\.spec\.ts$/.toString()
 ));
 
 export default defineConfig({

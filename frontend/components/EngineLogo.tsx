@@ -1,6 +1,6 @@
 ﻿import React from 'react';
-import { Crown, Mic2, Zap } from 'lucide-react';
-import { GenerationSettings } from '../types';
+import { Crown, Zap } from 'lucide-react';
+import { ActiveTtsEngineKey, GenerationSettings } from '../types';
 
 type LogoSize = 'sm' | 'md' | 'lg';
 type LogoVariant = 'filled' | 'ringed';
@@ -20,7 +20,7 @@ const SIZE_MAP: Record<LogoSize, { outer: string; icon: number }> = {
 };
 
 const ENGINE_STYLE: Record<
-  GenerationSettings['engine'],
+  ActiveTtsEngineKey,
   {
     gradient: string;
     glow: string;
@@ -34,12 +34,6 @@ const ENGINE_STYLE: Record<
     ring: 'ring-indigo-200/70',
     Icon: Crown,
   },
-  DUNO: {
-    gradient: 'from-sky-500 via-cyan-500 to-teal-500',
-    glow: 'shadow-[0_0_18px_rgba(14,165,233,0.4)]',
-    ring: 'ring-cyan-200/70',
-    Icon: Mic2,
-  },
   VECTOR: {
     gradient: 'from-amber-500 via-orange-500 to-red-500',
     glow: 'shadow-[0_0_18px_rgba(249,115,22,0.4)]',
@@ -48,6 +42,9 @@ const ENGINE_STYLE: Record<
   },
 };
 
+const normalizeActiveEngine = (engine: GenerationSettings['engine']): ActiveTtsEngineKey =>
+  engine === 'PRIME' ? 'PRIME' : 'VECTOR';
+
 export const EngineLogo: React.FC<EngineLogoProps> = ({
   engine,
   size = 'md',
@@ -55,7 +52,7 @@ export const EngineLogo: React.FC<EngineLogoProps> = ({
   withGlow = false,
   className = '',
 }) => {
-  const spec = ENGINE_STYLE[engine];
+  const spec = ENGINE_STYLE[normalizeActiveEngine(engine)];
   const dimensions = SIZE_MAP[size];
   const ringClass = variant === 'ringed' ? `ring-1 ${spec.ring}` : '';
   const glowClass = withGlow ? spec.glow : '';

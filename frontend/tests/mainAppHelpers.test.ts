@@ -10,24 +10,20 @@ import {
 import { getEngineDisplayName } from '../services/engineDisplay';
 
 describe('mainAppHelpers engine token handling', () => {
-  it('preserves legacy engine tokens instead of silently mapping them to PRIME', () => {
+  it('normalizes legacy-compatible engine tokens to the supported public engines', () => {
     expect(resolveEngineToken('prime_v2')).toBe('prime_v2');
     expect(resolveEngineToken('vector')).toBe('VECTOR');
+    expect(resolveEngineToken('kokoro')).toBe('VECTOR');
   });
 
   it('only keeps canonical engines when normalizing allowed engine lists', () => {
-    expect(normalizeAllowedEngines(['DUNO', 'legacy', 'prime_v2', 'VECTOR', 'PRIME'])).toEqual([
-      'DUNO',
+    expect(normalizeAllowedEngines(['KOKORO', 'legacy', 'prime_v2', 'VECTOR', 'PRIME'])).toEqual([
       'VECTOR',
       'PRIME',
     ]);
   });
 
   it('provides selector-specific copy without changing shared labels', () => {
-    expect(getEngineSelectorCopy('DUNO')).toEqual({
-      title: getEngineDisplayName('DUNO'),
-      description: 'Expressive voice with built-in cloning.',
-    });
     expect(getEngineSelectorCopy('VECTOR')).toEqual({
       title: getEngineDisplayName('VECTOR'),
       description: 'Balanced quality with reliable performance.',
@@ -43,19 +39,19 @@ describe('mainAppHelpers engine token handling', () => {
       hasUnlimitedAccess: false,
       isPaidBillingPlan: false,
       paidVfBalance: 0,
-    })).toEqual(['DUNO', 'VECTOR']);
+    })).toEqual(['VECTOR']);
 
     expect(resolvePrimeAllowedEngines({
       hasUnlimitedAccess: false,
       isPaidBillingPlan: false,
       paidVfBalance: 125,
-    })).toEqual(['DUNO', 'VECTOR', 'PRIME']);
+    })).toEqual(['VECTOR', 'PRIME']);
 
     expect(resolvePrimeAllowedEngines({
       hasUnlimitedAccess: false,
       isPaidBillingPlan: true,
       paidVfBalance: 0,
-    })).toEqual(['DUNO', 'VECTOR', 'PRIME']);
+    })).toEqual(['VECTOR', 'PRIME']);
   });
 });
 

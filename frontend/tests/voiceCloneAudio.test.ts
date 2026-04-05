@@ -98,23 +98,4 @@ describe('voice clone audio helpers', () => {
     expect(url).toBe('data:audio/wav;base64,AQIDBA==');
   });
 
-  it('builds a real DUNO preview audio data url from generated speech', async () => {
-    const { buildDunoClonePreviewUrl } = await import('../src/features/voice-cloning/dunoPreview');
-    const fakeBlob = new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/wav' });
-    generateSpeechMock.mockResolvedValueOnce({} as AudioBuffer);
-    audioBufferToWavMock.mockReturnValueOnce(fakeBlob);
-
-    const url = await buildDunoClonePreviewUrl({
-      backendBaseUrl: 'https://backend.example/api',
-      voiceId: 'di_voice_123',
-      voiceName: 'Narrator Clone',
-      voiceModel: 'ResembleAI/chatterbox-turbo',
-    });
-
-    expect(generateSpeechMock).toHaveBeenCalledTimes(1);
-    expect(String(generateSpeechMock.mock.calls[0]?.[0] || '')).toContain('Narrator Clone');
-    expect(String(generateSpeechMock.mock.calls[0]?.[1] || '')).toBe('Narrator Clone');
-    expect(audioBufferToWavMock).toHaveBeenCalledTimes(1);
-    expect(url).toBe('data:audio/wav;base64,AQIDBA==');
-  });
 });

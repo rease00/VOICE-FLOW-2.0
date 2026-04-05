@@ -39,8 +39,8 @@ if (!AUDIT_AUTH.tokenPresent) {
 
 const REPORT_BASENAME = TARGET_SECONDS === 30 ? 'tts_hi_30s_report.json' : `tts_hi_${TARGET_SECONDS}s_report.json`;
 const REPORT_PATH = path.join(ARTIFACT_DIR, REPORT_BASENAME);
-const DUNO_RUNTIME_URL = String(
-  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL || ''
+const VECTOR_RUNTIME_URL = String(
+  process.env.VF_VECTOR_RUNTIME_URL || process.env.VF_GEM_RUNTIME_URL || process.env.VF_GEMINI_RUNTIME_URL || ''
 ).trim();
 
 const CORE_EMOTIONS = ['Neutral', 'Happy', 'Sad', 'Angry', 'Calm', 'Excited'];
@@ -99,16 +99,16 @@ const ENGINE_CONFIGS = [
     }),
   },
   ...(
-    DUNO_RUNTIME_URL
+    VECTOR_RUNTIME_URL
       ? [{
-          id: 'DUNO_RUNTIME',
-          switchEngine: 'DUNO',
-          runtimeUrls: resolveRuntimeUrls(process.env.VF_TTS_AUDIT_DUNO_URLS, DUNO_RUNTIME_URL, ''),
+          id: 'VECTOR_RUNTIME',
+          switchEngine: 'VECTOR',
+          runtimeUrls: resolveRuntimeUrls(process.env.VF_TTS_AUDIT_VECTOR_URLS, VECTOR_RUNTIME_URL, ''),
           synthPath: '/synthesize',
           buildPayload: ({ text, emotion }) => ({
             text,
-            voiceId: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'deepinfra_default',
-            voice_id: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'deepinfra_default',
+            voiceName: process.env.VF_TTS_AUDIT_VECTOR_VOICE || 'Fenrir',
+            voice_id: process.env.VF_TTS_AUDIT_VECTOR_VOICE || 'Fenrir',
             language: 'hi',
             emotion,
             speed: 1.0,

@@ -15,6 +15,7 @@ const DEV_ALL_SESSION_ID = `${process.pid}-${Date.now()}-${Math.random().toStrin
 const SERVICE_CATALOG = [
   { id: "media-backend", name: "Media Backend", logFile: ".runtime/logs/media-backend.log" },
   { id: "gemini-runtime", name: "Gemini Runtime", logFile: ".runtime/logs/gemini-runtime.log" },
+  { id: "vertex-text-runtime", name: "Vertex Text Runtime", logFile: ".runtime/logs/vertex-text-runtime.log" },
 ];
 const SERVICES = SERVICE_CATALOG;
 
