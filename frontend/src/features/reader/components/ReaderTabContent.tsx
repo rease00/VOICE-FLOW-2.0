@@ -8,31 +8,42 @@ import type {
   ReaderDashboardPayload,
   ReaderLegalAck,
   ReaderLibrary,
+  ReaderNovelEntitlementView,
+  ReaderPublishConfig,
+  ReaderPublisherKycStatus,
   ReaderSession,
   ReaderSessionProgress,
 } from '../../../../types';
 import { VOICES } from '../../../../constants';
 import { readStorageJson, writeStorageJson } from '../../../shared/storage/localStore';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
-import { resolveApiUrl } from '../../../shared/api/config';
 import {
   acceptReaderLegalAck,
   checkReaderCommercialUse,
+  createReaderPublisherKycSession,
   createReaderSession,
   createReaderUpload,
   exportReaderSessionAudio,
   getReaderDashboard,
   getReaderCatalogItem,
   getReaderLegalAck,
+  getReaderNovelEntitlement,
   getReaderPreferences,
+  getReaderPublisherStatus,
   getReaderSession,
   getReaderTtsJobAudio,
+  getReaderUploadPublishConfig,
+  publishReaderUpload,
   primeReaderQueue,
   syncReaderOfflineLibrarySnapshot,
   saveReaderSession,
   resolveReaderQueuePrimeMode,
   type ReaderCommercialCheckResponse,
+  type ReaderPublisherKycSessionResponse,
   type ReaderOfflineLibrarySnapshotEntry,
+  unlockReaderNovel,
+  unlockReaderNovelChapter,
+  updateReaderUploadPublishConfig,
   updateReaderPreferences,
   updateReaderProgress,
   type ReaderPreferencesPayload,
@@ -43,6 +54,8 @@ import {
   isLowConfidenceItem,
   resolveImportedStatusBadge,
 } from '../model/library';
+import { normalizeReaderMediaUrl } from '../model/media';
+import { resolveReaderImportTitle } from '../model/import';
 import { buildReaderDeepLink, isReaderPath, parseReaderDeepLink } from '../model/route';
 import { EMPTY_READER_LIBRARY, buildReaderDashboardPayloadFromLibrary, resolveReaderHomeViewModel } from '../model/dashboard';
 import {
@@ -101,14 +114,20 @@ interface ReaderInstallPromptEvent extends Event {
 
 const READER_RESTORE_VERSION = 1;
 const READER_PREFERENCES_VERSION = 1;
+const READER_LEGAL_ACK_VERSION = 1;
 const READER_AMBIENCE_DISABLED_TRACK_ID = 'm_none';
 const READER_DEFAULT_AMBIENCE_TRACK_ID = 'm_cinematic_melody';
 const DEFAULT_READER_VOICE_ID = 'v1';
+const READER_IMPORT_TERMS_TITLE = 'V FLOW AI Reader upload rights';
+const READER_IMPORT_TERMS_MESSAGE = (
+  'Upload only work you created, have permission to use, or that is openly licensed. '
+  + 'V FLOW AI does not claim ownership of your files, and you remain responsible for rights and misuse.'
+);
 // Collapse the reader dock sooner on tablet widths so it stops covering shelves.
 const RESPONSIVE_DOCK_MINI_MODE_QUERY = '(max-width: 1024px)';
 const RESPONSIVE_READER_MOBILE_QUERY = '(max-width: 767px)';
 const RESPONSIVE_READER_TABLET_QUERY = '(min-width: 768px) and (max-width: 1024px)';
-const HOME_SETTINGS_FOCUSABLE_SELECTOR = [
+const DOCK_SETTINGS_FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
   'input:not([disabled])',
@@ -119,6 +138,9 @@ const HOME_SETTINGS_FOCUSABLE_SELECTOR = [
 ].join(', ');
 const ReaderUtilityTray = lazy(async () =>
   import('./ReaderUtilityTray').then((module) => ({ default: module.ReaderUtilityTray }))
+);
+const ReaderDockSettingsPanel = lazy(async () =>
+  import('./ReaderUtilityTray').then((module) => ({ default: module.ReaderDockSettingsPanel }))
 );
 const ReaderPlaybackStage = lazy(async () =>
   import('./ReaderPlaybackStage').then((module) => ({ default: module.ReaderPlaybackStage }))
@@ -208,6 +230,11 @@ interface ReaderPreferencesEnvelope {
   preferences: ReaderPreferencesPayload;
 }
 
+interface ReaderLegalAckEnvelope {
+  version: number;
+  ack: ReaderLegalAck;
+}
+
 const readReaderRestoreStore = (): ReaderRestoreStore => {
   const raw = readStorageJson<ReaderRestoreEnvelope | ReaderRestoreStore>(STORAGE_KEYS.readerRestoreState);
   if (!raw) return {};
@@ -252,6 +279,29 @@ const writeReaderPreferencesStore = (preferences: ReaderPreferencesPayload): voi
     version: READER_PREFERENCES_VERSION,
     preferences,
   } satisfies ReaderPreferencesEnvelope);
+};
+
+const readReaderLegalAckStore = (): ReaderLegalAck | null => {
+  const raw = readStorageJson<ReaderLegalAckEnvelope | ReaderLegalAck>(STORAGE_KEYS.readerLegalAck);
+  if (!raw) return null;
+  if (
+    typeof raw === 'object'
+    && raw !== null
+    && 'version' in raw
+    && 'ack' in raw
+    && typeof (raw as ReaderLegalAckEnvelope).ack === 'object'
+    && (raw as ReaderLegalAckEnvelope).ack !== null
+  ) {
+    return (raw as ReaderLegalAckEnvelope).ack;
+  }
+  return raw as ReaderLegalAck;
+};
+
+const writeReaderLegalAckStore = (ack: ReaderLegalAck): void => {
+  writeStorageJson(STORAGE_KEYS.readerLegalAck, {
+    version: READER_LEGAL_ACK_VERSION,
+    ack,
+  } satisfies ReaderLegalAckEnvelope);
 };
 
 const getRestoreKey = (mode: ReaderMode, titleId: string): string =>
@@ -374,7 +424,7 @@ const normalizeContentMode = (item: ReaderCatalogItem | null | undefined, sessio
 };
 
 const toHomeTab = (mode: ReaderMode): ReaderHomeTab =>
-  mode === 'comic' ? 'library' : 'novels';
+  mode === 'comic' ? 'yourUploads' : 'adminUploads';
 
 const detectImportTypeFromFiles = (files: File[]): 'book' | 'comic' => {
   const comicExtensions = ['.cbz', '.zip', '.png', '.jpg', '.jpeg', '.webp'];
@@ -440,6 +490,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
 }) => {
   const { authReady, isAuthenticated } = useUser();
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const dockSettingsBackgroundRef = useRef<HTMLDivElement | null>(null);
+  const dockSettingsModalRef = useRef<HTMLElement | null>(null);
+  const dockSettingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRegistryRef = useRef<string[]>([]);
@@ -447,6 +500,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const hasUserChangedHomeTabRef = useRef(false);
   const lastAutoOpenedSessionIdRef = useRef('');
   const readerPreferencesCacheRef = useRef<ReaderPreferencesPayload>(readReaderPreferencesStore());
+  const readerLegalAckCacheRef = useRef<ReaderLegalAck | null>(readReaderLegalAckStore());
   const lastPersistedReaderTabRef = useRef<{ sessionKey: string; tab: ReaderTab } | null>(null);
   const initialDeepLinkRef = useRef(
     typeof window === 'undefined'
@@ -458,8 +512,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [libraryError, setLibraryError] = useState<unknown>(null);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
   const [dashboard, setDashboard] = useState<ReaderDashboardPayload | null>(null);
-  const [legalAck, setLegalAck] = useState<ReaderLegalAck | null>(null);
-  const [homeTab, setHomeTab] = useState<ReaderHomeTab>(() => coerceReaderHomeTab(readerPreferencesCacheRef.current.homeTab));
+  const [legalAck, setLegalAck] = useState<ReaderLegalAck | null>(() => readerLegalAckCacheRef.current);
+  const [homeTab, setHomeTab] = useState<ReaderHomeTab>(() => coerceReaderHomeTab(readerPreferencesCacheRef.current.homeTab, 'adminUploads'));
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItemId, setSelectedItemId] = useState('');
   const [previewItemId, setPreviewItemId] = useState('');
@@ -467,6 +521,16 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [commercialCheck, setCommercialCheck] = useState<ReaderCommercialCheckResponse | null>(null);
   const [isCheckingCommercial, setIsCheckingCommercial] = useState(false);
+  const [publisherStatus, setPublisherStatus] = useState<ReaderPublisherKycStatus | null>(null);
+  const [publishConfigDraft, setPublishConfigDraft] = useState<ReaderPublishConfig | null>(null);
+  const [isLoadingPublishConfig, setIsLoadingPublishConfig] = useState(false);
+  const [isSavingPublishConfig, setIsSavingPublishConfig] = useState(false);
+  const [isPublishingUpload, setIsPublishingUpload] = useState(false);
+  const [publisherKycSession, setPublisherKycSession] = useState<ReaderPublisherKycSessionResponse | null>(null);
+  const [novelEntitlement, setNovelEntitlement] = useState<ReaderNovelEntitlementView | null>(null);
+  const [isLoadingNovelEntitlement, setIsLoadingNovelEntitlement] = useState(false);
+  const [isUnlockingNovel, setIsUnlockingNovel] = useState(false);
+  const [unlockingChapterId, setUnlockingChapterId] = useState('');
   const [session, setSession] = useState<ReaderSession | null>(null);
   const [sessionItemId, setSessionItemId] = useState('');
   const [mode, setMode] = useState<ReaderMode>('novel');
@@ -500,6 +564,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [showImportFlow, setShowImportFlow] = useState(false);
   const [showImportTermsModal, setShowImportTermsModal] = useState(false);
   const [isAcceptingImportTerms, setIsAcceptingImportTerms] = useState(false);
+  const [showDockSettingsModal, setShowDockSettingsModal] = useState(false);
   const [dockImportDialogSignal, setDockImportDialogSignal] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreparingAudio, setIsPreparingAudio] = useState(false);
@@ -552,15 +617,15 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     [homeTab, readerDashboard, searchTerm]
   );
   const readerAuthError = useMemo(() => {
-    const error = new Error('Sign in to restore Reader shelves, sessions, and your dashboard state.') as Error & { status?: number };
+    const error = new Error('Sign in to restore Novels shelves, sessions, and your dashboard state.') as Error & { status?: number };
     error.status = 401;
     return error;
   }, []);
   const hasReaderAuthSession = authReady && isAuthenticated;
   const readerAuthReturnPath = useMemo(() => {
-    const safePath = String(authReturnPath || '').trim().replace(/\/+$/, '') || APP_ROUTE_PATHS.reader;
+    const safePath = String(authReturnPath || '').trim().replace(/\/+$/, '') || APP_ROUTE_PATHS.novels;
     if (isReaderPath(safePath)) return safePath;
-    return APP_ROUTE_PATHS.reader;
+    return APP_ROUTE_PATHS.novels;
   }, [authReturnPath]);
   const readerLoginUrl = useMemo(() => resolveLoginPath('login', readerAuthReturnPath), [readerAuthReturnPath]);
   const readerSignupUrl = useMemo(() => resolveLoginPath('signup', readerAuthReturnPath), [readerAuthReturnPath]);
@@ -862,10 +927,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   }, [previewItem]);
 
   const resolveMediaUrl = useCallback((url: string | undefined): string => {
-    const safe = String(url || '').trim();
-    if (!safe) return '';
-    if (/^https?:\/\//i.test(safe)) return safe;
-    return resolveApiUrl(safe, mediaBackendUrl);
+    return normalizeReaderMediaUrl(url, mediaBackendUrl);
   }, [mediaBackendUrl]);
 
   const persistHomeTab = useCallback((nextHomeTab: ReaderHomeTab) => {
@@ -891,6 +953,20 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       .catch(() => undefined);
   }, [hasReaderAuthSession, mediaBackendUrl]);
 
+  const refreshPublisherStatus = useCallback(async () => {
+    if (!authReady || !isAuthenticated) {
+      setPublisherStatus(null);
+      return null;
+    }
+    try {
+      const nextStatus = await getReaderPublisherStatus(mediaBackendUrl);
+      setPublisherStatus(nextStatus);
+      return nextStatus;
+    } catch {
+      return null;
+    }
+  }, [authReady, isAuthenticated, mediaBackendUrl]);
+
   const loadLibrary = useCallback(async () => {
     if (!authReady) {
       setIsLoadingLibrary(false);
@@ -909,6 +985,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       setPreviewItemSnapshot(null);
       setCommercialCheck(null);
       setIsCheckingCommercial(false);
+      setPublisherStatus(null);
+      setPublishConfigDraft(null);
+      setNovelEntitlement(null);
       return;
     }
     setIsLoadingLibrary(true);
@@ -945,8 +1024,17 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
         .catch(() => undefined);
 
       void getReaderLegalAck(mediaBackendUrl)
-        .then((legalResult) => setLegalAck(legalResult.ack))
+        .then((legalResult) => {
+          const localAck = readerLegalAckCacheRef.current;
+          const nextAck = localAck?.accepted ? localAck : legalResult.ack;
+          readerLegalAckCacheRef.current = nextAck;
+          setLegalAck(nextAck);
+          if (nextAck?.accepted) {
+            writeReaderLegalAckStore(nextAck);
+          }
+        })
         .catch(() => undefined);
+      void refreshPublisherStatus();
     } catch (error) {
       setDashboard(null);
       setLibrary(null);
@@ -956,7 +1044,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     } finally {
       setIsLoadingLibrary(false);
     }
-  }, [authReady, isAuthenticated, mediaBackendUrl, onToast, readerAuthError]);
+  }, [authReady, isAuthenticated, mediaBackendUrl, onToast, readerAuthError, refreshPublisherStatus]);
 
   useEffect(() => {
     if (!authReady || isActive === false) return;
@@ -1140,7 +1228,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (!deepLink) return;
     const matchedItem = library.items.find((item) => item.id === deepLink.titleId);
     if (!matchedItem) return;
-    setHomeTab(toHomeTab(deepLink.mode));
+    setHomeTab(isImportedItem(matchedItem) ? 'yourUploads' : toHomeTab(deepLink.mode));
     void openReaderItem(matchedItem, {
       ...(deepLink.tab ? { requestedTab: deepLink.tab } : {}),
       ...(deepLink.chapter ? { chapter: deepLink.chapter } : {}),
@@ -1154,8 +1242,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (typeof window === 'undefined') return;
     if (!sessionItemId) {
       const url = new URL(window.location.href);
-      if (url.pathname !== APP_ROUTE_PATHS.reader) {
-        url.pathname = APP_ROUTE_PATHS.reader;
+      if (url.pathname !== APP_ROUTE_PATHS.novels) {
+        url.pathname = APP_ROUTE_PATHS.novels;
         window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
       }
       return;
@@ -1524,7 +1612,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     setShowImportTermsModal(false);
     lastPersistedReaderTabRef.current = null;
     const url = new URL(window.location.href);
-    url.pathname = APP_ROUTE_PATHS.reader;
+    url.pathname = APP_ROUTE_PATHS.novels;
     const readerQueryKeys = ['tab', 'chapter', 'episode', 'vf-reader-mode', 'vf-reader-item', 'vf-reader-title', 'vf-reader-tab', 'vf-reader-chapter', 'vf-reader-episode'];
     readerQueryKeys.forEach((key) => url.searchParams.delete(key));
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
@@ -1564,6 +1652,174 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       .finally(() => setIsCheckingCommercial(false));
   }, [mediaBackendUrl]);
 
+  const shouldApplyUploadSnapshot = useCallback((
+    currentSnapshot: ReaderCatalogItem | null | undefined,
+    expectedItemId: string,
+    expectedSurface: string,
+  ): boolean => {
+    const safeExpectedItemId = String(expectedItemId || '').trim();
+    if (!safeExpectedItemId) return false;
+    const currentItemId = String(currentSnapshot?.id || '').trim();
+    if (currentItemId && currentItemId !== safeExpectedItemId) return false;
+    const currentSurface = String(currentSnapshot?.surface || expectedSurface || '').trim().toLowerCase();
+    return currentSurface === 'uploads';
+  }, []);
+
+  useEffect(() => {
+    if (!previewItem || !hasReaderAuthSession) {
+      setPublishConfigDraft(null);
+      setIsLoadingPublishConfig(false);
+      setNovelEntitlement(null);
+      setIsLoadingNovelEntitlement(false);
+      return;
+    }
+    const novelId = String(previewItem.publishedNovelId || previewItem.id || '').trim();
+    const expectedPreviewItemId = previewItem.id;
+    const expectedPreviewSurface = previewItem.surface;
+    if (previewItem.surface === 'uploads') {
+      setNovelEntitlement(null);
+      setIsLoadingNovelEntitlement(false);
+      setIsLoadingPublishConfig(true);
+      void getReaderUploadPublishConfig(mediaBackendUrl, previewItem.id)
+        .then((result) => {
+          setPublishConfigDraft(result.config);
+          setPreviewItemSnapshot((current) => (
+            shouldApplyUploadSnapshot(current, expectedPreviewItemId, expectedPreviewSurface) ? result.upload : current
+          ));
+          setPublisherStatus(result.publisherStatus);
+        })
+        .catch(() => {
+          setPublishConfigDraft({
+            title: previewItem.title,
+            summary: previewItem.summary || '',
+            coverUrl: previewItem.coverUrl || '',
+            collectionLabel: previewItem.collectionLabel || 'Novels',
+            publishState: previewItem.publishState || 'draft',
+            fullNovelUnlockVf: Number(previewItem.pricingSummary?.fullNovelUnlockVf || 0),
+            defaultChapterUnlockVf: Number(previewItem.pricingSummary?.defaultChapterUnlockVf || 0),
+            chapterPrices: {},
+            offlineEnabled: true,
+          });
+        })
+        .finally(() => setIsLoadingPublishConfig(false));
+      return;
+    }
+    setPublishConfigDraft(null);
+    setIsLoadingPublishConfig(false);
+    if (!novelId) {
+      setNovelEntitlement(null);
+      setIsLoadingNovelEntitlement(false);
+      return;
+    }
+    setIsLoadingNovelEntitlement(true);
+    void getReaderNovelEntitlement(mediaBackendUrl, novelId)
+      .then((result) => setNovelEntitlement(result))
+      .catch(() => setNovelEntitlement(null))
+      .finally(() => setIsLoadingNovelEntitlement(false));
+  }, [hasReaderAuthSession, mediaBackendUrl, previewItem?.id, previewItem?.surface, previewItem?.publishedNovelId, shouldApplyUploadSnapshot]);
+
+  const handlePublishConfigDraftChange = useCallback((patch: Partial<ReaderPublishConfig>) => {
+    setPublishConfigDraft((current) => ({ ...(current || {}), ...patch }));
+  }, []);
+
+  const handleStartPublisherKyc = useCallback(async () => {
+    try {
+      const result = await createReaderPublisherKycSession(mediaBackendUrl, {
+        returnUrl: typeof window !== 'undefined' ? `${window.location.origin}${APP_ROUTE_PATHS.novels}` : APP_ROUTE_PATHS.novels,
+      });
+      setPublisherStatus(result.status);
+      setPublisherKycSession(result.session);
+      if (result.session.mode === 'mock_verified' || !result.status?.verified || !result.status?.canPublish) {
+        const refreshedStatus = await refreshPublisherStatus();
+        if (refreshedStatus) {
+          setPublisherStatus(refreshedStatus);
+        }
+      }
+      if (result.session.url && typeof window !== 'undefined') {
+        window.open(result.session.url, '_blank', 'noopener,noreferrer');
+      }
+      onToast(result.session.mode === 'mock_verified' ? 'Creator verification completed for local testing.' : 'Creator verification session started.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not start creator verification.'), 'error');
+    }
+  }, [mediaBackendUrl, onToast, refreshPublisherStatus]);
+
+  const handleSavePublishConfig = useCallback(async () => {
+    if (!previewItem || previewItem.surface !== 'uploads' || !publishConfigDraft) return;
+    setIsSavingPublishConfig(true);
+    const expectedPreviewItemId = previewItem.id;
+    const expectedPreviewSurface = previewItem.surface;
+    try {
+      const result = await updateReaderUploadPublishConfig(mediaBackendUrl, previewItem.id, publishConfigDraft);
+      setPublishConfigDraft(result.config);
+      setPreviewItemSnapshot((current) => (
+        shouldApplyUploadSnapshot(current, expectedPreviewItemId, expectedPreviewSurface) ? result.upload : current
+      ));
+      setPublisherStatus(result.publisherStatus);
+      void loadLibrary();
+      onToast('Novel publish setup saved.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not save publish setup.'), 'error');
+    } finally {
+      setIsSavingPublishConfig(false);
+    }
+  }, [loadLibrary, mediaBackendUrl, onToast, previewItem, publishConfigDraft, shouldApplyUploadSnapshot]);
+
+  const handlePublishUploadFromPreview = useCallback(async () => {
+    if (!previewItem || previewItem.surface !== 'uploads') return;
+    setIsPublishingUpload(true);
+    try {
+      const result = await publishReaderUpload(mediaBackendUrl, previewItem.id);
+      setSelectedItemId(result.item.id);
+      setPreviewItemId(result.item.id);
+      setPreviewItemSnapshot(result.item);
+      setCommercialCheck(null);
+      setIsCheckingCommercial(false);
+      setPublisherStatus(result.publisherStatus);
+      setPublishConfigDraft(result.config);
+      setNovelEntitlement(await getReaderNovelEntitlement(mediaBackendUrl, String(result.item.id || '').trim()));
+      await loadLibrary();
+      onToast('Novel published to the managed catalog.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not publish this novel.'), 'error');
+    } finally {
+      setIsPublishingUpload(false);
+    }
+  }, [loadLibrary, mediaBackendUrl, onToast, previewItem]);
+
+  const handleUnlockNovelFromPreview = useCallback(async () => {
+    if (!previewItem) return;
+    const novelId = String(previewItem.publishedNovelId || previewItem.id || '').trim();
+    if (!novelId) return;
+    setIsUnlockingNovel(true);
+    try {
+      const result = await unlockReaderNovel(mediaBackendUrl, novelId);
+      setNovelEntitlement(result);
+      onToast('Novel unlocked for reading and listening.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not unlock this novel.'), 'error');
+    } finally {
+      setIsUnlockingNovel(false);
+    }
+  }, [mediaBackendUrl, onToast, previewItem]);
+
+  const handleUnlockChapterFromPreview = useCallback(async (chapterId: string) => {
+    if (!previewItem) return;
+    const novelId = String(previewItem.publishedNovelId || previewItem.id || '').trim();
+    const safeChapterId = String(chapterId || '').trim();
+    if (!novelId || !safeChapterId) return;
+    setUnlockingChapterId(safeChapterId);
+    try {
+      const result = await unlockReaderNovelChapter(mediaBackendUrl, novelId, safeChapterId);
+      setNovelEntitlement(result);
+      onToast('Chapter unlocked.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not unlock this chapter.'), 'error');
+    } finally {
+      setUnlockingChapterId('');
+    }
+  }, [mediaBackendUrl, onToast, previewItem]);
+
   const handleRequestOpenItem = useCallback((itemId: string) => {
     setSelectedItemId(itemId);
     setPreviewItemId(itemId);
@@ -1589,7 +1845,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       onToast('Select files to import first.', 'info');
       return;
     }
-    if (!legalAck?.accepted) {
+    if (!readerLegalAckCacheRef.current?.accepted) {
       setShowImportTermsModal(true);
       onToast('Accept import terms to continue.', 'info');
       return;
@@ -1599,13 +1855,13 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       const contentType = detectImportTypeFromFiles(nextFiles);
       const upload = await createReaderUpload(mediaBackendUrl, {
         files: nextFiles,
-        title: nextTitle || nextFiles[0]?.name || 'Imported title',
+        title: resolveReaderImportTitle(nextTitle, nextFiles[0]?.name),
         contentType,
         regionId: library?.regionId || 'english',
       });
       setUploadFiles([]);
       setUploadTitle('');
-      persistHomeTab('imported');
+      persistHomeTab('yourUploads');
       setSelectedItemId(upload.id);
       void loadLibrary();
       const opened = await openReaderItem(upload);
@@ -1619,44 +1875,68 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     } finally {
       setIsUploading(false);
     }
-  }, [handleRequestOpenItem, legalAck?.accepted, library?.regionId, loadLibrary, mediaBackendUrl, onToast, openReaderItem, persistHomeTab, uploadFiles, uploadTitle]);
+  }, [handleRequestOpenItem, library?.regionId, loadLibrary, mediaBackendUrl, onToast, openReaderItem, persistHomeTab, uploadFiles, uploadTitle]);
+
+  const commitReaderLegalAck = useCallback((ack: ReaderLegalAck) => {
+    readerLegalAckCacheRef.current = ack;
+    setLegalAck(ack);
+    writeReaderLegalAckStore(ack);
+  }, []);
+
+  const acceptReaderLegalAckOptimistically = useCallback((options?: { closeImportTermsModal?: boolean }): boolean => {
+    if (isAcceptingImportTerms) return false;
+    setIsAcceptingImportTerms(true);
+    const optimisticAck: ReaderLegalAck = {
+      accepted: true,
+      acceptedAt: new Date().toISOString(),
+      title: READER_IMPORT_TERMS_TITLE,
+      message: READER_IMPORT_TERMS_MESSAGE,
+    };
+    commitReaderLegalAck(optimisticAck);
+    setShowImportFlow(false);
+    if (options?.closeImportTermsModal !== false) {
+      setShowImportTermsModal(false);
+    }
+    void acceptReaderLegalAck(mediaBackendUrl)
+      .then((ack) => {
+        const resolvedAck: ReaderLegalAck = {
+          ...optimisticAck,
+          ...ack,
+          accepted: true,
+        };
+        commitReaderLegalAck(resolvedAck);
+      })
+      .catch((error) => {
+        onToast(String((error as Error)?.message || 'Could not sync reader rights acknowledgement right now.'), 'info');
+      })
+      .finally(() => {
+        setIsAcceptingImportTerms(false);
+      });
+    return true;
+  }, [commitReaderLegalAck, isAcceptingImportTerms, mediaBackendUrl, onToast]);
 
   const handleAcceptReaderRights = useCallback(() => {
-    void acceptReaderLegalAck(mediaBackendUrl)
-      .then((ack) => {
-        setLegalAck(ack);
-        setShowImportFlow(false);
-        onToast('Reader import rights accepted.', 'success');
-      })
-      .catch((error) => onToast(String((error as Error)?.message || 'Could not save reader rights acknowledgement.'), 'error'));
-  }, [mediaBackendUrl, onToast]);
+    if (!acceptReaderLegalAckOptimistically({ closeImportTermsModal: false })) return;
+    onToast('Reader import rights accepted.', 'success');
+  }, [acceptReaderLegalAckOptimistically, onToast]);
 
   const handleAcceptImportTerms = useCallback(() => {
-    if (isAcceptingImportTerms) return;
-    setIsAcceptingImportTerms(true);
-    void acceptReaderLegalAck(mediaBackendUrl)
-      .then((ack) => {
-        setLegalAck(ack);
-        setShowImportFlow(false);
-        setShowImportTermsModal(false);
-        onToast('Reader import rights accepted.', 'success');
-        setDockImportDialogSignal((current) => current + 1);
-      })
-      .catch((error) => onToast(String((error as Error)?.message || 'Could not save reader rights acknowledgement.'), 'error'))
-      .finally(() => setIsAcceptingImportTerms(false));
-  }, [isAcceptingImportTerms, mediaBackendUrl, onToast]);
+    if (!acceptReaderLegalAckOptimistically({ closeImportTermsModal: true })) return;
+    onToast('Reader import rights accepted.', 'success');
+    setDockImportDialogSignal((current) => current + 1);
+  }, [acceptReaderLegalAckOptimistically, onToast]);
 
   const handleDockImport = useCallback((): boolean => {
     if (!hasReaderAuthSession) {
       onToast('Sign in to import files.', 'info');
       return true;
     }
-    if (!legalAck?.accepted) {
+    if (!readerLegalAckCacheRef.current?.accepted) {
       setShowImportTermsModal(true);
       return true;
     }
     return false;
-  }, [hasReaderAuthSession, legalAck?.accepted, onToast]);
+  }, [hasReaderAuthSession, onToast]);
 
   const handleConfirmPreviewRead = useCallback(() => {
     if (!previewItem) return;
@@ -1664,8 +1944,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       onToast(commercialCheck.reason || 'This title is blocked for commercial workflow. Use licensed import.', 'error');
       return;
     }
+    const pricedNovel = Number(previewItem.pricingSummary?.fullNovelUnlockVf || 0) > 0;
+    const requiresFullUnlock = previewItem.surface !== 'uploads' && pricedNovel;
+    if (requiresFullUnlock && !novelEntitlement?.effectiveAccess?.fullNovel) {
+      onToast('Unlock this novel before opening full reading mode.', 'info');
+      return;
+    }
     void openReaderItem(previewItem);
-  }, [commercialCheck?.reason, commercialCheck?.result, onToast, openReaderItem, previewItem]);
+  }, [commercialCheck?.reason, commercialCheck?.result, novelEntitlement?.effectiveAccess?.fullNovel, onToast, openReaderItem, previewItem]);
 
   const bootstrapState = resolveReaderBootstrapState({
     library,
@@ -1697,20 +1983,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     session?.savepointDownloadUrl ? resolveMediaUrl(session.savepointDownloadUrl) : ''
   ), [resolveMediaUrl, session?.savepointDownloadUrl]);
   const vfEstimate = useMemo(() => resolveReaderBillingEstimate(session, { progressPct: overallProgress }), [overallProgress, session]);
-  const tabBadges: ReaderTabBadgeMap = {
-    settings: multiSpeakerEnabled || castModeEnabled ? 'Cast on' : 'Single',
-    ...(scriptSegments.length > 0 ? { scripts: `${scriptSegments.filter((segment) => segment.status === 'ready').length}/${scriptSegments.length}` } : {}),
-    ...(offlineAudioEntries.length > 0
-      ? { saved: `${offlineAudioEntries.length}` }
-      : savepointDownloadUrl
-        ? { saved: 'Ready' }
-        : { saved: 'Local' }),
-  };
-  const showHomeSettingsModal = !session && activeTab === 'settings';
-  const shouldZoomReaderSurface = Boolean(session) || showHomeSettingsModal;
-  const homeSettingsBackgroundRef = useRef<HTMLDivElement | null>(null);
-  const homeSettingsModalRef = useRef<HTMLElement | null>(null);
-  const homeSettingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const tabBadges: ReaderTabBadgeMap = {};
+  const shouldZoomReaderSurface = Boolean(session);
 
   useEffect(() => {
     const sessionId = String(session?.id || '').trim();
@@ -1790,28 +2064,28 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   }, [ambiencePreset]);
   const handleInstallReaderApp = useCallback(() => {
     if (isReaderAppInstalled) {
-      onToast('Reader shortcut is already installed on this device.', 'info');
+      onToast('Novels shortcut is already installed on this device.', 'info');
       return;
     }
     if (!installPromptEvent) {
-      onToast('Use your browser menu and choose "Install app" to add the Reader shortcut.', 'info');
+      onToast('Use your browser menu and choose "Install app" to add the Novels shortcut.', 'info');
       return;
     }
     void installPromptEvent.prompt()
       .then(() => installPromptEvent.userChoice)
       .then((choice) => {
         if (choice.outcome === 'accepted') {
-          onToast('Reader shortcut install started.', 'success');
+          onToast('Novels shortcut install started.', 'success');
         } else {
-          onToast('Reader shortcut install was dismissed.', 'info');
+          onToast('Novels shortcut install was dismissed.', 'info');
         }
       })
-      .catch(() => onToast('Could not trigger Reader install prompt.', 'error'))
+      .catch(() => onToast('Could not trigger Novels install prompt.', 'error'))
       .finally(() => setInstallPromptEvent(null));
   }, [installPromptEvent, isReaderAppInstalled, onToast]);
   const handleSaveCurrentToLibrary = useCallback(async () => {
     if (!session?.id || !activeUnit) {
-      onToast('Open a Reader session first.', 'info');
+      onToast('Open a Novels session first.', 'info');
       return;
     }
     setIsSavingOfflineAudio(true);
@@ -1830,11 +2104,11 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       }
       await saveReaderOfflineAudio({
         blob: source.blob,
-        title: String(activeUnit.title || session.title || sessionItem?.title || 'Reader chapter'),
+        title: String(activeUnit.title || session.title || sessionItem?.title || 'Downloaded chapter'),
         unitLabel: String(activeUnit.title || 'Current unit'),
         sessionId: session.id,
         bookId: session.id,
-        bookTitle: String(session.title || sessionItem?.title || 'Reader book'),
+        bookTitle: String(session.title || sessionItem?.title || 'Downloaded novel'),
         unitId: String(activeUnit.id || ''),
         sourceJobId: String(activeUnit.jobId || ''),
         speakerMode: multiSpeakerEnabled ? 'multi-speaker' : 'single-speaker',
@@ -1856,9 +2130,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
           .filter((entry) => String(entry.sessionId || '').trim() === session.id)
           .map((entry) => toOfflineSnapshotEntry(entry)),
       });
-      onToast('Saved chapter to offline Reader library.', 'success');
+      onToast('Saved chapter to downloaded novels.', 'success');
     } catch (error) {
-      onToast(String((error as Error)?.message || 'Could not save audio to offline library.'), 'error');
+      onToast(String((error as Error)?.message || 'Could not save audio to downloaded novels.'), 'error');
     } finally {
       setIsSavingOfflineAudio(false);
     }
@@ -1922,55 +2196,54 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const handleToggleMiniMode = useCallback(() => {
     setMiniModeOverride((current) => (current === null ? !miniMode : !current));
   }, [miniMode]);
-  const closeHomeSettingsModal = useCallback(() => {
-    if (session) return;
-    setActiveTab('read');
-  }, [session]);
-  const handleHomeSettingsBackdropPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+  const closeDockSettingsModal = useCallback(() => {
+    setShowDockSettingsModal(false);
+  }, []);
+  const handleDockSettingsBackdropPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
-    closeHomeSettingsModal();
-  }, [closeHomeSettingsModal]);
+    closeDockSettingsModal();
+  }, [closeDockSettingsModal]);
   useEffect(() => {
-    if (!showHomeSettingsModal) return undefined;
+    if (!showDockSettingsModal) return undefined;
     const previousDocumentOverflow = document.documentElement.style.overflow;
     const previousOverflow = document.body.style.overflow;
-    document.body.classList.add('vf-reader-home-settings-open');
+    document.body.classList.add('vf-reader-dock-settings-open');
     document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
     return () => {
       document.documentElement.style.overflow = previousDocumentOverflow;
       document.body.style.overflow = previousOverflow;
-      document.body.classList.remove('vf-reader-home-settings-open');
+      document.body.classList.remove('vf-reader-dock-settings-open');
     };
-  }, [showHomeSettingsModal]);
+  }, [showDockSettingsModal]);
   useEffect(() => {
-    const backgroundNode = homeSettingsBackgroundRef.current as (HTMLElement & { inert?: boolean }) | null;
+    const backgroundNode = dockSettingsBackgroundRef.current as (HTMLElement & { inert?: boolean }) | null;
     if (!backgroundNode) return undefined;
-    backgroundNode.inert = showHomeSettingsModal;
+    backgroundNode.inert = showDockSettingsModal;
     return () => {
       backgroundNode.inert = false;
     };
-  }, [showHomeSettingsModal]);
+  }, [showDockSettingsModal]);
   useEffect(() => {
-    if (!showHomeSettingsModal) return undefined;
+    if (!showDockSettingsModal) return undefined;
     const previouslyFocusedElement = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
     const focusFrame = window.requestAnimationFrame(() => {
-      const initialFocusTarget = homeSettingsCloseButtonRef.current || homeSettingsModalRef.current;
+      const initialFocusTarget = dockSettingsCloseButtonRef.current || dockSettingsModalRef.current;
       initialFocusTarget?.focus();
     });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        closeHomeSettingsModal();
+        closeDockSettingsModal();
         return;
       }
       if (event.key !== 'Tab') return;
-      const modalRoot = homeSettingsModalRef.current;
+      const modalRoot = dockSettingsModalRef.current;
       if (!modalRoot) return;
       const focusableNodes = Array
-        .from(modalRoot.querySelectorAll<HTMLElement>(HOME_SETTINGS_FOCUSABLE_SELECTOR))
+        .from(modalRoot.querySelectorAll<HTMLElement>(DOCK_SETTINGS_FOCUSABLE_SELECTOR))
         .filter(
           (node) => !node.hasAttribute('disabled')
             && node.getAttribute('aria-hidden') !== 'true'
@@ -2010,7 +2283,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
         previouslyFocusedElement.focus();
       }
     };
-  }, [closeHomeSettingsModal, showHomeSettingsModal]);
+  }, [closeDockSettingsModal, showDockSettingsModal]);
   const dockActionProps = session
     ? {
         onRefresh: () => void handleRefresh(),
@@ -2030,50 +2303,49 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
         data-reader-dock-state-source={dockStateSource}
         data-reader-viewport={readerViewportMode}
         data-reader-layout={session ? 'workspace' : 'home'}
-        data-reader-home-settings-open={showHomeSettingsModal ? 'true' : 'false'}
+        data-reader-dock-settings-open={showDockSettingsModal ? 'true' : 'false'}
         data-reader-recording="restricted"
       >
         <div
-          ref={homeSettingsBackgroundRef}
+          ref={dockSettingsBackgroundRef}
           className="vf-reader-v2-home-layer"
-          aria-hidden={showHomeSettingsModal ? true : undefined}
+          aria-hidden={showDockSettingsModal ? true : undefined}
         >
           {!session ? (
             <>
-            <ReaderBrowseHome
-              viewModel={homeViewModel}
-              homeTab={homeTab}
-              searchTerm={searchTerm}
-              selectedItemId={selectedItemId}
-              isLoading={isLoadingLibrary}
-              bootstrapState={bootstrapState}
-              legalAccepted={Boolean(legalAck?.accepted)}
-              showImportFlow={showImportFlow}
-              libraryErrorMessage={String((libraryError as Error)?.message || libraryError || '')}
-              viewportMode={readerViewportMode}
-              onChangeHomeTab={persistHomeTab}
-              onChangeSearchTerm={setSearchTerm}
-              onSelectItem={setSelectedItemId}
-              onOpenItem={handleRequestOpenItem}
-              onRetryDashboard={() => void loadLibrary()}
-              onAcceptReaderRights={handleAcceptReaderRights}
-              resolveImportedStatusBadge={resolveImportedStatusBadge}
-              resolveMediaUrl={resolveMediaUrl}
-            />
+              <ReaderBrowseHome
+                viewModel={homeViewModel}
+                homeTab={homeTab}
+                searchTerm={searchTerm}
+                selectedItemId={selectedItemId}
+                isLoading={isLoadingLibrary}
+                bootstrapState={bootstrapState}
+                legalAccepted={Boolean(legalAck?.accepted)}
+                showImportFlow={showImportFlow}
+                libraryErrorMessage={String((libraryError as Error)?.message || libraryError || '')}
+                viewportMode={readerViewportMode}
+                onChangeHomeTab={persistHomeTab}
+                onChangeSearchTerm={setSearchTerm}
+                onSelectItem={setSelectedItemId}
+                onOpenItem={handleRequestOpenItem}
+                onRetryDashboard={() => void loadLibrary()}
+                onAcceptReaderRights={handleAcceptReaderRights}
+                resolveImportedStatusBadge={resolveImportedStatusBadge}
+                resolveMediaUrl={resolveMediaUrl}
+              />
 
-            {authReady && !hasReaderAuthSession ? (
-              <section className="vf-reader-v2-auth-gate" aria-label="Reader sign-in gate">
-                <div>
-                  <strong>Sign in to use Reader</strong>
-                  <p>Restore shelves, continue saved sessions, accept import rights, and bring in new titles after secure sign-in.</p>
-                </div>
-                <div className="vf-reader-v2-auth-gate__actions">
-                  <a href={readerLoginUrl} className="vf-reader-v2-primary">Sign in</a>
-                  <a href={readerSignupUrl} className="vf-reader-v2-secondary">Create account</a>
-                </div>
-              </section>
-            ) : null}
-
+              {authReady && !hasReaderAuthSession ? (
+                <section className="vf-reader-v2-auth-gate" aria-label="Novels sign-in gate">
+                  <div>
+                    <strong>Sign in to use Novels</strong>
+                    <p>Restore shelves, continue saved sessions, accept import rights, and bring in new titles after secure sign-in.</p>
+                  </div>
+                  <div className="vf-reader-v2-auth-gate__actions">
+                    <a href={readerLoginUrl} className="vf-reader-v2-primary">Sign in</a>
+                    <a href={readerSignupUrl} className="vf-reader-v2-secondary">Create account</a>
+                  </div>
+                </section>
+              ) : null}
             </>
           ) : (
             <>
@@ -2135,6 +2407,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
                   activeText={activeText}
                   scriptSegments={scriptSegments}
                   currentUnitTitle={activeUnit?.title || (mode === 'novel' ? 'Read' : 'Panels')}
+                  itemId={String(sessionItem?.id || session?.id || '')}
+                  chapterId={String(activeUnit?.id || '')}
                   savepointDownloadUrl={savepointDownloadUrl}
                   textDirty={textDirty}
                   voiceSettingsDirty={voiceSettingsDirty}
@@ -2145,7 +2419,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
                   backgroundPrepLimitUnit={backgroundPrepLimitUnit}
                   canInstallReaderApp={Boolean(installPromptEvent) || !isReaderAppInstalled}
                   isReaderAppInstalled={isReaderAppInstalled}
-                  readerAppInstallHint={isReaderAppInstalled ? 'Reader shortcut is installed and can open offline.' : 'Install Reader on this device for offline launch and playback of saved audio.'}
+                  readerAppInstallHint={isReaderAppInstalled ? 'Novels shortcut is installed and can open offline.' : 'Install Novels on this device for offline launch and playback of downloaded audio.'}
                   savedAudioEntries={offlineAudioEntries}
                   isSavingOfflineAudio={isSavingOfflineAudio}
                   onChangeTab={setActiveTab}
@@ -2187,60 +2461,75 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
               commercialCheck={commercialCheck}
               isCheckingCommercial={isCheckingCommercial}
               resolveMediaUrl={resolveMediaUrl}
+              publisherStatus={publisherStatus}
+              publishConfig={publishConfigDraft}
+              isLoadingPublishConfig={isLoadingPublishConfig}
+              isSavingPublishConfig={isSavingPublishConfig}
+              isPublishingUpload={isPublishingUpload}
+              publisherKycSessionMode={publisherKycSession?.mode || ''}
+              entitlement={novelEntitlement}
+              isLoadingEntitlement={isLoadingNovelEntitlement}
+              isUnlockingNovel={isUnlockingNovel}
+              unlockingChapterId={unlockingChapterId}
+              onPublishConfigChange={handlePublishConfigDraftChange}
+              onSavePublishConfig={() => void handleSavePublishConfig()}
+              onStartPublisherKyc={() => void handleStartPublisherKyc()}
+              onPublishUpload={() => void handlePublishUploadFromPreview()}
+              onUnlockNovel={() => void handleUnlockNovelFromPreview()}
+              onUnlockChapter={(chapterId) => void handleUnlockChapterFromPreview(chapterId)}
               onClose={() => {
                 setPreviewItemId('');
                 setPreviewItemSnapshot(null);
                 setIsLoadingPreview(false);
                 setCommercialCheck(null);
                 setIsCheckingCommercial(false);
+                setPublishConfigDraft(null);
+                setNovelEntitlement(null);
+                setPublisherKycSession(null);
               }}
               onRead={handleConfirmPreviewRead}
             />
           </Suspense>
         ) : null}
 
-        {showHomeSettingsModal ? (
+        {showDockSettingsModal ? (
           <div
             className="vf-reader-v2-modal-backdrop"
-            data-reader-modal="home-settings"
-            onPointerDown={handleHomeSettingsBackdropPointerDown}
+            data-reader-modal="dock-settings"
+            onPointerDown={handleDockSettingsBackdropPointerDown}
             onClick={(event) => {
               if (event.target !== event.currentTarget) return;
-              closeHomeSettingsModal();
+              closeDockSettingsModal();
             }}
           >
             <section
-              ref={homeSettingsModalRef}
+              ref={dockSettingsModalRef}
               className="vf-reader-v2-modal vf-reader-v2-modal--settings-home"
               role="dialog"
               aria-modal="true"
-              aria-label="Reader settings"
+              aria-label="Novels settings"
               tabIndex={-1}
             >
               <div className="vf-reader-v2-modal__settings-shell">
                 <header className="vf-reader-v2-modal__settings-head">
                   <div>
-                    <div className="vf-reader-v2-eyebrow">Reader Settings</div>
-                    <strong>Tune Reader defaults before opening a session.</strong>
+                    <div className="vf-reader-v2-eyebrow">Dock Settings</div>
+                    <strong>Tune Novels playback, language, and offline defaults from the dock.</strong>
                   </div>
                   <button
-                    ref={homeSettingsCloseButtonRef}
+                    ref={dockSettingsCloseButtonRef}
                     type="button"
                     className="vf-reader-v2-secondary"
                     aria-label="Close settings"
-                    onClick={closeHomeSettingsModal}
+                    onClick={closeDockSettingsModal}
                   >
                     Close
                   </button>
                 </header>
                 <div className="vf-reader-v2-modal__settings-body">
                   <Suspense fallback={<ReaderInlineFallback />}>
-                    <ReaderUtilityTray
-                      mode={mode}
-                      tabs={['settings'] as ReaderTab[]}
-                      activeTab="settings"
-                      surface="home-modal"
-                      tabBadges={tabBadges}
+                    <ReaderDockSettingsPanel
+                      isCompactViewport={readerViewportMode !== 'desktop'}
                       sourceLanguage={sourceLanguage}
                       targetLanguage={targetLanguage}
                       playbackLanguage={playbackLanguage}
@@ -2253,28 +2542,21 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
                       speed={playbackSpeed}
                       ambiencePreset={ambiencePreset}
                       stylePreset={stylePreset}
-                      viewportMode={readerViewportMode}
                       voiceOptions={VOICES}
                       detectedSpeakers={detectedSpeakers}
                       castDraft={resolvedCastDraft}
                       textDraft={textDraft}
                       activeText={activeText}
-                      scriptSegments={[]}
-                      currentUnitTitle="Reader settings"
-                      savepointDownloadUrl=""
                       textDirty={false}
                       voiceSettingsDirty={voiceSettingsDirty}
-                      castSettingsDirty={false}
+                      castSettingsDirty={castSettingsDirty}
                       isSavingVoiceSettings={isSavingVoiceSettings}
                       isSavingCastAssignments={isSavingCastAssignments}
                       backgroundPrepLimitValue={backgroundPrepLimitValue}
                       backgroundPrepLimitUnit={backgroundPrepLimitUnit}
                       canInstallReaderApp={Boolean(installPromptEvent) || !isReaderAppInstalled}
                       isReaderAppInstalled={isReaderAppInstalled}
-                      readerAppInstallHint={isReaderAppInstalled ? 'Reader shortcut is installed and can open offline.' : 'Install Reader on this device for offline launch and playback of saved audio.'}
-                      savedAudioEntries={offlineAudioEntries}
-                      isSavingOfflineAudio={isSavingOfflineAudio}
-                      onChangeTab={setActiveTab}
+                      readerAppInstallHint={isReaderAppInstalled ? 'Novels shortcut is installed and can open offline.' : 'Install Novels on this device for offline launch and playback of downloaded audio.'}
                       onToggleMultiSpeaker={handleToggleMultiSpeaker}
                       onToggleCastMode={handleToggleCastMode}
                       onToggleAmbienceSound={handleToggleAmbienceSound}
@@ -2294,10 +2576,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
                       onTargetLanguageChange={setTargetLanguage}
                       onPlaybackLanguageChange={setPlaybackLanguage}
                       onInstallReaderApp={handleInstallReaderApp}
-                      onSaveCurrentToLibrary={() => void handleSaveCurrentToLibrary()}
-                      onPlaySavedAudio={(entryId) => void handlePlaySavedAudio(entryId)}
-                      onDownloadSavedAudio={(entryId) => void handleDownloadSavedAudio(entryId)}
-                      onDeleteSavedAudio={(entryId) => void handleDeleteSavedAudio(entryId)}
                     />
                   </Suspense>
                 </div>
@@ -2343,10 +2621,10 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
           </div>
         ) : null}
 
-        <div aria-hidden={showHomeSettingsModal ? true : undefined}>
+        <div aria-hidden={showDockSettingsModal ? true : undefined}>
           <Suspense fallback={<ReaderDockFallback />}>
             <ReaderStickyDock
-              title={String(session?.title || sessionItem?.title || 'Reader')}
+              title={String(session?.title || sessionItem?.title || 'Novels')}
               unitLabel={activeUnit?.title || (mode === 'novel' ? 'Read' : 'Panels')}
               progressPct={session ? overallProgress : 0}
               statusLabel={session ? statusLabel : 'Idle'}
@@ -2362,8 +2640,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
               onToggleMiniMode={handleToggleMiniMode}
               viewportMode={readerViewportMode}
               onDockImport={handleDockImport}
-              onDockSettings={() => setActiveTab('settings')}
-              onOpenSettings={() => setActiveTab('settings')}
+              onDockSettings={() => setShowDockSettingsModal(true)}
+              onOpenSettings={() => setShowDockSettingsModal(true)}
               importDialogSignal={dockImportDialogSignal}
               onImportFiles={(files) => {
                 setUploadFiles(files);
