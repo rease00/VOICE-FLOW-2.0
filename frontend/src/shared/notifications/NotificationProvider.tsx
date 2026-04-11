@@ -31,6 +31,8 @@ import type {
   AppNotification,
   EmitOptions,
   NotificationAction,
+  NotificationAudience,
+  NotificationChannel,
   NotificationEmitPayload,
   NotificationEventCode,
   NotificationInput,
@@ -190,11 +192,123 @@ const defaultTitleForSeverity = (severity: NotificationSeverity): string => {
   return 'Info';
 };
 
+const coerceNotificationAudience = (value: unknown): NotificationAudience => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'admin' || token === 'user' || token === 'all') return token;
+  return 'user';
+};
+
+const coerceNotificationChannel = (
+  value: unknown,
+  fallback: NotificationChannel = 'inbox'
+): NotificationChannel => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'toast' || token === 'inbox' || token === 'silent') return token;
+  return fallback;
+};
+
+const buildNotificationIdentityKey = (item: Partial<AppNotification>): string => {
+  const id = String(item.id || '').trim();
+  if (id) return `id:${id}`;
+  const dedupeKey = String(item.dedupeKey || '').trim();
+  if (dedupeKey) return `dedupe:${dedupeKey}`;
+  const eventCode = String(item.eventCode || 'custom.message').trim();
+  const entityKey = String(item.entityKey || 'global').trim() || 'global';
+  return `event:${eventCode}::${entityKey}`;
+};
+
+const coerceStoredLocalNotification = (
+  input: unknown,
+  nowMs: number
+): AppNotification | null => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const row = input as Partial<AppNotification>;
+  const id = String(row.id || '').trim();
+  const eventCandidate = String(row.eventCode || '').trim();
+  const eventCode: NotificationEventCode = isNotificationEventCode(eventCandidate) ? eventCandidate : 'custom.message';
+  const message = sanitizeUiText(String(row.userMessage || row.message || '').trim());
+  if (!id || !message) return null;
+  const severity = String(row.severity || getNotificationCatalogEntry(eventCode).severity || 'info').trim() as NotificationSeverity;
+  const category = String(row.category || getNotificationCatalogEntry(eventCode).category || 'activity').trim();
+  if (!['success', 'info', 'warning', 'error', 'critical'].includes(severity)) return null;
+  if (!['system', 'activity', 'security', 'tips'].includes(category)) return null;
+  const createdAt = toTimestampMs(row.createdAt, nowMs);
+  const expiresAt = row.expiresAt != null ? toTimestampMs(row.expiresAt, createdAt + NOTIFICATION_TTL_MS) : createdAt + NOTIFICATION_TTL_MS;
+  return {
+    id,
+    eventCode,
+    entityKey: String(row.entityKey || '').trim() || undefined,
+    title: sanitizeUiText(String(row.title || '').trim()) || getNotificationCatalogEntry(eventCode).title || defaultTitleForSeverity(severity),
+    message,
+    userMessage: message,
+    details: sanitizeUiText(String(row.details || '').trim()) || undefined,
+    adminDetail: sanitizeUiText(String(row.adminDetail || row.details || '').trim()) || undefined,
+    severity,
+    category: category as AppNotification['category'],
+    audience: coerceNotificationAudience(row.audience),
+    roleScope: String(row.roleScope || '').trim() || undefined,
+    scope: row.scope === 'persisted' ? 'persisted' : 'ephemeral',
+    channel: coerceNotificationChannel(row.channel, 'toast'),
+    status: String(row.status || '').trim().toLowerCase() === 'resolved' ? 'resolved' : 'active',
+    resolvedAt: row.resolvedAt != null ? toTimestampMs(row.resolvedAt, createdAt) : null,
+    resolvedBy: String(row.resolvedBy || '').trim() || null,
+    createdAt,
+    expiresAt,
+    readAt: row.readAt != null ? toTimestampMs(row.readAt, createdAt) : null,
+    dismissedAt: row.dismissedAt != null ? toTimestampMs(row.dismissedAt, createdAt) : null,
+    sticky: row.sticky === true || severity === 'critical',
+    dedupeKey: String(row.dedupeKey || '').trim() || undefined,
+    toastVisible: row.toastVisible === true,
+    requiredPermission: String(row.requiredPermission || '').trim() || undefined,
+    emailEligible: row.emailEligible === true,
+    action: sanitizeAction(row.action),
+  };
+};
+
+const readStoredLocalNotifications = (): AppNotification[] => {
+  const nowMs = Date.now();
+  const rows = readStorageJson<unknown[]>(STORAGE_KEYS.notifications);
+  if (!Array.isArray(rows)) return [];
+  return limitNotifications(
+    pruneExpiredNotifications(
+      rows
+        .map((row) => coerceStoredLocalNotification(row, nowMs))
+        .filter((row): row is AppNotification => Boolean(row)),
+      nowMs
+    ),
+    NOTIFICATION_MAX_ITEMS
+  );
+};
+
+const isNotificationVisibleForClient = (
+  item: Pick<AppNotification, 'audience' | 'requiredPermission'>,
+  canSeeAdminNotifications: boolean
+): boolean => {
+  if (item.audience === 'admin' && !canSeeAdminNotifications) return false;
+  if (item.requiredPermission && !canSeeAdminNotifications) return false;
+  return true;
+};
+
+export const combineNotificationFeeds = (
+  persistedNotifications: AppNotification[],
+  localNotifications: AppNotification[]
+): AppNotification[] => {
+  const merged = new Map<string, AppNotification>();
+  [...localNotifications, ...persistedNotifications].forEach((item) => {
+    const key = buildNotificationIdentityKey(item);
+    const existing = merged.get(key);
+    if (!existing || Number(item.createdAt || 0) >= Number(existing.createdAt || 0)) {
+      merged.set(key, item);
+    }
+  });
+  return [...merged.values()].sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+};
+
 export const coercePersistedNotification = (input: NotificationWireItem, nowMs: number): AppNotification | null => {
   const id = String(input?.id || '').trim();
   const eventCandidate = String(input?.eventCode || '').trim();
   const eventCode: NotificationEventCode = isNotificationEventCode(eventCandidate) ? eventCandidate : 'custom.message';
-  const message = sanitizeUiText(String(input?.message || '').trim());
+  const message = sanitizeUiText(String(input?.userMessage || input?.message || '').trim());
   if (!id || !message) return null;
   const severity = String(input?.severity || getNotificationCatalogEntry(eventCode).severity || 'info').trim() as NotificationSeverity;
   const category = String(input?.category || getNotificationCatalogEntry(eventCode).category || 'activity').trim();
@@ -208,12 +322,15 @@ export const coercePersistedNotification = (input: NotificationWireItem, nowMs: 
     entityKey: String(input?.entityKey || '').trim() || undefined,
     title: sanitizeUiText(String(input?.title || '').trim()) || getNotificationCatalogEntry(eventCode).title || defaultTitleForSeverity(severity),
     message,
+    userMessage: message,
     details: sanitizeUiText(String(input?.details || '').trim()) || undefined,
+    adminDetail: sanitizeUiText(String(input?.adminDetail || input?.details || '').trim()) || undefined,
     severity,
     category: category as AppNotification['category'],
-    audience: String(input?.audience || '').trim().toLowerCase() === 'admin' ? 'admin' : 'user',
+    audience: coerceNotificationAudience(input?.audience),
+    roleScope: sanitizeUiText(String(input?.roleScope || '').trim()) || undefined,
     scope: 'persisted',
-    channel: 'inbox',
+    channel: coerceNotificationChannel(input?.channel, 'inbox'),
     status: String(input?.status || '').trim().toLowerCase() === 'resolved' ? 'resolved' : 'active',
     resolvedAt: input?.resolvedAt ? toTimestampMs(input.resolvedAt, createdAt) : null,
     resolvedBy: String(input?.resolvedBy || '').trim() || null,
@@ -234,8 +351,11 @@ export const prepareNotificationsForStorage = (notifications: AppNotification[])
   notifications.map((item) => ({
     ...item,
     title: sanitizeUiText(String(item.title || '').trim()) || defaultTitleForSeverity(item.severity),
-    message: sanitizeUiText(String(item.message || '').trim()) || 'Notification',
+    message: sanitizeUiText(String(item.userMessage || item.message || '').trim()) || 'Notification',
+    userMessage: sanitizeUiText(String(item.userMessage || item.message || '').trim()) || 'Notification',
     details: sanitizeUiText(String(item.details || '').trim()) || undefined,
+    adminDetail: sanitizeUiText(String(item.adminDetail || item.details || '').trim()) || undefined,
+    roleScope: sanitizeUiText(String(item.roleScope || '').trim()) || undefined,
     action: item.action
       ? {
           label: sanitizeUiText(String(item.action.label || '').trim()) || 'Open',
@@ -317,7 +437,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     []
   );
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [toastNotifications, setToastNotifications] = useState<AppNotification[]>([]);
+  const [toastNotifications, setToastNotifications] = useState<AppNotification[]>(() => readStoredLocalNotifications());
   const [prefsState, setPrefsState] = useState<NotificationPrefs>(initialPrefs);
   const [isCenterOpen, setCenterOpen] = useState(false);
   const notificationsRef = useRef<AppNotification[]>([]);
@@ -399,7 +519,8 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       const rows = await fetchAccountNotifications(readSettingsBackendUrl(), { limit: 150 });
       const normalized = rows
         .map((row) => coercePersistedNotification(row, Date.now()))
-        .filter((row): row is AppNotification => Boolean(row));
+        .filter((row): row is AppNotification => Boolean(row))
+        .filter((row) => isNotificationVisibleForClient(row, canSeeAdminNotifications))
       notificationsRef.current = normalized;
       setNotifications(normalized);
       persistedSyncErrorCountRef.current = 0;
@@ -415,7 +536,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       }
       schedulePersistedNotificationSync();
     }
-  }, [hasSessionIdentity, schedulePersistedNotificationSync, shouldSyncRemoteNotifications]);
+  }, [canSeeAdminNotifications, hasSessionIdentity, schedulePersistedNotificationSync, shouldSyncRemoteNotifications]);
 
   const syncPreferences = useCallback(async () => {
     if (!hasSessionIdentity || !shouldSyncRemoteNotifications) return;
@@ -476,6 +597,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     const normalized = limitNotifications(pruneExpiredNotifications(next), NOTIFICATION_MAX_ITEMS);
     toastNotificationsRef.current = normalized;
     setToastNotifications(normalized);
+    writeStorageJson(STORAGE_KEYS.notifications, prepareNotificationsForStorage(normalized));
   }, []);
 
   const canShowToast = useCallback((rows: AppNotification[], nowMs: number): boolean => {
@@ -487,7 +609,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     const nowMs = Date.now();
     const safePayload = payload || {};
     const policy = resolveNotificationPolicy(eventCode, safePayload, { isAdmin: canSeeAdminNotifications });
-    if (policy.channel !== 'toast') return '';
+    if (policy.channel === 'silent') return '';
     const entityKey = String(safePayload.entityKey || '').trim();
     const fallbackMessage = safePayload.message || policy.catalog.message || 'Notification';
     const message = sanitizeUiText(
@@ -522,12 +644,15 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       entityKey: entityKey || undefined,
       title: sanitizeUiText(String(safePayload.title || policy.catalog.title || '').trim()) || defaultTitleForSeverity(policy.severity),
       message,
+      userMessage: message,
       details: sanitizeUiText(String(safePayload.details || '').trim()) || undefined,
+      adminDetail: sanitizeUiText(String(safePayload.adminDetail || safePayload.details || '').trim()) || undefined,
       severity: policy.severity,
       category: policy.category,
       audience: policy.audience,
+      roleScope: sanitizeUiText(String(safePayload.roleScope || '').trim()) || undefined,
       scope: 'ephemeral',
-      channel: 'toast',
+      channel: policy.channel,
       status: 'active',
       resolvedAt: null,
       resolvedBy: null,
@@ -537,7 +662,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       dismissedAt: null,
       sticky: safePayload.sticky === true || policy.sticky,
       dedupeKey: buildEventDedupeKey(eventCode, entityKey || undefined, safePayload.dedupeKey),
-      toastVisible: canShowToast(currentRows, nowMs),
+      toastVisible: policy.channel === 'toast' ? canShowToast(currentRows, nowMs) : false,
       requiredPermission: safePayload.requiredPermission,
       emailEligible: safePayload.emailEligible === true,
       action: sanitizeAction(safePayload.action),
@@ -569,12 +694,15 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     if (!message) return '';
     return emit(input.eventCode || 'custom.message', {
       message,
+      ...(input.userMessage ? { userMessage: input.userMessage } : {}),
       ...(input.entityKey ? { entityKey: input.entityKey } : {}),
       ...(input.title ? { title: input.title } : {}),
       ...(input.details ? { details: input.details } : {}),
+      ...(input.adminDetail ? { adminDetail: input.adminDetail } : {}),
       ...(input.severity ? { severity: input.severity } : {}),
       ...(input.category ? { category: input.category } : {}),
       ...(input.audience ? { audience: input.audience } : {}),
+      ...(input.roleScope ? { roleScope: input.roleScope } : {}),
       ...(input.channel ? { channel: input.channel } : {}),
       ...(input.sticky === true ? { sticky: true } : {}),
       ...(input.dedupeKey ? { dedupeKey: input.dedupeKey } : {}),
@@ -700,7 +828,10 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     };
   }, [emit]);
 
-  const unreadCount = useMemo(() => notifications.filter((item) => !item.readAt && item.status === 'active').length, [notifications]);
+  const unreadCount = useMemo(
+    () => combineNotificationFeeds(notifications, toastNotifications).filter((item) => !item.readAt && item.status === 'active').length,
+    [notifications, toastNotifications]
+  );
   const value = useMemo<NotificationsContextValue>(() => ({
     notifications,
     toastNotifications,
@@ -737,3 +868,5 @@ export const useNotifications = (): NotificationsContextValue => {
   if (!context) throw new Error('useNotifications must be used within NotificationProvider');
   return context;
 };
+
+export const useOptionalNotifications = (): NotificationsContextValue | undefined => useContext(NotificationsContext);

@@ -40,6 +40,10 @@ spec:
             - secretRef:
                 name: voiceflow-redis
             - secretRef:
+                name: voiceflow-firebase
+            - secretRef:
+                name: voiceflow-reader-storage
+            - secretRef:
                 name: voiceflow-runtime-admin
           lifecycle:
             preStop:

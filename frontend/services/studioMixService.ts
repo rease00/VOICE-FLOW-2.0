@@ -1,7 +1,5 @@
 import { MUSIC_TRACKS } from "../constants";
 import { GenerationSettings } from "../types";
-import { getSharedAudioContext } from "../src/shared/audio/audioContext";
-import { resolveMusicTrackUrlById } from "../src/shared/media/audioCatalog";
 
 export const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
 export const STUDIO_SPEECH_GAIN_MIN = 0.05;
@@ -9,10 +7,6 @@ export const STUDIO_SPEECH_GAIN_MAX = 1.5;
 export const STUDIO_MUSIC_GAIN_DEFAULT = 0.3;
 export const STUDIO_MUSIC_GAIN_MIN = 0;
 export const STUDIO_MUSIC_GAIN_MAX = 1;
-
-interface StudioAudioMixOptions {
-  customMusicTrackUrl?: string;
-}
 
 const clampFiniteNumber = (value: unknown, min: number, max: number, fallback: number): number => {
   const numeric = Number(value);
@@ -28,8 +22,16 @@ export const resolveStudioMusicGain = (value: unknown): number => (
   clampFiniteNumber(value, STUDIO_MUSIC_GAIN_MIN, STUDIO_MUSIC_GAIN_MAX, STUDIO_MUSIC_GAIN_DEFAULT)
 );
 
+function getAudioContext(): AudioContext {
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) {
+    throw new Error("AudioContext is not supported in this browser.");
+  }
+  return new AudioContextClass();
+}
+
 async function fetchTrackBuffer(url: string): Promise<AudioBuffer> {
-  const ctx = getSharedAudioContext();
+  const ctx = getAudioContext();
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -46,12 +48,11 @@ async function fetchTrackBuffer(url: string): Promise<AudioBuffer> {
 export async function applyStudioAudioMix(
   speechBuffer: AudioBuffer,
   settings: GenerationSettings,
-  options: StudioAudioMixOptions = {}
+  _options?: { customMusicTrackUrl?: string | null }
 ): Promise<AudioBuffer> {
   const hasMusic = !!settings.musicTrackId && settings.musicTrackId !== "m_none";
   const speechGainValue = resolveStudioSpeechGain(settings.speechVolume);
   const musicGainValue = resolveStudioMusicGain(settings.musicVolume);
-  const customMusicTrackUrl = String(options.customMusicTrackUrl || '').trim();
 
   // Preserve source fidelity when no effective mix operation is requested.
   if (!hasMusic && Math.abs(speechGainValue - 1.0) < 0.001) {
@@ -79,10 +80,9 @@ export async function applyStudioAudioMix(
 
   if (hasMusic && musicGainValue > 0) {
     const track = MUSIC_TRACKS.find((t) => t.id === settings.musicTrackId);
-    const trackUrl = customMusicTrackUrl || await resolveMusicTrackUrlById(String(settings.musicTrackId || ''), track?.url || '');
-    if (trackUrl) {
+    if (track?.url) {
       try {
-        const musicBuffer = await fetchTrackBuffer(trackUrl);
+        const musicBuffer = await fetchTrackBuffer(track.url);
         const musicGain = offline.createGain();
         musicGain.gain.value = musicGainValue;
         musicGain.connect(offline.destination);

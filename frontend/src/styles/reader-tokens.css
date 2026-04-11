@@ -1,0 +1,331 @@
+/* Reader theme tokens — scoped under [data-vf-reader-theme] to avoid
+   conflicting with the application-wide voice-Flow theme system. */
+
+/* ------------------------------------------------------------------ */
+/* DARK READER THEME                                                   */
+/* ------------------------------------------------------------------ */
+[data-vf-reader-theme="dark"] {
+  --vf-reader-shell-bg: #0f1419;
+  --vf-reader-shell-text: #e8e8e8;
+  --vf-reader-header-bg: #1a2332;
+  --vf-reader-header-text: #e8e8e8;
+  --vf-reader-header-border: #2a3f52;
+  --vf-reader-panel-bg: #1d2a38;
+  --vf-reader-panel-border: #3a4f68;
+  --vf-reader-panel-text: #d8d8d8;
+  --vf-reader-muted: #8fa5b8;
+  --vf-reader-card-bg: rgba(26, 40, 53, 0.92);
+  --vf-reader-card-border: #3a4f68;
+  --vf-reader-selected-bg: #3f83ff;
+  --vf-reader-selected-text: white;
+  --vf-reader-hover-bg: rgba(94, 151, 255, 0.18);
+  --vf-reader-input-bg: #1a2835;
+  --vf-reader-input-border: #3a4f68;
+  --vf-reader-input-text: #e8e8e8;
+  --vf-reader-accent-text: #9db8d4;
+  --vf-reader-choice-active-border: #79a7ff;
+  --vf-reader-choice-active-bg: #3f83ff;
+  --vf-reader-choice-active-text: white;
+  --vf-reader-choice-idle-border: #3a4f68;
+  --vf-reader-choice-idle-bg: #1a2835;
+  --vf-reader-choice-idle-text: #d8d8d8;
+  --vf-reader-choice-idle-hover-bg: #232d3d;
+  --vf-reader-primary-btn-bg: #3f83ff;
+  --vf-reader-primary-btn-text: white;
+  --vf-reader-primary-btn-hover-bg: #2f72ea;
+  --vf-reader-sidebar-trigger-idle-text: #d8d8d8;
+  --vf-reader-sidebar-trigger-idle-border: rgba(90, 122, 148, 0.7);
+  --vf-reader-sidebar-trigger-idle-bg: rgba(26, 40, 53, 0.62);
+  --vf-reader-sidebar-trigger-idle-hover-border: #81a9e6;
+  --vf-reader-sidebar-trigger-idle-hover-bg: rgba(35, 45, 61, 0.68);
+  --vf-reader-sidebar-trigger-active-border: #86afea;
+  --vf-reader-sidebar-trigger-active-bg: rgba(63, 131, 255, 0.78);
+  --vf-reader-sidebar-trigger-active-text: white;
+  --vf-reader-sidebar-trigger-active-shadow: rgba(15, 20, 25, 0.42);
+  --vf-reader-sidebar-popup-border: rgba(58, 79, 104, 0.88);
+  --vf-reader-sidebar-popup-from: rgba(26, 40, 53, 0.94);
+  --vf-reader-sidebar-popup-to: rgba(20, 29, 41, 0.9);
+  --vf-reader-sidebar-popup-shadow: rgba(15, 20, 25, 0.65);
+  --vf-reader-sidebar-header-border: #2a3f52;
+  --vf-reader-sidebar-tabs-wrap-bg: #1a2835;
+  --vf-reader-sidebar-tab-active-bg: #3f83ff;
+  --vf-reader-sidebar-tab-active-text: white;
+  --vf-reader-sidebar-tab-idle-text: #c8d8e8;
+  --vf-reader-sidebar-tab-idle-hover-bg: #232d3d;
+  --vf-reader-sidebar-tab-idle-hover-text: white;
+  --vf-reader-sidebar-search-wrap-border: #3a4f68;
+  --vf-reader-sidebar-search-wrap-bg: rgba(26, 40, 53, 0.95);
+  --vf-reader-sidebar-search-input-border: #3a4f68;
+  --vf-reader-sidebar-search-input-bg: #1d2a38;
+  --vf-reader-sidebar-search-input-text: #e8e8e8;
+  --vf-reader-sidebar-search-input-focus-border: #79a7ff;
+  --vf-reader-icon-muted: #8fa5b8;
+  --vf-reader-icon-hover-bg: #232d3d;
+  --vf-reader-dock-popup-border: #3a4f68;
+  --vf-reader-dock-popup-bg: rgba(26, 35, 50, 0.95);
+  --vf-reader-dock-popup-header-border: #2a3f52;
+  --vf-reader-dock-shell-border: rgba(58, 79, 104, 0.8);
+  --vf-reader-dock-shell-bg: rgba(25, 31, 46, 0.92);
+  --vf-reader-dock-shell-shadow: rgba(15, 20, 25, 0.58);
+  --vf-reader-dock-action-active-border: #79a7ff;
+  --vf-reader-dock-action-active-bg: #3f83ff;
+  --vf-reader-dock-action-active-text: white;
+  --vf-reader-dock-action-idle-border: #3a4f68;
+  --vf-reader-dock-action-idle-bg: #1d2a38;
+  --vf-reader-dock-action-idle-text: #d8d8d8;
+  --vf-reader-dock-action-idle-hover-bg: #232d3d;
+  --vf-reader-dock-action-idle-hover-border: #5f8fd1;
+  --vf-reader-slider-track-start: rgba(94, 151, 255, 0.92);
+  --vf-reader-slider-track-end: rgba(191, 219, 254, 0.32);
+  --vf-reader-slider-thumb-border: #79a7ff;
+  --vf-reader-slider-thumb-bg: #f8fbff;
+  --vf-reader-slider-thumb-halo: rgba(121, 167, 255, 0.2);
+  --vf-reader-slider-thumb-halo-hover: rgba(121, 167, 255, 0.28);
+}
+
+/* ------------------------------------------------------------------ */
+/* SEPIA READER THEME                                                  */
+/* ------------------------------------------------------------------ */
+[data-vf-reader-theme="sepia"] {
+  --vf-reader-shell-bg: #f5ead8;
+  --vf-reader-shell-text: #3f2f1f;
+  --vf-reader-header-bg: #efe0c7;
+  --vf-reader-header-text: #4a3622;
+  --vf-reader-header-border: #cfbb9d;
+  --vf-reader-panel-bg: #f1e3cb;
+  --vf-reader-panel-border: #ccb28e;
+  --vf-reader-panel-text: #5f432b;
+  --vf-reader-muted: #8a7156;
+  --vf-reader-card-bg: rgba(248, 238, 223, 0.9);
+  --vf-reader-card-border: #d4bd9d;
+  --vf-reader-selected-bg: #9b6739;
+  --vf-reader-selected-text: #fff7ea;
+  --vf-reader-hover-bg: #e7d3b5;
+  --vf-reader-input-bg: #f6ebda;
+  --vf-reader-input-border: #cfb392;
+  --vf-reader-input-text: #4a3521;
+  --vf-reader-accent-text: #8a5b31;
+  --vf-reader-choice-active-border: #a87140;
+  --vf-reader-choice-active-bg: #9b6739;
+  --vf-reader-choice-active-text: #fff7ea;
+  --vf-reader-choice-idle-border: #c8ab83;
+  --vf-reader-choice-idle-bg: #f2e4cd;
+  --vf-reader-choice-idle-text: #5f432b;
+  --vf-reader-choice-idle-hover-bg: #e8d3b4;
+  --vf-reader-primary-btn-bg: #9b6739;
+  --vf-reader-primary-btn-text: #fff8ed;
+  --vf-reader-primary-btn-hover-bg: #84552e;
+  --vf-reader-sidebar-trigger-idle-text: #62452d;
+  --vf-reader-sidebar-trigger-idle-border: rgba(190, 160, 123, 0.7);
+  --vf-reader-sidebar-trigger-idle-bg: rgba(244, 231, 209, 0.7);
+  --vf-reader-sidebar-trigger-idle-hover-border: #a98256;
+  --vf-reader-sidebar-trigger-idle-hover-bg: #ead8bc;
+  --vf-reader-sidebar-trigger-active-border: #b88352;
+  --vf-reader-sidebar-trigger-active-bg: rgba(166, 106, 53, 0.65);
+  --vf-reader-sidebar-trigger-active-text: #fff8ed;
+  --vf-reader-sidebar-trigger-active-shadow: rgba(139, 94, 50, 0.35);
+  --vf-reader-sidebar-popup-border: rgba(200, 171, 134, 0.9);
+  --vf-reader-sidebar-popup-from: rgba(246, 234, 216, 0.95);
+  --vf-reader-sidebar-popup-to: rgba(233, 214, 186, 0.9);
+  --vf-reader-sidebar-popup-shadow: rgba(158, 128, 94, 0.45);
+  --vf-reader-sidebar-header-border: #ccb292;
+  --vf-reader-sidebar-tabs-wrap-bg: #ebdcc4;
+  --vf-reader-sidebar-tab-active-bg: #9b6739;
+  --vf-reader-sidebar-tab-active-text: #fff8ef;
+  --vf-reader-sidebar-tab-idle-text: #654a31;
+  --vf-reader-sidebar-tab-idle-hover-bg: #dec5a4;
+  --vf-reader-sidebar-tab-idle-hover-text: #3f2d1b;
+  --vf-reader-sidebar-search-wrap-border: #c9ab83;
+  --vf-reader-sidebar-search-wrap-bg: rgba(243, 230, 210, 0.95);
+  --vf-reader-sidebar-search-input-border: #c9ac84;
+  --vf-reader-sidebar-search-input-bg: #f8efdf;
+  --vf-reader-sidebar-search-input-text: #4b3826;
+  --vf-reader-sidebar-search-input-focus-border: #a97745;
+  --vf-reader-icon-muted: #8b7357;
+  --vf-reader-icon-hover-bg: #ddc6a7;
+  --vf-reader-dock-popup-border: #c5a983;
+  --vf-reader-dock-popup-bg: rgba(243, 229, 208, 0.96);
+  --vf-reader-dock-popup-header-border: #ccb292;
+  --vf-reader-dock-shell-border: rgba(195, 167, 129, 0.8);
+  --vf-reader-dock-shell-bg: rgba(240, 223, 201, 0.94);
+  --vf-reader-dock-shell-shadow: rgba(101, 73, 45, 0.3);
+  --vf-reader-dock-action-active-border: #a87140;
+  --vf-reader-dock-action-active-bg: #9b6739;
+  --vf-reader-dock-action-active-text: #fff7ea;
+  --vf-reader-dock-action-idle-border: #c7aa83;
+  --vf-reader-dock-action-idle-bg: #efe0c8;
+  --vf-reader-dock-action-idle-text: #5f432b;
+  --vf-reader-dock-action-idle-hover-bg: #e6d1b1;
+  --vf-reader-dock-action-idle-hover-border: #b99264;
+  --vf-reader-slider-track-start: rgba(168, 114, 61, 0.95);
+  --vf-reader-slider-track-end: rgba(232, 208, 174, 0.72);
+  --vf-reader-slider-thumb-border: #a97745;
+  --vf-reader-slider-thumb-bg: #fff9f0;
+  --vf-reader-slider-thumb-halo: rgba(169, 119, 69, 0.24);
+  --vf-reader-slider-thumb-halo-hover: rgba(169, 119, 69, 0.32);
+}
+
+/* ------------------------------------------------------------------ */
+/* LIGHT READER THEME                                                  */
+/* ------------------------------------------------------------------ */
+[data-vf-reader-theme="light"] {
+  --vf-reader-shell-bg: #f4f8ff;
+  --vf-reader-shell-text: #1f2937;
+  --vf-reader-header-bg: #e9f0ff;
+  --vf-reader-header-text: #1f2937;
+  --vf-reader-header-border: #c2d4f6;
+  --vf-reader-panel-bg: #edf4ff;
+  --vf-reader-panel-border: #bfd3f5;
+  --vf-reader-panel-text: #2f4f86;
+  --vf-reader-muted: #6b7280;
+  --vf-reader-card-bg: rgba(255, 255, 255, 0.95);
+  --vf-reader-card-border: #c8d8f4;
+  --vf-reader-selected-bg: #2563eb;
+  --vf-reader-selected-text: white;
+  --vf-reader-hover-bg: #dbeafe;
+  --vf-reader-input-bg: white;
+  --vf-reader-input-border: #c6d6f2;
+  --vf-reader-input-text: #1f2937;
+  --vf-reader-accent-text: #2455a6;
+  --vf-reader-choice-active-border: #2563eb;
+  --vf-reader-choice-active-bg: #2563eb;
+  --vf-reader-choice-active-text: white;
+  --vf-reader-choice-idle-border: #bfd1f2;
+  --vf-reader-choice-idle-bg: #edf4ff;
+  --vf-reader-choice-idle-text: #2d4f84;
+  --vf-reader-choice-idle-hover-bg: #dde9ff;
+  --vf-reader-primary-btn-bg: #2563eb;
+  --vf-reader-primary-btn-text: white;
+  --vf-reader-primary-btn-hover-bg: #1d4ed8;
+  --vf-reader-sidebar-trigger-idle-text: #29508f;
+  --vf-reader-sidebar-trigger-idle-border: rgba(159, 184, 229, 0.7);
+  --vf-reader-sidebar-trigger-idle-bg: rgba(238, 244, 255, 0.72);
+  --vf-reader-sidebar-trigger-idle-hover-border: #7da0da;
+  --vf-reader-sidebar-trigger-idle-hover-bg: #e2ecff;
+  --vf-reader-sidebar-trigger-active-border: #5a82d2;
+  --vf-reader-sidebar-trigger-active-bg: rgba(37, 99, 235, 0.8);
+  --vf-reader-sidebar-trigger-active-text: white;
+  --vf-reader-sidebar-trigger-active-shadow: rgba(29, 78, 216, 0.3);
+  --vf-reader-sidebar-popup-border: rgba(181, 201, 238, 0.95);
+  --vf-reader-sidebar-popup-from: rgba(247, 250, 255, 0.96);
+  --vf-reader-sidebar-popup-to: rgba(231, 239, 255, 0.92);
+  --vf-reader-sidebar-popup-shadow: rgba(139, 166, 214, 0.35);
+  --vf-reader-sidebar-header-border: #c4d6f4;
+  --vf-reader-sidebar-tabs-wrap-bg: #eaf1ff;
+  --vf-reader-sidebar-tab-active-bg: #2563eb;
+  --vf-reader-sidebar-tab-active-text: white;
+  --vf-reader-sidebar-tab-idle-text: #37517f;
+  --vf-reader-sidebar-tab-idle-hover-bg: #d6e4ff;
+  --vf-reader-sidebar-tab-idle-hover-text: #17325f;
+  --vf-reader-sidebar-search-wrap-border: #c2d3f2;
+  --vf-reader-sidebar-search-wrap-bg: rgba(245, 248, 255, 0.95);
+  --vf-reader-sidebar-search-input-border: #c3d3f0;
+  --vf-reader-sidebar-search-input-bg: white;
+  --vf-reader-sidebar-search-input-text: #1f2937;
+  --vf-reader-sidebar-search-input-focus-border: #3b82f6;
+  --vf-reader-icon-muted: #6b7280;
+  --vf-reader-icon-hover-bg: #d9e6ff;
+  --vf-reader-dock-popup-border: #b8cdef;
+  --vf-reader-dock-popup-bg: rgba(244, 248, 255, 0.96);
+  --vf-reader-dock-popup-header-border: #c5d7f4;
+  --vf-reader-dock-shell-border: rgba(184, 205, 241, 0.8);
+  --vf-reader-dock-shell-bg: rgba(243, 247, 254, 0.94);
+  --vf-reader-dock-shell-shadow: rgba(56, 94, 164, 0.2);
+  --vf-reader-dock-action-active-border: #2563eb;
+  --vf-reader-dock-action-active-bg: #2563eb;
+  --vf-reader-dock-action-active-text: white;
+  --vf-reader-dock-action-idle-border: #bfd2f3;
+  --vf-reader-dock-action-idle-bg: #edf4ff;
+  --vf-reader-dock-action-idle-text: #2b4f86;
+  --vf-reader-dock-action-idle-hover-bg: #dce9ff;
+  --vf-reader-dock-action-idle-hover-border: #95b4e8;
+  --vf-reader-slider-track-start: rgba(37, 99, 235, 0.9);
+  --vf-reader-slider-track-end: rgba(147, 197, 253, 0.55);
+  --vf-reader-slider-thumb-border: #3b82f6;
+  --vf-reader-slider-thumb-bg: #ffffff;
+  --vf-reader-slider-thumb-halo: rgba(59, 130, 246, 0.16);
+  --vf-reader-slider-thumb-halo-hover: rgba(59, 130, 246, 0.24);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reader-scoped scrollbar overrides                                   */
+/* ------------------------------------------------------------------ */
+[data-vf-reader-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(120, 150, 200, 0.3);
+}
+[data-vf-reader-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 150, 200, 0.5);
+}
+
+[data-vf-reader-theme="sepia"] ::-webkit-scrollbar-thumb {
+  background: rgba(138, 91, 49, 0.25);
+}
+[data-vf-reader-theme="sepia"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(138, 91, 49, 0.4);
+}
+
+[data-vf-reader-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(36, 85, 166, 0.2);
+}
+[data-vf-reader-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(36, 85, 166, 0.35);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reader dock slider styling                                          */
+/* ------------------------------------------------------------------ */
+.vf-reader-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    var(--vf-reader-slider-track-start, rgba(59, 130, 246, 0.95)),
+    var(--vf-reader-slider-track-end, rgba(191, 219, 254, 0.24))
+  );
+}
+
+.vf-reader-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  margin-top: -5px;
+  height: 16px;
+  width: 16px;
+  border-radius: 9999px;
+  border: 2px solid var(--vf-reader-slider-thumb-border, #60a5fa);
+  background: var(--vf-reader-slider-thumb-bg, #f8fbff);
+  box-shadow: 0 0 0 4px var(--vf-reader-slider-thumb-halo, rgba(96, 165, 250, 0.16));
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.vf-reader-slider::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 0 6px var(--vf-reader-slider-thumb-halo-hover, rgba(96, 165, 250, 0.24));
+}
+
+.vf-reader-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    var(--vf-reader-slider-track-start, rgba(59, 130, 246, 0.95)),
+    var(--vf-reader-slider-track-end, rgba(191, 219, 254, 0.24))
+  );
+}
+
+.vf-reader-slider::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 9999px;
+  border: 2px solid var(--vf-reader-slider-thumb-border, #60a5fa);
+  background: var(--vf-reader-slider-thumb-bg, #f8fbff);
+  box-shadow: 0 0 0 4px var(--vf-reader-slider-thumb-halo, rgba(96, 165, 250, 0.16));
+  cursor: pointer;
+}
+
+.vf-reader-slider::-moz-range-thumb:hover {
+  box-shadow: 0 0 0 6px var(--vf-reader-slider-thumb-halo-hover, rgba(96, 165, 250, 0.24));
+}
+
+.vf-reader-slider:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--vf-reader-selected-bg, #3f83ff);
+  outline-offset: 2px;
+}

@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-03-25T14:43:40.840165+00:00",
+  "generated_at": "2026-04-08T15:37:19.197334+00:00",
   "scope": "all-accessible",
   "window_days": 30,
   "status": "ok",
   "environment": {
-    "active_account": "tts-693@v-flow-ai-491311.iam.gserviceaccount.com",
+    "active_account": "firebase-adminsdk-fbsvc@v-flow-ai-491311.iam.gserviceaccount.com",
     "active_project": "v-flow-ai-491311",
     "gcloud_available": true
   },
@@ -34,9 +34,13 @@
     "project_service_counts": [
       {
         "project_id": "v-flow-ai-491311",
-        "enabled_service_count": 45,
+        "enabled_service_count": 69,
         "high_cost_services": [
+          "aiplatform.googleapis.com",
           "bigquery.googleapis.com",
+          "compute.googleapis.com",
+          "container.googleapis.com",
+          "run.googleapis.com",
           "storage.googleapis.com"
         ]
       }
@@ -70,12 +74,7 @@
       "recommended_action": "Link project to the correct billing account and verify budget guardrails."
     }
   ],
-  "errors": [
-    {
-      "command": "gcloud billing accounts list --format=json",
-      "error": "API [cloudbilling.googleapis.com] not enabled on project [820011798437]. Would \nyou like to enable and retry (this will take a few minutes)? (y/N)?  \nERROR: (gcloud.billing.accounts.list) PERMISSION_DENIED: Cloud Billing API has not been used in project 820011798437 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/cloudbilling.googleapis.com/overview?project=820011798437 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry. This command is authenticated as tts-693@v-flow-ai-491311.iam.gserviceaccount.com which is the active account specified by the [core/account] property.\nCloud Billing API has not been used in project 820011798437 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/cloudbilling.googleapis.com/overview?project=820011798437 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.\nGoogle developers console API activation\nhttps://console.developers.google.com/apis/api/cloudbilling.googleapis.com/overview?project=820011798437\n- '@type': type.googleapis.com/google.rpc.ErrorInfo\n  domain: googleapis.com\n  metadata:\n    activationUrl: https://console.developers.google.com/apis/api/cloudbilling.googleapis.com/overview?project=820011798437\n    consumer: projects/820011798437\n    containerInfo: '820011798437'\n    service: cloudbilling.googleapis.com\n    serviceTitle: Cloud Billing API\n  reason: SERVICE_DISABLED"
-    }
-  ],
+  "errors": [],
   "notes": [
     "Actual cost/spend values require Cloud Billing export pipelines (for example BigQuery export). This report uses billing-account, budget, service, and coverage signals."
   ]

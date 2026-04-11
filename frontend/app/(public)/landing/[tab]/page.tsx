@@ -14,7 +14,7 @@ const TAB_TITLES: Record<LandingTabKey, string> = {
   'prime-scenes': 'Prime Scenes',
   'clone-proof': 'Clone Proof',
   direction: 'Direction',
-  reader: 'Reader',
+  writing: 'Writing',
 };
 
 const normalizeTab = (raw: string): LandingTabKey | null => {

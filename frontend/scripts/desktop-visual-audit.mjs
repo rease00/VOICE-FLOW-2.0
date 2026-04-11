@@ -16,7 +16,7 @@ const outputDir = path.resolve(process.cwd(), 'tmp_dir', 'playwright', `desktop-
 const routeReadiness = {
   '/app/studio': ['.vf-studio-grid', '.vf-editor-shell', 'button:has-text("Import")'],
   '/app/voices': ['[data-testid="voices-workspace"]', '.vf-voices-shell', 'text=Library'],
-  '/app/reader': ['.vf-reader-v2-shell', '[data-testid="reader-browse-home"]', 'button:has-text("Get Started")'],
+  '/app/writing': ['[data-testid="novel-workspace"]', '[data-testid="novel-editor-tabs"]', 'text=Novel Workspace'],
 };
 
 const suites = [
@@ -53,7 +53,7 @@ const suites = [
   },
 ];
 
-const routes = ['/app/studio', '/app/voices', '/app/reader'];
+const routes = ['/app/studio', '/app/voices', '/app/writing'];
 
 const parseArgs = () => {
   const args = process.argv.slice(2);

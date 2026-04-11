@@ -1,0 +1,609 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - link "Skip to main content" [ref=e3] [cursor=pointer]:
+      - /url: "#main-content"
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "V FLOW AI AI STUDIO" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e7]:
+            - generic [ref=e8]:
+              - img [ref=e12]
+              - img [ref=e17]
+              - img [ref=e21]
+            - generic [ref=e23]:
+              - generic [ref=e24]: V FLOW AI
+              - generic [ref=e25]: AI STUDIO
+        - navigation "Main navigation" [ref=e26]:
+          - link "Voice" [ref=e27] [cursor=pointer]:
+            - /url: /landing/single-voice
+          - link "Prime" [ref=e28] [cursor=pointer]:
+            - /url: /landing/prime-scenes
+          - link "Clone" [ref=e29] [cursor=pointer]:
+            - /url: /landing/clone-proof
+          - link "Direct" [ref=e30] [cursor=pointer]:
+            - /url: /landing/direction
+          - link "Reader" [ref=e31] [cursor=pointer]:
+            - /url: /landing/reader
+        - generic [ref=e32]:
+          - link "Pricing" [ref=e33] [cursor=pointer]:
+            - /url: /billing
+          - link "Start free" [ref=e34] [cursor=pointer]:
+            - /url: /app/login?mode=signup&next=%2Fapp%2Fstudio
+            - text: Start free
+            - img [ref=e35]
+    - generic [ref=e38]:
+      - generic [ref=e39]:
+        - img [ref=e40]
+        - text: Prime
+      - generic [ref=e43]:
+        - img [ref=e44]
+        - text: Clone
+      - generic [ref=e48]:
+        - img [ref=e49]
+        - text: Direct
+      - generic [ref=e52]:
+        - img [ref=e53]
+        - text: Reader
+      - generic [ref=e55]:
+        - img [ref=e56]
+        - text: Live
+      - generic [ref=e57]:
+        - img [ref=e58]
+        - text: Global
+      - generic [ref=e61]:
+        - img [ref=e62]
+        - text: Fast
+      - generic [ref=e64]:
+        - img [ref=e65]
+        - text: Ready
+      - generic [ref=e67]:
+        - img [ref=e68]
+        - text: Prime
+      - generic [ref=e71]:
+        - img [ref=e72]
+        - text: Clone
+      - generic [ref=e76]:
+        - img [ref=e77]
+        - text: Direct
+      - generic [ref=e80]:
+        - img [ref=e81]
+        - text: Reader
+      - generic [ref=e83]:
+        - img [ref=e84]
+        - text: Live
+      - generic [ref=e85]:
+        - img [ref=e86]
+        - text: Global
+      - generic [ref=e89]:
+        - img [ref=e90]
+        - text: Fast
+      - generic [ref=e92]:
+        - img [ref=e93]
+        - text: Ready
+      - generic [ref=e95]:
+        - generic [ref=e96]:
+          - img [ref=e97]
+          - text: Prime
+        - generic [ref=e100]:
+          - img [ref=e101]
+          - text: Clone
+        - generic [ref=e105]:
+          - img [ref=e106]
+          - text: Direct
+        - generic [ref=e109]:
+          - img [ref=e110]
+          - text: Reader
+        - generic [ref=e112]:
+          - img [ref=e113]
+          - text: Live
+        - generic [ref=e114]:
+          - img [ref=e115]
+          - text: Global
+        - generic [ref=e118]:
+          - img [ref=e119]
+          - text: Fast
+        - generic [ref=e121]:
+          - img [ref=e122]
+          - text: Ready
+        - generic [ref=e124]:
+          - img [ref=e125]
+          - text: Prime
+        - generic [ref=e128]:
+          - img [ref=e129]
+          - text: Clone
+        - generic [ref=e133]:
+          - img [ref=e134]
+          - text: Direct
+        - generic [ref=e137]:
+          - img [ref=e138]
+          - text: Reader
+        - generic [ref=e140]:
+          - img [ref=e141]
+          - text: Live
+        - generic [ref=e142]:
+          - img [ref=e143]
+          - text: Global
+        - generic [ref=e146]:
+          - img [ref=e147]
+          - text: Fast
+        - generic [ref=e149]:
+          - img [ref=e150]
+          - text: Ready
+    - main [ref=e152]:
+      - generic [ref=e154]:
+        - generic [ref=e155]:
+          - generic [ref=e156]: Live Studio
+          - generic [ref=e158]:
+            - img [ref=e159]
+            - text: Premium voice studio
+        - heading "Make voice work feel premium." [level=1] [ref=e162]:
+          - text: Make voice work
+          - text: feel premium.
+        - paragraph [ref=e163]: Single voice. Prime scenes. Clone proof. One clean flow.
+        - generic [ref=e164]:
+          - link "Open studio" [ref=e165] [cursor=pointer]:
+            - /url: /app/studio
+            - img [ref=e166]
+            - text: Open studio
+          - link "Hear Prime scenes" [ref=e168] [cursor=pointer]:
+            - /url: /landing/prime-scenes
+            - text: Hear Prime scenes
+            - img [ref=e169]
+        - generic [ref=e171]:
+          - generic [ref=e172]: Fast
+          - generic [ref=e173]: Clean
+          - generic [ref=e174]: Ready
+        - generic [ref=e194]:
+          - generic [ref=e195]:
+            - generic [ref=e196]:
+              - img [ref=e197]
+              - text: Prime scene
+            - generic [ref=e200]: Live
+          - article [ref=e202]:
+            - generic [ref=e203]:
+              - generic [ref=e204]:
+                - paragraph [ref=e205]: Movie Night / United States / Global English
+                - heading "Weekend plan" [level=3] [ref=e206]
+              - generic "Weekend plan highlights" [ref=e207]:
+                - generic [ref=e208]: Prime
+                - generic [ref=e209]: Scene
+            - paragraph [ref=e210]: A fast weekend pitch-off.
+            - generic "Weekend plan cast" [ref=e211]:
+              - generic [ref=e212]: Ethan US Male
+              - generic [ref=e213]: Ava US Female
+              - generic [ref=e214]: Grace UK Elder
+            - generic [ref=e226]:
+              - button "Play Weekend plan" [ref=e227]:
+                - img [ref=e228]
+              - generic [ref=e230]:
+                - generic [ref=e231]: Seek Weekend plan
+                - slider "Seek Weekend plan" [ref=e232] [cursor=pointer]: "0"
+                - generic [ref=e233]: 0:00Loading
+            - paragraph [ref=e234]: Tap to hear the scene.
+      - separator [ref=e235]
+      - generic [ref=e237]:
+        - generic [ref=e238]:
+          - paragraph [ref=e239]:
+            - img [ref=e240]
+            - text: Studio lanes
+          - heading "Five lanes. One studio." [level=2] [ref=e244]
+          - paragraph [ref=e245]: Pick the proof you need and open it in one tap.
+        - generic [ref=e246]:
+          - link "Prime 5 scenes Multi-voice proof in one pass. Open" [ref=e247] [cursor=pointer]:
+            - /url: /landing/prime-scenes
+            - img [ref=e249]
+            - generic [ref=e252]:
+              - heading "Prime" [level=3] [ref=e253]
+              - generic [ref=e254]: 5 scenes
+            - paragraph [ref=e255]: Multi-voice proof in one pass.
+            - generic [ref=e256]:
+              - text: Open
+              - img [ref=e257]
+          - link "Voice 5 reads Five clean single-voice cuts. Open" [ref=e259] [cursor=pointer]:
+            - /url: /landing/single-voice
+            - img [ref=e261]
+            - generic [ref=e265]:
+              - heading "Voice" [level=3] [ref=e266]
+              - generic [ref=e267]: 5 reads
+            - paragraph [ref=e268]: Five clean single-voice cuts.
+            - generic [ref=e269]:
+              - text: Open
+              - img [ref=e270]
+          - link "Clone Compare Source and render side by side. Open" [ref=e272] [cursor=pointer]:
+            - /url: /landing/clone-proof
+            - img [ref=e274]
+            - generic [ref=e278]:
+              - heading "Clone" [level=3] [ref=e279]
+              - generic [ref=e280]: Compare
+            - paragraph [ref=e281]: Source and render side by side.
+            - generic [ref=e282]:
+              - text: Open
+              - img [ref=e283]
+          - link "Direct Prompted Tighten pace before render. Open" [ref=e285] [cursor=pointer]:
+            - /url: /landing/direction
+            - img [ref=e287]
+            - generic [ref=e288]:
+              - heading "Direct" [level=3] [ref=e289]
+              - generic [ref=e290]: Prompted
+            - paragraph [ref=e291]: Tighten pace before render.
+            - generic [ref=e292]:
+              - text: Open
+              - img [ref=e293]
+          - link "Reader Review Listen back before ship. Open" [ref=e295] [cursor=pointer]:
+            - /url: /landing/reader
+            - img [ref=e297]
+            - generic [ref=e299]:
+              - heading "Reader" [level=3] [ref=e300]
+              - generic [ref=e301]: Review
+            - paragraph [ref=e302]: Listen back before ship.
+            - generic [ref=e303]:
+              - text: Open
+              - img [ref=e304]
+          - generic [ref=e306]:
+            - paragraph [ref=e307]:
+              - img [ref=e308]
+              - text: Studio snapshot
+            - generic [ref=e311]:
+              - generic [ref=e312]:
+                - paragraph [ref=e313]: "5"
+                - paragraph [ref=e314]: Prime
+              - generic [ref=e315]:
+                - paragraph [ref=e316]: "5"
+                - paragraph [ref=e317]: Reads
+              - generic [ref=e318]:
+                - paragraph [ref=e319]: "5"
+                - paragraph [ref=e320]: Languages
+              - generic [ref=e321]:
+                - paragraph [ref=e322]: "1"
+                - paragraph [ref=e323]: Flow
+      - separator [ref=e324]
+      - generic "Tab content" [ref=e327]:
+        - generic [ref=e328]:
+          - generic [ref=e329]:
+            - paragraph [ref=e330]:
+              - img [ref=e331]
+              - text: Single voice
+            - heading "Five clean reads." [level=2] [ref=e335]
+            - paragraph [ref=e336]: Five markets, one clean read each.
+          - generic [ref=e337]:
+            - article [ref=e338]:
+              - generic [ref=e339]:
+                - generic [ref=e340]:
+                  - paragraph [ref=e341]: English (US) / United States
+                  - heading "Daily check-in" [level=3] [ref=e342]
+                - generic "Daily check-in highlights" [ref=e343]:
+                  - generic [ref=e344]: Voice
+                  - generic [ref=e345]: English (US)
+              - paragraph [ref=e346]: Weather, calendar, reminder.
+              - generic [ref=e358]:
+                - button "Play Daily check-in" [ref=e359]:
+                  - img [ref=e360]
+                - generic [ref=e362]:
+                  - generic [ref=e363]: Seek Daily check-in
+                  - slider "Seek Daily check-in" [ref=e364] [cursor=pointer]: "0"
+                  - generic [ref=e365]: 0:00Loading
+              - paragraph [ref=e366]: Bright, warm, clear.
+            - article [ref=e367]:
+              - generic [ref=e368]:
+                - generic [ref=e369]:
+                  - paragraph [ref=e370]: Hindi / India
+                  - heading "Support reply" [level=3] [ref=e371]
+                - generic "Support reply highlights" [ref=e372]:
+                  - generic [ref=e373]: Voice
+                  - generic [ref=e374]: Hindi
+              - paragraph [ref=e375]: Calm help with the next step.
+              - generic [ref=e387]:
+                - button "Play Support reply" [ref=e388]:
+                  - img [ref=e389]
+                - generic [ref=e391]:
+                  - generic [ref=e392]: Seek Support reply
+                  - slider "Seek Support reply" [ref=e393] [cursor=pointer]: "0"
+                  - generic [ref=e394]: 0:00Loading
+              - paragraph [ref=e395]: Steady, reassuring.
+            - article [ref=e396]:
+              - generic [ref=e397]:
+                - generic [ref=e398]:
+                  - paragraph [ref=e399]: Spanish / Spain
+                  - heading "Delivery update" [level=3] [ref=e400]
+                - generic "Delivery update highlights" [ref=e401]:
+                  - generic [ref=e402]: Voice
+                  - generic [ref=e403]: Spanish
+              - paragraph [ref=e404]: Quick status, clear next action.
+              - generic [ref=e416]:
+                - button "Play Delivery update" [ref=e417]:
+                  - img [ref=e418]
+                - generic [ref=e420]:
+                  - generic [ref=e421]: Seek Delivery update
+                  - slider "Seek Delivery update" [ref=e422] [cursor=pointer]: "0"
+                  - generic [ref=e423]: 0:00Loading
+              - paragraph [ref=e424]: Crisp, practical.
+            - article [ref=e425]:
+              - generic [ref=e426]:
+                - generic [ref=e427]:
+                  - paragraph [ref=e428]: Japanese / Japan
+                  - heading "Meeting reminder" [level=3] [ref=e429]
+                - generic "Meeting reminder highlights" [ref=e430]:
+                  - generic [ref=e431]: Voice
+                  - generic [ref=e432]: Japanese
+              - paragraph [ref=e433]: Polished reminder before the call.
+              - generic [ref=e445]:
+                - button "Play Meeting reminder" [ref=e446]:
+                  - img [ref=e447]
+                - generic [ref=e449]:
+                  - generic [ref=e450]: Seek Meeting reminder
+                  - slider "Seek Meeting reminder" [ref=e451] [cursor=pointer]: "0"
+                  - generic [ref=e452]: 0:00Loading
+              - paragraph [ref=e453]: Measured, professional.
+            - article [ref=e454]:
+              - generic [ref=e455]:
+                - generic [ref=e456]:
+                  - paragraph [ref=e457]: French / France
+                  - heading "Travel line" [level=3] [ref=e458]
+                - generic "Travel line highlights" [ref=e459]:
+                  - generic [ref=e460]: Voice
+                  - generic [ref=e461]: French
+              - paragraph [ref=e462]: Soft, cinematic narration.
+              - generic [ref=e474]:
+                - button "Play Travel line" [ref=e475]:
+                  - img [ref=e476]
+                - generic [ref=e478]:
+                  - generic [ref=e479]: Seek Travel line
+                  - slider "Seek Travel line" [ref=e480] [cursor=pointer]: "0"
+                  - generic [ref=e481]: 0:00Loading
+              - paragraph [ref=e482]: Airy, warm.
+        - generic [ref=e483]:
+          - generic [ref=e484]:
+            - paragraph [ref=e485]:
+              - img [ref=e486]
+              - text: Prime scenes
+            - heading "Five scenes. One pass." [level=2] [ref=e489]
+            - paragraph [ref=e490]: Fast compare mode for multi-voice scenes.
+          - generic [ref=e491]:
+            - article [ref=e492]:
+              - generic [ref=e493]:
+                - generic [ref=e494]:
+                  - paragraph [ref=e495]: The Weekend Plan / United States / Global English
+                  - heading "Weekend plan" [level=3] [ref=e496]
+                - generic "Weekend plan highlights" [ref=e497]:
+                  - generic [ref=e498]: Prime
+                  - generic [ref=e499]: 3 voices
+              - paragraph [ref=e500]: A fast weekend pitch-off.
+              - generic [ref=e512]:
+                - button "Play Weekend plan" [ref=e513]:
+                  - img [ref=e514]
+                - generic [ref=e516]:
+                  - generic [ref=e517]: Seek Weekend plan
+                  - slider "Seek Weekend plan" [ref=e518] [cursor=pointer]: "0"
+                  - generic [ref=e519]: 0:00Loading
+              - paragraph [ref=e520]: Quick turns. Clean contrast.
+            - article [ref=e521]:
+              - generic [ref=e522]:
+                - generic [ref=e523]:
+                  - paragraph [ref=e524]: Family Dinner / India
+                  - heading "Family dinner" [level=3] [ref=e525]
+                - generic "Family dinner highlights" [ref=e526]:
+                  - generic [ref=e527]: Prime
+                  - generic [ref=e528]: 3 voices
+              - paragraph [ref=e529]: Warm family timing.
+              - generic [ref=e541]:
+                - button "Play Family dinner" [ref=e542]:
+                  - img [ref=e543]
+                - generic [ref=e545]:
+                  - generic [ref=e546]: Seek Family dinner
+                  - slider "Seek Family dinner" [ref=e547] [cursor=pointer]: "0"
+                  - generic [ref=e548]: 0:00Loading
+              - paragraph [ref=e549]: Warm and teasing.
+            - article [ref=e550]:
+              - generic [ref=e551]:
+                - generic [ref=e552]:
+                  - paragraph [ref=e553]: The Boutique Shop / Spain / Latin America
+                  - heading "Boutique stop" [level=3] [ref=e554]
+                - generic "Boutique stop highlights" [ref=e555]:
+                  - generic [ref=e556]: Prime
+                  - generic [ref=e557]: 2 voices
+              - paragraph [ref=e558]: A shop exchange with a clean close.
+              - generic [ref=e570]:
+                - button "Play Boutique stop" [ref=e571]:
+                  - img [ref=e572]
+                - generic [ref=e574]:
+                  - generic [ref=e575]: Seek Boutique stop
+                  - slider "Seek Boutique stop" [ref=e576] [cursor=pointer]: "0"
+                  - generic [ref=e577]: 0:00Loading
+              - paragraph [ref=e578]: Helpful and bright.
+            - article [ref=e579]:
+              - generic [ref=e580]:
+                - generic [ref=e581]:
+                  - paragraph [ref=e582]: The Office Deadline / Japan
+                  - heading "Office deadline" [level=3] [ref=e583]
+                - generic "Office deadline highlights" [ref=e584]:
+                  - generic [ref=e585]: Prime
+                  - generic [ref=e586]: 2 voices
+              - paragraph [ref=e587]: An office handoff under pressure.
+              - generic [ref=e599]:
+                - button "Play Office deadline" [ref=e600]:
+                  - img [ref=e601]
+                - generic [ref=e603]:
+                  - generic [ref=e604]: Seek Office deadline
+                  - slider "Seek Office deadline" [ref=e605] [cursor=pointer]: "0"
+                  - generic [ref=e606]: 0:00Loading
+              - paragraph [ref=e607]: Tight, professional.
+            - article [ref=e608]:
+              - generic [ref=e609]:
+                - generic [ref=e610]:
+                  - paragraph [ref=e611]: The City Tour / France / Francophone Europe
+                  - heading "City tour" [level=3] [ref=e612]
+                - generic "City tour highlights" [ref=e613]:
+                  - generic [ref=e614]: Prime
+                  - generic [ref=e615]: 3 voices
+              - paragraph [ref=e616]: A guide and traveler in sync.
+              - generic [ref=e628]:
+                - button "Play City tour" [ref=e629]:
+                  - img [ref=e630]
+                - generic [ref=e632]:
+                  - generic [ref=e633]: Seek City tour
+                  - slider "Seek City tour" [ref=e634] [cursor=pointer]: "0"
+                  - generic [ref=e635]: 0:00Loading
+              - paragraph [ref=e636]: Elegant, easy.
+        - generic [ref=e637]:
+          - generic [ref=e638]:
+            - paragraph [ref=e639]:
+              - img [ref=e640]
+              - text: Clone proof
+            - paragraph [ref=e643]: Clone compare
+            - heading "Reference and render." [level=2] [ref=e644]
+            - paragraph [ref=e645]: Compare source and render side by side.
+          - generic [ref=e646]:
+            - article [ref=e647]:
+              - generic [ref=e648]:
+                - generic [ref=e649]:
+                  - paragraph [ref=e650]: Reference source
+                  - heading "Reference take" [level=3] [ref=e651]
+                - generic "Reference take highlights" [ref=e652]:
+                  - generic [ref=e653]: Clone
+              - paragraph [ref=e654]: Original source used to guide the clone.
+              - generic [ref=e666]:
+                - button "Play Reference take" [ref=e667]:
+                  - img [ref=e668]
+                - generic [ref=e670]:
+                  - generic [ref=e671]: Seek Reference take
+                  - slider "Seek Reference take" [ref=e672] [cursor=pointer]: "0"
+                  - generic [ref=e673]: 0:00Loading
+              - paragraph [ref=e674]: reference.wav
+            - article [ref=e675]:
+              - generic [ref=e676]:
+                - generic [ref=e677]:
+                  - paragraph [ref=e678]: Rendered output
+                  - heading "Rendered clone" [level=3] [ref=e679]
+                - generic "Rendered clone highlights" [ref=e680]:
+                  - generic [ref=e681]: Clone render
+              - paragraph [ref=e682]: Rendered clone kept beside the source for fast approval.
+              - generic [ref=e694]:
+                - button "Play Rendered clone" [ref=e695]:
+                  - img [ref=e696]
+                - generic [ref=e698]:
+                  - generic [ref=e699]: Seek Rendered clone
+                  - slider "Seek Rendered clone" [ref=e700] [cursor=pointer]: "0"
+                  - generic [ref=e701]: 0:00Loading
+              - paragraph [ref=e702]: rendered.wav
+        - generic [ref=e703]:
+          - generic [ref=e704]:
+            - paragraph [ref=e705]:
+              - img [ref=e706]
+              - text: AI Director
+            - heading "Shape the take." [level=2] [ref=e707]
+            - paragraph [ref=e708]: Tighten pace before render.
+          - generic [ref=e709]:
+            - generic [ref=e710]:
+              - paragraph [ref=e711]: Prompt contract
+              - generic [ref=e712]: "You are a Studio AI Director for Gemini native-audio rendering. Return only a strict render-ready JSON response. Shared live dialogue rules: 1. Always use the canonical speaker header format \"(Speaker Name) :\". 2. If delivery metadata helps, use \"(Speaker Name) (Emotion) :\". 3. Keep speaker names stable and do not invent new speakers. 4. Do not use bare \"Speaker:\" headers or markdown bullets/headings. 5. Keep handoffs concise and natural for live TTS."
+            - generic [ref=e713]:
+              - generic [ref=e714]:
+                - generic [ref=e715]:
+                  - paragraph [ref=e716]: Before
+                  - paragraph [ref=e717]: Flat pacing, weak contrast.
+                - generic [ref=e718]:
+                  - paragraph [ref=e719]: After
+                  - paragraph [ref=e720]: Cleaner handoffs, better lift.
+              - generic [ref=e721]:
+                - generic [ref=e722]:
+                  - paragraph [ref=e723]: Prompt
+                  - paragraph [ref=e724]: Stable JSON keeps direction usable.
+                - generic [ref=e725]:
+                  - paragraph [ref=e726]: Scene-safe
+                  - paragraph [ref=e727]: Tweak delivery, keep meaning.
+                - generic [ref=e728]:
+                  - paragraph [ref=e729]: Speed
+                  - paragraph [ref=e730]: Review, rerender, ship.
+        - generic [ref=e731]:
+          - generic [ref=e732]:
+            - paragraph [ref=e733]:
+              - img [ref=e734]
+              - text: Reader
+            - heading "Review by ear." [level=2] [ref=e736]
+            - paragraph [ref=e737]: Review by ear before release.
+          - generic [ref=e738]:
+            - complementary [ref=e739]:
+              - generic [ref=e740]:
+                - generic [ref=e741]:
+                  - paragraph [ref=e742]: Reader review
+                  - heading "Reader" [level=3] [ref=e743]
+                - generic [ref=e744]: 4 scenes locked
+              - generic [ref=e745]:
+                - generic [ref=e746]:
+                  - generic [ref=e747]:
+                    - paragraph [ref=e748]: Scene 01 - Cold open
+                    - generic [ref=e749]: Locked
+                  - paragraph [ref=e750]: Lead with the promise.
+                - generic [ref=e751]:
+                  - generic [ref=e752]:
+                    - paragraph [ref=e753]: Scene 02 - Prime cast reel
+                    - generic [ref=e754]: Live
+                  - paragraph [ref=e755]: Keep the reel easy to scan.
+                - generic [ref=e756]:
+                  - generic [ref=e757]:
+                    - paragraph [ref=e758]: Scene 03 - Clone approval
+                    - generic [ref=e759]: Ready
+                  - paragraph [ref=e760]: Keep source and clone together.
+            - generic [ref=e761]:
+              - generic [ref=e762]:
+                - generic [ref=e763]:
+                  - paragraph [ref=e764]: Approval surface
+                  - heading "Episode 03 - Final pass" [level=3] [ref=e765]
+                - generic [ref=e766]: Reviewing
+              - generic [ref=e768]:
+                - generic [ref=e770]:
+                  - img [ref=e774]
+                  - img [ref=e779]
+                  - img [ref=e783]
+                - paragraph [ref=e785]: Approval loop
+                - paragraph [ref=e786]: Keep the pass tight and clean.
+        - generic [ref=e789]:
+          - paragraph [ref=e790]:
+            - img [ref=e791]
+            - text: Ready to publish
+          - heading "Open the studio." [level=2] [ref=e794]
+          - paragraph [ref=e795]: Hear the proof, then move on.
+          - generic [ref=e796]:
+            - link "Open studio" [ref=e797] [cursor=pointer]:
+              - /url: /app/studio
+              - img [ref=e798]
+              - text: Open studio
+            - link "View pricing" [ref=e800] [cursor=pointer]:
+              - /url: /billing
+              - text: View pricing
+              - img [ref=e801]
+        - generic [ref=e804]:
+          - generic [ref=e805]:
+            - generic [ref=e806]:
+              - generic [ref=e807]:
+                - img [ref=e811]
+                - img [ref=e816]
+                - img [ref=e820]
+              - generic [ref=e822]:
+                - generic [ref=e823]: V FLOW AI
+                - generic [ref=e824]: AI STUDIO
+            - paragraph [ref=e825]: V FLOW AI is a premium voice studio for demos, clone checks, direction, and review.
+            - generic [ref=e826]:
+              - link "Studio" [ref=e827] [cursor=pointer]:
+                - /url: /app/studio
+              - link "Pricing" [ref=e828] [cursor=pointer]:
+                - /url: /billing
+              - link "Legal" [ref=e829] [cursor=pointer]:
+                - /url: /legal
+          - navigation "Legal links" [ref=e830]:
+            - link "Terms" [ref=e831] [cursor=pointer]:
+              - /url: /legal/terms
+            - link "Privacy" [ref=e832] [cursor=pointer]:
+              - /url: /legal/privacy
+            - link "Acceptable Use" [ref=e833] [cursor=pointer]:
+              - /url: /legal/acceptable-use
+            - link "Cookies" [ref=e834] [cursor=pointer]:
+              - /url: /legal/cookies
+            - link "Billing & Refunds" [ref=e835] [cursor=pointer]:
+              - /url: /legal/billing-refunds
+            - link "Copyright" [ref=e836] [cursor=pointer]:
+              - /url: /legal/copyright
+  - button "Open Next.js Dev Tools" [ref=e843] [cursor=pointer]:
+    - img [ref=e844]
+  - alert [ref=e847]

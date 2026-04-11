@@ -12,6 +12,7 @@ import {
 import { AppScreen, GenerationSettings, HistoryItem } from '../../types';
 import { BrandLogo } from '../BrandLogo';
 import { EngineLogo } from '../EngineLogo';
+import { OptimizedAvatar } from '../ui/OptimizedAvatar';
 import { useUser } from '../../contexts/UserContext';
 import { APP_ROUTE_PATHS } from '../../src/app/navigation';
 import { useBillingActions } from '../../src/features/billing/hooks/useBillingActions';
@@ -54,7 +55,6 @@ import {
   type AccountTabKey,
 } from './accountCenterTabs';
 import { consumeBillingReturnState } from './billingReturnState';
-import { READER_USAGE_UPDATED_EVENT } from '../../src/features/reader/model/offlineLibrary';
 import {
   ACCOUNT_TAB_ICONS,
   InfoRow,
@@ -138,11 +138,6 @@ const readSavedUiBrandTheme = (): UiBrandThemeId => {
   return 'aurora';
 };
 
-const readReaderUsageVfRecord = (): number => {
-  const raw = readStorageJson<{ readerEstimatedTotalVf?: number }>(STORAGE_KEYS.readerUsageRecord);
-  return Math.max(0, Number(raw?.readerEstimatedTotalVf || 0));
-};
-
 const resolveThemeChoice = (themeChoice: ThemeChoice): boolean => {
   if (typeof window === 'undefined') return themeChoice === 'dark';
   if (themeChoice === 'dark') return true;
@@ -215,6 +210,21 @@ const buildFallbackBillingSummary = (
   const planKey = normalizePlanKey(stats.planName);
   const planName = toPlanName(planKey);
   const isPaidPlan = planKey !== 'free';
+  const normalizeActiveEngine = (value: unknown): TtsEngineKey => {
+    const token = String(value || '').trim().toUpperCase();
+    return token === 'PRIME' ? 'PRIME' : 'VECTOR';
+  };
+  const normalizeAllowedEngines = (value: unknown): TtsEngineKey[] => {
+    if (!Array.isArray(value)) return [];
+    const result: TtsEngineKey[] = [];
+    for (const entry of value) {
+      const normalized = normalizeActiveEngine(entry);
+      if (!result.includes(normalized)) {
+        result.push(normalized);
+      }
+    }
+    return result;
+  };
   return {
     profile: {
       uid: String(user.uid || '').trim(),
@@ -237,9 +247,9 @@ const buildFallbackBillingSummary = (
         Number(accountEntitlements?.limits?.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)
       ),
       allowedEngines: Array.isArray(accountEntitlements?.limits?.allowedEngines)
-        ? accountEntitlements.limits.allowedEngines
+        ? normalizeAllowedEngines(accountEntitlements.limits.allowedEngines)
         : Array.isArray(stats.limits?.allowedEngines)
-          ? stats.limits.allowedEngines
+          ? normalizeAllowedEngines(stats.limits.allowedEngines)
           : [],
       earlyAccess: Boolean(accountEntitlements?.features?.earlyAccess || stats.features?.earlyAccess),
       pricing: {
@@ -288,7 +298,7 @@ const normalizeHistoryEngine = (value?: HistoryItem['engine'] | string): Generat
   return normalizeEngineToken(value, 'PRIME');
 };
 
-const ENGINE_RATE_ORDER: TtsEngineKey[] = ['DUNO', 'VECTOR', 'PRIME'];
+const ENGINE_RATE_ORDER: TtsEngineKey[] = ['VECTOR', 'PRIME'];
 const DECIMAL_FORMATTER_CACHE = new Map<string, Intl.NumberFormat>();
 
 const getDecimalFormatter = (minimumFractionDigits: number, maximumFractionDigits: number): Intl.NumberFormat => {
@@ -401,7 +411,6 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const [brandThemeChoice, setBrandThemeChoice] = useState<UiBrandThemeId>('aurora');
   const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
   const [hasMounted, setHasMounted] = useState(false);
-  const [readerUsageVf, setReaderUsageVf] = useState<number>(() => readReaderUsageVfRecord());
   const hasAppliedThemeRef = useRef(false);
   const [accountProfile, setAccountProfile] = useState<AccountUserProfile | null>(null);
   const [accountEntitlements, setAccountEntitlements] = useState<AccountEntitlements | null>(null);
@@ -481,24 +490,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     if (typeof window === 'undefined') return undefined;
     setThemeChoice(readSavedUiTheme());
     setBrandThemeChoice(readSavedUiBrandTheme());
-    setReaderUsageVf(readReaderUsageVfRecord());
     setHasMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const syncReaderUsage = () => setReaderUsageVf(readReaderUsageVfRecord());
-    syncReaderUsage();
-    window.addEventListener('focus', syncReaderUsage);
-    window.addEventListener('storage', syncReaderUsage);
-    window.addEventListener(READER_USAGE_UPDATED_EVENT, syncReaderUsage as EventListener);
-    document.addEventListener('visibilitychange', syncReaderUsage);
-    return () => {
-      window.removeEventListener('focus', syncReaderUsage);
-      window.removeEventListener('storage', syncReaderUsage);
-      window.removeEventListener(READER_USAGE_UPDATED_EVENT, syncReaderUsage as EventListener);
-      document.removeEventListener('visibilitychange', syncReaderUsage);
-    };
   }, []);
 
   useEffect(() => {
@@ -1631,7 +1623,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.balance} eyebrow="Monthly used" title={`${formatNumber(monthlyUsed)} VF`} detail={hasUnlimitedAccess ? 'Unlimited access is active.' : `${formatNumber(monthlyLimit)} VF monthly cap.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.spendable} eyebrow="Spendable now" title={formatVfValue(availableBalance)} detail={`${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF available right now.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.currentPlan} eyebrow="Max chars" title={formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} detail="Maximum characters allowed per generation request." />
-        <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.usage} eyebrow="Reader consumed" title={`${formatNumber(readerUsageVf)} VF`} detail="Reader total tracked locally from reading sessions and offline saves." />
+        <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.usage} eyebrow="Total usage" title={`${formatNumber(Number(stats.vfUsage.lifetime?.totalVf || 0))} VF`} detail="Lifetime VF usage tracked by your account." />
       </div>
 
       <div className="grid gap-3 sm:gap-4 xl:grid-cols-3">
@@ -1740,11 +1732,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                         : 'border-slate-200 text-slate-700 hover:bg-white'
                   }`}
                   data-active={active}
-                  aria-pressed={active}
                   >
                   <span
                     className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/40"
-                    style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 55%, ${theme.accent3} 100%)` }}
+                    data-brand-swatch={themeId}
                     aria-hidden="true"
                   />
                   <span className="min-w-0">
@@ -2067,7 +2058,17 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
               <div className={`flex min-w-0 items-center gap-2 rounded-[1rem] border px-2.5 py-2 sm:px-3 sm:py-2.5 lg:justify-self-end ${cardInsetClass(isDarkUi)}`}>
                 <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border text-sm font-black sm:h-10 sm:w-10 sm:text-base ${isDarkUi ? 'border-white/10 bg-white/[0.06] text-white' : 'border-slate-200 bg-white text-slate-900'}`}>
-                  {user.avatarUrl ? <img src={user.avatarUrl} alt={`${userDisplayName} avatar`} className="h-full w-full rounded-xl object-cover" /> : userDisplayName.slice(0, 1).toUpperCase()}
+                  <OptimizedAvatar
+                    src={user.avatarUrl}
+                    alt={`${userDisplayName} avatar`}
+                    width={40}
+                    height={40}
+                    containerClassName="h-full w-full"
+                    className="h-full w-full rounded-xl"
+                    fallback={userDisplayName.slice(0, 1).toUpperCase()}
+                    quality={85}
+                    sizes="(max-width: 640px) 36px, (max-width: 1024px) 40px, 48px"
+                  />
                 </div>
                 <div className="min-w-0">
                   <div className={`truncate text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{userDisplayName}</div>

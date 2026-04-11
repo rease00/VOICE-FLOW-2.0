@@ -94,8 +94,8 @@ describe('WorkspaceScreen', () => {
     expect(mainAppMock).not.toHaveBeenCalled();
   });
 
-  it('keeps authenticated reader paths on the workspace app shell handoff', () => {
-    pathnameMock.mockReturnValue('/app/reader');
+  it('keeps authenticated writing paths on the workspace app shell handoff', () => {
+    pathnameMock.mockReturnValue('/app/writing');
     useUserMock.mockReturnValue({ authReady: true, isAuthenticated: true });
 
     const html = renderToStaticMarkup(<WorkspaceScreen />);

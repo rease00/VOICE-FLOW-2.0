@@ -84,6 +84,93 @@ describe('authFetch', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('does not retry backend token timing responses for non-idempotent writes', async () => {
+    vi.useFakeTimers();
+    mockFirebaseAuth.currentUser = {
+      uid: 'firebase_user_1',
+      getIdToken: vi.fn(async () => 'firebase-token'),
+    };
+
+    const timingResponse = () => new Response(
+      JSON.stringify({ detail: 'Invalid auth token: token is not yet valid.' }),
+      {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    const okResponse = () => new Response(
+      JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(timingResponse())
+      .mockResolvedValueOnce(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = authFetch(
+      '/account/profile',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'mutate' }),
+      },
+      { requireAuth: true }
+    );
+
+    await expect(request).resolves.toMatchObject({ ok: false, status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows backend token timing retries for idempotent writes with an idempotency key', async () => {
+    vi.useFakeTimers();
+    mockFirebaseAuth.currentUser = {
+      uid: 'firebase_user_1',
+      getIdToken: vi.fn(async () => 'firebase-token'),
+    };
+
+    const timingResponse = () => new Response(
+      JSON.stringify({ detail: 'Invalid auth token: token is not yet valid.' }),
+      {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    const okResponse = () => new Response(
+      JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(timingResponse())
+      .mockResolvedValueOnce(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = authFetch(
+      '/account/profile',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'idempotency-key': 'idem-token-1',
+        },
+        body: JSON.stringify({ action: 'mutate' }),
+      },
+      { requireAuth: true }
+    );
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    await expect(request).resolves.toMatchObject({ ok: true, status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('fails with a readable timeout when the backend does not respond', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => (
@@ -98,9 +185,9 @@ describe('authFetch', () => {
       })
     )));
 
-    const request = authFetch('/reader/library', undefined, { timeoutMs: 1200 });
+    const request = authFetch('/tts/v2/jobs', undefined, { timeoutMs: 1200 });
     const expectation = expect(request).rejects.toThrow(
-      'Request to /reader/library timed out after 1s. Verify backend availability and retry.'
+      'Request to /tts/v2/jobs timed out after 1s. Verify backend availability and retry.'
     );
 
     await vi.advanceTimersByTimeAsync(1200);
@@ -174,3 +261,4 @@ describe('authFetch', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
+

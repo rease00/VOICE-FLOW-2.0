@@ -24,9 +24,13 @@ except Exception:  # pragma: no cover
     request_initial_drain = None  # type: ignore
 
 
+LANE_PRIORITY: tuple[str, ...] = ("scale", "pro", "creator", "starter", "launcher", "free")
 DEFAULT_LANE_WEIGHTS = {
-    "pro_plus": 10,
-    "pro": 5,
+    "scale": 12,
+    "pro": 10,
+    "creator": 8,
+    "starter": 6,
+    "launcher": 4,
     "free": 2,
 }
 
@@ -43,8 +47,10 @@ WORKER_CATEGORIES = {
 def normalize_lane(lane: str) -> str:
     token = str(lane or "").strip().lower()
     if token in {"plus", "pro-plus", "pro_plus", "proplus"}:
-        return "pro_plus"
-    if token in {"pro", "free"}:
+        return "scale"
+    if token in {"launch", "launcher"}:
+        return "launcher"
+    if token in {"scale", "pro", "creator", "starter", "launcher", "free"}:
         return token
     return "free"
 
@@ -112,39 +118,65 @@ class WeightedInMemoryQueue:
         self._depth_by_lane: dict[str, int] = {lane: 0 for lane in self._lane_weights}
         self._queues: dict[str, deque[QueueItem]] = {lane: deque() for lane in self._lane_weights}
         self._lane_order = self._build_lane_order()
+        self._weighted_lane_order = self._build_weighted_lane_order()
         self._next_index = 0
         self._lock = threading.Lock()
 
     def _build_lane_order(self) -> list[str]:
-        order: list[str] = []
-        for lane, weight in self._lane_weights.items():
-            order.extend([lane] * max(1, int(weight)))
+        order = [lane for lane in LANE_PRIORITY if lane in self._queues]
+        for lane in self._lane_weights:
+            if lane not in order:
+                order.append(lane)
         return order or ["free"]
+
+    def _build_weighted_lane_order(self) -> list[str]:
+        order = self._build_lane_order()
+        weighted: list[str] = []
+        for lane in order:
+            weighted.extend([lane] * max(1, int(self._lane_weights.get(lane, 1))))
+        return weighted or ["free"]
+
+    def _refresh_lane_order(self) -> None:
+        self._lane_order = self._build_lane_order()
+        self._weighted_lane_order = self._build_weighted_lane_order()
+        if self._weighted_lane_order:
+            self._next_index %= len(self._weighted_lane_order)
+        else:
+            self._next_index = 0
 
     def push(self, lane: str, payload: dict[str, Any]) -> None:
         normalized = normalize_lane(lane)
         with self._lock:
+            if normalized not in self._lane_weights:
+                self._lane_weights[normalized] = 1
+            if normalized not in self._queues:
+                self._queues[normalized] = deque()
+                self._depth_by_lane[normalized] = 0
+                self._refresh_lane_order()
             self._depth_by_lane[normalized] = int(self._depth_by_lane.get(normalized, 0)) + 1
-            self._queues.setdefault(normalized, deque()).append(QueueItem(lane=normalized, payload=dict(payload or {})))
-            if normalized not in self._lane_order:
-                self._lane_order = self._build_lane_order()
+            self._queues[normalized].append(QueueItem(lane=normalized, payload=dict(payload or {})))
 
     def pop(self) -> Optional[QueueItem]:
         with self._lock:
             if not self._queues:
                 return None
-            lanes = self._lane_order or list(self._queues.keys())
-            for _ in range(len(lanes)):
-                lane = lanes[self._next_index % len(lanes)]
-                self._next_index = (self._next_index + 1) % max(1, len(lanes))
+            lanes = self._weighted_lane_order or self._build_weighted_lane_order()
+            if not lanes:
+                return None
+            lane_count = len(lanes)
+            start_index = self._next_index % lane_count
+            for offset in range(lane_count):
+                lane = lanes[(start_index + offset) % lane_count]
                 queue = self._queues.get(lane)
-                if queue:
-                    try:
-                        item = queue.popleft()
-                    except IndexError:
-                        continue
-                    self._depth_by_lane[lane] = max(0, int(self._depth_by_lane.get(lane, 0)) - 1)
-                    return item
+                if not queue:
+                    continue
+                try:
+                    item = queue.popleft()
+                except IndexError:
+                    continue
+                self._depth_by_lane[lane] = max(0, int(self._depth_by_lane.get(lane, 0)) - 1)
+                self._next_index = (start_index + offset + 1) % lane_count
+                return item
             return None
 
     def depth(self) -> int:
@@ -327,7 +359,10 @@ return {"reserved", encoded_job}
             normalize_lane(key): max(1, int(value))
             for key, value in (lane_weights or DEFAULT_LANE_WEIGHTS).items()
         }
-        self._claim_ttl_sec = max(30, self._result_ttl_ms // 1000)
+        self._claim_ttl_sec = max(
+            30,
+            min(_env_int("VF_TTS_QUEUE_CLAIM_TTL_SEC", 90), self._result_ttl_ms // 1000),
+        )
         self._missing_claim_grace_ms = max(5_000, _env_int("VF_TTS_QUEUE_MISSING_CLAIM_GRACE_SEC", 60) * 1000)
         self._dead_letter_enabled = _env_bool("VF_TTS_QUEUE_DEAD_LETTER_ENABLED", False)
         self._dead_letter_ttl_sec = max(
@@ -337,14 +372,29 @@ return {"reserved", encoded_job}
                 max(self._DEFAULT_DEAD_LETTER_TTL_SEC, int(self._result_ttl_ms / 1000)),
             ),
         )
+        # Keep request identity around for at least the replay-risk window so a retry cannot outlive the job/result.
+        dedupe_horizon_sec = max(
+            120,
+            _env_int("VF_TTS_QUEUE_DEDUPE_HORIZON_SEC", max(300, int(self._result_ttl_ms / 1000))),
+        )
+        self._dedupe_ttl_sec = max(
+            60,
+            _env_int("VF_TTS_QUEUE_DEDUPE_TTL_SEC", dedupe_horizon_sec),
+            dedupe_horizon_sec,
+        )
         self._logger = logging.getLogger("voiceflow.tts_queue")
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._job_lanes: dict[str, str] = {}
         self._job_cache_order: deque[str] = deque()
         self._compat_queue = WeightedInMemoryQueue(self._weights)
-        self._lane_rr = deque(self._weighted_lane_order())
+        self._lane_rr = deque(self._weighted_lane_schedule())
         self._redis = None
+        self._dedupe_metrics = {
+            "dedupe_hit": 0,
+            "dedupe_miss": 0,
+            "dedupe_expired_replay": 0,
+        }
         requires_durable_store = _queue_requires_durable_store()
         if redis is not None and str(redis_url or "").strip():
             try:
@@ -390,11 +440,54 @@ return {"reserved", encoded_job}
         except Exception as exc:
             raise RuntimeError(f"Redis ready enqueue failed: {exc}") from exc
 
+    def _wait_for_redis_job_record(self, job_id: str, *, timeout_ms: Optional[int] = None) -> Optional[dict[str, Any]]:
+        safe_job_id = str(job_id or "").strip()
+        if not safe_job_id:
+            return None
+        deadline_ms = self._now_ms() + max(0, int(timeout_ms if timeout_ms is not None else _env_int("VF_TTS_QUEUE_DEDUPE_WAIT_MS", 250)))
+        while True:
+            record = self.get(safe_job_id)
+            if record:
+                return record
+            now_ms = self._now_ms()
+            if now_ms >= deadline_ms:
+                return None
+            sleep_for = min(0.02, max(0.0, (deadline_ms - now_ms) / 1000.0))
+            if sleep_for <= 0:
+                return None
+            time.sleep(sleep_for)
+
+    def _pending_dedupe_record(self, record: dict[str, Any], *, job_id: str, lane: str) -> dict[str, Any]:
+        pending = dict(record)
+        pending["jobId"] = str(job_id or pending.get("jobId") or "").strip()
+        pending["requestId"] = str(pending.get("requestId") or pending.get("request_id") or "")
+        pending["lane"] = normalize_lane(lane)
+        pending["status"] = "queued"
+        pending["workerId"] = str(pending.get("workerId") or "").strip()
+        pending["updatedAtMs"] = self._now_ms()
+        return pending
+
     def _claim_key(self, job_id: str) -> str:
         return f"{self.key_prefix}:claim:{job_id}"
 
     def _dedupe_key(self, request_id: str) -> str:
-        return f"{self.key_prefix}:dedupe:{request_id}"
+        safe = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(request_id or "").strip())
+        return f"{self.key_prefix}:dedupe:{safe}"
+
+    def _dedupe_metric_bump(self, metric_name: str) -> None:
+        safe_name = str(metric_name or "").strip()
+        if safe_name not in self._dedupe_metrics:
+            return
+        with self._lock:
+            self._dedupe_metrics[safe_name] = int(self._dedupe_metrics.get(safe_name) or 0) + 1
+
+    def _dedupe_metric_snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "dedupe_hit": int(self._dedupe_metrics.get("dedupe_hit") or 0),
+                "dedupe_miss": int(self._dedupe_metrics.get("dedupe_miss") or 0),
+                "dedupe_expired_replay": int(self._dedupe_metrics.get("dedupe_expired_replay") or 0),
+            }
 
     def _dead_letter_key(self, job_id: str) -> str:
         return f"{self.key_prefix}:deadletter:{job_id}"
@@ -405,10 +498,18 @@ return {"reserved", encoded_job}
         return f"{self.key_prefix}:reserve-anomaly:{safe_lane}:{safe_job_id}"
 
     def _weighted_lane_order(self) -> list[str]:
-        order: list[str] = []
-        for lane, weight in self._weights.items():
-            order.extend([lane] * max(1, int(weight)))
+        order = [lane for lane in LANE_PRIORITY if lane in self._weights]
+        for lane in self._weights:
+            normalized = normalize_lane(lane)
+            if normalized not in order:
+                order.append(normalized)
         return order or ["free"]
+
+    def _weighted_lane_schedule(self) -> list[str]:
+        schedule: list[str] = []
+        for lane in self._weighted_lane_order():
+            schedule.extend([lane] * max(1, int(self._weights.get(lane, 1))))
+        return schedule or ["free"]
 
     def _unique_lanes(self) -> list[str]:
         seen: set[str] = set()
@@ -419,7 +520,7 @@ return {"reserved", encoded_job}
                 continue
             seen.add(normalized)
             lanes.append(normalized)
-        for lane in ("free", "pro", "pro_plus"):
+        for lane in LANE_PRIORITY:
             if lane in seen:
                 continue
             seen.add(lane)
@@ -428,9 +529,20 @@ return {"reserved", encoded_job}
 
     def _rotate_lanes(self) -> list[str]:
         with self._lock:
-            lanes = list(self._lane_rr) or self._weighted_lane_order()
+            if not self._lane_rr:
+                self._lane_rr = deque(self._weighted_lane_schedule())
+            if not self._lane_rr:
+                return ["free"]
+            lanes: list[str] = []
+            seen: set[str] = set()
+            for lane in self._lane_rr:
+                normalized = normalize_lane(lane)
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                lanes.append(normalized)
             self._lane_rr.rotate(-1)
-            return lanes
+            return lanes or ["free"]
 
     def _claim_token(self, *, worker_id: str, claimed_at_ms: int) -> str:
         return json.dumps(
@@ -568,6 +680,7 @@ return {"reserved", encoded_job}
             return self._store_memory_record(record)
         job_id = str(record.get("jobId") or "").strip()
         request_id = str(record.get("requestId") or "").strip()
+        idempotency_key = str(record.get("idempotencyKey") or request_id).strip()
         lane = normalize_lane(str(record.get("lane") or "free"))
         previous = self._load_redis_record(job_id)
         ttl_ms = max(self._DEFAULT_JOB_TTL_MS, int(record.get("expiresAtMs") or 0) - int(record.get("createdAtMs") or self._now_ms()))
@@ -575,7 +688,7 @@ return {"reserved", encoded_job}
         job_key = self._job_key(job_id)
         ready_key = self._ready_key(lane)
         claim_key = self._claim_key(job_id)
-        dedupe_key = self._dedupe_key(request_id) if request_id else ""
+        dedupe_key = self._dedupe_key(idempotency_key or request_id) if (idempotency_key or request_id) else ""
         serialized = self._serialize_record(record)
         adjustments = self._user_queued_counter_adjustments(previous, record)
         counter_updates: list[tuple[str, int]] = []
@@ -593,7 +706,7 @@ return {"reserved", encoded_job}
             pipe.rpush(ready_key, job_id)
             pipe.expire(ready_key, ttl_sec)
             if dedupe_key:
-                pipe.set(dedupe_key, job_id, ex=ttl_sec, nx=True)
+                pipe.set(dedupe_key, job_id, ex=min(ttl_sec, self._dedupe_ttl_sec), nx=True)
             for counter_key, next_count in counter_updates:
                 if next_count <= 0:
                     pipe.delete(counter_key)
@@ -618,7 +731,13 @@ return {"reserved", encoded_job}
             return None
         return self._deserialize_record(payload)
 
-    def _persist_record_update(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _persist_record_update(
+        self,
+        record: dict[str, Any],
+        *,
+        ready_mode: str = "",
+        clear_claim: bool = False,
+    ) -> dict[str, Any]:
         updated = self._normalize_record(existing=record, now_ms=self._now_ms())
         updated_status = str(updated.get("status") or "").strip().lower()
 
@@ -639,8 +758,26 @@ return {"reserved", encoded_job}
             ttl_ms = max(self._DEFAULT_JOB_TTL_MS, int(updated.get("expiresAtMs") or 0) - int(updated.get("createdAtMs") or self._now_ms()))
             ttl_sec = max(60, int(round(ttl_ms / 1000)))
             previous = self._load_redis_record(job_id)
+            normalized_ready_mode = str(ready_mode or "").strip().lower()
             if _is_terminal_conflict(previous):
+                if clear_claim or normalized_ready_mode:
+                    try:
+                        pipe = self._redis.pipeline(transaction=True)
+                        if clear_claim:
+                            pipe.delete(self._claim_key(job_id))
+                        if normalized_ready_mode == "replace":
+                            pipe.lrem(self._ready_key(str(updated.get("lane") or "free")), 0, job_id)
+                        elif normalized_ready_mode == "enqueue":
+                            pipe.rpush(self._ready_key(str(updated.get("lane") or "free")), job_id)
+                            pipe.expire(self._ready_key(str(updated.get("lane") or "free")), ttl_sec)
+                        elif normalized_ready_mode == "remove":
+                            pipe.lrem(self._ready_key(str(updated.get("lane") or "free")), 0, job_id)
+                        pipe.execute()
+                    except Exception:
+                        pass
                 return dict(previous or {})
+            ready_key = self._ready_key(str(updated.get("lane") or "free"))
+            claim_key = self._claim_key(job_id)
             adjustments = self._user_queued_counter_adjustments(previous, updated)
             counter_updates: list[tuple[str, int]] = []
             for uid, delta in adjustments.items():
@@ -653,6 +790,18 @@ return {"reserved", encoded_job}
             try:
                 pipe = self._redis.pipeline(transaction=True)
                 pipe.set(self._job_key(job_id), self._serialize_record(updated), ex=ttl_sec)
+                if clear_claim:
+                    pipe.delete(claim_key)
+                normalized_ready_mode = str(ready_mode or "").strip().lower()
+                if normalized_ready_mode == "replace":
+                    pipe.lrem(ready_key, 0, job_id)
+                    pipe.rpush(ready_key, job_id)
+                    pipe.expire(ready_key, ttl_sec)
+                elif normalized_ready_mode == "enqueue":
+                    pipe.rpush(ready_key, job_id)
+                    pipe.expire(ready_key, ttl_sec)
+                elif normalized_ready_mode == "remove":
+                    pipe.lrem(ready_key, 0, job_id)
                 for counter_key, next_count in counter_updates:
                     if next_count <= 0:
                         pipe.delete(counter_key)
@@ -1233,13 +1382,7 @@ return {"reserved", encoded_job}
         updated["finishedAtMs"] = 0
         if recovery:
             updated["recoveryAttempts"] = max(0, int(updated.get("recoveryAttempts") or 0)) + 1
-        claim_key = self._claim_key(safe_job_id)
-        try:
-            self._redis.delete(claim_key)
-            self._enqueue_ready_once(lane=str(updated.get("lane") or "free"), job_id=safe_job_id)
-        except Exception as exc:
-            raise RuntimeError(f"Redis requeue failed: {exc}") from exc
-        updated = self._persist_record_update(updated)
+        updated = self._persist_record_update(updated, ready_mode="replace", clear_claim=True)
         _maybe_schedule_drain(
             self,
             lane=str(updated.get("lane") or "free"),
@@ -1309,14 +1452,19 @@ return {"reserved", encoded_job}
         record["updatedAtMs"] = anchor
         if not str(record.get("requestId") or "").strip():
             raise ValueError("requestId is required.")
+        dedupe_token = str(record.get("idempotencyKey") or record.get("requestId") or "").strip()
         if self._redis is not None:
             try:
-                existing_job_id = self._redis.get(self._dedupe_key(str(record["requestId"])))
+                existing_job_id = self._redis.get(self._dedupe_key(dedupe_token or str(record["requestId"])))
             except Exception as exc:
                 raise RuntimeError(f"Redis dedupe read failed: {exc}") from exc
             if existing_job_id:
-                existing = self.get(str(existing_job_id))
+                existing_job_id = str(existing_job_id or "").strip()
+                existing = self.get(existing_job_id)
+                if not existing:
+                    existing = self._wait_for_redis_job_record(existing_job_id)
                 if existing:
+                    self._dedupe_metric_bump("dedupe_hit")
                     if str(existing.get("status") or "").strip().lower() == "queued":
                         claim_metadata = self._claim_metadata(str(existing.get("jobId") or existing_job_id))
                         if claim_metadata:
@@ -1341,22 +1489,28 @@ return {"reserved", encoded_job}
                             reason="submit-existing-queued",
                         )
                     return existing
-                try:
-                    self._redis.delete(self._dedupe_key(str(record["requestId"])))
-                except Exception:
-                    pass
+                self._dedupe_metric_bump("dedupe_expired_replay")
+                return self._pending_dedupe_record(
+                    record,
+                    job_id=existing_job_id or str(record["jobId"]),
+                    lane=normalized_lane,
+                )
             try:
                 created = self._redis.set(
-                    self._dedupe_key(str(record["requestId"])),
+                    self._dedupe_key(dedupe_token or str(record["requestId"])),
                     str(record["jobId"]),
-                    ex=max(60, int(self._result_ttl_ms / 1000)),
+                    ex=self._dedupe_ttl_sec,
                     nx=True,
                 )
             except Exception as exc:
                 raise RuntimeError(f"Redis dedupe write failed: {exc}") from exc
             if not created:
-                existing = self.get(str(self._redis.get(self._dedupe_key(str(record["requestId"]))) or ""))
+                dedupe_job_id = str(self._redis.get(self._dedupe_key(dedupe_token or str(record["requestId"]))) or "").strip()
+                existing = self.get(dedupe_job_id) if dedupe_job_id else None
+                if not existing and dedupe_job_id:
+                    existing = self._wait_for_redis_job_record(dedupe_job_id)
                 if existing:
+                    self._dedupe_metric_bump("dedupe_hit")
                     if str(existing.get("status") or "").strip().lower() == "queued":
                         claim_metadata = self._claim_metadata(str(existing.get("jobId") or ""))
                         if claim_metadata:
@@ -1381,6 +1535,13 @@ return {"reserved", encoded_job}
                             reason="submit-existing-queued",
                         )
                     return existing
+                self._dedupe_metric_bump("dedupe_expired_replay")
+                return self._pending_dedupe_record(
+                    record,
+                    job_id=dedupe_job_id or str(record["jobId"]),
+                    lane=normalized_lane,
+                )
+            self._dedupe_metric_bump("dedupe_miss")
             self._enforce_user_queued_cap(str(record.get("uid") or ""))
             self._enforce_lane_queue_cap(normalized_lane)
             self._enforce_category_queue_cap(str(record.get("workerCategory") or DEFAULT_WORKER_CATEGORY))
@@ -1451,13 +1612,9 @@ return {"reserved", encoded_job}
                 updated["startedAtMs"] = updated["updatedAtMs"]
             if lane:
                 updated["lane"] = normalize_lane(lane)
-            updated = self._persist_record_update(updated)
+            updated = self._persist_record_update(updated, ready_mode="remove")
         except Exception as exc:
             raise RuntimeError(f"Redis claim failed: {exc}") from exc
-        try:
-            self._redis.lrem(self._ready_key(str(updated.get("lane") or "free")), 0, safe_job_id)
-        except Exception:
-            pass
         return updated
 
     def ack(
@@ -1502,12 +1659,7 @@ return {"reserved", encoded_job}
                 "statusCode": 200,
             }
         )
-        updated = self._persist_record_update(updated)
-        try:
-            self._redis.delete(self._claim_key(safe_job_id))
-            self._redis.lrem(self._ready_key(str(updated.get("lane") or "free")), 0, safe_job_id)
-        except Exception:
-            pass
+        updated = self._persist_record_update(updated, ready_mode="remove", clear_claim=True)
         return updated
 
     def release(
@@ -1537,16 +1689,13 @@ return {"reserved", encoded_job}
             updated["status"] = "queued"
             updated["error"] = {}
             updated["statusCode"] = 0
-            try:
-                self._enqueue_ready_once(lane=str(updated.get("lane") or "free"), job_id=safe_job_id)
-            except Exception as exc:
-                raise RuntimeError(f"Redis requeue failed: {exc}") from exc
+            updated = self._persist_record_update(updated, ready_mode="replace", clear_claim=True)
         else:
             updated["status"] = str(terminal_status or "failed").strip().lower() or "failed"
             updated["finishedAtMs"] = self._now_ms()
             updated["statusCode"] = int(status_code or 500)
             updated["error"] = error if isinstance(error, dict) else {"detail": str(error or updated["status"])}
-        updated = self._persist_record_update(updated)
+            updated = self._persist_record_update(updated, ready_mode="remove", clear_claim=True)
         if requeue:
             _maybe_schedule_drain(
                 self,
@@ -1554,12 +1703,6 @@ return {"reserved", encoded_job}
                 job_id=safe_job_id,
                 reason="release-requeue",
             )
-        try:
-            self._redis.delete(self._claim_key(safe_job_id))
-            if not requeue:
-                self._redis.lrem(self._ready_key(str(updated.get("lane") or "free")), 0, safe_job_id)
-        except Exception:
-            pass
         return updated
 
     def get(self, job_id: str) -> Optional[dict[str, Any]]:
@@ -1734,14 +1877,16 @@ return {"reserved", encoded_job}
             time.sleep(wait_ms / 1000.0)
 
     def depth_snapshot(self) -> dict[str, Any]:
-        lanes = sorted(set(self._weights.keys()) | {"free", "pro", "pro_plus"})
+        lanes = list(dict.fromkeys([*LANE_PRIORITY, *[normalize_lane(key) for key in self._weights.keys()]]))
         by_category = self._category_depth_snapshot()
+        telemetry = {"dedupe": self._dedupe_metric_snapshot()}
         if self._redis is None:
             return {
                 "total": self._compat_queue.depth(),
                 "byLane": self._compat_queue.depth_by_lane(),
                 "byCategory": by_category,
                 "storage": "memory",
+                "telemetry": telemetry,
             }
         try:
             by_lane = {lane: int(self._redis.llen(self._ready_key(lane))) for lane in lanes}
@@ -1752,4 +1897,5 @@ return {"reserved", encoded_job}
             "byLane": by_lane,
             "byCategory": by_category,
             "storage": "redis",
+            "telemetry": telemetry,
         }

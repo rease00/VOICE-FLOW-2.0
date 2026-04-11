@@ -1,13 +1,14 @@
 import type { AuthRouteMode } from '../../app/navigation';
 import { resolveSafeInternalNextPath } from '../../app/navigation';
-import type { BillingPlanKey, BillingVcPackKey, TokenPackKey } from '../../../services/accountService';
+import type { BillingPlanKey, TokenPackKey, VnTokenPackKey } from '../../../services/accountService';
+import type { BillingVcPackCatalogKey } from './catalog';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { readStorageJson, removeStorageKey, writeStorageJson } from '../../shared/storage/localStore';
 
 export const BILLING_CHECKOUT_INTENT_TTL_MS = 60 * 60 * 1000;
 export const BILLING_CHECKOUT_RESUME_PATH = '/billing';
 
-export type BillingCheckoutKind = 'subscription' | 'token-pack' | 'vc-token-pack';
+export type BillingCheckoutKind = 'subscription' | 'token-pack' | 'vc-token-pack' | 'vn-token-pack';
 
 export type BillingCheckoutSelection =
   | {
@@ -18,7 +19,10 @@ export type BillingCheckoutSelection =
       packKey: TokenPackKey;
     }
   | {
-      vcPackKey: BillingVcPackKey;
+      vcPackKey: BillingVcPackCatalogKey;
+    }
+  | {
+      vnPackKey: VnTokenPackKey;
     };
 
 export interface BillingCheckoutIntent {
@@ -41,7 +45,8 @@ export interface BillingCheckoutIntentDraft {
 
 const VALID_BILLING_PLAN_KEYS = new Set<BillingPlanKey>(['launcher', 'starter', 'creator', 'pro', 'scale']);
 const VALID_TOKEN_PACK_KEYS = new Set<TokenPackKey>(['micro', 'standard', 'mega', 'ultra']);
-const VALID_VC_PACK_KEYS = new Set<BillingVcPackKey>(['standard']);
+const VALID_VC_PACK_KEYS = new Set<BillingVcPackCatalogKey>(['starter', 'standard', 'growth', 'pro', 'scale']);
+const VALID_VN_PACK_KEYS = new Set<VnTokenPackKey>(['vn_micro', 'vn_standard', 'vn_mega', 'vn_ultra']);
 
 const isAuthRouteMode = (value: unknown): value is AuthRouteMode => value === 'login' || value === 'signup';
 
@@ -65,9 +70,19 @@ const normalizeSelection = (kind: BillingCheckoutKind, selection: BillingCheckou
     return { packKey };
   }
 
-  const vcPackKey = String((selection as { vcPackKey?: unknown }).vcPackKey || '').trim() as BillingVcPackKey;
-  if (!VALID_VC_PACK_KEYS.has(vcPackKey)) return null;
-  return { vcPackKey };
+  const vcPackKey = String((selection as { vcPackKey?: unknown }).vcPackKey || '').trim() as BillingVcPackCatalogKey;
+  if (kind === 'vc-token-pack') {
+    if (!VALID_VC_PACK_KEYS.has(vcPackKey)) return null;
+    return { vcPackKey };
+  }
+
+  const vnPackKey = String((selection as { vnPackKey?: unknown }).vnPackKey || '').trim() as VnTokenPackKey;
+  if (kind === 'vn-token-pack') {
+    if (!VALID_VN_PACK_KEYS.has(vnPackKey)) return null;
+    return { vnPackKey };
+  }
+
+  return null;
 };
 
 const normalizeIntent = (value: unknown, now = Date.now()): BillingCheckoutIntent | null => {
@@ -80,7 +95,7 @@ const normalizeIntent = (value: unknown, now = Date.now()): BillingCheckoutInten
     createdAt?: unknown;
     expiresAt?: unknown;
   };
-  const kind = raw.kind === 'subscription' || raw.kind === 'token-pack' || raw.kind === 'vc-token-pack' ? raw.kind : null;
+  const kind = raw.kind === 'subscription' || raw.kind === 'token-pack' || raw.kind === 'vc-token-pack' || raw.kind === 'vn-token-pack' ? raw.kind : null;
   if (!kind) return null;
   const authMode = isAuthRouteMode(raw.authMode) ? raw.authMode : null;
   if (!authMode) return null;

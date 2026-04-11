@@ -143,6 +143,22 @@ python scripts/firebase_project_wipe.py --apply --confirm WIPE_FIREBASE_NOW
 
 ## Media Backend
 
+### Live Firebase + R2 storage options
+
+The backend now prefers Cloudflare R2 automatically when the R2 credentials are present.
+
+Recommended K8s path:
+- Use `backend/deploy/k8s/firebase-secret.example.yaml` and `backend/deploy/k8s/reader-storage-secret.example.yaml` as templates for real cluster secrets
+- Replace the placeholder values with your Firebase Admin SDK JSON and R2 credentials
+- Apply `backend/deploy/k8s/kustomization.yaml` so the API and worker pods pick up both secrets
+
+Alternative Firebase setup:
+- Keep the Firebase Admin SDK JSON in `FIREBASE_SERVICE_ACCOUNT_JSON`
+- If you prefer a mounted JSON file, use `GOOGLE_APPLICATION_CREDENTIALS` with a custom volume mount instead of env injection
+
+Dev-only fallback:
+- Leave the secrets empty locally and the backend will keep using the existing local storage fallback
+
 ## Isolated Python Runtimes (Per-Engine venv)
 
 The local backend services run in isolated Python virtual environments:

@@ -13,22 +13,21 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   const page = await browser.newPage();
 
   try {
-    await page.goto(`${baseUrl}/app/reader`, {
+    await page.goto(`${baseUrl}/app/writing`, {
       waitUntil: 'domcontentloaded',
       timeout: ROUTE_TIMEOUT_MS,
     });
-    const readerHome = page.getByTestId('reader-browse-home');
-    const authScreen = page.getByTestId('brand-logo').first();
-    const onboardingCta = page
-      .getByRole('button', { name: /Get Started|Sign In|Create Account|Test Drive|Create Your First Scene|Listen to Live Demos/i })
-      .or(page.getByRole('link', { name: /Get Started|Sign In|Create Account|Test Drive|Create Your First Scene|Listen to Live Demos/i }));
+    const writingWorkspace = page.getByTestId('novel-workspace').first();
+    const writingHeading = page.getByRole('heading', { name: /Novel Workspace/i }).first();
+    const writingAuthGate = page.getByRole('heading', { name: /Sign in to open Writing/i }).first();
     await Promise.any([
-      readerHome.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      authScreen.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      onboardingCta.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-    ]).catch(() => undefined);
+      writingWorkspace.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      writingHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      writingAuthGate.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    ]);
   } finally {
     await browser.close();
   }
 }
+
 

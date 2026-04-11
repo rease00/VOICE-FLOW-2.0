@@ -5,6 +5,7 @@ import { proxyBackendRequest } from '../app/api/backend/proxy';
 
 interface EnvSnapshot {
   VF_MEDIA_BACKEND_URL?: string;
+  VF_MEDIA_BACKEND_ORIGINS_JSON?: string;
   VF_BACKEND_PROXY_ALLOWLIST?: string;
   VF_BACKEND_PROXY_MUTATION_ALLOWLIST?: string;
 }
@@ -29,10 +30,12 @@ describe('backend proxy header policy', () => {
   beforeEach(() => {
     envSnapshot = {
       VF_MEDIA_BACKEND_URL: process.env.VF_MEDIA_BACKEND_URL,
+      VF_MEDIA_BACKEND_ORIGINS_JSON: process.env.VF_MEDIA_BACKEND_ORIGINS_JSON,
       VF_BACKEND_PROXY_ALLOWLIST: process.env.VF_BACKEND_PROXY_ALLOWLIST,
       VF_BACKEND_PROXY_MUTATION_ALLOWLIST: process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST,
     };
     process.env.VF_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
+    delete process.env.VF_MEDIA_BACKEND_ORIGINS_JSON;
     delete process.env.VF_BACKEND_PROXY_ALLOWLIST;
     delete process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
   });
@@ -40,6 +43,8 @@ describe('backend proxy header policy', () => {
   afterEach(() => {
     if (envSnapshot.VF_MEDIA_BACKEND_URL === undefined) delete process.env.VF_MEDIA_BACKEND_URL;
     else process.env.VF_MEDIA_BACKEND_URL = envSnapshot.VF_MEDIA_BACKEND_URL;
+    if (envSnapshot.VF_MEDIA_BACKEND_ORIGINS_JSON === undefined) delete process.env.VF_MEDIA_BACKEND_ORIGINS_JSON;
+    else process.env.VF_MEDIA_BACKEND_ORIGINS_JSON = envSnapshot.VF_MEDIA_BACKEND_ORIGINS_JSON;
     if (envSnapshot.VF_BACKEND_PROXY_ALLOWLIST === undefined) delete process.env.VF_BACKEND_PROXY_ALLOWLIST;
     else process.env.VF_BACKEND_PROXY_ALLOWLIST = envSnapshot.VF_BACKEND_PROXY_ALLOWLIST;
     if (envSnapshot.VF_BACKEND_PROXY_MUTATION_ALLOWLIST === undefined) delete process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
@@ -109,6 +114,29 @@ describe('backend proxy header policy', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('allows public routing region reads through the proxy allowlist', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ regions: ['us-central1', 'europe-west1'] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'GET',
+        url: 'https://v-flow-ai.local/api/backend/routing/regions?source=studio',
+      }),
+      ['routing', 'regions']
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(target)).toBe('http://127.0.0.1:7800/routing/regions?source=studio');
+  });
+
   it('returns a structured 502 response when the upstream backend fetch throws', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
@@ -129,6 +157,43 @@ describe('backend proxy header policy', () => {
       detail: expect.stringContaining('/voice-clone/openvoice/separate'),
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('chooses the healthiest configured regional origin for safe requests', async () => {
+    process.env.VF_MEDIA_BACKEND_ORIGINS_JSON = JSON.stringify({
+      'asia-southeast1': 'https://asia.api.example',
+      'europe-west1': 'https://eu.api.example',
+      'us-central1': 'https://us.api.example',
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === 'https://asia.api.example/health') {
+        return new Response('down', { status: 503 });
+      }
+      if (url === 'https://eu.api.example/health' || url === 'https://us.api.example/health') {
+        return new Response('ok', { status: 200 });
+      }
+      if (url === 'https://eu.api.example/tts/voice-profiles/demo.wav') {
+        return new Response('image', { status: 200, headers: { 'content-type': 'image/png' } });
+      }
+      throw new Error(`Unexpected fetch target: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'GET',
+        url: 'https://v-flow-ai.com/api/backend/tts/voice-profiles/demo.wav',
+        headers: {
+          'cf-ipcountry': 'IN',
+        },
+      }),
+      ['tts', 'voice-profiles', 'demo.wav']
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-v-flow-ai-backend-region')).toBe('europe-west1');
+    expect(response.headers.get('x-v-flow-ai-backend-origin')).toBe('https://eu.api.example');
   });
 
   it('allows admin stress routes and still strips spoofed x-dev-uid header', async () => {
@@ -185,3 +250,4 @@ describe('backend proxy header policy', () => {
     expect(forwarded.has('x-dev-uid')).toBe(false);
   });
 });
+

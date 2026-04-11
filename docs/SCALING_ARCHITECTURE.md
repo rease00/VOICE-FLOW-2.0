@@ -6,7 +6,7 @@ V FLOW AI scaling is queue-first and asynchronous:
 
 1. API layer accepts synthesis requests and writes jobs to Redis-backed queue.
 2. Worker layer consumes queued jobs and calls engine runtimes.
-3. Engine runtimes (Gemini and Modal-hosted Duno) process synthesis in parallel with engine-specific limits.
+3. Engine runtimes (Cloud TTS for speech and Vertex text for AI/text) process work in parallel with role-specific limits.
 4. Clients poll `GET /tts/jobs/{job_id}` until terminal status.
 
 This supports high user volume by horizontal scaling, rather than single-process synchronous rendering.
@@ -23,8 +23,8 @@ Current production profile: `cloudrun-2vcpu`
    - Runs queue consumers and runtime dispatch loops.
 3. `gemini-runtime`
    - `/synthesize` and `/v1/generate-text` for Gemini-backed workloads.
-4. Duno runtime (Modal)
-   - `/synthesize` via `VF_DUNO_RUNTIME_URL` configured on the backend.
+4. Vertex text runtime
+   - `/v1/generate-text`, `/v1/count-tokens`, and admin pool endpoints via `VF_VERTEX_TEXT_RUNTIME_URL`.
 5. Managed Redis
    - Queue ownership and rate-limit state (`VF_REDIS_URL`).
    - Shared across API and worker pods.
@@ -36,7 +36,6 @@ Current production profile: `cloudrun-2vcpu`
    - `VF_TTS_QUEUE_SYNC_WAIT_MS=3000`
 2. Engine concurrency:
    - `VF_TTS_ENGINE_CONCURRENCY_GEM=2`
-   - `VF_TTS_ENGINE_CONCURRENCY_DUNO=1`
 3. Admission safeguards:
    - Queue depth limit (`VF_TTS_QUEUE_MAX_DEPTH`).
    - Projected queue-timeout rejection:
@@ -57,7 +56,7 @@ Current production profile: `cloudrun-2vcpu`
    - Live TTS pipeline concurrency pinned to `1` on 2 vCPU baseline
 3. Runtimes:
    - Gemini runtime concurrency `2`
-   - Duno concurrency `1` via the Modal endpoint
+   - Cloud TTS concurrency is managed through the dedicated TTS runtime; Vertex text concurrency is isolated in its own runtime
 
 ## Autoscaling Signals
 

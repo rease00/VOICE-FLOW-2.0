@@ -6,7 +6,7 @@ import { useAuthSession } from './hooks/useAuthSession';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { removeStorageKey, readStorageString } from '../../shared/storage/localStore';
 import { BrandLogo } from '../../../components/BrandLogo';
-import { useNotifications } from '../../shared/notifications/NotificationProvider';
+import { useOptionalNotifications } from '../../shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../../shared/ui/terminology';
 import { resolveLegalDocument } from '../legal/legalContent';
 import { resolveSafeInternalNextPath, type AuthRouteMode } from '../../app/navigation';
@@ -34,7 +34,8 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     requestPasswordReset,
     signInWithGoogle,
   } = useAuthSession();
-  const { emit } = useNotifications();
+  const notifications = useOptionalNotifications();
+  const emit = notifications?.emit;
   const [mode, setMode] = useState<AuthMode>(initialMode ?? 'login');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
@@ -182,7 +183,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         setPassword('');
         setInfoMsg(message);
         setVerificationCooldownUntil(Date.now() + 30_000);
-        emit('auth.signup.success', {
+        emit?.('auth.signup.success', {
           title: 'Sign Up Success',
           message,
           category: 'security',
@@ -200,7 +201,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         if ('requiresEmailVerification' in result && result.requiresEmailVerification) {
           setNeedsEmailVerification(true);
           setInfoMsg(message);
-          emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
+          emit?.(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
             title: mode === 'signup' ? 'Email Verification Required' : 'Email Verification Required',
             message,
             category: 'security',
@@ -211,7 +212,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         setErrorMsg(message);
         const provisioningHint = 'provisioningHint' in result ? String(result.provisioningHint || '').trim() : '';
         setProvisioningHintMsg(provisioningHint ? sanitizeUiText(provisioningHint) : null);
-        emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
+        emit?.(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
           title: mode === 'signup' ? 'Sign Up Failed' : 'Sign In Failed',
           message,
           category: 'security',
@@ -219,7 +220,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         });
         return;
       }
-      emit(mode === 'signup' ? 'auth.signup.success' : 'auth.signin.success', {
+      emit?.(mode === 'signup' ? 'auth.signup.success' : 'auth.signin.success', {
         title: mode === 'signup' ? 'Sign Up Success' : 'Sign In Success',
         message: mode === 'signup' ? 'Account created successfully.' : 'Signed in successfully.',
         category: 'security',
@@ -251,7 +252,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       if (!result.ok) {
         const message = sanitizeUiText(result.error || 'Could not resend verification email.');
         setErrorMsg(message);
-        emit('auth.signin.failed', {
+        emit?.('auth.signin.failed', {
           title: 'Verification Email Failed',
           message,
           category: 'security',
@@ -263,7 +264,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       setNeedsEmailVerification(true);
       setInfoMsg(message);
       setVerificationCooldownUntil(Date.now() + 30_000);
-      emit('auth.signin.success', {
+      emit?.('auth.signin.success', {
         title: 'Verification Email Sent',
         message,
         category: 'security',
@@ -290,7 +291,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
           result.error || (mode === 'signup' ? 'Google sign-up failed.' : 'Google sign-in failed.')
         );
         setErrorMsg(message);
-        emit('auth.signin.failed', {
+        emit?.('auth.signin.failed', {
           title: 'Google Sign-In Failed',
           message,
           category: 'security',
@@ -298,7 +299,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         });
         return;
       }
-      emit('auth.signin.success', {
+      emit?.('auth.signin.success', {
         title: mode === 'signup' ? 'Account Ready' : 'Sign In Success',
         message: mode === 'signup' ? 'Your account is ready with Google.' : 'Signed in with Google.',
         category: 'security',
@@ -329,7 +330,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       if (!result.ok) {
         const message = sanitizeUiText(result.error || 'Could not request password reset.');
         setErrorMsg(message);
-        emit('auth.reset.failed', {
+        emit?.('auth.reset.failed', {
           title: 'Password Reset Failed',
           message,
           category: 'security',
@@ -339,7 +340,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       }
       const message = 'If an account exists for this email, a reset link has been sent.';
       setInfoMsg(message);
-      emit('auth.reset.success', {
+      emit?.('auth.reset.success', {
         title: 'Password Reset Requested',
         message,
         category: 'security',
@@ -352,29 +353,36 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
 
   return (
     <div
-      className="vf-auth-shell min-h-[100dvh] w-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8"
+      className="ap-shell"
       data-testid="auth-shell"
       data-auth-hydrated={isHydrated ? 'true' : 'false'}
     >
-      <div className="relative z-10 mx-auto w-full max-w-7xl py-4 lg:py-8">
-      <div className="vf-auth-card vf-surface-card relative mx-auto w-full max-w-[36rem] rounded-[2.4rem] border p-5 shadow-2xl animate-in fade-in zoom-in duration-300 sm:p-6 lg:p-8" data-testid="auth-card">
-        <div className="mb-8 text-center">
-          <div className="mx-auto flex justify-center">
+      {/* Aurora background */}
+      <div className="ap-grid" aria-hidden="true" />
+      <div className="ap-aurora ap-aurora--a" aria-hidden="true" />
+      <div className="ap-aurora ap-aurora--b" aria-hidden="true" />
+      <div className="ap-aurora ap-aurora--c" aria-hidden="true" />
+
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-7xl items-center justify-center px-4 py-8">
+      <div className="ap-card w-full max-w-[36rem] p-5 sm:p-6 lg:p-8" data-testid="auth-card">
+        <div className="mb-7 text-center">
+          <div className="mx-auto mb-4 flex justify-center">
             <BrandLogo size="lg" tone="light" />
           </div>
-          <p className="mt-4 inline-flex items-center gap-2 rounded-full border border-[#46E7C7]/18 bg-[#46E7C7]/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#CFFAF0]">
+          <span className="ap-eyebrow">
+            <span className="ap-live-dot" style={{ height: '6px', width: '6px' }} />
             Secure account access
-          </p>
-          <h1 className="vf-auth-shell-title mt-4 text-2xl font-semibold text-[#F5F7FB] sm:text-3xl">{authHeading}</h1>
-          <p className="mt-2 text-sm text-[#B8C7DA]">{authSubtitle}</p>
+          </span>
+          <h1 className="mt-4 text-2xl font-black tracking-tight text-white sm:text-3xl">{authHeading}</h1>
+          <p className="mt-2 text-sm text-slate-400">{authSubtitle}</p>
         </div>
 
-        <div className="mb-5 grid grid-cols-2 gap-2 rounded-[1.1rem] border border-white/10 bg-white/[0.03] p-1">
+        <div className="ap-mode-tab mb-5">
           <button
             type="button"
             onClick={() => setAuthMode('login')}
             aria-pressed={mode === 'login'}
-            className={`inline-flex min-h-11 items-center justify-center rounded-[0.9rem] px-3 py-3 text-sm font-semibold ${authButtonFocusClass} ${mode === 'login' ? 'bg-gradient-to-r from-[#46E7C7] to-[#F4B66A] text-[#07131E] shadow-[0_10px_24px_rgba(70,231,199,0.18)]' : 'text-[#A9BCD3] hover:text-[#F5F7FB]'}`}
+            className={`ap-mode-tab__btn ${mode === 'login' ? 'ap-mode-tab__btn--active' : 'ap-mode-tab__btn--inactive'} ${authButtonFocusClass}`}
           >
             Login
           </button>
@@ -382,41 +390,38 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             type="button"
             onClick={() => setAuthMode('signup')}
             aria-pressed={mode === 'signup'}
-            className={`inline-flex min-h-11 items-center justify-center rounded-[0.9rem] px-3 py-3 text-sm font-semibold ${authButtonFocusClass} ${mode === 'signup' ? 'bg-gradient-to-r from-[#46E7C7] to-[#F4B66A] text-[#07131E] shadow-[0_10px_24px_rgba(70,231,199,0.18)]' : 'text-[#A9BCD3] hover:text-[#F5F7FB]'}`}
+            className={`ap-mode-tab__btn ${mode === 'signup' ? 'ap-mode-tab__btn--active' : 'ap-mode-tab__btn--inactive'} ${authButtonFocusClass}`}
           >
             Sign Up
           </button>
         </div>
 
         {errorMsg && (
-          <div className="mb-5 flex items-start gap-2 rounded-[1.1rem] border border-red-500/20 bg-red-500/10 p-3 text-sm text-[#FFD7D7]" role="alert" aria-live="assertive" aria-atomic="true">
-            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <div className="ap-banner ap-banner--error mb-4" role="alert" aria-live="assertive" aria-atomic="true">
+            <AlertCircle size={15} className="mt-0.5 shrink-0" />
             <span>{errorMsg}</span>
           </div>
         )}
-
         {provisioningHintMsg && (
-          <div className="mb-5 flex items-start gap-2 rounded-[1.1rem] border border-amber-400/20 bg-amber-400/10 p-3 text-sm text-[#FFE3BF]" role="alert" aria-live="assertive" aria-atomic="true">
-            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <div className="ap-banner ap-banner--warn mb-4" role="alert" aria-live="assertive" aria-atomic="true">
+            <AlertCircle size={15} className="mt-0.5 shrink-0" />
             <span>{provisioningHintMsg}</span>
           </div>
         )}
-
         {firebaseIssue && (
-          <div className="mb-5 flex items-start gap-2 rounded-[1.1rem] border border-amber-400/20 bg-amber-400/10 p-3 text-sm text-[#FFE3BF]" role="alert" aria-live="assertive" aria-atomic="true">
-            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <div className="ap-banner ap-banner--warn mb-4" role="alert" aria-live="assertive" aria-atomic="true">
+            <AlertCircle size={15} className="mt-0.5 shrink-0" />
             <span>{firebaseIssue}</span>
           </div>
         )}
-
         {infoMsg && (
-          <div className="mb-5 flex items-start gap-2 rounded-[1.1rem] border border-emerald-400/20 bg-emerald-400/10 p-3 text-sm text-[#D7FFE8]" role="status" aria-live="polite" aria-atomic="true">
-            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <div className="ap-banner ap-banner--success mb-4" role="status" aria-live="polite" aria-atomic="true">
+            <AlertCircle size={15} className="mt-0.5 shrink-0" />
             <span>{infoMsg}</span>
           </div>
         )}
 
-        <form onSubmit={handleEmailSubmit} className="space-y-4">
+        <form onSubmit={handleEmailSubmit} className="space-y-3.5">
           {mode === 'signup' && (
             <>
               <div>
@@ -432,7 +437,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                     autoComplete="name"
                     spellCheck={false}
                     aria-describedby="display-name-help"
-                    className={`vf-auth-field w-full rounded-xl border py-3 pl-10 pr-3 text-sm outline-none ${authControlTransitionClass} ${authControlFocusClass}`}
+                    className={`ap-field text-sm ${authControlTransitionClass} ${authControlFocusClass}`}
                   />
                   <User size={16} className="absolute left-3 top-3.5 text-[#7E92A8]" />
                 </div>
@@ -455,7 +460,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                 inputMode="email"
                 spellCheck={false}
                 aria-describedby="auth-email-help"
-                className={`vf-auth-field w-full rounded-xl border py-3 pl-10 pr-3 text-sm outline-none ${authControlTransitionClass} ${authControlFocusClass}`}
+                className={`ap-field text-sm ${authControlTransitionClass} ${authControlFocusClass}`}
                 required
               />
               <Mail size={16} className="absolute left-3 top-3.5 text-[#7E92A8]" />
@@ -476,7 +481,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                 autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                 spellCheck={false}
                 aria-describedby="auth-password-help"
-                className={`vf-auth-field w-full rounded-xl border py-3 pl-10 pr-10 text-sm outline-none ${authControlTransitionClass} ${authControlFocusClass}`}
+                className={`ap-field pr-10 text-sm ${authControlTransitionClass} ${authControlFocusClass}`}
                 required
               />
               <Lock size={16} className="absolute left-3 top-3.5 text-[#7E92A8]" />
@@ -524,7 +529,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                   autoComplete="new-password"
                   spellCheck={false}
                   aria-describedby="auth-password-confirm-help"
-                  className={`vf-auth-field w-full rounded-xl border py-3 pl-10 pr-3 text-sm outline-none ${authControlTransitionClass} ${authControlFocusClass}`}
+                  className={`ap-field text-sm ${authControlTransitionClass} ${authControlFocusClass}`}
                   required
                 />
                 <Lock size={16} className="absolute left-3 top-3.5 text-[#7E92A8]" />
@@ -591,7 +596,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             type="submit"
             disabled={isLoading || isResetting || disableEmailAuthSubmit}
             aria-busy={isLoading || isResetting}
-            className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#46E7C7] via-[#31B8E6] to-[#F4B66A] px-4 py-3 text-sm font-bold text-[#07131E] shadow-[0_18px_42px_rgba(70,231,199,0.18)] ${authButtonTransitionClass} ${authButtonFocusClass} hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`ap-btn-primary text-sm ${authButtonFocusClass} disabled:cursor-not-allowed disabled:opacity-70`}
           >
             {isLoading ? 'Please wait...' : mode === 'signup' ? 'Create Account' : 'Sign In'} {!isLoading && <ArrowRight size={16} />}
           </button>
@@ -616,10 +621,10 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
           </div>
         )}
 
-        <div className="my-5 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wider text-[#9CB1C9]">
-          <span className="h-px flex-1 bg-white/15" />
+        <div className="my-5 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+          <hr className="h-px flex-1 border-none bg-white/10" />
           Or continue with
-          <span className="h-px flex-1 bg-white/15" />
+          <hr className="h-px flex-1 border-none bg-white/10" />
         </div>
 
         <div className="grid grid-cols-1 gap-2">
@@ -628,13 +633,13 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             onClick={handleGoogle}
             disabled={isLoading || disableOAuthAuthSubmit}
             aria-busy={isLoading}
-            className={`rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-semibold text-[#F5F7FB] ${authButtonTransitionClass} ${authButtonFocusClass} hover:bg-white/[0.08] disabled:opacity-60`}
+            className={`ap-google-btn ${authButtonFocusClass} disabled:opacity-60`}
           >
             {mode === 'signup' ? 'Continue with Google' : 'Sign in with Google'}
           </button>
         </div>
 
-        <p className="mt-4 text-center text-[11px] leading-relaxed text-[#9CB1C9]">
+        <p className="mt-4 text-center text-[11px] leading-relaxed text-slate-500">
           {mode === 'signup'
             ? 'Create your account with email or Google. If email verification is required, you will be guided back here after confirming.'
             : 'Use your email or Google account to continue into V FLOW AI.'}

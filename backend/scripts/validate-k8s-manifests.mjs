@@ -130,7 +130,7 @@ const main = async () => {
   if (!has(kustomizationText, /runtime-admin-secret\.example\.yaml/i)) {
     kustomizationFailures.push('kustomization.yaml is missing runtime-admin-secret.example.yaml resource.');
   }
-  if (has(kustomizationText, /runtime-(?:basic|legacy|kokoro)\.yaml/i)) {
+  if (has(kustomizationText, /runtime-(?:basic|legacy)\.yaml/i)) {
     kustomizationFailures.push('kustomization.yaml still references a removed legacy TTS runtime manifest.');
   }
   if (!has(kustomizationText, /runtime-vertex-text\.yaml/i)) {

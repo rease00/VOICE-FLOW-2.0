@@ -55,16 +55,14 @@ async function fetchJson(url, headers = {}) {
 }
 
 async function collectBackendChecks(authHeaders) {
-  const [health, status, queue] = await Promise.all([
+  const [health, queue] = await Promise.all([
     fetchJson(`${backendBaseUrl}/health`, authHeaders),
-    fetchJson(`${backendBaseUrl}/tts/engines/status`, authHeaders),
     fetchJson(`${backendBaseUrl}/admin/tts/queue/metrics`, authHeaders),
   ]);
 
   return {
-    ok: health.ok && status.ok && queue.ok,
+    ok: health.ok && queue.ok,
     health,
-    enginesStatus: status,
     queueMetrics: queue,
   };
 }

@@ -13,7 +13,6 @@ import app as backend_app
 from services.admission.redis_limits import SuccessQuotaDecision, SuccessQuotaLimiter, SuccessQuotaReservation, SuccessQuotaSnapshot
 from services.queue.redis_queue import WeightedInMemoryQueue
 
-
 class _DummyRuntimeResponse:
     def __init__(self, status_code: int = 200, content: bytes = b"RIFF" + b"\x00" * 256, json_payload: dict | None = None) -> None:
         self.status_code = status_code
@@ -28,7 +27,6 @@ class _DummyRuntimeResponse:
 
     def json(self) -> dict:
         return self._json_payload
-
 
 def _reset_inmemory_state() -> None:
     for name in (
@@ -84,7 +82,6 @@ def _reset_inmemory_state() -> None:
         backend_app._INMEMORY_TTS_V2_SESSIONS.clear()
         backend_app._INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.clear()
 
-
 def test_tts_v2_synthesize_chunk_forwards_request_identity(monkeypatch) -> None:
     captured_payload: dict[str, object] = {}
 
@@ -112,7 +109,6 @@ def test_tts_v2_synthesize_chunk_forwards_request_identity(monkeypatch) -> None:
     assert str(captured_payload.get("request_id") or "") == "req_identity_123"
     assert str(captured_payload.get("idempotencyKey") or "") == "idem_identity_123"
     assert str(captured_payload.get("idempotency_key") or "") == "idem_identity_123"
-
 
 def _submit_tts_and_wait_status(
     client: TestClient,
@@ -166,14 +162,12 @@ def _submit_tts_and_wait_status(
         time.sleep(0.05)
     return submit.status_code, submit
 
-
 def test_auth_enforcement_blocks_missing_token(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     client = TestClient(backend_app.app)
     response = client.get("/account/entitlements")
     assert response.status_code == 401
-
 
 def test_auth_enforcement_accepts_valid_token(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -196,7 +190,6 @@ def test_auth_enforcement_accepts_valid_token(monkeypatch) -> None:
     assert payload["ok"] is True
     assert payload["entitlements"]["uid"] == "firebase_user_1"
 
-
 def test_auth_enforcement_blocks_unverified_email_token(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
@@ -217,7 +210,6 @@ def test_auth_enforcement_blocks_unverified_email_token(monkeypatch) -> None:
     payload = response.json()
     assert payload.get("detail") == "Email verification required."
     assert payload.get("errorCode") == "VF_EMAIL_NOT_VERIFIED"
-
 
 def test_auth_enforcement_allows_unverified_admin_email_allowlist(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -242,7 +234,6 @@ def test_auth_enforcement_allows_unverified_admin_email_allowlist(monkeypatch) -
     assert payload["ok"] is True
     assert payload["entitlements"]["uid"] == "firebase_admin_user_unverified"
 
-
 def test_auth_enforcement_allows_phone_only_token_without_email_claim(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
@@ -259,7 +250,6 @@ def test_auth_enforcement_allows_phone_only_token_without_email_claim(monkeypatc
     payload = response.json()
     assert payload["ok"] is True
     assert payload["entitlements"]["uid"] == "firebase_phone_user"
-
 
 def test_verify_firebase_id_token_checks_revocation(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -278,14 +268,12 @@ def test_verify_firebase_id_token_checks_revocation(monkeypatch) -> None:
     assert claims["uid"] == "revocation_user"
     assert calls == [("token_123", True, 60)]
 
-
 def test_runtime_status_endpoint_requires_auth_when_enforced(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     client = TestClient(backend_app.app)
     response = client.get("/tts/engines/status", params={"engine": "PRIME"})
     assert response.status_code == 401
-
 
 @pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:43123"])
 def test_protected_preflight_returns_cors_success(monkeypatch, origin: str) -> None:
@@ -303,7 +291,6 @@ def test_protected_preflight_returns_cors_success(monkeypatch, origin: str) -> N
     assert "GET" in str(response.headers.get("access-control-allow-methods") or "")
     assert "authorization" in str(response.headers.get("access-control-allow-headers") or "").lower()
 
-
 @pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:43123"])
 def test_auth_401_response_includes_cors_headers(monkeypatch, origin: str) -> None:
     _reset_inmemory_state()
@@ -312,7 +299,6 @@ def test_auth_401_response_includes_cors_headers(monkeypatch, origin: str) -> No
     response = client.get("/account/profile", headers={"Origin": origin})
     assert response.status_code == 401
     assert response.headers.get("access-control-allow-origin") == origin
-
 
 def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -357,7 +343,6 @@ def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     assert "generationLimit" not in daily_payload
     assert "generationRemaining" not in daily_payload
 
-
 def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -390,7 +375,6 @@ def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     assert detail.get("plan") == "Free"
     assert detail.get("engine") == "PRIME"
     assert set(detail.get("allowedEngines") or []) == {"VECTOR"}
-
 
 def test_prime_is_allowed_for_paid_wallet_balance(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -427,7 +411,6 @@ def test_prime_is_allowed_for_paid_wallet_balance(monkeypatch) -> None:
     )
     assert response_code in {200, 202}
 
-
 def test_prime_is_allowed_for_paid_plan_with_zero_balance(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -458,7 +441,6 @@ def test_prime_is_allowed_for_paid_plan_with_zero_balance(monkeypatch) -> None:
     )
     assert response_code == 200
 
-
 def test_default_entitlement_uses_free_wallet_policy() -> None:
     _reset_inmemory_state()
     entitlement = backend_app._default_entitlement("free_wallet_defaults")
@@ -466,7 +448,6 @@ def test_default_entitlement_uses_free_wallet_policy() -> None:
     assert entitlement["monthlyVfLimit"] == backend_app.PLAN_LIMITS["free"]["monthlyVfLimit"] == 1000
     assert float(entitlement["vffBalance"] or 0) == float(backend_app.VF_FREE_MONTHLY_VFF_GRANT)
     assert str(entitlement.get("vffGrantMonthKey") or "") == backend_app._wallet_month_key()
-
 
 def test_normalize_entitlement_wallet_migrates_free_vff_grant_and_cap() -> None:
     _reset_inmemory_state()
@@ -498,7 +479,6 @@ def test_normalize_entitlement_wallet_migrates_free_vff_grant_and_cap() -> None:
     assert float(rollover.get("vffBalance") or 0) == float(backend_app.VF_FREE_MONTHLY_VFF_GRANT)
     assert str(rollover.get("vffMonthKey") or "") == month_key
 
-
 def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -529,7 +509,6 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     payload = ent.json()["entitlements"]
     assert payload["daily"]["generationUsed"] == 0
     assert payload["monthly"]["vfUsed"] == 0
-
 
 def test_entitlements_include_engine_char_caps_and_early_access(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -567,7 +546,6 @@ def test_entitlements_include_engine_char_caps_and_early_access(monkeypatch) -> 
     assert bool((free_ent.get("features") or {}).get("earlyAccess")) is False
     assert int((free_ent.get("limits") or {}).get("maxCharsPerGeneration") or 0) == 8000
     assert "PRIME" not in list((free_ent.get("limits") or {}).get("allowedEngines") or [])
-
 
 def test_admin_reconcile_allowed_engines_dry_run_and_apply(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -624,7 +602,6 @@ def test_admin_reconcile_allowed_engines_dry_run_and_apply(monkeypatch) -> None:
     assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["VECTOR", "PRIME"]
     assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["VECTOR", "PRIME"]
 
-
 def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -658,7 +635,6 @@ def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> 
     event = backend_app._INMEMORY_USAGE_EVENTS.get(f"{uid}_admin_req_2")
     assert isinstance(event, dict)
     assert bool((event.get("limitBypass") or {}).get("enabled")) is True
-
 
 class _DummyStripe:
     api_key = ""
@@ -780,7 +756,6 @@ class _DummyStripe:
                 ]
             }
 
-
 def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -821,7 +796,6 @@ def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     ent = backend_app._load_entitlement("stripe_user_1")
     assert ent["plan"] == "Pro"
     assert ent["monthlyVfLimit"] == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"]
-
 
 def test_tts_v2_create_prechecks_success_quota_before_reserving_usage(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -867,6 +841,94 @@ def test_tts_v2_create_prechecks_success_quota_before_reserving_usage(monkeypatc
     assert response.status_code == 429
     assert reserve_attempts == [("quota_precheck_user", "Free", request_id)]
     assert usage_calls == []
+
+
+def test_reserve_tts_success_quota_fails_closed_when_redis_is_required(monkeypatch) -> None:
+    _reset_inmemory_state()
+    metric_calls: list[str] = []
+
+    class _FailClosedLimiter:
+        def reserve_success(self, uid: str, plan_key: str, request_fingerprint: str = "") -> SuccessQuotaReservation:
+            _ = uid, plan_key, request_fingerprint
+            raise RuntimeError("Redis is required for success quota reservations.")
+
+        def is_redis_required(self) -> bool:
+            return True
+
+        def is_redis_enabled(self) -> bool:
+            return False
+
+    monkeypatch.setattr(backend_app, "_TTS_SUCCESS_LIMITER", _FailClosedLimiter())
+    monkeypatch.setattr(
+        backend_app,
+        "_record_tts_success_quota_reservation_metric",
+        lambda metric_key, increment=1: metric_calls.extend([str(metric_key)] * max(1, int(increment))),
+    )
+
+    with pytest.raises(backend_app.HTTPException) as exc_info:
+        backend_app._reserve_tts_success_quota(
+            "quota_user",
+            "Free",
+            "free",
+            "trace_redis_fail_closed",
+            request_fingerprint="trace_redis_fail_closed",
+        )
+
+    assert exc_info.value.status_code == 503
+    detail = dict(exc_info.value.detail or {})
+    assert detail.get("errorCode") == backend_app.ADMISSION_DEPENDENCY_UNAVAILABLE
+    assert detail.get("reason") == "redis_unavailable_for_reservation"
+    assert detail.get("dependency") == "redis"
+    assert metric_calls.count("reservation_denied_redis_unavailable") >= 1
+
+
+def test_reserve_tts_success_quota_records_idempotent_reuse_metric(monkeypatch) -> None:
+    _reset_inmemory_state()
+    metric_calls: list[str] = []
+    reused_reservation = SuccessQuotaReservation(
+        allowed=True,
+        reserved=False,
+        committed=True,
+        released=False,
+        counted=False,
+        idempotent_reuse=True,
+        reservation_id="reservation_reused_1",
+        backend="redis",
+        redis_available=True,
+        redis_required=True,
+        snapshot=SuccessQuotaSnapshot(limit=5, used=2, remaining=3, reset_at_ms=1_762_000_000_000, window_seconds=60),
+        error="",
+    )
+
+    class _ReuseLimiter:
+        def reserve_success(self, uid: str, plan_key: str, request_fingerprint: str = "") -> SuccessQuotaReservation:
+            _ = uid, plan_key, request_fingerprint
+            return reused_reservation
+
+        def is_redis_required(self) -> bool:
+            return True
+
+        def is_redis_enabled(self) -> bool:
+            return True
+
+    monkeypatch.setattr(backend_app, "_TTS_SUCCESS_LIMITER", _ReuseLimiter())
+    monkeypatch.setattr(
+        backend_app,
+        "_record_tts_success_quota_reservation_metric",
+        lambda metric_key, increment=1: metric_calls.extend([str(metric_key)] * max(1, int(increment))),
+    )
+
+    reservation, headers = backend_app._reserve_tts_success_quota(
+        "quota_user",
+        "Pro",
+        "pro",
+        "trace_idempotent_reuse",
+        request_fingerprint="trace_idempotent_reuse",
+    )
+
+    assert reservation.idempotent_reuse is True
+    assert int(headers.get("X-RateLimit-Success-Remaining") or 0) == 3
+    assert "reservation_idempotent_reuse" in metric_calls
 
 
 def test_tts_v2_create_attaches_success_quota_reservation_payload(monkeypatch) -> None:
@@ -945,7 +1007,6 @@ def test_tts_v2_create_attaches_success_quota_reservation_payload(monkeypatch) -
     assert payload["successQuotaReservationToken"] == "reservation-123"
     assert int(quota_payload.get("snapshot", {}).get("used") or 0) == 1
 
-
 def test_success_quota_reservation_lifecycle_uses_memory_fallback() -> None:
     limiter = SuccessQuotaLimiter(redis_url="", window_seconds=30, idempotency_ttl_seconds=120)
 
@@ -997,7 +1058,6 @@ def test_success_quota_reservation_lifecycle_uses_memory_fallback() -> None:
     assert after_release.counted is True
     assert after_release.snapshot.used == 2
 
-
 def test_success_quota_reservation_requires_redis_when_configured() -> None:
     limiter = SuccessQuotaLimiter(redis_url="", require_redis=True)
 
@@ -1012,7 +1072,6 @@ def test_success_quota_reservation_requires_redis_when_configured() -> None:
 
     with pytest.raises(RuntimeError):
         limiter.peek("quota_user", "free")
-
 
 def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1155,7 +1214,6 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     assert len(payload["invoices"]) == 2
     assert payload["invoices"][0]["amountPaidMinor"] == 216000
 
-
 def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1179,7 +1237,6 @@ def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
 
     second = client.post("/wallet/coupons/redeem", json={"code": "WELCOME1000"}, headers=headers)
     assert second.status_code == 409
-
 
 def test_admin_wallet_coupon_redeem_bypasses_user_and_max_limits(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1208,7 +1265,6 @@ def test_admin_wallet_coupon_redeem_bypasses_user_and_max_limits(monkeypatch) ->
     assert ent["paidVfBalance"] == 3000
     assert backend_app._INMEMORY_COUPONS["coupon_admin"]["redeemedCount"] == 3
     assert len(backend_app._INMEMORY_COUPON_REDEMPTIONS) == 3
-
 
 def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1255,7 +1311,6 @@ def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     assert lot.get("source") == "token_pack"
     assert str(lot.get("expiresAt") or "").strip()
 
-
 def test_token_pack_webhook_uses_amount_fallback_when_final_amount_missing(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1301,7 +1356,6 @@ def test_token_pack_webhook_uses_amount_fallback_when_final_amount_missing(monke
     assert captured[0]["amount"] == 50000
     assert int((captured[0].get("metadata") or {}).get("finalAmountInr") or 0) == 550
 
-
 def test_vc_token_pack_webhook_credits_vc_wallet(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1343,7 +1397,6 @@ def test_vc_token_pack_webhook_credits_vc_wallet(monkeypatch) -> None:
     entitlement = backend_app._load_entitlement("vc_wallet_user_1")
     assert entitlement["vcPaidBalance"] == 1500
 
-
 def test_wallet_vc_convert_requires_config(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1357,7 +1410,6 @@ def test_wallet_vc_convert_requires_config(monkeypatch) -> None:
     assert response.status_code == 503
     detail = response.json().get("detail") or {}
     assert str(detail.get("errorCode") or "") == "VC_CONVERSION_CONFIG_REQUIRED"
-
 
 def test_wallet_vc_convert_debits_paid_vf_and_credits_vc(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1385,7 +1437,6 @@ def test_wallet_vc_convert_debits_paid_vf_and_credits_vc(monkeypatch) -> None:
     assert float(entitlement["paidVfBalance"]) == 80.0
     assert float(entitlement["vcPaidBalance"]) == 100.0
 
-
 def test_wallet_vc_convert_returns_429_when_paid_vf_is_insufficient(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1406,7 +1457,6 @@ def test_wallet_vc_convert_returns_429_when_paid_vf_is_insufficient(monkeypatch)
     )
     assert response.status_code == 429
 
-
 def test_vc_token_pack_checkout_requires_config(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1421,7 +1471,6 @@ def test_vc_token_pack_checkout_requires_config(monkeypatch) -> None:
     assert response.status_code == 503
     detail = response.json().get("detail") or {}
     assert str(detail.get("errorCode") or "") == "VC_TOKEN_PACK_CONFIG_REQUIRED"
-
 
 def test_vc_token_pack_checkout_session_returns_razorpay_payload(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1466,7 +1515,6 @@ def test_vc_token_pack_checkout_session_returns_razorpay_payload(monkeypatch) ->
     assert int(notes.get("standardAmountInr") or 0) == 110
     assert int(notes.get("finalAmountInr") or 0) == 110
     assert int(notes.get("discountPercent") or 0) == 0
-
 
 @pytest.mark.parametrize(
     ("plan_name", "pack_key", "expected_vc", "expected_standard", "expected_final"),
@@ -1533,7 +1581,6 @@ def test_vc_token_pack_checkout_applies_plan_discount(
     assert int(notes.get("finalAmountInr") or 0) == expected_final
     assert int(notes.get("discountPercent") or 0) == 5
 
-
 def test_vc_monthly_grants_normalized_for_pro_and_scale() -> None:
     _reset_inmemory_state()
     now = datetime(2026, 3, 15, tzinfo=timezone.utc)
@@ -1580,7 +1627,6 @@ def test_vc_monthly_grants_normalized_for_pro_and_scale() -> None:
     assert float(scale_wallet.get("vcFreeBalance") or 0) == float(backend_app.VC_FREE_MONTHLY_GRANT_BY_PLAN["scale"])
     assert float(free_wallet.get("vcFreeBalance") or 0) == 0.0
 
-
 def test_billing_webhook_rejects_oversized_payload(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1599,25 +1645,6 @@ def test_billing_webhook_rejects_oversized_payload(monkeypatch) -> None:
         headers={"content-type": "application/json"},
     )
     assert response.status_code == 413
-
-
-def test_reader_cached_asset_blocks_prefix_collision_traversal(monkeypatch, tmp_path) -> None:
-    _reset_inmemory_state()
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    base_dir = tmp_path / "reader-assets"
-    sibling_dir = tmp_path / "reader-assets-escape"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    sibling_dir.mkdir(parents=True, exist_ok=True)
-    secret_file = sibling_dir / "secret.txt"
-    secret_file.write_text("secret", encoding="utf-8")
-    monkeypatch.setattr(backend_app, "READER_REMOTE_ASSETS_DIR", Path(base_dir))
-
-    try:
-        backend_app._reader_resolve_allowed_path(base_dir, "../reader-assets-escape/secret.txt", error_status=403)
-        raise AssertionError("Expected traversal containment to fail.")
-    except backend_app.HTTPException as exc:
-        assert exc.status_code == 403
-
 
 def test_process_tts_job_finalizes_cancelled_usage(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1645,7 +1672,6 @@ def test_process_tts_job_finalizes_cancelled_usage(monkeypatch) -> None:
 
     backend_app._process_tts_job({"jobId": "cancel_req_1"}, "worker-1")
     assert finalize_calls == [("cancel_user", "cancel_req_1", False, "cancelled")]
-
 
 def test_process_tts_job_finalizes_after_mark_completed(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1713,7 +1739,6 @@ def test_process_tts_job_finalizes_after_mark_completed(monkeypatch) -> None:
 
     backend_app._process_tts_job({"jobId": "success_req_1"}, "worker-1")
     assert call_order[:4] == ["persist", "mark_completed", "attach_usage", "finalize"]
-
 
 def test_process_tts_job_uses_payload_when_upstream_payload_missing(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1786,7 +1811,6 @@ def test_process_tts_job_uses_payload_when_upstream_payload_missing(monkeypatch)
     assert captured_runtime_payload["text"] == "hello from payload"
     assert captured_runtime_payload["engine"] == "VECTOR"
     assert call_order[:4] == ["persist", "mark_completed", "attach_usage", "finalize"]
-
 
 def test_process_tts_job_updates_audio_audit_lifecycle_and_terminal_fields(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1867,7 +1891,6 @@ def test_process_tts_job_updates_audio_audit_lifecycle_and_terminal_fields(monke
     assert row["traceId"] == "trace_submit_123"
     assert str(row.get("audioCreatedAt") or "").strip()
     assert str(row.get("terminalAt") or "").strip()
-
 
 def test_process_tts_job_commits_success_quota_reservation_on_success(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -1994,7 +2017,6 @@ def test_process_tts_job_commits_success_quota_reservation_on_success(monkeypatc
     assert len(fake_limiter.commits) == 1
     assert len(fake_limiter.releases) == 0
 
-
 def test_process_tts_job_releases_success_quota_reservation_on_cancel(monkeypatch) -> None:
     _reset_inmemory_state()
     release_calls: list[SuccessQuotaReservation] = []
@@ -2061,7 +2083,6 @@ def test_process_tts_job_releases_success_quota_reservation_on_cancel(monkeypatc
     backend_app._process_tts_job({"jobId": "cancel_req_1"}, "worker-1")
     assert finalize_calls == [("worker_cancel_user", "cancel_req_1", False, "cancelled")]
     assert len(release_calls) == 1
-
 
 def test_process_tts_job_falls_back_to_direct_success_commit_when_reservation_commit_is_none(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -2158,7 +2179,6 @@ def test_process_tts_job_falls_back_to_direct_success_commit_when_reservation_co
     assert len(direct_commit_calls) == 1
     assert call_order[:5] == ["persist", "mark_completed", "commit_direct", "attach_usage", "finalize"]
 
-
 def test_token_pack_lot_has_6_month_expiry_window() -> None:
     _reset_inmemory_state()
     uid = "token_lot_expiry_user"
@@ -2183,7 +2203,6 @@ def test_token_pack_lot_has_6_month_expiry_window() -> None:
         now,
         backend_app.VF_TOKEN_PACK_VALIDITY_MONTHS,
     ).isoformat()
-
 
 def test_token_pack_lots_expire_independently_per_purchase() -> None:
     _reset_inmemory_state()
@@ -2220,7 +2239,6 @@ def test_token_pack_lots_expire_independently_per_purchase() -> None:
         second_purchase,
         backend_app.VF_TOKEN_PACK_VALIDITY_MONTHS,
     ).isoformat()
-
 
 def test_paid_vf_lot_spend_and_restore_is_lossless() -> None:
     _reset_inmemory_state()
@@ -2262,7 +2280,6 @@ def test_paid_vf_lot_spend_and_restore_is_lossless() -> None:
     assert float(restored.get("paidVfBalance") or 0) == 160
     assert float((restored_by_id["lot_early"] or {}).get("amountRemaining") or 0) == 100
     assert float((restored_by_id["lot_later"] or {}).get("amountRemaining") or 0) == 60
-
 
 def test_usage_reserve_revert_restores_paid_vf_lot_debits() -> None:
     _reset_inmemory_state()
@@ -2319,7 +2336,6 @@ def test_usage_reserve_revert_restores_paid_vf_lot_debits() -> None:
     assert int(reverted_monthly.get("generationCount") or 0) == 0
     assert int(reverted_daily.get("generationCount") or 0) == 0
 
-
 def test_legacy_paid_vf_balance_is_preserved_as_non_expiring_lot() -> None:
     _reset_inmemory_state()
     uid = "legacy_paid_balance_user"
@@ -2334,7 +2350,6 @@ def test_legacy_paid_vf_balance_is_preserved_as_non_expiring_lot() -> None:
     assert float(normalized.get("paidVfBalance") or 0) == 777
     assert lots[0].get("source") == "legacy"
     assert lots[0].get("expiresAt") is None
-
 
 def test_subscription_upgrade_applies_monthly_limit_immediately_and_preserves_paid_balances(monkeypatch) -> None:
     _reset_inmemory_state()
@@ -2371,7 +2386,6 @@ def test_subscription_upgrade_applies_monthly_limit_immediately_and_preserves_pa
     assert int(wallet.get("monthlyFreeRemaining") or 0) == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"] - 20000
     assert float(ent.get("paidVfBalance") or 0) == 1200
     assert float(ent.get("vffBalance") or 0) == 900
-
 
 def test_subscription_downgrade_removes_old_plan_surplus_and_preserves_paid_balances(monkeypatch) -> None:
     _reset_inmemory_state()

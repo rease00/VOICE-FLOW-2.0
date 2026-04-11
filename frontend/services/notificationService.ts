@@ -16,10 +16,13 @@ export interface NotificationWireItem {
   entityKey?: string | null;
   title?: string;
   message?: string;
+  userMessage?: string | null;
   details?: string | null;
+  adminDetail?: string | null;
   severity?: string;
   category?: string;
   audience?: string;
+  roleScope?: string | null;
   channel?: string;
   status?: string;
   resolvedAt?: string | null;

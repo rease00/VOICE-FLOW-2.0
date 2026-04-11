@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  combineNotificationFeeds,
   DEFAULT_NOTIFICATION_PREFS,
   coerceNotificationPrefs,
   prepareNotificationsForStorage,
@@ -146,6 +147,54 @@ describe('notification provider helpers', () => {
 
     expect(withServerExpiry?.expiresAt).toBe(Date.parse(serverExpiresAt));
     expect(withFallbackExpiry?.expiresAt).toBe(Date.parse(createdAt) + 30 * 24 * 60 * 60 * 1000);
+  });
+
+  it('preserves channel and audience metadata for persisted notifications', async () => {
+    const { coercePersistedNotification } = await import('./NotificationProvider');
+    const row = coercePersistedNotification(
+      {
+        id: 'persisted-1',
+        eventCode: 'custom.message',
+        title: 'Server notice',
+        message: 'User-safe message',
+        userMessage: 'User-safe message',
+        adminDetail: 'Internal trace details',
+        audience: 'all',
+        channel: 'toast',
+        roleScope: 'admins_and_users',
+      } as never,
+      Date.now()
+    );
+
+    expect(row?.audience).toBe('all');
+    expect(row?.channel).toBe('toast');
+    expect(row?.roleScope).toBe('admins_and_users');
+    expect(row?.userMessage).toBe('User-safe message');
+    expect(row?.adminDetail).toBe('Internal trace details');
+  });
+
+  it('combines local toast history with persisted inbox items for the center feed', () => {
+    const persisted = [
+      createNotification({
+        id: 'persisted-1',
+        channel: 'inbox',
+        scope: 'persisted',
+        createdAt: 1000,
+      }),
+    ];
+    const local = [
+      createNotification({
+        id: 'toast-1',
+        channel: 'toast',
+        scope: 'ephemeral',
+        createdAt: 2000,
+        toastVisible: true,
+      }),
+    ];
+
+    const combined = combineNotificationFeeds(persisted, local);
+
+    expect(combined.map((item) => item.id)).toEqual(['toast-1', 'persisted-1']);
   });
 });
 

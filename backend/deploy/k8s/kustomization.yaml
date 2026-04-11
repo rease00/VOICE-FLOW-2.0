@@ -4,6 +4,8 @@ namespace: voiceflow
 resources:
   - namespace.yaml
   - redis-secret.example.yaml
+  - firebase-secret.example.yaml
+  - reader-storage-secret.example.yaml
   - runtime-admin-secret.example.yaml
   - backend-configmap.yaml
   - runtime-gemini.yaml

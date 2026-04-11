@@ -1,4 +1,4 @@
-export enum AppScreen {
+﻿export enum AppScreen {
   ONBOARDING = 'ONBOARDING',
   LOGIN = 'LOGIN',
   USER_ID_SETUP = 'USER_ID_SETUP',
@@ -111,6 +111,8 @@ export interface GenerationSettings {
   backendApiKey?: string | undefined;
   voiceModel?: string | undefined;
   geminiTtsServiceUrl?: string | undefined;
+  kokoroTtsServiceUrl?: string | undefined;
+  kokoroStandbyIdleMs?: number | undefined;
   runtimeProvider?: string | undefined;
 
   // Studio controls
@@ -118,13 +120,11 @@ export interface GenerationSettings {
   musicVolume?: number | undefined;
   speechVolume?: number | undefined;
   autoEnhance?: boolean | undefined;
-  multiSpeakerEnabled?: boolean | undefined;
-  speakerMapping?: Record<string, string> | undefined;
-
-  // Dubbing options
   useModelSourceSeparation?: boolean | undefined;
   preserveDubVoiceTone?: boolean | undefined;
   dubbingSourceLanguage?: string | undefined;
+  multiSpeakerEnabled?: boolean | undefined;
+  speakerMapping?: Record<string, string> | undefined;
 
   // Frontend UI preferences
   uiMotionLevel?: 'off' | 'balanced' | 'rich' | undefined;
@@ -134,6 +134,28 @@ export interface GenerationSettings {
 export type ScriptBlockType = 'dialogue' | 'sfx' | 'direction';
 export type StudioEditorMode = 'blocks' | 'raw';
 export type WorkspaceLayoutMode = 'phone' | 'tablet' | 'desktop';
+export type CpuDubbingProfile = 'cpu_quality' | 'cpu_speed' | 'gpu';
+
+export interface DubbingClip {
+  id: string;
+  file: File;
+  objectUrl: string;
+  durationMs: number;
+  trimInMs: number;
+  trimOutMs: number;
+  layer: 'V1' | 'V2';
+  script: string;
+  status: 'idle' | 'transcribing' | 'queued' | 'running' | 'completed' | 'failed';
+  jobId: string;
+  resultUrl: string | null;
+  reportUrl: string | null;
+  error: string;
+}
+
+export interface DubbingClipboard {
+  clip: DubbingClip;
+  timestamp: number;
+}
 
 export interface ScriptBlockEmotionMeta {
   primaryEmotion: string;
@@ -158,6 +180,24 @@ export interface DriveConnectionState {
     | 'needs_login'
     | 'error';
   message: string;
+}
+
+export interface NovelImportExtractDiagnostics {
+  mode: 'txt' | 'pdf_text' | 'image_ai' | 'pdf_ai_fallback' | 'generic_text' | 'generic_ai';
+  warnings: string[];
+  usedAiFallback: boolean;
+}
+
+export interface NovelImportPageStat {
+  page: number;
+  chars: number;
+}
+
+export interface NovelImportChapterPreview {
+  title: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
 }
 
 export interface NovelProject {
@@ -226,24 +266,6 @@ export interface ChapterAdaptationState {
   error?: string;
 }
 
-export interface NovelImportExtractDiagnostics {
-  mode: 'txt' | 'pdf_text' | 'image_ai' | 'pdf_ai_fallback' | 'generic_text' | 'generic_ai';
-  warnings: string[];
-  usedAiFallback: boolean;
-}
-
-export interface NovelImportPageStat {
-  page: number;
-  chars: number;
-}
-
-export interface NovelImportChapterPreview {
-  title: string;
-  text: string;
-  startOffset: number;
-  endOffset: number;
-}
-
 export type NovelIdeaSource = 'webnovel' | 'pocketnovel';
 
 export interface NovelIdeaCard {
@@ -271,14 +293,6 @@ export interface NovelConversionResult {
   outputFileName: string;
   driveFileId?: string;
   warnings?: string[];
-}
-
-export interface Draft {
-  id: string;
-  name: string;
-  text: string;
-  settings: GenerationSettings;
-  lastModified: number;
 }
 
 export type StudioQueueItemStatus =
@@ -385,8 +399,14 @@ export interface UserWalletStats {
   monthlyFreeLimit: number;
   vffBalance: number;
   paidVfBalance: number;
+  vcFreeBalance?: number;
+  vcGrantedBalance?: number;
+  vcPaidBalance?: number;
+  vcSpendableBalance?: number;
   spendableNowByEngine: Record<ActiveTtsEngineKey, number>;
   vffMonthKey?: string | undefined;
+  vcMonthKey?: string | undefined;
+  vnBalance?: number;
 }
 
 export interface UserStats {
@@ -473,9 +493,6 @@ export interface UserContextType {
   deleteAccount: () => void;
   clonedVoices: ClonedVoice[];
   addClonedVoice: (voice: ClonedVoice) => void;
-  drafts: Draft[];
-  saveDraft: (name: string, text: string, settings: GenerationSettings) => void;
-  deleteDraft: (id: string) => void;
   showSubscriptionModal: boolean;
   setShowSubscriptionModal: (show: boolean) => void;
   recordTtsUsage: (engine: GenerationSettings['engine'], charCount: number) => void;
@@ -552,486 +569,99 @@ export interface NormalizedSynthesisRequest {
   request_id?: string | undefined;
 }
 
-export interface DubbingSegment {
-  id?: string;
-  startTime: number;
-  endTime?: number | undefined;
-  speaker: string;
-  text: string;
-  emotion?: string | undefined;
-  crewTags?: string[] | undefined;
-  emotionTags?: string[] | undefined;
-}
+// ─── VN Token Economy Types ──────────────────────────────────────────
 
-export type DubbingClipLayer = 'V1' | 'V2';
-export type DubbingClipStatus =
-  | 'idle'
-  | 'queued'
-  | 'transcribing'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+export type VnTokenType = 'VN';
+export type TokenType = 'VN' | 'VF' | 'VC';
 
-export type CpuDubbingProfile = 'cpu_quality' | 'cpu_balanced' | 'cpu_fast';
+export type VnTransactionType =
+  | 'vn_purchase'
+  | 'chapter_unlock'
+  | 'full_novel_unlock'
+  | 'author_earning'
+  | 'withdrawal'
+  | 'refund'
+  | 'daily_free_unlock';
 
-export interface DubbingClip {
+export interface VnTransaction {
   id: string;
-  file: File;
-  objectUrl: string;
-  durationMs: number;
-  trimInMs: number;
-  trimOutMs: number;
-  layer: DubbingClipLayer;
-  script: string;
-  status: DubbingClipStatus;
-  jobId?: string | undefined;
-  resultUrl?: string | null | undefined;
-  reportUrl?: string | null | undefined;
-  error?: string | undefined;
+  userId: string;
+  type: VnTransactionType;
+  amount: number;
+  tokenType: TokenType;
+  status: 'pending' | 'completed' | 'failed' | 'refunded';
+  timestamp: string;
+  metadata?: {
+    bookId?: string;
+    chapterId?: string;
+    packKey?: string;
+    withdrawalId?: string;
+    razorpayOrderId?: string;
+  };
 }
 
-export interface DubbingClipboard {
-  clip: DubbingClip;
-  copiedAt: number;
-}
+export type WithdrawalStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
-export interface DubbingJobRequest {
-  sourceFile: File;
-  targetLanguage: string;
-  engine: GenerationSettings['engine'];
-  voiceMap?: Record<string, string>;
-  transcript?: string;
-  emotionMatching?: boolean;
-  prosodyTransfer?: boolean;
-  lipSync?: boolean;
-  output?: 'audio' | 'video' | 'audio+video';
-}
-
-export interface DubbingJobRequestV2 {
-  sourceFile: File;
-  targetLanguage: string;
-  mode?: 'strict_full' | 'fast';
-  output?: 'audio' | 'video' | 'audio+video';
-  advanced?: Record<string, unknown>;
-}
-
-export interface DubbingSpeakerProfile {
-  speaker: string;
-  voiceId?: string;
-}
-
-export interface DubbingJobStatus {
-  jobId?: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'idle';
-  progress?: number;
-  stage?: string;
+export interface WithdrawalRequest {
+  id: string;
+  userId: string;
+  vnAmount: number;
+  inrAmount: number;
+  platformFee: number;
+  netAmount: number;
+  bankDetails: {
+    accountNumber: string;
+    ifsc: string;
+    beneficiaryName: string;
+  };
+  status: WithdrawalStatus;
+  createdAt: string;
+  processedAt?: string;
+  completedAt?: string;
+  razorpayPayoutId?: string;
   error?: string;
-  pipelineVersion?: 'v1' | 'v2' | '2026.1' | string;
-  stageTimeline?: Array<{
-    stage:
-      | 'acoustic_isolation'
-      | 'speaker_segmentation'
-      | 'translation'
-      | 'tts'
-      | 'voice_transfer'
-      | 'video_lipsync'
-      | string;
-    status: string;
-    startMs?: number | null;
-    endMs?: number | null;
-    durationMs?: number | null;
-  }>;
-  outputFiles?: Record<string, unknown>;
-  directorJson?: Record<string, unknown> | null;
-  isochronyStats?: Record<string, unknown> | null;
-  voiceTransferMetrics?: Record<string, unknown> | null;
-  videoSyncMetrics?: Record<string, unknown> | null;
-  tokenUsage?: Record<string, unknown> | null;
-  assets?: Record<string, unknown> | null;
-  thinkingPolicy?: Record<string, unknown> | null;
-  speakerProfiles?: DubbingSpeakerProfile[];
-  live?: {
-    enabled?: boolean;
-    mode?: string;
-    playableChunks?: number;
-    playableDurationMs?: number;
-    chunkCursorNext?: number;
-  };
-  chunks?: Array<{
-    index: number;
-    contentType?: string;
-    durationMs?: number;
-    speakerId?: string;
-    engine?: string;
-    voiceId?: string;
-    textChars?: number;
-    timelineStartMs?: number;
-    timelineEndMs?: number;
-    previewKind?: string;
-    downloadUrl?: string;
-    audioBase64?: string;
-  }>;
-  chunkCursorNext?: number;
-  speakerStats?: {
-    detectedSpeakers?: number;
-    mappedSpeakers?: number;
-    fallbackBindings?: Array<Record<string, unknown>>;
-    driftAlerts?: Array<Record<string, unknown>>;
-  };
-  qosState?: {
-    selectedProfile?: string;
-    downgraded?: boolean;
-    reason?: string;
-    gpuUsed?: boolean;
+}
+
+export interface ChapterUnlockStatus {
+  chapterId: string;
+  bookId: string;
+  unlocked: boolean;
+  unlockedAt?: string;
+  method?: 'purchase' | 'full_novel' | 'daily_free';
+}
+
+// ─── Unified User Model (Firestore users/{uid}) ─────────────────────
+
+export interface UserBankDetails {
+  accountNumber: string;
+  ifsc: string;
+  beneficiaryName: string;
+}
+
+export type KycStatus = 'none' | 'pending' | 'verified' | 'rejected';
+
+export interface FirestoreUserDoc {
+  /** Core fields (existing) */
+  isAdmin?: boolean;
+  displayName?: string;
+  email?: string;
+  photoURL?: string;
+
+  /** Novel economy additions */
+  vnBalance: number;
+  kycStatus: KycStatus;
+  referralCode: string;
+  bankDetails?: UserBankDetails;
+  signupBonusCredited: boolean;
+  favoriteBooks: string[];
+
+  /** Wallet sub-doc reference */
+  wallets?: {
+    vffBalance?: number;
+    paidVfBalance?: number;
+    vcFreeBalance?: number;
+    vcPaidBalance?: number;
+    monthly?: Record<string, unknown>;
   };
 }
 
-export interface DubbingReport {
-  jobId?: string;
-  status?: string;
-  summary?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface ReaderCatalogRegion {
-  id: string;
-  label: string;
-  locale?: string;
-  languageCodes?: string[];
-  sharedCount?: number;
-  emptyState?: string;
-}
-
-export interface ReaderCatalogItem {
-  id: string;
-  title: string;
-  author: string;
-  regionId: string;
-  regionLabel?: string;
-  sourceLanguage?: string;
-  languageLabel?: string;
-  contentKind: 'book' | 'comic';
-  surface: 'books' | 'comics' | 'uploads';
-  provider: string;
-  license: string;
-  sourceUrl?: string;
-  summary?: string;
-  excerpt?: string;
-  sampleText?: string;
-  contentUrl?: string;
-  archiveTxtUrl?: string;
-  coverUrl?: string;
-  supportsReadHere?: boolean;
-  ownershipBasis?: string;
-  textPath?: string;
-  manifestPath?: string;
-  fileNames?: string[];
-  direction?: string;
-  readingModeDefault?: string;
-  collectionLabel?: string;
-  sessionId?: string;
-  resume?: ReaderResumeState;
-  readiness?: ReaderReadiness;
-  prep?: ReaderPreparation;
-  stats?: ReaderItemStats;
-  translationSupport?: {
-    page: boolean;
-    tts: boolean;
-  };
-  commercialUseStatus?: 'allowed' | 'blocked' | 'review';
-  commercialUseReason?: string | null;
-  sourceMeta?: Record<string, unknown>;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface ReaderResumeState {
-  hasProgress: boolean;
-  consumedChars: number;
-  currentPanelIndex: number;
-  progressPct: number;
-  updatedAt?: string;
-  sessionId?: string;
-}
-
-export interface ReaderReadiness {
-  state: 'ready' | 'preparing' | 'blocked';
-  label: string;
-  playableItems: number;
-  reason?: string;
-}
-
-export interface ReaderPreparation {
-  state: 'queued' | 'running' | 'ready' | 'error' | 'degraded';
-  stage: 'manifest' | 'assets' | 'ocr' | 'audio';
-  completedItems: number;
-  totalItems: number;
-  failedItems: number;
-  message?: string;
-}
-
-export interface ReaderItemStats {
-  totalChars?: number;
-  totalPanels?: number;
-  pageCount?: number;
-  fileCount?: number;
-}
-
-export interface ReaderLibrary {
-  surface: 'all' | 'books' | 'comics' | 'uploads';
-  regionId: string;
-  regions: ReaderCatalogRegion[];
-  commercialPolicyVersion?: string;
-  blockedProviders?: string[];
-  items: ReaderCatalogItem[];
-  activeSession?: ReaderSession | null;
-  activeSessions?: ReaderSession[];
-  counts: {
-    all: number;
-    visible: number;
-    books: number;
-    comics: number;
-    uploads: number;
-    resumable: number;
-  };
-  facets: {
-    providers: string[];
-    collections: string[];
-    progressStates: string[];
-  };
-  shelves: {
-    continueReading: ReaderCatalogItem[];
-    trending: ReaderCatalogItem[];
-    newArrivals: ReaderCatalogItem[];
-    recentlyImported: ReaderCatalogItem[];
-  };
-}
-
-export interface ReaderDashboardMission {
-  title: string;
-  subtitle: string;
-  ctaText: string;
-}
-
-export interface ReaderDashboardHighlights {
-  library: number;
-  resumable: number;
-  uploads: number;
-  comics: number;
-  books: number;
-}
-
-export interface ReaderDashboardShelves {
-  continueReading: ReaderCatalogItem[];
-  trending: ReaderCatalogItem[];
-  newArrivals: ReaderCatalogItem[];
-  recentlyImported: ReaderCatalogItem[];
-}
-
-export interface ReaderDashboardPayload {
-  library: ReaderLibrary;
-  mission: ReaderDashboardMission;
-  highlights: ReaderDashboardHighlights;
-  spotlight: ReaderCatalogItem | null;
-  shelves: ReaderDashboardShelves;
-  activeSessionSummary: ReaderSession | null;
-  commercialPolicyVersion?: string;
-  blockedProviders?: string[];
-}
-
-export interface ReaderVoiceCast {
-  [speaker: string]: string;
-}
-
-export interface ReaderAudioWindow {
-  index: number;
-  startChar?: number;
-  endChar?: number;
-  charCount?: number;
-  text?: string;
-  sourceText?: string;
-  translatedText?: string;
-  displayText?: string;
-  translationStatus?: 'pending' | 'ready' | 'error';
-  estimatedReadMs?: number;
-  textOverrideStatus?: 'none' | 'edited' | string;
-  overrideText?: string;
-  overrideUpdatedAt?: string;
-  pacing?: {
-    baseReadMs?: number;
-    emotionAwareReadMs?: number;
-    emotionMultiplier?: number;
-    emotion?: string;
-  };
-  status?: string;
-  purged?: boolean;
-  exported?: boolean;
-  lowConfidence?: boolean;
-  jobId?: string;
-  job?: {
-    jobId?: string;
-    status?: string;
-    playableChunks?: number;
-    playableDurationMs?: number;
-    downloadUrl?: string;
-  };
-}
-
-export interface ReaderPanelManifest {
-  panelId: string;
-  pageId: string;
-  index: number;
-  direction: string;
-  text: string;
-  sourceText?: string;
-  translatedText?: string;
-  displayText?: string;
-  translationStatus?: 'pending' | 'ready' | 'error';
-  estimatedReadMs?: number;
-  textOverrideStatus?: 'none' | 'edited' | string;
-  overrideText?: string;
-  overrideUpdatedAt?: string;
-  pacing?: {
-    baseReadMs?: number;
-    emotionAwareReadMs?: number;
-    emotionMultiplier?: number;
-    emotion?: string;
-  };
-  speaker?: string;
-  emotion?: string;
-  sfx?: string[];
-  imagePath?: string;
-  imageUrl?: string;
-  audioJobId?: string;
-  audioStatus?: string;
-  purged?: boolean;
-  lowConfidence?: boolean;
-  audioJob?: {
-    jobId?: string;
-    status?: string;
-    playableChunks?: number;
-    playableDurationMs?: number;
-    downloadUrl?: string;
-  };
-}
-
-export type ReaderAudioEngine = 'tts_hd';
-export type ReaderAudioEngineStatus = 'active' | string;
-
-export interface ReaderRestoreState {
-  activeItemIndex: number;
-  activeUnitId?: string;
-  viewportAnchor?: string;
-  activeReaderTab?: string;
-  updatedAt?: string;
-}
-
-export interface ReaderSession {
-  id: string;
-  title: string;
-  contentKind: 'book' | 'comic';
-  surface: 'books' | 'comics' | 'uploads';
-  regionId: string;
-  direction: string;
-  readingMode?: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-  pageViewMode: 'original' | 'translated';
-  ttsLanguageMode: 'auto' | 'source' | 'target';
-  audioEngine?: ReaderAudioEngine | string;
-  audioEngineStatus?: ReaderAudioEngineStatus;
-  voiceMode?: 'single' | 'multi' | string;
-  narratorVoiceId?: string;
-  translationState: 'idle' | 'warming' | 'ready' | 'error';
-  translationLeadRatio?: number;
-  voiceFallbacks?: Record<string, { requestedVoiceId: string; resolvedVoiceId: string; reason: string }>;
-  multiSpeakerEnabled: boolean;
-  effectiveMultiSpeakerMode?: 'single' | 'line_map' | 'studio_pair_groups';
-  workKey: string;
-  sourceKind: 'catalog' | 'upload' | string;
-  provider?: string;
-  license?: string;
-  commercialUseStatus?: 'allowed' | 'blocked' | 'review';
-  commercialUseReason?: string | null;
-  coverUrl?: string;
-  summary?: string;
-  sourceUrl?: string;
-  collectionLabel?: string;
-  musicTrackId: string;
-  autoAdvanceProfile?: 'off' | 'audio_sync' | 'slow' | 'medium' | 'fast' | string;
-  castMemory: ReaderVoiceCast;
-  consumedChars: number;
-  totalChars: number;
-  currentPanelIndex: number;
-  totalPanels: number;
-  progressPct: number;
-  readiness?: ReaderReadiness;
-  prep?: ReaderPreparation;
-  resumeToken?: string;
-  activeItemIndex?: number;
-  restoreState?: ReaderRestoreState;
-  unitOverrides?: Record<string, string>;
-  stats?: ReaderItemStats;
-  cachedChars: number;
-  cacheLimitChars: number;
-  deleteAtMs: number;
-  warningActive: boolean;
-  savepointDownloadUrl: string;
-  lowConfidence?: boolean;
-  billing: {
-    vfPerChar: number;
-    rule: string;
-    label: string;
-  };
-  limits: {
-    textWindowChars: number;
-    prefetchThresholdChars: number;
-    panelBatchSize: number;
-    panelTriggerIndex: number;
-    deleteWarningMs: number;
-  };
-  windows: ReaderAudioWindow[];
-  panels: ReaderPanelManifest[];
-}
-
-export interface ReaderSessionProgress {
-  consumedChars?: number;
-  currentPanelIndex?: number;
-  targetLanguage?: string;
-  pageViewMode?: 'original' | 'translated';
-  audioEngine?: ReaderAudioEngine | string;
-  activeItemIndex?: number;
-  activeUnitId?: string;
-  viewportAnchor?: string;
-}
-
-export interface ReaderLegalAck {
-  accepted: boolean;
-  acceptedAt?: string;
-  title: string;
-  message: string;
-}
-
-export type ReaderOwnershipBasis =
-  | 'own_work'
-  | 'licensed'
-  | 'open_license'
-  | 'public_domain'
-  | 'user_responsible';
-
-export interface ReaderOwnershipBasisOption {
-  value: ReaderOwnershipBasis;
-  label: string;
-  description: string;
-}
-
-export interface ReaderCommercialPolicy {
-  enabled: boolean;
-  commercialPolicyVersion?: string;
-  policyVersion?: string;
-  blockedProviders: string[];
-  ownershipBasisOptions: ReaderOwnershipBasisOption[];
-}
-
-export interface ReaderUpload extends ReaderCatalogItem {}

@@ -9,7 +9,7 @@ import {
     Download, Menu, Box,
     Bot, Clock, Send,
     Film, Mic2, Sliders,
-    Lock, RefreshCw, Users, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell
+    Lock, RefreshCw, Users, Palette, Timer, Cpu, Zap, Laptop, Activity, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell, Maximize2, Minimize2
 } from 'lucide-react';
 import { Button } from '../../../components/Button';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS } from '../../../constants';
@@ -38,6 +38,7 @@ import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } fro
 import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../../shared/theme/themeDom';
 import { EngineRuntimeStrip } from '../../../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../../../components/ProofreadCluster';
+import { OptimizedAvatar } from '../../../components/ui/OptimizedAvatar';
 import { StudioTranslateBar } from '../../../components/StudioTranslateBar';
 import { SectionCard } from '../../../components/SectionCard';
 import { BrandLogo } from '../../../components/BrandLogo';
@@ -47,22 +48,11 @@ import { normalizeDirectorPreviewComparisonText } from '../../../components/stud
 import { TelemetrySparkline } from '../../../components/ui/TelemetrySparkline';
 import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WORKSPACE_NAV_SECTION_LABELS, WorkspaceTab as Tab } from '../../features/workspace/model/tabs';
 import { useBillingActions } from '../../features/billing/hooks/useBillingActions';
-import { cancelTtsJob, cancelTtsSession, createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../../shared/api/gatewayClient';
+import { cancelTtsJob, cancelTtsSession, createTtsJob, getTtsJob } from '../../shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../../shared/api/config';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../../shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../../shared/ui/useWorkspaceViewport';
 import { useManagedTabs } from '../../shared/ui/tabs';
-import {
-  createRuntimePollTabId,
-  isRuntimePollCoordinationAvailable,
-  readRuntimePollSnapshot,
-  releaseRuntimePollLeadership,
-  renewRuntimePollLeadership,
-  RUNTIME_POLL_LEADER_KEY,
-  RUNTIME_POLL_SNAPSHOT_KEY,
-  writeRuntimePollSnapshot,
-} from '../../shared/runtime/runtimePollCoordinator';
-import { resolveRuntimePollMode } from '../../shared/runtime/runtimePollScheduler';
 import {
   normalizeAssistantProviderControlsEnabled,
   normalizePreferUserGeminiKey,
@@ -137,21 +127,26 @@ import {
 import { createStudioObjectUrlRegistry } from '../../../services/studioObjectUrlRegistry';
 import { audioBufferToWav } from '../../shared/audio/wav';
 import { getSharedAudioContext as getAudioContext } from '../../shared/audio/audioContext';
-import { hydrateRuntimeStatusSnapshot } from '../../shared/runtime/runtimeStatusHydration';
-import {
-  BACKEND_ROUTING_APPLIED_EVENT,
-  applyNearestBackendRoutingOnLogin,
-  clearNearestBackendRoutingState,
-} from '../../../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../../shared/voices/historyVoiceLabel';
 import { resolvePublicVoiceLabel } from '../../shared/voices/voicePublicName';
-import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../../../services/runtimeStatusMapping';
+
+// Runtime types imported from inlined barrel
+import {
+  mapGatewayEngineRuntimeToUiStatus,
+  TTS_RUNTIME_STATUS_EVENT,
+  type EngineRuntimeUiState,
+  type EngineRuntimeUiStatus,
+  type EngineRuntimeMetadata,
+  formatRuntimeMetadataSummary,
+  formatRuntimeServerLabel,
+  normalizeEngineRuntimeStateToken,
+} from '../../shared/runtime/runtimeStatusMapping';
+
 import { createSynthesisTraceId } from '../../../services/synthesisContractService';
 import { APP_ROUTE_PATHS, resolveLoginPath } from '../navigation';
 import type { VoiceCloneModalResult } from '../../features/voice-cloning/VoiceCloneModal';
 import { applyMotionLevelToDocument } from '../../shared/theme/themeDom';
 
-const TTS_RUNTIME_STATUS_EVENT = 'voiceflow:tts-runtime-status';
 
 type StudioDirectorOptionKey = 'expressiveEmotion' | 'autoRewrite';
 type StudioDirectorModeState = Record<StudioDirectorOptionKey, boolean>;
@@ -206,81 +201,6 @@ const describeStudioDirectorModeState = (value: StudioDirectorModeState): string
     .filter((item) => value[item.key])
     .map((item) => item.label);
   return activeLabels.length > 0 ? activeLabels.join(' + ') : 'Default';
-};
-
-const normalizeRuntimeToken = (value: unknown): string => String(value || '').trim();
-
-const formatRuntimeServerLabel = (status: Partial<EngineRuntimeUiStatus> | null | undefined): string => {
-  if (!status || typeof status !== 'object') return '';
-  const locationLabel = (
-    normalizeRuntimeToken(status.selectedRegion) ||
-    normalizeRuntimeToken(status.cloudTtsLocation) ||
-    normalizeRuntimeToken(status.vertexLocation) ||
-    normalizeRuntimeToken(status.regionHint)
-  ).replace(/_/g, '-');
-  if (locationLabel) return locationLabel;
-  const token = normalizeRuntimeToken(status.runtimeUrl || status.healthUrl);
-  if (!token) return '';
-  try {
-    return new URL(token).host || token;
-  } catch {
-    return token.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || token;
-  }
-};
-
-const formatRuntimeMetadataSummary = (status: Partial<EngineRuntimeUiStatus> | null | undefined): string => {
-  if (!status || typeof status !== 'object') return '';
-  const provider = normalizeRuntimeToken(status.provider);
-  const lane = normalizeRuntimeToken(status.lane);
-  const server = formatRuntimeServerLabel(status);
-  const modelId = normalizeRuntimeToken(status.modelId);
-  return [provider, lane, server, modelId].filter(Boolean).join(' / ');
-};
-
-const mapGatewayEngineRuntimeToUiStatus = (engineItem: unknown): EngineRuntimeUiStatus => {
-  if (!engineItem || typeof engineItem !== 'object') {
-    return { state: 'offline', detail: 'Gateway did not return runtime status.' };
-  }
-  const candidate = engineItem as Record<string, unknown> & {
-    ready?: unknown;
-    capabilities?: Record<string, unknown> | null;
-    metadata?: Record<string, unknown> | null;
-  };
-  const capabilities = candidate.capabilities && typeof candidate.capabilities === 'object' && !Array.isArray(candidate.capabilities)
-    ? candidate.capabilities
-    : null;
-  const metadata = candidate.metadata && typeof candidate.metadata === 'object' && !Array.isArray(candidate.metadata)
-    ? candidate.metadata
-    : null;
-  const metadataSource = capabilities?.metadata && typeof capabilities.metadata === 'object' && !Array.isArray(capabilities.metadata)
-    ? capabilities.metadata
-    : metadata || capabilities || candidate;
-  const stateToken = normalizeEngineRuntimeState(candidate.state, 'offline');
-  const runtimeReady = typeof candidate.ready === 'boolean' ? candidate.ready : stateToken === 'online';
-  const detail = String(candidate.detail || 'Runtime status updated.') || 'Runtime status updated.';
-  const standbyHint = Boolean((metadataSource as Record<string, unknown>).standby);
-  const mappedState: EngineRuntimeUiState =
-    stateToken === 'not_configured' ? 'not_configured' :
-    stateToken === 'warming' && standbyHint ? 'standby' :
-    stateToken === 'warming' ? 'starting' :
-    (stateToken === 'starting' || (stateToken === 'online' && !runtimeReady)) ? 'starting' :
-    stateToken === 'online' ? 'online' :
-    (stateToken === 'standby' || (stateToken === 'offline' && standbyHint)) ? 'standby' :
-    'offline';
-  return {
-    state: mappedState,
-    detail,
-    provider: normalizeRuntimeToken((metadataSource as Record<string, unknown>).provider),
-    lane: normalizeRuntimeToken((metadataSource as Record<string, unknown>).lane),
-    selectedRegion: normalizeRuntimeToken((metadataSource as Record<string, unknown>).selectedRegion),
-    modelId: normalizeRuntimeToken((metadataSource as Record<string, unknown>).modelId),
-    runtimeUrl: normalizeRuntimeToken((metadataSource as Record<string, unknown>).runtimeUrl),
-    healthUrl: normalizeRuntimeToken((metadataSource as Record<string, unknown>).healthUrl),
-    cloudTtsLocation: normalizeRuntimeToken((metadataSource as Record<string, unknown>).cloudTtsLocation),
-    vertexLocation: normalizeRuntimeToken((metadataSource as Record<string, unknown>).vertexLocation),
-    regionHint: normalizeRuntimeToken((metadataSource as Record<string, unknown>).regionHint),
-    regionSource: normalizeRuntimeToken((metadataSource as Record<string, unknown>).regionSource),
-  };
 };
 
 const loadStudioMixService = (() => {
@@ -409,7 +329,6 @@ const pushDubbingTimelineHistory = (
 
 const loadAdminTabContent = () => import('../../features/admin/components/AdminTabContent');
 const loadNovelTabContent = () => import('../../features/novel/components/NovelTabContent');
-const loadReaderTabContent = () => import('../../features/reader/components/ReaderTabContent');
 const loadVoiceCloningTabContent = () => import('../../features/voice-cloning/VoiceCloningTabContent');
 const loadAudioPlayer = () => import('../../../components/AudioPlayer');
 const LazyBlockScriptEditor = lazy(async () => {
@@ -447,13 +366,6 @@ const loadTtsVoiceRegistryService = (() => {
     return cached;
   };
 })();
-const loadMediaBackendService = (() => {
-  let cached: Promise<typeof import('../../../services/mediaBackendService')> | null = null;
-  return () => {
-    cached ??= import('../../../services/mediaBackendService');
-    return cached;
-  };
-})();
 const loadTtsGatewayJobService = (() => {
   let cached: Promise<typeof import('../../../services/ttsGatewayJobService')> | null = null;
   return () => {
@@ -461,6 +373,18 @@ const loadTtsGatewayJobService = (() => {
     return cached;
   };
 })();
+
+const loadMediaBackendService = (() => {
+  let cached: Promise<typeof import('../../../services/mediaBackendService')> | null = null;
+  return () => {
+    cached ??= import('../../../services/mediaBackendService');
+    return cached;
+  };
+})();
+
+/** Stub: backend routing is no longer needed (Cloud TTS). */
+const clearNearestBackendRoutingState = (): void => {};
+const applyNearestBackendRoutingOnLogin = async (_opts?: { signal?: AbortSignal }): Promise<void> => {};
 
 export const findFirstRecoverableStudioQueueItem = (items: StudioQueueItem[]): StudioQueueItem | null => (
   [...items]
@@ -474,6 +398,22 @@ export const hasRecoverableSingleInflightGenerationState = (
   const requestId = String(value?.requestId || '').trim();
   const jobId = String(value?.jobId || '').trim();
   return Boolean(requestId || jobId);
+};
+
+export const normalizeStudioGenerationLedgerText = (value: string): string => (
+  String(value || '').replace(/\s+/g, ' ').trim()
+);
+
+export const shouldResumeSingleGenerationFromLedger = (
+  currentText: string,
+  ledger: Pick<StudioSingleInflightGenerationLedger, 'requestId' | 'jobId' | 'textSnapshot'> | null | undefined
+): boolean => {
+  if (!hasRecoverableSingleInflightGenerationState(ledger)) return false;
+  const normalizedLedgerText = normalizeStudioGenerationLedgerText(String(ledger?.textSnapshot || ''));
+  if (!normalizedLedgerText) return true;
+  const normalizedCurrentText = normalizeStudioGenerationLedgerText(currentText);
+  if (!normalizedCurrentText) return true;
+  return normalizedCurrentText === normalizedLedgerText;
 };
 
 const FRONTEND_PROXY_POLICY_PATTERNS = [
@@ -585,7 +525,6 @@ const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
 
 const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
 const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
-const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
 const VoiceCloningTabContent = lazy(async () => loadVoiceCloningTabContent().then((module) => ({ default: module.VoiceCloningTabContent })));
 const VoiceCloneModal = lazy(async () => import('../../features/voice-cloning/VoiceCloneModal').then((module) => ({ default: module.VoiceCloneModal })));
 const AudioPlayer = lazy(async () => loadAudioPlayer().then((module) => ({ default: module.AudioPlayer })));
@@ -600,13 +539,11 @@ const readBooleanEnv = (value: unknown, fallback: boolean): boolean => {
 
 const ENABLE_RESOURCE_MONITOR = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR ?? process.env.VITE_ENABLE_RESOURCE_MONITOR, process.env.NODE_ENV !== 'production');
 const ENABLE_RESOURCE_MONITOR_LONGTASK = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR_LONGTASK ?? process.env.VITE_ENABLE_RESOURCE_MONITOR_LONGTASK, false);
-const ENABLE_STUDIO_READER_PRELOAD = readBooleanEnv(process.env.NEXT_PUBLIC_STUDIO_PRELOAD_READER ?? process.env.VITE_STUDIO_PRELOAD_READER, false);
 
 const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   [Tab.ADMIN]: loadAdminTabContent,
   [Tab.NOVEL]: loadNovelTabContent,
   [Tab.VOICE_CLONING]: loadVoiceCloningTabContent,
-  ...(ENABLE_STUDIO_READER_PRELOAD ? { [Tab.READER]: loadReaderTabContent } : {}),
 };
 
 const loadGeminiService = (() => {
@@ -670,7 +607,6 @@ const hasSpeakerVcReferencePayloadShape = (value: unknown): boolean => {
 };
 
 type UiTheme = 'light' | 'dark' | 'system';
-type UiDensity = 'comfortable' | 'compact';
 type UiMotionLevel = 'off' | 'balanced' | 'rich';
 type EngineRuntimeState = EngineRuntimeUiState;
 
@@ -771,6 +707,7 @@ const shouldRetryTransientGenerationError = (errorLike: unknown): boolean => {
     || 0
   );
   if (RETRYABLE_GENERATION_STATUS_CODES.has(statusCode)) return true;
+  if (statusCode >= 400 && statusCode < 500) return false;
 
   const combined = sanitizeUiText(
     [
@@ -840,10 +777,6 @@ const awaitAbortablePromise = async <T,>(promise: Promise<T>, signal?: AbortSign
 };
 
 type EngineRuntimeStatus = EngineRuntimeUiStatus;
-interface RuntimePollSnapshotPayload {
-  activeEngine: GenerationSettings['engine'];
-  engines: Record<ActiveTtsEngineKey, EngineRuntimeStatus>;
-}
 type SelectedEngineTelemetryKind = 'pending' | 'network' | 'local' | 'error';
 
 interface SelectedEngineTelemetry {
@@ -871,15 +804,6 @@ const createInitialSelectedEngineTelemetry = (): Record<ActiveTtsEngineKey, Sele
   PRIME: createSelectedEngineTelemetry(),
   VECTOR: createSelectedEngineTelemetry(),
 });
-
-const normalizeRuntimeSnapshotActiveEngine = (
-  value: unknown,
-  fallback: ActiveTtsEngineKey
-): ActiveTtsEngineKey => {
-  const token = resolveEngineToken(String(value || '').trim());
-  if (token === 'PRIME' || token === 'VECTOR') return token;
-  return fallback;
-};
 
 const ENGINE_RUNTIME_STATE_SET: ReadonlySet<EngineRuntimeState> = new Set([
   'checking',
@@ -1072,13 +996,6 @@ const FALLBACK_RUNTIME_URLS: Record<ActiveTtsEngineKey, string> = {
   VECTOR: 'http://127.0.0.1:7810',
 };
 const DEFAULT_MEDIA_BACKEND_URL = getDefaultApiBaseUrl();
-const readPositiveIntEnv = (value: unknown, fallback: number): number => { const parsed = Number(value); if (!Number.isFinite(parsed) || parsed <= 0) return fallback; return Math.floor(parsed); };
-const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_ACTIVE_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 3000);
-const RUNTIME_STATUS_LATENCY_TIMEOUT_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_LATENCY_TIMEOUT_MS ?? process.env.VITE_RUNTIME_STATUS_LATENCY_TIMEOUT_MS, 5000);
-const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_POLL_MS, 60000);
-const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_WINDOW_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
-const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 10000;
-const RUNTIME_STATUS_LEADER_LEASE_MS = 40000;
 const SIMULATED_GENERATION_TICK_MS = 200;
 const EMPTY_RUNTIME_CATALOG: Record<ActiveTtsEngineKey, VoiceOption[]> = { PRIME: [], VECTOR: [] };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
@@ -1118,6 +1035,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   backendApiKey: '',
   voiceModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.PRIME,
+  uiMotionLevel: 'rich',
 
   musicTrackId: 'm_none',
   musicVolume: 0.3,
@@ -1128,7 +1046,6 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   dubbingSourceLanguage: 'auto',
   multiSpeakerEnabled: true,
   speakerMapping: {},
-  uiMotionLevel: 'off',
   autoPlayGeneratedAudio: true,
 };
 
@@ -1189,10 +1106,10 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     dubbingSourceLanguage: typeof value.dubbingSourceLanguage === 'string' && value.dubbingSourceLanguage.trim()
       ? value.dubbingSourceLanguage.trim()
       : DEFAULT_SETTINGS.dubbingSourceLanguage,
-    uiMotionLevel:
-      value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
-        ? value.uiMotionLevel
-    : (DEFAULT_SETTINGS.uiMotionLevel || 'off'),
+  uiMotionLevel:
+    value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
+      ? value.uiMotionLevel
+    : (DEFAULT_SETTINGS.uiMotionLevel || 'rich'),
     multiSpeakerEnabled: typeof value.multiSpeakerEnabled === 'boolean'
       ? value.multiSpeakerEnabled
       : DEFAULT_SETTINGS.multiSpeakerEnabled,
@@ -1380,9 +1297,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     user,
     clonedVoices,
     addClonedVoice,
-    drafts,
-    saveDraft,
-    deleteDraft,
     characterLibrary,
     updateCharacter,
     deleteCharacter,
@@ -1484,7 +1398,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const pathname = usePathname();
   const [activeTab, setActiveTab] = useState<Tab>(() => resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO);
   const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
-  const shouldHydrateStudioWorkspaceStateOnInit = activeTab === Tab.STUDIO;
+  const isNovelWorkspaceTab = activeTab === Tab.NOVEL;
+  const shouldHydrateStudioWorkspaceStateOnInit = isStudioWorkspaceTab;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (
@@ -1539,26 +1454,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     settingsAuthOwnerRef.current = authenticatedUserId;
     setSettings((previous) => stripSensitiveSettingsForStorage(previous));
   }, [authenticatedUserId]);
-  useEffect(() => {
-    const onBackendRoutingApplied = (event: Event) => {
-      const custom = event as CustomEvent<{ baseUrl?: string }>;
-      const nextBaseUrl = String(custom?.detail?.baseUrl || '').trim();
-      if (!nextBaseUrl) return;
-      setSettings((prev) => {
-        const currentBase = sanitizeConfiguredApiBaseUrl(
-          String(prev.mediaBackendUrl || ''),
-          DEFAULT_MEDIA_BACKEND_URL
-        ).value;
-        const nextBase = sanitizeConfiguredApiBaseUrl(nextBaseUrl, DEFAULT_MEDIA_BACKEND_URL).value;
-        if (currentBase === nextBase) return prev;
-        return { ...prev, mediaBackendUrl: nextBase };
-      });
-    };
-    window.addEventListener(BACKEND_ROUTING_APPLIED_EVENT, onBackendRoutingApplied as EventListener);
-    return () => {
-      window.removeEventListener(BACKEND_ROUTING_APPLIED_EVENT, onBackendRoutingApplied as EventListener);
-    };
-  }, []);
 
   // Generation Status State
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1701,10 +1596,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = readStorageString(STORAGE_KEYS.uiBrandTheme);
     return saved === 'aurora' || saved === 'sunset' || saved === 'emerald' || saved === 'neon' ? saved : 'neon';
   });
-  const [uiDensity, setUiDensity] = useState<UiDensity>(() => {
-    const saved = readStorageString(STORAGE_KEYS.uiDensity);
-    return saved === 'comfortable' ? 'comfortable' : 'compact';
-  });
   const uiFontScale = UI_FONT_SCALE_DEFAULT;
 
   const setGeneratedAudioUrlManaged = useCallback((nextUrl: string | null) => {
@@ -1743,7 +1634,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const current = singleInflightLedgerRef.current;
     const requestId = String(patch.requestId ?? current?.requestId ?? '').trim();
     const jobId = String(patch.jobId ?? current?.jobId ?? '').trim();
-    const textSnapshot = String(patch.textSnapshot ?? current?.textSnapshot ?? '');
+    const textSnapshot = normalizeStudioGenerationLedgerText(String(patch.textSnapshot ?? current?.textSnapshot ?? ''));
     if (!requestId && !jobId) return null;
     const nextLedger: StudioSingleInflightGenerationLedger = {
       mode: 'single',
@@ -1770,7 +1661,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     if (normalized.uiMotionLevel === 'off' || normalized.uiMotionLevel === 'rich' || normalized.uiMotionLevel === 'balanced') {
       return normalized.uiMotionLevel;
     }
-    return DEFAULT_SETTINGS.uiMotionLevel || 'off';
+    return DEFAULT_SETTINGS.uiMotionLevel || 'rich';
   });
 
   // Editor Tools
@@ -2158,13 +2049,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     detail: 'Checking authentication...',
     checkedAt: 0,
   });
-  const [runtimePollLeaderVersion, setRuntimePollLeaderVersion] = useState(0);
-  const runtimePollTabIdRef = useRef<string>(createRuntimePollTabId());
-  const runtimePollIsLeaderRef = useRef(false);
-  const runtimePollActiveUntilRef = useRef(0);
-  const runtimePollCooldownUntilRef = useRef(0);
   const runtimePollRefreshInFlightRef = useRef<Promise<void> | null>(null);
-  const runtimePollWasBusyRef = useRef(false);
   const [selectedEngineTelemetry, setSelectedEngineTelemetry] = useState<Record<ActiveTtsEngineKey, SelectedEngineTelemetry>>(
     createInitialSelectedEngineTelemetry
   );
@@ -2425,25 +2310,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     [probeProtectedTtsAccess]
   );
   const rediscoverBackendRouting = useCallback(
-    async (reason: string): Promise<boolean> => {
-      if (!hasSessionIdentity) return false;
-      const now = Date.now();
-      if (backendRoutingRediscoveryInFlightRef.current) return false;
-      if ((now - backendRoutingRediscoveryLastAttemptAtRef.current) < 30_000) return false;
-      backendRoutingRediscoveryInFlightRef.current = true;
-      backendRoutingRediscoveryLastAttemptAtRef.current = now;
-      try {
-        clearNearestBackendRoutingState();
-        await applyNearestBackendRoutingOnLogin();
-        return true;
-      } catch (error: unknown) {
-        console.warn('[studio.backend_routing_rediscovery]', reason, error);
-        return false;
-      } finally {
-        backendRoutingRediscoveryInFlightRef.current = false;
-      }
+    async (_reason: string): Promise<boolean> => {
+      // Backend routing removed — Cloud TTS routes are local API routes
+      return false;
     },
-    [hasSessionIdentity, mediaBackendUrl]
+    []
   );
   const syncRuntimeBlockedStateFromError = useCallback(
     (_engine: GenerationSettings['engine'], error: unknown) => {
@@ -3463,28 +3334,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       [getStaticVoicesForEngine, mediaBackendUrl, mergeVoiceCatalogs, withVoiceMeta]
   );
 
-  const toRuntimeStatus = useCallback((
-      engine: GenerationSettings['engine'],
-      engineItem: any
-  ): EngineRuntimeStatus => {
-      void engine;
-    const mapped = mapGatewayEngineRuntimeToUiStatus(engineItem);
-    return {
-      state: mapped.state as EngineRuntimeState,
-      detail: sanitizeUiText(mapped.detail) || 'Runtime status updated.',
-      provider: cleanRuntimeMetadataField(mapped.provider),
-      lane: cleanRuntimeMetadataField(mapped.lane),
-      selectedRegion: cleanRuntimeMetadataField(mapped.selectedRegion),
-      modelId: cleanRuntimeMetadataField(mapped.modelId),
-      runtimeUrl: cleanRuntimeMetadataField(mapped.runtimeUrl),
-      healthUrl: cleanRuntimeMetadataField(mapped.healthUrl),
-      cloudTtsLocation: cleanRuntimeMetadataField(mapped.cloudTtsLocation),
-      vertexLocation: cleanRuntimeMetadataField(mapped.vertexLocation),
-      regionHint: cleanRuntimeMetadataField(mapped.regionHint),
-      regionSource: cleanRuntimeMetadataField(mapped.regionSource),
-    };
-  }, []);
-
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const snapshot = {
@@ -3506,162 +3355,117 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     }
   }, [managedActiveEngine, settings.engine, ttsRuntimeStatus]);
 
-  const probeRuntimeStatus = useCallback(async (
-    engine: GenerationSettings['engine'],
-    options?: { timeoutMs?: number; signal?: AbortSignal }
-  ): Promise<EngineRuntimeStatus> => {
-    throwIfSignalAborted(options?.signal);
-    try {
-      const payload = await fetchTtsEnginesStatus(engine, mediaBackendUrl, {
-        ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
-        ...(options?.signal ? { signal: options.signal } : {}),
-      });
-      throwIfSignalAborted(options?.signal);
-      const engineItem = payload.engines?.[engine];
-      return toRuntimeStatus(engine, engineItem);
-    } catch (error: unknown) {
-      if ((error as { name?: string } | null)?.name === 'AbortError') {
-        throw error;
-      }
-      const rawDetail = error instanceof Error ? error.message : 'Runtime offline';
-      const detail = sanitizeUiText(rawDetail || 'Runtime offline');
-      return { state: 'offline', detail };
-    }
-  }, [mediaBackendUrl, toRuntimeStatus]);
-
   const refreshTtsRuntimeStatus = useCallback(async (options?: { broadcast?: boolean }): Promise<void> => {
     if (runtimePollRefreshInFlightRef.current) {
       return runtimePollRefreshInFlightRef.current;
     }
     const selectedRuntimeEngine = managedActiveEngine || settings.engine;
-    const shouldBroadcast = options?.broadcast !== false;
     const idleDetail = `Idle (active: ${getEngineDisplayName(selectedRuntimeEngine)}). Switch to activate.`;
     const inFlight = (async () => {
-      const updateSelectedEngineTelemetry = (
-        engine: GenerationSettings['engine'],
-        updater: (current: SelectedEngineTelemetry) => SelectedEngineTelemetry
-      ) => {
-        if (engine !== selectedRuntimeEngine) return;
+      try {
+        const { fetchTtsEngineStatus } = await loadMediaBackendService();
+        const runtimePayload = await fetchTtsEngineStatus(mediaBackendUrl, {
+          engine: 'all',
+          forceRefresh: Boolean(options?.broadcast),
+        });
+        const runtimeRows = runtimePayload?.engines && typeof runtimePayload.engines === 'object'
+          ? runtimePayload.engines
+          : {};
+
+        const mappedStatuses = ENGINE_ORDER.reduce((acc, engine) => {
+          const rawStatus = runtimeRows[engine];
+          if (rawStatus) {
+            acc[engine] = mapGatewayEngineRuntimeToUiStatus(rawStatus);
+          }
+          return acc;
+        }, {} as Partial<Record<ActiveTtsEngineKey, EngineRuntimeStatus>>);
+
+        const selectedStatus = mappedStatuses[selectedRuntimeEngine]
+          || ttsRuntimeStatusRef.current[selectedRuntimeEngine]
+          || {
+            state: engineSwitchInProgress === selectedRuntimeEngine ? 'starting' : 'checking',
+            detail: engineSwitchInProgress === selectedRuntimeEngine ? 'Starting runtime...' : 'Checking runtime status...',
+          };
+
         setSelectedEngineTelemetry((prev) => {
-          const current = prev[engine] ?? createSelectedEngineTelemetry();
+          const existing = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
           return {
             ...prev,
-            [engine]: updater(current),
+            [selectedRuntimeEngine]: {
+              ...existing,
+              kind: 'network',
+              label: 'Status',
+              detail: sanitizeUiText(selectedStatus.detail || 'Runtime status updated.') || 'Runtime status updated.',
+              latencyMs: null,
+              measuredAtMs: Date.now(),
+            },
           };
         });
-      };
-      const writeSelectedStatus = (
-        status: EngineRuntimeStatus,
-        otherDetail: string = idleDetail
-      ) => {
-        setTtsRuntimeStatus((prev) => {
-          const next = { ...prev };
-          next[selectedRuntimeEngine] = mergeRuntimeStatus(prev[selectedRuntimeEngine], status);
-          for (const engine of ENGINE_ORDER) {
-            if (engine === selectedRuntimeEngine) continue;
-            if (next[engine]?.state !== 'checking') continue;
-            next[engine] = mergeRuntimeStatus(next[engine], { state: 'standby', detail: otherDetail });
-          }
-          if (shouldBroadcast) {
-            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, {
-              activeEngine: selectedRuntimeEngine,
-              engines: next,
-            } satisfies RuntimePollSnapshotPayload);
-          }
-          return next;
-        });
-      };
 
-      const payload = await fetchTtsEngineLatency(selectedRuntimeEngine, mediaBackendUrl, {
-        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-      });
-      const status = toRuntimeStatus(selectedRuntimeEngine, payload);
-      const latencySampleMs = Number.isFinite(payload.gcpPingMs)
-        ? Math.max(1, Math.floor(Number(payload.gcpPingMs)))
-        : (Number.isFinite(payload.latencyMs) ? Math.max(1, Math.floor(payload.latencyMs)) : null);
-      updateSelectedEngineTelemetry(selectedRuntimeEngine, (current) => ({
-        ...current,
-        kind: 'network',
-        label: typeof latencySampleMs === 'number' ? `${latencySampleMs} ms` : 'Pending',
-        detail: sanitizeUiText(status.detail || 'Runtime status updated.') || 'Runtime status updated.',
-        latencyMs: latencySampleMs,
-        measuredAtMs: Date.now(),
-        samples: typeof latencySampleMs === 'number'
-          ? appendRollingSample(
-              current.samples,
-              latencySampleMs,
-              SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT
-            )
-          : current.samples,
-      }));
-      writeSelectedStatus(status);
-    })()
-      .catch((error) => {
-        runtimePollActiveUntilRef.current = Math.max(
-          runtimePollActiveUntilRef.current,
-          Date.now() + Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS * 3, 15000)
-        );
-        const safeDetail = sanitizeUiText(
-          error instanceof Error ? error.message : String(error || 'Runtime status unavailable')
-        ) || 'Runtime status unavailable';
-        const authBlocked = isAuthOrProfileBlockingMessage(safeDetail);
-        if (authBlocked) {
-          syncRuntimeBlockedStateFromError(managedActiveEngine || settings.engine, error);
-        }
-        if (selectedRuntimeEngine) {
-          setSelectedEngineTelemetry((prev) => {
-            const current = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
-            return {
-              ...prev,
-              [selectedRuntimeEngine]: {
-                ...current,
-                kind: 'error',
-                label: /timeout/i.test(safeDetail) ? 'Timed out' : 'Unavailable',
-                detail: safeDetail,
-                latencyMs: null,
-                measuredAtMs: Date.now(),
-              },
-            };
-          });
-        }
         setTtsRuntimeStatus((prev) => {
           const next = { ...prev };
-          const nextStatus: Partial<EngineRuntimeStatus> = authBlocked
-            ? { state: 'standby' as EngineRuntimeStatus['state'], detail: 'Sign in to check runtime status.' }
-            : { state: 'offline' as EngineRuntimeStatus['state'], detail: safeDetail };
-          next[selectedRuntimeEngine] = mergeRuntimeStatus(prev[selectedRuntimeEngine], nextStatus);
           for (const engine of ENGINE_ORDER) {
-            if (engine === selectedRuntimeEngine) continue;
-            if (next[engine]?.state !== 'checking') continue;
-            next[engine] = mergeRuntimeStatus(prev[engine], {
-              state: 'standby',
-              detail: !hasSessionIdentity || authBlocked ? 'Sign in to check runtime status.' : idleDetail,
-            });
-          }
-          if (shouldBroadcast) {
-            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, {
-              activeEngine: selectedRuntimeEngine,
-              engines: next,
-            } satisfies RuntimePollSnapshotPayload);
+            const mapped = mappedStatuses[engine];
+            if (mapped) {
+              next[engine] = mergeRuntimeStatus(prev[engine], mapped);
+              continue;
+            }
+            if (engine === selectedRuntimeEngine) {
+              next[engine] = mergeRuntimeStatus(prev[engine], selectedStatus);
+              continue;
+            }
+            next[engine] = mergeRuntimeStatus(prev[engine], { state: 'standby', detail: idleDetail });
           }
           return next;
         });
-        console.warn('[studio.runtime_status.refresh]', error);
-      })
-      .finally(() => {
+      } catch (error: any) {
+        const runtimeErrorDetail = sanitizeUiText(
+          toUserFriendlySystemMessage(error?.message || error, 'Runtime health check failed.')
+        ) || 'Runtime health check failed.';
+
+        setSelectedEngineTelemetry((prev) => {
+          const existing = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
+          return {
+            ...prev,
+            [selectedRuntimeEngine]: {
+              ...existing,
+              kind: 'error',
+              label: 'Status',
+              detail: runtimeErrorDetail,
+              latencyMs: null,
+              measuredAtMs: Date.now(),
+            },
+          };
+        });
+
+        setTtsRuntimeStatus((prev) => {
+          const next = { ...prev };
+          const currentSelected = prev[selectedRuntimeEngine];
+          next[selectedRuntimeEngine] = mergeRuntimeStatus(currentSelected, {
+            state: engineSwitchInProgress === selectedRuntimeEngine
+              ? 'starting'
+              : (currentSelected?.state === 'online' ? 'online' : 'offline'),
+            detail: runtimeErrorDetail,
+          });
+          for (const engine of ENGINE_ORDER) {
+            if (engine === selectedRuntimeEngine) continue;
+            if (next[engine]?.state !== 'checking') continue;
+            next[engine] = mergeRuntimeStatus(next[engine], { state: 'standby', detail: idleDetail });
+          }
+          return next;
+        });
+      }
+    })().finally(() => {
         runtimePollRefreshInFlightRef.current = null;
       });
     runtimePollRefreshInFlightRef.current = inFlight;
     return inFlight;
   }, [
-    hasSessionIdentity,
-    isAuthOrProfileBlockingMessage,
-    isStudioWorkspaceTab,
+    engineSwitchInProgress,
     managedActiveEngine,
     mediaBackendUrl,
     settings.engine,
-    syncRuntimeBlockedStateFromError,
-    toRuntimeStatus,
+    toUserFriendlySystemMessage,
   ]);
 
   useEffect(() => {
@@ -3677,142 +3481,41 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     }
     if (hasRuntimeAutoSelectSessionRun()) return;
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    if (isGenerating || Boolean(engineSwitchInProgress)) return;
 
-    let cancelled = false;
-    const controller = new AbortController();
-    const probeGeneration = runtimeAutoSelectGenerationRef.current;
     runtimeAutoSelectProbeInFlightRef.current = true;
-    runtimeAutoSelectAbortControllerRef.current = controller;
-
-    const probeAllRuntimesAndAutoSelect = async (): Promise<void> => {
-      try {
-        const statusProbeStartedAtMs = Date.now();
-        const [statusResult] = await Promise.allSettled([
-          fetchTtsEnginesStatus(undefined, mediaBackendUrl, {
-            timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-            signal: controller.signal,
-          }).then((payload) => ({
-            payload,
-            latencyMs: Math.max(0, Date.now() - statusProbeStartedAtMs),
-          })),
-        ]);
-
-        if (cancelled) return;
-        if (runtimeAutoSelectGenerationRef.current !== probeGeneration) return;
-
-        const statusProbe = statusResult.status === 'fulfilled' ? statusResult.value : null;
-        const statusPayload = statusProbe?.payload || null;
-        const statusPayloadLatencyMs = statusProbe ? Math.max(0, Math.floor(statusProbe.latencyMs)) : null;
-        if (!statusPayload) return;
-
-        const nextStatuses = { ...ttsRuntimeStatusRef.current };
-        const candidateLatencies: Partial<Record<ActiveTtsEngineKey, { state?: string; latencyMs?: number | null }>> = {};
-
-        const enginePayloads = statusPayload?.engines || {};
-        for (const engine of ['PRIME', 'VECTOR'] as const) {
-          const payload = enginePayloads[engine];
-          if (!payload || typeof payload !== 'object') continue;
-          const runtimeStatus = toRuntimeStatus(engine, payload);
-          nextStatuses[engine] = mergeRuntimeStatus(nextStatuses[engine], runtimeStatus);
-          const runtimeLatencyMs = Number((payload as { latencyMs?: unknown }).latencyMs);
-          const latencyMs = (
-            Number.isFinite(runtimeLatencyMs) && runtimeLatencyMs >= 0
-              ? Math.floor(runtimeLatencyMs)
-              : (runtimeStatus.state === 'online' ? statusPayloadLatencyMs : null)
-          );
-          candidateLatencies[engine] = {
-            state: runtimeStatus.state,
-            latencyMs,
-          };
-        }
-
-        setTtsRuntimeStatus(nextStatuses);
-
-        if (!hasSessionIdentity) return;
-
-        const bestEngine = pickLowestLatencyRuntimeEngine(
-          candidateLatencies,
-          primeAllowedEngines
-        );
-        if (!bestEngine) return;
-        if (runtimeAutoSelectGenerationRef.current !== probeGeneration) return;
-
-        const currentEngine = managedActiveEngine || settings.engine;
-        markRuntimeAutoSelectSessionRun();
-        if (bestEngine === currentEngine) return;
-
-        const bestCatalog = getEngineVoiceCatalog(bestEngine);
-        const nextVoiceId = selectVoiceIdFromCatalog(bestEngine, bestCatalog, settings.voiceId);
-        setManagedActiveEngine(bestEngine);
-        setSettings((prev) => (
-          prev.engine === bestEngine && prev.voiceId === nextVoiceId
-            ? prev
-            : { ...prev, engine: bestEngine, voiceId: nextVoiceId }
-        ));
-      } catch (error) {
-        if ((error as { name?: string } | null)?.name === 'AbortError') return;
-        console.warn('[studio.runtime_auto_select]', error);
-      } finally {
-        if (runtimeAutoSelectAbortControllerRef.current === controller) {
-          runtimeAutoSelectAbortControllerRef.current = null;
-        }
-        if (runtimeAutoSelectGenerationRef.current === probeGeneration) {
-          runtimeAutoSelectProbeInFlightRef.current = false;
-        }
+    runtimeAutoSelectAbortControllerRef.current = null;
+    try {
+      const currentEngine = managedActiveEngine || settings.engine;
+      const targetEngine = isPrimeEngineAllowed(currentEngine)
+        ? currentEngine
+        : (isPrimeEngineAllowed('PRIME') ? 'PRIME' : 'VECTOR');
+      markRuntimeAutoSelectSessionRun();
+      if (targetEngine === currentEngine) {
+        return;
       }
-    };
-
-    void probeAllRuntimesAndAutoSelect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (runtimeAutoSelectAbortControllerRef.current === controller) {
-        runtimeAutoSelectAbortControllerRef.current = null;
-      }
-      if (runtimeAutoSelectGenerationRef.current === probeGeneration) {
-        runtimeAutoSelectProbeInFlightRef.current = false;
-      }
-    };
+      const targetCatalog = getEngineVoiceCatalog(targetEngine);
+      const targetVoiceId = selectVoiceIdFromCatalog(targetEngine, targetCatalog, settings.voiceId);
+      setManagedActiveEngine(targetEngine);
+      setSettings((prev) => (
+        prev.engine === targetEngine && prev.voiceId === targetVoiceId
+          ? prev
+          : { ...prev, engine: targetEngine, voiceId: targetVoiceId }
+      ));
+    } finally {
+      runtimeAutoSelectProbeInFlightRef.current = false;
+    }
   }, [
     cancelRuntimeAutoSelectProbe,
-    engineSwitchInProgress,
     getEngineVoiceCatalog,
     hasSessionIdentity,
-    isGenerating,
+    isPrimeEngineAllowed,
     managedActiveEngine,
-    mediaBackendUrl,
-    primeAllowedEngines,
-    probeRuntimeStatus,
     selectVoiceIdFromCatalog,
     setManagedActiveEngine,
     setSettings,
     settings.engine,
     settings.voiceId,
-    toRuntimeStatus,
   ]);
-
-  const waitForRuntimeOnline = async (
-    engine: GenerationSettings['engine'],
-    timeoutMs: number,
-    signal?: AbortSignal
-  ): Promise<boolean> => {
-    const started = Date.now();
-    let pollDelayMs = Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS, 2000);
-    const maxDelayMs = Math.max(RUNTIME_STATUS_COOLDOWN_POLL_MS / 6, 10000);
-    while (Date.now() - started < timeoutMs) {
-      throwIfSignalAborted(signal);
-      const status = await probeRuntimeStatus(engine, {
-        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-        ...(signal ? { signal } : {}),
-      });
-      if (status.state === 'online') return true;
-      await waitForAbortableDelay(pollDelayMs, signal);
-      pollDelayMs = Math.min(maxDelayMs, Math.round(pollDelayMs * 1.5));
-    }
-    throwIfSignalAborted(signal);
-    return false;
-  };
 
   const ensureEngineOnline = async (
       engine: GenerationSettings['engine'],
@@ -3829,56 +3532,38 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       throwIfSignalAborted(options?.signal);
       const engineLabel = getEngineDisplayName(engine);
-      const shouldWaitForOnline = options?.waitForOnline !== false;
       const shouldCommitSettings = options?.commitSettings !== false;
       if (!isPrimeEngineAllowed(engine)) {
           throw new Error(`${engineLabel} is not enabled for your current plan.`);
       }
       let runtimeUrl = getRuntimeUrlForEngine(engine);
-      try {
-          const statusPayload = await fetchTtsEnginesStatus(engine, mediaBackendUrl, {
-            timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-            ...(options?.signal ? { signal: options.signal } : {}),
-          });
-          const gatewayRuntimeUrl = normalizeRuntimeUrl(statusPayload.engines?.[engine]?.runtimeUrl);
-          if (gatewayRuntimeUrl) runtimeUrl = gatewayRuntimeUrl;
-      } catch (error) {
-          if ((error as { name?: string } | null)?.name === 'AbortError') {
-              throw error;
-          }
-          // Runtime URL is now gateway-managed; keep backward-compat fallback value if status call fails.
-      }
-
-      const currentStatus = await probeRuntimeStatus(engine, {
-        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-        ...(options?.signal ? { signal: options.signal } : {}),
-      });
-      if (
-          isGemRuntimeEngine(engine) &&
-          currentStatus.state === 'offline' &&
-          String(currentStatus.detail || '').toLowerCase().includes('slot')
-      ) {
-          throw new Error(currentStatus.detail || 'Primary AI slot set is not configured.');
-      }
-      if (currentStatus.state === 'offline' && isAuthOrProfileBlockingMessage(currentStatus.detail)) {
-          throw new Error(currentStatus.detail || 'Sign in again to enable AI/TTS requests.');
-      }
       if (options?.requireAccess) {
           const access = await refreshTtsAccessState(true);
           if (!access.ok) {
               throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
           }
       }
-      if (currentStatus.state === 'online') {
+      const currentStatus = ttsRuntimeStatusRef.current[engine];
+      const canReuseCurrentRuntime = Boolean(
+        !engineSwitchInProgress
+        && (managedActiveEngine === engine || settings.engine === engine)
+        && currentStatus
+        && currentStatus.state !== 'offline'
+        && currentStatus.state !== 'not_configured'
+      );
+      if (canReuseCurrentRuntime) {
           const cachedCatalog = runtimeVoiceCatalogs[engine] || [];
           const shouldRefreshCatalog = cachedCatalog.length === 0;
           const refreshedCatalog = shouldRefreshCatalog
-              ? await refreshEngineVoiceCatalog(engine, runtimeUrl)
+              ? await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(() => cachedCatalog)
               : cachedCatalog;
           setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
               const next = { ...prev };
-                next[engine] = mergeRuntimeStatus(next[engine], { state: 'online', detail: currentStatus.detail || 'Runtime online' });
+                next[engine] = mergeRuntimeStatus(next[engine], {
+                  state: currentStatus?.state || 'standby',
+                  detail: currentStatus?.detail || 'Runtime status checks are disabled in compatibility mode.',
+                });
               ENGINE_ORDER.forEach((other) => {
                   if (other === engine) return;
                   if (next[other].state === 'not_configured') return;
@@ -3904,7 +3589,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           return {
               runtimeUrl,
-              catalog: refreshedCatalog,
+              catalog: refreshedCatalog.length > 0 ? refreshedCatalog : getEngineVoiceCatalog(engine),
               ...(syncedVoiceId ? { syncedVoiceId } : {}),
           };
       }
@@ -3931,38 +3616,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('admin-unlock') ||
                   detail.includes('admin session unlock')
               ) {
-                  const fallbackCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(() => getEngineVoiceCatalog(engine));
-                  const standbyDetail = `${engineLabel} runtime activation is admin-locked. Continuing with managed runtime auto-recovery.`;
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      [engine]: { state: 'standby', detail: standbyDetail },
-                  }));
-                  let syncedVoiceId: string | undefined;
-                   if (options?.syncVoiceId) {
-                       const candidateVoiceId = options.syncVoiceId || settings.voiceId;
-                       const validVoiceId = selectVoiceIdFromCatalog(
-                           engine,
-                           fallbackCatalog.length > 0 ? fallbackCatalog : getEngineVoiceCatalog(engine),
-                           candidateVoiceId
-                       );
-                       syncedVoiceId = validVoiceId;
-                       if (shouldCommitSettings) {
-                           setSettings((prev) => (
-                               prev.engine === engine && prev.voiceId === validVoiceId
-                                   ? prev
-                                   : { ...prev, engine, voiceId: validVoiceId }
-                           ));
-                       }
-                   }
-                  setManagedActiveEngine(engine);
-                  if (!options?.silent) {
-                       showToast(`${engineLabel} runtime switch is admin-locked. Continuing with auto-recovery.`, 'info');
-                   }
-                  return {
-                      runtimeUrl,
-                      catalog: fallbackCatalog,
-                      ...(syncedVoiceId ? { syncedVoiceId } : {}),
-                  };
+                  throw new Error(`${engineLabel} activation is restricted by backend policy.`);
               }
               if (
                   detail.includes('unreachable') ||
@@ -3983,6 +3637,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (switchState === 'offline') {
               throw new Error(switchResult?.detail || getRuntimeOfflineMessage(engine));
           }
+          const switchHealthUrl = normalizeRuntimeUrl(switchResult?.healthUrl);
+          if (switchHealthUrl) {
+            runtimeUrl = switchHealthUrl;
+          }
           setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
               const next = { ...prev };
@@ -3997,29 +3655,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                });
                return next;
            });
-
-           let runtimeOnline = switchState === 'online';
-           if (!runtimeOnline && shouldWaitForOnline) {
-               const timeoutMs = options?.timeoutMs ?? (switchResult?.state === 'starting' ? 90000 : 60000);
-               const online = await waitForRuntimeOnline(engine, timeoutMs, options?.signal);
-               if (!online) {
-                   setManagedActiveEngine(settings.engine);
-                   throw new Error(`${engineLabel} runtime did not become online within ${Math.round(timeoutMs / 1000)}s. Check gateway status and runtime logs.`);
-               }
-               runtimeOnline = true;
-           }
-
-           const refreshedCatalog =
-               runtimeOnline || shouldWaitForOnline
-                   ? await refreshEngineVoiceCatalog(engine, runtimeUrl)
-                   : (runtimeVoiceCatalogs[engine]?.length > 0
-                       ? runtimeVoiceCatalogs[engine]
-                       : getEngineVoiceCatalog(engine));
+           const refreshedCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(
+             () => (
+               runtimeVoiceCatalogs[engine]?.length > 0
+                 ? runtimeVoiceCatalogs[engine]
+                 : getEngineVoiceCatalog(engine)
+             )
+           );
+           const optimisticOnline = switchState === 'online';
            setTtsRuntimeStatus(prev => ({
              ...prev,
              [engine]: mergeRuntimeStatus(prev[engine], {
-               state: runtimeOnline ? 'online' : 'starting',
-               detail: runtimeOnline ? 'Runtime online' : (switchResult?.detail || 'Runtime starting in background'),
+              state: optimisticOnline ? 'online' : 'starting',
+              detail: optimisticOnline
+                ? 'Runtime online'
+                : (switchResult?.detail || 'Runtime activation requested. Continuing without status polling.'),
              }),
            }));
            let syncedVoiceId: string | undefined;
@@ -4038,8 +3688,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                    ));
                }
            }
-           if (!options?.silent && runtimeOnline) {
+           if (!options?.silent) {
+             if (optimisticOnline) {
                showToast(`${engineLabel} runtime is online.`, 'info');
+             } else {
+               showToast(`${engineLabel} activation requested. Continuing without runtime polling.`, 'info');
+             }
            }
            return {
                runtimeUrl,
@@ -4113,7 +3767,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- Effects ---
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiTheme, uiTheme); }, [uiTheme]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiBrandTheme, uiBrandTheme); }, [uiBrandTheme]);
-  useEffect(() => { writeStorageString(STORAGE_KEYS.uiDensity, uiDensity); }, [uiDensity]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.studioSidebarMode, sidebarMode); }, [sidebarMode]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiFontScale, String(uiFontScale)); }, [uiFontScale]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiMotionLevel, uiMotionLevel); }, [uiMotionLevel]);
@@ -4567,176 +4220,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [hasSessionIdentity, mapTtsAccessBlockReason, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
 
   useEffect(() => {
-      const busy = isGenerating || Boolean(engineSwitchInProgress);
-      const now = Date.now();
-      if (busy) {
-          runtimePollActiveUntilRef.current = Math.max(
-            runtimePollActiveUntilRef.current,
-            now + RUNTIME_STATUS_ACTIVE_POLL_MS
-          );
-      } else if (runtimePollWasBusyRef.current) {
-          runtimePollCooldownUntilRef.current = Math.max(
-            runtimePollCooldownUntilRef.current,
-            now + RUNTIME_STATUS_COOLDOWN_WINDOW_MS
-          );
-      }
-      runtimePollWasBusyRef.current = busy;
-  }, [engineSwitchInProgress, isGenerating]);
-
-  useEffect(() => {
       if (!isStudioWorkspaceTab) return undefined;
-      const tabId = runtimePollTabIdRef.current;
-      const coordinationAvailable = isRuntimePollCoordinationAvailable();
-      const busy = isGenerating || Boolean(engineSwitchInProgress);
-      const applySnapshot = () => {
-          if (!coordinationAvailable) return;
-          const snapshot = readRuntimePollSnapshot<RuntimePollSnapshotPayload>();
-          if (!snapshot || snapshot.tabId === tabId) return;
-          const payload = snapshot.payload;
-          const engineRows = payload?.engines;
-          if (!engineRows || typeof engineRows !== 'object') return;
-          if (!engineSwitchInProgress) {
-              const fallbackEngine = managedActiveEngine || settings.engine;
-              const snapshotActiveEngine = normalizeRuntimeSnapshotActiveEngine(payload.activeEngine, fallbackEngine);
-              setManagedActiveEngine(snapshotActiveEngine);
-          }
-          setTtsRuntimeStatus((prev) => {
-              const nextStatuses = {} as Record<ActiveTtsEngineKey, EngineRuntimeStatus>;
-              for (const engine of ENGINE_ORDER) {
-                  const row = engineRows[engine];
-                  nextStatuses[engine] = hydrateRuntimeStatusSnapshot(
-                    prev[engine],
-                    row && typeof row === 'object' ? (row as Partial<EngineRuntimeStatus>) : null
-                  );
-              }
-              return nextStatuses;
-          });
-      };
-      const refreshLeadership = () => {
-          const previous = runtimePollIsLeaderRef.current;
-          if (typeof document === 'undefined' || document.visibilityState !== 'visible' || !busy) {
-              if (coordinationAvailable) {
-                  releaseRuntimePollLeadership(tabId);
-              }
-              runtimePollIsLeaderRef.current = false;
-              if (previous) setRuntimePollLeaderVersion((value) => value + 1);
-              return;
-          }
-          const nextLeader = coordinationAvailable
-            ? renewRuntimePollLeadership(
-                tabId,
-                Date.now(),
-                RUNTIME_STATUS_LEADER_LEASE_MS
-              )
-            : true;
-          runtimePollIsLeaderRef.current = nextLeader;
-          if (previous !== nextLeader) {
-              setRuntimePollLeaderVersion((value) => value + 1);
-          }
-      };
-
-      refreshLeadership();
-      applySnapshot();
-      const heartbeatId = coordinationAvailable && busy
-        ? window.setInterval(refreshLeadership, RUNTIME_STATUS_LEADER_HEARTBEAT_MS)
-        : null;
-      const onStorage = (event: StorageEvent) => {
-          if (!coordinationAvailable) return;
-          if (event.key === RUNTIME_POLL_LEADER_KEY) {
-              refreshLeadership();
-              return;
-          }
-          if (event.key === RUNTIME_POLL_SNAPSHOT_KEY) {
-              applySnapshot();
-          }
-      };
       const onVisibility = () => {
-          refreshLeadership();
-          if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-          if (!runtimePollIsLeaderRef.current) {
-              applySnapshot();
-              return;
-          }
-          runtimePollCooldownUntilRef.current = Math.max(
-            runtimePollCooldownUntilRef.current,
-            Date.now() + RUNTIME_STATUS_COOLDOWN_POLL_MS
-          );
+          if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
           void refreshTtsRuntimeStatus();
       };
-      if (coordinationAvailable) {
-          window.addEventListener('storage', onStorage);
-      }
       document.addEventListener('visibilitychange', onVisibility);
       window.addEventListener('focus', onVisibility);
-      onVisibility();
       return () => {
-          if (heartbeatId !== null) {
-              window.clearInterval(heartbeatId);
-          }
-          if (coordinationAvailable) {
-              window.removeEventListener('storage', onStorage);
-          }
           document.removeEventListener('visibilitychange', onVisibility);
           window.removeEventListener('focus', onVisibility);
-          if (coordinationAvailable) {
-              releaseRuntimePollLeadership(tabId);
-          }
       };
-  }, [engineSwitchInProgress, isGenerating, isStudioWorkspaceTab, managedActiveEngine, refreshTtsRuntimeStatus, settings.engine]);
-
-  useEffect(() => {
-      if (!isStudioWorkspaceTab) return undefined;
-      let cancelled = false;
-      let timerId: number | null = null;
-
-      const scheduleNext = (delayMs: number) => {
-          if (cancelled) return;
-          if (timerId !== null) {
-              window.clearTimeout(timerId);
-              timerId = null;
-          }
-          if (delayMs <= 0) return;
-          timerId = window.setTimeout(() => {
-              void runTick();
-          }, delayMs);
-      };
-
-      const runTick = async () => {
-          if (cancelled) return;
-          const now = Date.now();
-          const isVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
-          const mode = resolveRuntimePollMode({
-              nowMs: now,
-              isBusy: isGenerating || Boolean(engineSwitchInProgress),
-              activeUntilMs: runtimePollActiveUntilRef.current,
-              cooldownUntilMs: runtimePollCooldownUntilRef.current,
-              isVisible,
-              isLeader: runtimePollIsLeaderRef.current,
-          });
-          if (mode === 'none') return;
-          try {
-              await refreshTtsRuntimeStatus();
-          } catch {
-              // Keep polling to preserve runtime indicator continuity during transient failures.
-          }
-          const nextDelay = mode === 'active' ? RUNTIME_STATUS_ACTIVE_POLL_MS : RUNTIME_STATUS_COOLDOWN_POLL_MS;
-          scheduleNext(nextDelay);
-      };
-
-      void runTick();
-      return () => {
-          cancelled = true;
-          if (timerId !== null) {
-              window.clearTimeout(timerId);
-          }
-      };
-  }, [
-      engineSwitchInProgress,
-      isGenerating,
-      isStudioWorkspaceTab,
-      runtimePollLeaderVersion,
-      refreshTtsRuntimeStatus,
-  ]);
+  }, [isStudioWorkspaceTab, refreshTtsRuntimeStatus]);
 
   useEffect(() => {
       if (!hasSessionIdentity) {
@@ -5209,15 +4704,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [uiBrandTheme]);
 
   useEffect(() => {
-      const previousCompact = document.body.dataset.compact;
-      document.body.dataset.compact = uiDensity === 'compact' ? 'true' : 'false';
-      return () => {
-          if (previousCompact) document.body.dataset.compact = previousCompact;
-          else delete document.body.dataset.compact;
-      };
-  }, [uiDensity]);
-
-  useEffect(() => {
       if (typeof document === 'undefined') return undefined;
       return applyMotionLevelToDocument(document, uiMotionLevel);
   }, [uiMotionLevel]);
@@ -5346,7 +4832,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (observer) observer.disconnect();
           clearDockMetrics();
       };
-  }, [isLargeDesktop, isNarrowDesktop, isStudioEditorFullscreen, isStudioWorkspaceTab, sidebarMode, uiDensity, uiFontScale, viewportMode]);
+  }, [isLargeDesktop, isNarrowDesktop, isStudioEditorFullscreen, isStudioWorkspaceTab, sidebarMode, uiFontScale, viewportMode]);
 
   useEffect(() => {
       if (isChatOpen && chatEndRef.current) {
@@ -5874,7 +5360,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const normalizedQueueEngine = resolveEngineToken(item.settingsSnapshot.engine);
       const persistedRequestId = String(item.requestId || '').trim();
       const initialKnownJobId = String(item.jobId || '').trim();
-      const runRequestId = persistedRequestId || initialKnownJobId || createSynthesisTraceId(normalizedQueueEngine as GenerationSettings['engine']);
+      let runRequestId = persistedRequestId || initialKnownJobId || createSynthesisTraceId(normalizedQueueEngine as GenerationSettings['engine']);
       activeStudioQueueItemIdRef.current = item.id;
       syncActiveGatewayIds(runRequestId, initialKnownJobId);
       generationRunStartedAtRef.current = itemStartedAtMs;
@@ -5967,7 +5453,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           const { cancelTtsJob } = await import('../../shared/api/gatewayClient');
                           await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(runSettings) });
                       } catch {
-                          // Best-effort cancellation before retrying with the same request id.
+                          // Best-effort cancellation before retrying the same request id.
                       }
                   }
                   currentJobId = '';
@@ -5978,13 +5464,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       if (!prev) return prev;
                       return {
                           ...prev,
-                           activeItemId: item.id,
-                           items: prev.items.map((entry) => (
-                               entry.id === item.id
-                                   ? { ...entry, status: 'running', error: undefined, requestId: runRequestId, jobId: undefined }
-                                   : entry
-                           )),
-                       };
+                          activeItemId: item.id,
+                          items: prev.items.map((entry) => (
+                              entry.id === item.id
+                                  ? { ...entry, status: 'running', error: undefined, requestId: runRequestId, jobId: undefined }
+                                  : entry
+                          )),
+                      };
                   });
                   setProcessingStage('Temporary delay detected. Retrying this queue item now...');
                   showToast('We hit a temporary delay. Retrying this queued item now.', 'info');
@@ -6246,6 +5732,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ]);
 
   const startStudioQueuedGeneration = useCallback(async (): Promise<void> => {
+      if (queueRunnerLockRef.current || isStudioQueueRunActiveRef.current) return;
       const currentHash = hashStudioQueueSource(text);
       const existingState = studioQueueStateRef.current;
       const generationEngine = managedActiveEngine || settings.engine;
@@ -6632,15 +6119,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const generationEngine = managedActiveEngine || settings.engine;
       const generationRequestId = String(inflightLedger?.requestId || '').trim()
           || createSynthesisTraceId(resolveEngineToken(generationEngine) as GenerationSettings['engine']);
+      let activeRequestId = generationRequestId;
       let currentJobId = String(inflightLedger?.jobId || '').trim();
       patchSingleInflightGenerationLedger({
           mode: 'single',
-          requestId: generationRequestId,
+          requestId: activeRequestId,
           jobId: currentJobId,
           textSnapshot: generationText,
           startedAtMs: generationStartedAtMs,
       });
-      syncActiveGatewayIds(generationRequestId, currentJobId);
+      syncActiveGatewayIds(activeRequestId, currentJobId);
 
       setGeneratedAudioUrlManaged(null);
       setLiveAudioChunks([]);
@@ -6701,7 +6189,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           generationText,
                           controller.signal,
                           undefined,
-                          { requestId: generationRequestId }
+                          { requestId: activeRequestId }
                       );
                   }
               } catch (attemptError: any) {
@@ -6718,14 +6206,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           const { cancelTtsJob } = await import('../../shared/api/gatewayClient');
                           await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(buildStudioGenerationSettings(settings)) });
                       } catch {
-                          // Best-effort cancellation before retrying with the same request id.
+                          // Best-effort cancellation before retrying the same request id.
                       }
                   }
                   currentJobId = '';
-                  syncActiveGatewayIds(generationRequestId, undefined);
+                  syncActiveGatewayIds(activeRequestId, undefined);
                   patchSingleInflightGenerationLedger({
                       mode: 'single',
-                      requestId: generationRequestId,
+                      requestId: activeRequestId,
                       jobId: '',
                       textSnapshot: generationText,
                       startedAtMs: generationStartedAtMs,
@@ -6849,6 +6337,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerate = async () => {
     if (isGenerating || singleRunLockRef.current) return;
+    if (isStudioQueueRunActiveRef.current || queueRunnerLockRef.current) return;
     if (engineSwitchInProgress) {
       showToast('Wait for the engine switch to finish before generating.', 'info');
       return;
@@ -6859,8 +6348,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     }
     const inflightSingle = singleInflightLedgerRef.current;
     if (inflightSingle) {
+        if (!shouldResumeSingleGenerationFromLedger(text, inflightSingle)) {
+          clearSingleInflightGenerationLedger();
+        } else {
         await runSingleGeneration({ inflightLedger: inflightSingle, treatAsRecovery: true });
         return;
+        }
     }
     if (!text.trim()) return showToast("Please enter some text.", "info");
     const activeEngineForGeneration = managedActiveEngine || settings.engine;
@@ -6903,6 +6396,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const inflightSingle = singleInflightLedgerRef.current;
       if (!inflightSingle) return;
       if (!hasRecoverableSingleInflightGenerationState(inflightSingle)) return;
+      if (!shouldResumeSingleGenerationFromLedger(text, inflightSingle)) {
+          clearSingleInflightGenerationLedger();
+          return;
+      }
       const inflightStartedAtMs = Number(inflightSingle.startedAtMs || 0);
       if (
           Number.isFinite(inflightStartedAtMs)
@@ -7402,10 +6899,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
 
           setDubScript(nextScript);
-          const discoveredSpeakers = Array.from(new Set((backendResult.segments || []).map((seg) => String(seg.speaker || '').trim()).filter(Boolean)));
+          const discoveredSpeakers: string[] = Array.from(new Set((backendResult.segments || []).map((seg: { speaker?: string }) => String(seg.speaker || '').trim()).filter(Boolean)));
           if (discoveredSpeakers.length > 0) {
               setDetectedSpeakers(discoveredSpeakers);
-              syncCast(discoveredSpeakers);
+              syncCast(discoveredSpeakers as string[]);
           }
           const lineCount = Array.isArray(backendResult.segments) ? backendResult.segments.length : 0;
           const emotionState = backendResult.emotionCapture?.enabled ? 'emotion captured' : 'emotion fallback';
@@ -7886,53 +7383,51 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleDirectorAI = async (targetText: string) => {
       if (!requireSignedInForAiTool('AI Director')) return;
       const safeInput = String(targetText || '');
-      if (!safeInput.trim()) return showToast('Enter text first', 'info');
+      if (!safeInput.trim()) {
+          showToast('Enter text first', 'info');
+          return;
+      }
       const activeDirectorModes = describeStudioDirectorModeState(studioDirectorModeState);
-      const directorOptions = studioDirectorModeState.expressiveEmotion || studioDirectorModeState.autoRewrite
-        ? {
-            style: 'natural' as const,
-            tone: studioDirectorModeState.expressiveEmotion ? 'dramatic' as const : 'neutral' as const,
-            expressiveEmotion: studioDirectorModeState.expressiveEmotion,
-            autoRewrite: studioDirectorModeState.autoRewrite,
-          }
-        : undefined;
+      const directorOptions =
+          studioDirectorModeState.expressiveEmotion || studioDirectorModeState.autoRewrite
+              ? {
+                    style: 'natural' as const,
+                    tone: studioDirectorModeState.expressiveEmotion ? ('dramatic' as const) : ('neutral' as const),
+                    expressiveEmotion: studioDirectorModeState.expressiveEmotion,
+                    autoRewrite: studioDirectorModeState.autoRewrite,
+                }
+              : undefined;
       setIsAiWriting(true);
       try {
           const { autoDirectStudioScript } = await loadGeminiService();
-          const { mood, cast, directedText } = await autoDirectStudioScript(safeInput, settings, directorOptions, characterLibrary);
+          const { mood, cast, directedText } = await autoDirectStudioScript(
+              safeInput,
+              settings,
+              directorOptions,
+              characterLibrary
+          );
           const tagInjection = injectDirectorTagsPreservingFormat(safeInput, directedText || safeInput);
-          const previewText = String(tagInjection.text || directedText || safeInput);
-          const castNames = cast
+          const appliedText = String(tagInjection.text || directedText || safeInput);
+          const castNames = (cast || [])
               .map((entry) => String(entry.name || '').trim())
               .filter((name) => name.length > 0);
-          const hasPreviewChange = normalizeDirectorPreviewComparisonText(previewText) !== normalizeDirectorPreviewComparisonText(safeInput);
 
-          if (hasPreviewChange) {
-              const previewMood = String(mood || '').trim();
-              setStudioDirectorPreview({
-                  sourceText: safeInput,
-                  previewText,
-                  castNames,
-                  modeLabel: activeDirectorModes,
-                  patchedLineCount: tagInjection.patchedLineCount,
-                  ...(previewMood ? { mood: previewMood } : {}),
-              });
-              showToast(
-                  `AI Director (${activeDirectorModes}) preview ready${castNames.length > 0 ? ` with ${castNames.length} speaker${castNames.length === 1 ? '' : 's'}` : ''}.`,
-                  'success'
-              );
-              return;
-          }
+          // Apply immediately (legacy behaviour from the first shipped build)
+          setStudioDirectorPreview(null);
+          setStudioEditorMode('raw');
+          setText(appliedText);
 
           if (castNames.length > 0) {
-              startTransition(() => {
-                  setDetectedSpeakers(castNames);
-              });
-              showToast(`AI Director (${activeDirectorModes}) identified ${castNames.length} speaker${castNames.length === 1 ? '' : 's'}.`, 'success');
-          } else {
-              showToast(`No preview-worthy changes found. Mode: ${activeDirectorModes}. Mood: ${mood || 'Neutral'}`, 'info');
+              startTransition(() => setDetectedSpeakers(castNames));
+              syncCast(cast as any);
           }
 
+          const moodLabel = String(mood || '').trim() || 'Neutral';
+          const speakerNote =
+              castNames.length > 0
+                  ? `${castNames.length} speaker${castNames.length === 1 ? '' : 's'} detected.`
+                  : 'No new speakers detected.';
+          showToast(`AI Director applied (${activeDirectorModes}). Mood: ${moodLabel}. ${speakerNote}`, 'success');
       } catch (e: any) {
           syncRuntimeBlockedStateFromError(settings.engine, e);
           showToast(e.message, "error");
@@ -8595,17 +8090,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
   const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
-  const contentMaxWidthClass = activeTab === Tab.NOVEL || isStudioWorkspaceTab
+  const contentMaxWidthClass = isNovelWorkspaceTab || isStudioWorkspaceTab
       ? 'max-w-[1480px]'
-      : activeTab === Tab.READER || activeTab === Tab.VOICE_CLONING
+      : activeTab === Tab.VOICE_CLONING
         ? 'max-w-[1360px]'
         : 'max-w-5xl';
-  const normalizedPathname = String(pathname || '').trim().toLowerCase();
-  const isStandaloneReaderRoute = (
-      normalizedPathname.startsWith('/reader')
-      || normalizedPathname === '/app/reader'
-      || normalizedPathname.startsWith('/app/reader/')
-  );
 
   useEffect(() => {
       const nextTab = resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO;
@@ -8628,8 +8117,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       if (!hasWorkspaceInteracted) return undefined;
       const nextTab = resolveWorkspaceNextPreloadTab(workspaceTabs, activeTab, {
-        allowReaderPreload: ENABLE_STUDIO_READER_PRELOAD,
-        allowNextPreloadFromStudio: ENABLE_STUDIO_READER_PRELOAD,
+        allowNextPreloadFromStudio: false,
       });
       const preloadNext = nextTab ? TAB_PRELOADERS[nextTab] : undefined;
       if (!preloadNext) return undefined;
@@ -8866,6 +8354,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <select
               value={selectedTokenPack}
               onChange={(event) => setSelectedTokenPack(event.target.value as TokenPackKey)}
+              aria-label="Token pack"
+              title="Token pack"
               className={`h-8 w-full rounded-lg border px-2 text-[11px] font-semibold outline-none transition-colors ${
                 isDarkUi
                   ? 'border-slate-700 bg-slate-950/70 text-slate-100 focus:border-cyan-400'
@@ -8918,7 +8408,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const isDesktopCompact = isDesktop && sidebarMode === 'compact';
     const primaryWorkspaceTabs = workspaceTabs.filter((item) => item.id !== Tab.ADMIN);
     const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create');
-    const libraryWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'library');
     const accountWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'account');
     const adminWorkspaceTab = workspaceTabs.find((item) => item.id === Tab.ADMIN);
     const getSidebarButtonClassName = (isActive: boolean) => `flex w-full items-center rounded-xl text-sm font-semibold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
@@ -8962,35 +8451,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.create}</p>
               )}
               {createWorkspaceTabs.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    router.push(item.route);
-                  }}
-                  aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
-                  aria-label={item.label}
-                  title={item.label}
-                  className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
-                >
-                  <span className="shrink-0">{item.icon}</span>
-                  {!isDesktopCompact && <span className="truncate">{item.label}</span>}
-                  {isDesktopCompact && (
-                    <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-                      {item.label}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {libraryWorkspaceTabs.length > 0 ? (
-            <div className="space-y-1">
-              {!isDesktopCompact && (
-                <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.library}</p>
-              )}
-              {libraryWorkspaceTabs.map((item) => (
                 <button
                   key={item.id}
                   type="button"
@@ -9123,7 +8583,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
                       : 'border border-white bg-cyan-100 text-cyan-700'
                   }`}>
-                    {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+                    <OptimizedAvatar
+                      src={user.avatarUrl}
+                      alt={`${user.name} avatar`}
+                      width={40}
+                      height={40}
+                      containerClassName="h-full w-full"
+                      className="h-full w-full rounded-full"
+                      fallback={user.name?.[0]}
+                      quality={85}
+                      sizes="(max-width: 640px) 32px, (max-width: 1024px) 40px, 48px"
+                    />
                   </div>
                 </button>
               </div>
@@ -9180,7 +8650,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
                       : 'border border-white bg-cyan-100 text-cyan-700'
                   }`}>
-                    {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+                    <OptimizedAvatar
+                      src={user.avatarUrl}
+                      alt={`${user.name} avatar`}
+                      width={36}
+                      height={36}
+                      containerClassName="h-full w-full"
+                      className="h-full w-full rounded-full"
+                      fallback={user.name?.[0]}
+                      quality={85}
+                      sizes="(max-width: 640px) 32px, (max-width: 1024px) 36px, 44px"
+                    />
                   </div>
                   <div className="flex-1 overflow-hidden">
                     <div className={`truncate text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>{user.name}</div>
@@ -9199,11 +8679,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const renderSettingsPanel = () => {
       const settingsCardClass = isDarkUi
-        ? 'space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-3.5'
-        : 'space-y-3 rounded-xl border border-slate-200 bg-white p-3.5';
+        ? 'space-y-2.5 rounded-xl border border-slate-700 bg-slate-900/70 p-3'
+        : 'space-y-2.5 rounded-xl border border-slate-200 bg-white p-3';
       const settingsLabelClass = isDarkUi
-        ? 'mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400'
-        : 'mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500';
+        ? 'mb-1.5 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400'
+        : 'mb-1.5 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500';
 
       return (
       <div
@@ -9214,7 +8694,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           aria-label="Configuration panel"
       >
           <div
-              className={`h-full w-full max-w-[29rem] shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col ${
+              className={`h-full w-full max-w-[26.5rem] shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col overflow-hidden ${
                 isDarkUi
                   ? 'bg-slate-950/95 border-l border-slate-700/70'
                   : 'bg-slate-50/95 border-l border-slate-200'
@@ -9223,27 +8703,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               ref={settingsPanelRef}
               tabIndex={-1}
           >
-              <div className={`p-4 border-b z-10 ${
-                isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'
+              <div className={`p-3 border-b z-10 ${
+                isDarkUi ? 'border-slate-800 bg-slate-950/95' : 'border-slate-200 bg-slate-50/95'
               }`}>
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-2.5">
                       <div>
-                          <h2 className={`text-base font-bold flex items-center gap-2 ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                              <Settings size={16} className="text-indigo-500" />
+                          <h2 className={`flex items-center gap-2 text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                              <Settings size={15} className="text-indigo-500" />
                               Workspace Settings
                           </h2>
                       </div>
                       <button
                         onClick={() => setShowSettings(false)}
-                        className={`p-2 rounded-full transition-colors ${isDarkUi ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-700'}`}
+                        className={`rounded-full p-1.5 transition-colors ${isDarkUi ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-700'}`}
                         aria-label="Close settings panel"
                       >
-                        <X size={18}/>
+                        <X size={17}/>
                       </button>
                   </div>
               </div>
 
-              <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${isDarkUi ? 'bg-slate-950/90' : 'bg-slate-100/60'}`}>
+              <div className={`flex-1 overflow-y-auto p-3 space-y-3 ${isDarkUi ? 'bg-slate-950/90' : 'bg-slate-100/60'}`}>
                   {/* Appearance */}
                   <section>
                       <label className={settingsLabelClass}>Appearance</label>
@@ -9252,85 +8732,62 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               <div className="hidden">
                                   {/* Light/Dark theme selector removed per request. Forced to dark. */}
                               </div>
-                              <div className="mt-4">
+                              <div className="mt-3">
                                   <div className={`mb-2 flex items-center gap-1 text-[10px] font-bold uppercase ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
                                       <Sparkles size={12} /> Brand palette
                                   </div>
-                                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                  <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
                                       {UI_BRAND_THEME_ORDER.map((brandId) => {
                                           const theme = UI_BRAND_THEME_CONFIGS[brandId];
                                           const active = uiBrandTheme === brandId;
-                                                  return (
-                                                  <button
-                                                          key={brandId}
-                                                          type="button"
-                                                          onClick={() => setUiBrandTheme(brandId)}
-                                                  className={`vf-brand-chip flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[11px] font-semibold transition-colors ${
-                                                      active
-                                                        ? 'text-white border-transparent'
-                                                        : 'bg-[color:var(--vf-surface-soft)] text-[color:var(--vf-text-muted)] border-[color:var(--vf-border)] hover:bg-[color:var(--vf-surface-muted)]'
-                                                  }`}
-                                                  aria-pressed={active}
-                                                  data-active={active}
+                                            if (active) {
+                                              return (
+                                                <button
+                                                  key={brandId}
+                                                  type="button"
+                                                  onClick={() => setUiBrandTheme(brandId)}
+                                                  className="vf-brand-chip flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-left text-[11px] font-semibold text-white transition-colors"
+                                                  aria-pressed="true"
+                                                  data-active={true}
                                                   data-brand-theme={brandId}
-                                                  >
-                                                      <span
-                                                      className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
-                                                      style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 55%, ${theme.accent3} 100%)` }}
-                                                      aria-hidden="true"
+                                                >
+                                                  <span
+                                                    className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
+                                                    data-brand-swatch={brandId}
+                                                    aria-hidden="true"
                                                   />
                                                   <span className="min-w-0">
-                                                      <span className="block truncate">{theme.label}</span>
-                                                      <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
+                                                    <span className="block truncate">{theme.label}</span>
+                                                    <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
                                                   </span>
+                                                </button>
+                                              );
+                                            }
+                                            return (
+                                              <button
+                                                key={brandId}
+                                                type="button"
+                                                onClick={() => setUiBrandTheme(brandId)}
+                                                className="vf-brand-chip flex items-center gap-2 rounded-lg border border-[color:var(--vf-border)] bg-[color:var(--vf-surface-soft)] px-2.5 py-2 text-left text-[11px] font-semibold text-[color:var(--vf-text-muted)] transition-colors hover:bg-[color:var(--vf-surface-muted)]"
+                                                aria-pressed="false"
+                                                data-active={false}
+                                                data-brand-theme={brandId}
+                                              >
+                                                <span
+                                                  className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
+                                                  data-brand-swatch={brandId}
+                                                  aria-hidden="true"
+                                                />
+                                                <span className="min-w-0">
+                                                  <span className="block truncate">{theme.label}</span>
+                                                  <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
+                                                </span>
                                               </button>
-                                          );
+                                            );
                                       })}
                                   </div>
                               </div>
-                              <div className="mt-2 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
-                          </div>
-
-                          <div className={`flex items-center justify-between p-2.5 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
-                              <span className={`text-[11px] font-semibold flex items-center gap-1.5 ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>
-                                  {uiDensity === 'compact' ? <Minimize2 size={11} /> : <Maximize2 size={11} />} Compact Density
-                              </span>
-                              <button
-                                  type="button"
-                                  onClick={() => setUiDensity(d => d === 'compact' ? 'comfortable' : 'compact')}
-                                  className={`relative h-5 w-9 rounded-full transition-colors ${uiDensity === 'compact' ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                  aria-label="Toggle interface density"
-                                  aria-pressed={uiDensity === 'compact'}
-                              >
-                                  <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${uiDensity === 'compact' ? 'translate-x-4' : ''}`}></span>
-                              </button>
-                          </div>
-
-                          <div className={`p-2.5 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
-                              <div className={`text-[11px] font-semibold mb-2 ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>Motion</div>
-                              <div className="grid grid-cols-3 gap-2">
-                                  {(['off', 'balanced', 'rich'] as const).map((level) => {
-                                      const active = uiMotionLevel === level;
-                                      return (
-                                          <button
-                                              key={level}
-                                              type="button"
-                                              onClick={() => setUiMotionLevel(level)}
-                                              className={`rounded-lg border px-2 py-1.5 text-[10px] font-semibold capitalize transition-colors ${
-                                                  active
-                                                    ? isDarkUi
-                                                      ? 'border-indigo-400/70 bg-indigo-500/20 text-indigo-300'
-                                                      : 'border-indigo-300 bg-indigo-50 text-indigo-700'
-                                                    : isDarkUi
-                                                      ? 'border-slate-600 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                                                      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100'
-                                              }`}
-                                          >
-                                              {level}
-                                          </button>
-                                      );
-                                  })}
-                              </div>
+                              <div className="mt-1.5 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
                           </div>
 
                           <div>
@@ -9349,7 +8806,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   <section>
                       <label className={settingsLabelClass}>Audio Engine</label>
                       <div className={settingsCardClass}>
-                        <div className="grid grid-cols-1 gap-2">
+                        <div className="grid grid-cols-1 gap-1.5">
                           {ENGINE_ORDER.map(engine => {
                               const isActive = (managedActiveEngine || settings.engine) === engine;
                               const status = ttsRuntimeStatus[engine];
@@ -9374,7 +8831,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       }
                                       void activateTtsEngine(engine);
                                   }}
-                                      className={`p-2.5 rounded-xl border transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] flex items-center gap-2.5 ${
+                                      className={`rounded-xl border p-2.5 transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] flex items-center gap-2 ${
                                         isActive
                                           ? isDarkUi
                                             ? 'border-indigo-400/70 bg-indigo-500/20'
@@ -9387,12 +8844,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       {engine === 'PRIME' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       {engine === 'VECTOR' && <Zap size={18} className={`shrink-0 ${isActive ? 'text-amber-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       <div className="flex-1 min-w-0">
-                                          <div className={`font-semibold text-xs ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
+                                          <div className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
                                           <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{getEngineSubLabel(engine)}</div>
-                                          <div className={`mt-1 text-[10px] leading-4 ${isDarkUi ? 'text-slate-300' : 'text-slate-600'}`}>
+                                          <div className={`mt-0.5 text-[10px] leading-[1rem] ${isDarkUi ? 'text-slate-300' : 'text-slate-600'}`}>
                                               {getEngineDescription(engine)}
                                           </div>
-                                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                          <div className="mt-1 flex flex-wrap items-center gap-1">
                                               <span
                                                 className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
                                                   isDarkUi ? 'border-slate-600 bg-slate-800/80 text-slate-200' : 'border-slate-200 bg-slate-100 text-slate-700'
@@ -9409,7 +8866,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                               </span>
                                             </div>
                                           {connectedServer ? (
-                                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                              <div className="mt-1 flex flex-wrap items-center gap-1">
                                                   <span
                                                     className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
                                                       isDarkUi ? 'border-cyan-500/30 bg-cyan-500/12 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-700'
@@ -9442,8 +8899,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
               </div>
 
-              <div className={`p-4 border-t flex justify-end ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
-                  <Button className="px-6" size="sm" onClick={() => setShowSettings(false)}>Save Changes</Button>
+              <div className={`p-3 border-t flex justify-end ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
+                  <Button className="px-5" size="sm" onClick={() => setShowSettings(false)}>Save Changes</Button>
               </div>
           </div>
       </div>
@@ -9451,7 +8908,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   const usesFloatingStudioDock = isStudioWorkspaceTab;
-  const shouldHideAssistantForReader = activeTab === Tab.READER;
+  const shouldHideAssistantInWorkspace = false;
   const isStudioCastPanelOpen = !isPhone || studioMobilePanels.cast;
   const studioMainSpacingClass = isPhone
     ? isShortPhone
@@ -9513,7 +8970,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
-  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForReader && !isStudioWorkspaceTab;
+  const showTopbarAssistantButton = isPhone && !shouldHideAssistantInWorkspace && !isStudioWorkspaceTab;
   const assistantPanelSizeClass = isPhone
     ? 'w-[min(23rem,calc(100vw-0.75rem))] h-[min(30rem,calc(100vh-10.5rem))]'
     : 'w-[min(23rem,calc(100vw-1.5rem))] h-[min(30rem,calc(100vh-8rem))]';
@@ -9525,11 +8982,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = !shouldHideAssistantForReader && isChatOpen;
+  const shouldRenderFloatingAssistant = !shouldHideAssistantInWorkspace && isChatOpen;
 
   return (
     <div className={`relative h-[100dvh] min-h-screen overflow-hidden vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
-      <div className={`vf-app-shell flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent font-sans text-gray-900 xl:grid xl:grid-cols-[auto_minmax(0,1fr)] xl:gap-4 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
+      <div className="vf-app-shell flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent font-sans text-gray-900 xl:grid xl:grid-cols-[auto_minmax(0,1fr)] xl:gap-4">
         {/* Mobile Overlay */}
         {isMobileMenuOpen && (
           <button
@@ -9693,10 +9150,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <div className={`mx-auto w-full ${workspaceContentStackClass} ${contentMaxWidthClass}`}>
                 
                 {isStudioWorkspaceTab && (
-                    <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
-                    <div className={`vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] ${isPhone ? 'gap-3' : 'gap-4 xl:gap-5'} animate-in fade-in duration-300`}>
-                        {/* Editor Section */}
-                        <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
+                  <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
+                  <div className={`vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] ${isPhone ? 'gap-3' : 'gap-4 xl:gap-5'} animate-in fade-in duration-300`}>
+                      {/* Editor Section */}
+                      <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
                             {/* Reduced Height Editor */}
                             {isStudioEditorFullscreen && (
                                 <button
@@ -9745,6 +9202,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         type="file"
                                         className="hidden"
                                         multiple
+                                      aria-label="Import studio files"
+                                      title="Import studio files"
                                         onChange={handleStudioImportInputChange}
                                     />
                                 </div>
@@ -9774,8 +9233,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           assistantActionLabel={isPhone ? 'Assist' : 'Assistant'}
                                           assistantActionTitle="Open creative assistant"
                                           onAssistantAction={() => setIsChatOpen(true)}
-                                          directorActionLabel={studioDirectorPreview ? 'Refresh Preview' : 'AI Director'}
-                                          directorActionTitle={`${studioDirectorPreview ? 'Refresh' : 'Analyze'} the current text and review an AI Director pass before applying. Current mode: ${describeStudioDirectorModeState(studioDirectorModeState)}.`}
+                                          directorActionLabel="AI Director"
+                                          directorActionTitle={`Analyze the current text and apply an AI Director pass. Current mode: ${describeStudioDirectorModeState(studioDirectorModeState)}.`}
                                           onDirectorAction={() => handleDirectorAI(text)}
                                           directorActionBusy={isAiWriting}
                                           onOverflow={({ maxChars }) => {
@@ -9860,7 +9319,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Users size={12} />
                                             Multi-Speaker {isStudioMultiSpeakerEnabled ? 'On' : 'Off'}
                                         </button>
-                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex shrink-0 snap-start items-center gap-1 whitespace-nowrap"><Save size={11}/> Save Draft</button>
                                     </div>
                                 </div>
                             </SectionCard>
@@ -9961,6 +9419,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            max="2.0"
 	                                            step="0.1"
 	                                            value={settings.speed}
+                                              aria-label="Speech speed"
+                                              title="Speech speed"
 	                                            onChange={(e) => setSettings(s => ({ ...s, speed: parseFloat(e.target.value) }))}
 	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
 	                                        />
@@ -9969,6 +9429,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">TTS Output Language</div>
 	                                        <select
 	                                            value={settings.language}
+                                              aria-label="TTS output language"
+                                              title="TTS output language"
 	                                            onChange={(e) => setSettings(s => ({ ...s, language: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -9980,6 +9442,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">Background Music Track</div>
 	                                        <select
 	                                            value={settings.musicTrackId}
+                                              aria-label="Background music track"
+                                              title="Background music track"
 	                                            onChange={(e) => setSettings(s => ({ ...s, musicTrackId: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -10012,6 +9476,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            type="file"
 	                                            accept={STUDIO_CUSTOM_MUSIC_FILE_ACCEPT}
 	                                            className="hidden"
+                                              aria-label="Upload background music track"
+                                              title="Upload background music track"
 	                                            onChange={handleCustomMusicTrackInputChange}
 	                                        />
 	                                        <div className="mt-1 text-[10px] font-medium text-gray-500">
@@ -10310,6 +9776,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            max="2.0"
 	                                            step="0.1"
 	                                            value={settings.speed}
+                                              aria-label="Speech speed"
+                                              title="Speech speed"
 	                                            onChange={(e) => setSettings(s => ({ ...s, speed: parseFloat(e.target.value) }))}
 	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
 	                                        />
@@ -10318,6 +9786,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">TTS Output Language</div>
 	                                        <select
 	                                            value={settings.language}
+                                              aria-label="TTS output language"
+                                              title="TTS output language"
 	                                            onChange={(e) => setSettings(s => ({ ...s, language: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -10329,6 +9799,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">Background Music Track</div>
 	                                        <select
 	                                            value={settings.musicTrackId}
+                                              aria-label="Background music track"
+                                              title="Background music track"
 	                                            onChange={(e) => setSettings(s => ({ ...s, musicTrackId: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -10361,6 +9833,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            type="file"
 	                                            accept={STUDIO_CUSTOM_MUSIC_FILE_ACCEPT}
 	                                            className="hidden"
+                                              aria-label="Upload background music track"
+                                              title="Upload background music track"
 	                                            onChange={handleCustomMusicTrackInputChange}
 	                                        />
 	                                        <div className="mt-1 text-[10px] font-medium text-gray-500">
@@ -10426,36 +9900,69 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     {isPhone ? (
                                         <div className="mb-3 flex flex-col gap-2">
                                             <div className="flex items-start justify-between gap-3">
+                                              {isStudioCastPanelOpen ? (
                                                 <button
-                                                    type="button"
-                                                    onClick={() => toggleStudioMobilePanel('cast')}
-                                                    className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
-                                                    aria-expanded={isStudioCastPanelOpen}
-                                                    aria-controls="studio-cast-panel"
+                                                  type="button"
+                                                  onClick={() => toggleStudioMobilePanel('cast')}
+                                                  className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
+                                                  aria-expanded="true"
+                                                  aria-controls="studio-cast-panel"
                                                 >
-                                                    <div className="min-w-0">
-                                                        <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
-                                                            isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
-                                                        }`}><Bot size={14}/> Cast &amp; Crew</h3>
-                                                        <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                                            {isStudioMultiSpeakerEnabled
-                                                              ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
-                                                              : 'Disabled'}
-                                                        </p>
-                                                    </div>
-                                                    <div className="flex items-center gap-1.5">
-                                                        {studioCrewTags.length > 0 && (
-                                                            <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
-                                                                isDarkUi
-                                                                  ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
-                                                                  : 'border-cyan-100 bg-white text-cyan-600'
-                                                            }`}>
-                                                                {studioCrewTags.length} crew
-                                                            </span>
-                                                        )}
-                                                        {isStudioCastPanelOpen ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-                                                    </div>
+                                                  <div className="min-w-0">
+                                                    <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
+                                                      isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                                    }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                    <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                      {isStudioMultiSpeakerEnabled
+                                                        ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
+                                                        : 'Disabled'}
+                                                    </p>
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5">
+                                                    {studioCrewTags.length > 0 && (
+                                                      <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
+                                                        isDarkUi
+                                                          ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
+                                                          : 'border-cyan-100 bg-white text-cyan-600'
+                                                      }`}>
+                                                        {studioCrewTags.length} crew
+                                                      </span>
+                                                    )}
+                                                    <ChevronUp size={16} className="text-gray-500" />
+                                                  </div>
                                                 </button>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => toggleStudioMobilePanel('cast')}
+                                                  className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
+                                                  aria-expanded="false"
+                                                  aria-controls="studio-cast-panel"
+                                                >
+                                                  <div className="min-w-0">
+                                                    <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
+                                                      isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                                    }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                    <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                      {isStudioMultiSpeakerEnabled
+                                                        ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
+                                                        : 'Disabled'}
+                                                    </p>
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5">
+                                                    {studioCrewTags.length > 0 && (
+                                                      <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
+                                                        isDarkUi
+                                                          ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
+                                                          : 'border-cyan-100 bg-white text-cyan-600'
+                                                      }`}>
+                                                        {studioCrewTags.length} crew
+                                                      </span>
+                                                    )}
+                                                    <ChevronDown size={16} className="text-gray-500" />
+                                                  </div>
+                                                </button>
+                                              )}
                                                 <button
                                                     type="button"
                                                     onClick={autoAssignCastVoices}
@@ -10931,17 +10438,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                 </div>
                               );
                             })}
-                        </div>
-                    </div>
+                      </div>
+                  </div>
                 )}
-                
+
                 {mountedWorkspaceTabs[Tab.NOVEL] && (
                   <div
                     hidden={activeTab !== Tab.NOVEL}
                     aria-hidden={activeTab !== Tab.NOVEL}
                     className={activeTab === Tab.NOVEL ? '' : 'hidden'}
                   >
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading novel workspace...</SectionCard>}>
+                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading writing workspace...</SectionCard>}>
                       <NovelTabContent
                         settings={settings}
                         mediaBackendUrl={mediaBackendUrl}
@@ -10949,33 +10456,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         onSendToStudio={(content: string) => {
                           if (!content.trim()) return;
                           setText(content);
-                          setActiveTab(Tab.STUDIO);
-                          showToast("Sent to Studio for Audio Generation", "success");
+                          void router.push(resolveWorkspaceRoutePath(Tab.STUDIO));
+                          showToast('Sent to Studio for Audio Generation', 'success');
                         }}
                       />
                     </Suspense>
                   </div>
                 )}
-
-                {mountedWorkspaceTabs[Tab.READER] && (
-                  <div
-                    hidden={activeTab !== Tab.READER}
-                    aria-hidden={activeTab !== Tab.READER}
-                    className={activeTab === Tab.READER ? '' : 'hidden'}
-                  >
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader workspace...</SectionCard>}>
-                      <ReaderTabContent
-                        settings={settings}
-                        mediaBackendUrl={mediaBackendUrl}
-                        resolvedTheme={resolvedTheme}
-                        onToast={showToast}
-                        syncLocation={isStandaloneReaderRoute && activeTab === Tab.READER}
-                        isActive={activeTab === Tab.READER}
-                      />
-                    </Suspense>
-                  </div>
-                )}
-
+                
                 {mountedWorkspaceTabs[Tab.VOICE_CLONING] && (
                   <div
                     hidden={activeTab !== Tab.VOICE_CLONING}
@@ -11040,7 +10528,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
-      {!shouldHideAssistantForReader && isChatOpen && (
+      {!shouldHideAssistantInWorkspace && isChatOpen && (
         <button
           type="button"
           className="fixed inset-0 z-[49] bg-transparent"
@@ -11216,7 +10704,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {ENABLE_RESOURCE_MONITOR ? (
         <ResourceMonitor
           isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading}
-          hidden={shouldHideAssistantForReader}
+          hidden={shouldHideAssistantInWorkspace}
         />
       ) : null}
 

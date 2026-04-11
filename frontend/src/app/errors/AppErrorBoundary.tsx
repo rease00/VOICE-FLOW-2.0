@@ -72,7 +72,6 @@ const sanitizeStoredVolumeSettings = (): void => {
     }
   };
 
-  sanitizeRecord(STORAGE_KEYS.readerPreferences, { speechVolume: 1, musicVolume: 0.3 });
   sanitizeRecord(STORAGE_KEYS.settings, { speechVolume: 1, musicVolume: 0.3 });
 };
 

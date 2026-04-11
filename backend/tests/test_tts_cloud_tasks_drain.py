@@ -31,6 +31,10 @@ class _FakePipeline:
         self._ops.append(("rpush", args, kwargs))
         return self
 
+    def lrem(self, *args, **kwargs):
+        self._ops.append(("lrem", args, kwargs))
+        return self
+
     def expire(self, *args, **kwargs):
         self._ops.append(("expire", args, kwargs))
         return self
@@ -473,6 +477,7 @@ def test_worker_http_drain_skips_when_lock_is_held(monkeypatch) -> None:
 
 
 def test_runtime_auth_headers_include_gemini_id_token_and_admin_token(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "TTS_RUNTIME_URL", "https://gemini-runtime.example.run.app")
     monkeypatch.setattr(backend_app, "GEMINI_RUNTIME_URL", "https://gemini-runtime.example.run.app")
     monkeypatch.setattr(backend_app, "GEMINI_RUNTIME_ADMIN_TOKEN", "admin-secret")
     monkeypatch.setattr(backend_app, "_cloud_run_id_token_for_url", lambda _url: "id-token-123")

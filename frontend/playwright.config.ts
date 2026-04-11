@@ -9,9 +9,9 @@ const normalizeSmokeProfile = (value: string | undefined): SmokeProfile => {
   return 'launch';
 };
 
-const PORT = Number(process.env.PLAYWRIGHT_PORT || 3000);
+const PORT = Number(process.env.PLAYWRIGHT_PORT || 3100);
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`;
-const REUSE_EXISTING_SERVER = process.env.CI !== 'true' && process.env.PLAYWRIGHT_REUSE_SERVER !== '0';
+const REUSE_EXISTING_SERVER = process.env.PLAYWRIGHT_REUSE_SERVER === '1';
 const SMOKE_PROFILE = normalizeSmokeProfile(process.env.PLAYWRIGHT_SMOKE_PROFILE);
 const PLAYWRIGHT_OUTPUT_ROOT =
   SMOKE_PROFILE === 'full'
@@ -55,19 +55,15 @@ const fullTestMatch = [
   /app\.smoke\.spec\.ts$/,
   /app\.backdrop\.spec\.ts$/,
   /prime\.access\.spec\.tsx?$/,
-  /reader\.admin\.catalog\.spec\.ts$/,
-  /reader\.device-check\.spec\.ts$/,
-  /reader\.tabs\.spec\.ts$/,
   /studio\.director-chip\.spec\.ts$/,
   /toolbar\.one-line\.devices\.spec\.ts$/,
   /workspace\.launch\.spec\.ts$/,
   /voices\.gcp-mapping\.spec\.ts$/,
+  /voiceCloneStatusBackoff\.spec\.ts$/,
   /voiceCloneProgressCancel\.spec\.ts$/,
   /voiceCloneDropzoneInteractions\.spec\.ts$/,
 ];
-const desktopMobileTestMatch = fullTestMatch.filter((entry) => (
-  entry.toString() !== /reader\.device-check\.spec\.ts$/.toString()
-));
+const desktopMobileTestMatch = fullTestMatch;
 
 export default defineConfig({
   globalSetup: './tests/smoke/globalSetup.ts',
@@ -100,13 +96,22 @@ export default defineConfig({
     command: 'npm run build && npm run start',
     env: {
       ...process.env,
+      NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST:
+        process.env.NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST
+        || process.env.PLAYWRIGHT_ADMIN_EMAIL
+        || '',
+      VITE_ADMIN_EMAIL_ALLOWLIST:
+        process.env.VITE_ADMIN_EMAIL_ALLOWLIST
+        || process.env.PLAYWRIGHT_ADMIN_EMAIL
+        || '',
       HOSTNAME: 'localhost',
       PORT: String(PORT),
     },
     port: PORT,
     timeout: 900_000,
-    // Reuse local smoke servers by default so the scripted smoke gate stays green after
-    // an earlier manual/direct Playwright run. Set PLAYWRIGHT_REUSE_SERVER=0 to force a fresh start.
+    // Smoke gates should be deterministic by default and must not silently attach
+    // to whichever app instance is already bound to the Playwright port.
+    // Opt into reuse only for intentional manual debugging sessions.
     reuseExistingServer: REUSE_EXISTING_SERVER,
   },
 });

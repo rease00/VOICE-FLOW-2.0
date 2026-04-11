@@ -100,13 +100,18 @@ export interface VoiceCloneStemSeparationResponse {
     rule?: string;
     breakdown?: {
       vcFree?: number;
+      vcGranted?: number;
       vcPaid?: number;
     };
     remaining?: {
       vcFreeBalance?: number;
+      vcGrantedBalance?: number;
       vcPaidBalance?: number;
+      vcSpendableBalance?: number;
     };
+    adminBypass?: boolean;
     idempotentReuse?: boolean;
+    stages?: Record<string, unknown>;
   };
   notes?: string[];
   message?: string;
@@ -365,7 +370,7 @@ const requestVoiceCloneJson = async <T>(
   const baseInit = withIdempotencyHeader(init, idempotencyKey);
   const requestMethod = String(init?.method || 'GET').trim().toUpperCase();
   const isCancelRoute = /\/cancel$/i.test(String(path || '').trim());
-  const canRetryAcrossBaseUrls = requestMethod !== 'POST' || Boolean(idempotencyKey) || isCancelRoute;
+  const canRetryAcrossBaseUrls = requestMethod !== 'POST' || isCancelRoute;
   let lastError: unknown = null;
 
   for (const [index, baseUrl] of baseUrls.entries()) {

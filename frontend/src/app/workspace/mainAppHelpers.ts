@@ -218,6 +218,61 @@ export const resolveSpeakerMappedVoiceId = (
   return '';
 };
 
+const normalizeScriptTextLine = (line: string): string => (
+  String(line || '')
+    .replace(/[\u2018\u2019\u201C\u201D"]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const logAiDirectorDebug = (message: string, details?: Record<string, unknown>): void => {
+  if (typeof console === 'undefined' || typeof console.debug !== 'function') return;
+  if (details) {
+    console.debug(`[ai-director] ${message}`, details);
+    return;
+  }
+  console.debug(`[ai-director] ${message}`);
+};
+
+const normalizeDirectedTitleMetaStrict = (sourceText: string, directedText: string): string => {
+  const lines = String(directedText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n');
+  const firstIndex = lines.findIndex((line) => String(line || '').trim().length > 0);
+  if (firstIndex < 0) return directedText;
+
+  const firstLine = String(lines[firstIndex] || '').trim();
+  const sourceFirstLine = String(sourceText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => String(line || '').trim())
+    .find((line) => line.length > 0) || '';
+  const normalizedFirst = normalizeScriptTextLine(firstLine).toLowerCase();
+  const normalizedSourceFirst = normalizeScriptTextLine(sourceFirstLine).toLowerCase();
+  const sourceLooksLikeSpeaker = Boolean(
+    sourceFirstLine &&
+    (String(sourceFirstLine).trim().match(MAINAPP_SPEAKER_LINE_REGEX) || MAINAPP_SFX_REGEX.test(sourceFirstLine))
+  );
+  const looksLikeTitle =
+    !sourceLooksLikeSpeaker &&
+    normalizedFirst.length > 0 &&
+    normalizedFirst.length <= 120 &&
+    (
+      normalizedFirst === normalizedSourceFirst ||
+      /\b(title|story|chapter)\b/i.test(normalizedFirst) ||
+      /(?:\u0915\u0939\u093e\u0928\u0940|\u0936\u0940\u0930\u094d\u0937\u0915|\u0905\u0927\u094d\u092f\u093e\u092f)/u.test(firstLine)
+    );
+  if (!looksLikeTitle) return directedText;
+
+  lines[firstIndex] = `Narrator (Neutral): ${firstLine.replace(/^(?:["'\u2018\u2019\u201C\u201D])+|(?:["'\u2018\u2019\u201C\u201D])+$/gu, '').trim()}`;
+  logAiDirectorDebug('normalized title-like first line to Narrator.', {
+    title: normalizedFirst.slice(0, 80),
+  });
+  return lines.join('\n');
+};
+
 export const normalizeSpeakerHeaderScript = (text: string): string => (
   (() => {
     const normalizedLines = String(text || '')
@@ -347,12 +402,17 @@ const composeHeaderTagBlock = (primaryEmotion: string, cueTags: readonly string[
 
 export const injectDirectorTagsPreservingFormat = (sourceText: string, directedText: string): { text: string; patchedLineCount: number } => {
   const sourceLines = String(sourceText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  const directedHeaders = String(directedText || '')
+  const normalizedDirectedText = normalizeDirectedTitleMetaStrict(sourceText, directedText);
+  const directedHeaders = String(normalizedDirectedText || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .split('\n')
     .map((line) => parseDirectorHeaderTokensFromLine(line))
     .filter((header): header is DirectorHeaderTokens => Boolean(header));
+
+  if (String(directedText || '').trim() && directedHeaders.length <= 0) {
+    logAiDirectorDebug('no parseable speaker headers found in directed text; using source fallback.');
+  }
 
   if (sourceLines.length <= 0) {
     return { text: '', patchedLineCount: 0 };
@@ -426,10 +486,9 @@ export const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number
 };
 
 export const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
+  [Tab.WRITING]: 'Write, browse, publish, and manage your novels',
   [Tab.STUDIO]: 'Write, direct, and preview your next scene',
-  [Tab.READER]: 'Listen, import titles, and continue in progress sessions',
   [Tab.VOICE_CLONING]: 'Manage voices, cloning, and cast-ready voice assets',
-  [Tab.NOVEL]: 'Draft longer-form writing and story work',
   [Tab.HISTORY]: 'Rendered previews, exports, and runs history',
   [Tab.BILLING]: 'Manage plans, credits, and billing',
   [Tab.ADMIN]: 'Staff controls, moderation, and audits',
@@ -445,10 +504,10 @@ export const formatInr = (amount: number): string =>
 export type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 
 const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
+  { prefix: '/app/writing', tab: Tab.WRITING },
+  { prefix: '/app/novel', tab: Tab.WRITING },
   { prefix: '/app/studio', tab: Tab.STUDIO },
-  { prefix: '/app/reader', tab: Tab.READER },
   { prefix: '/app/voices', tab: Tab.VOICE_CLONING },
-  { prefix: '/app/writing', tab: Tab.NOVEL },
   { prefix: '/app/runs', tab: Tab.HISTORY },
   { prefix: '/app/billing', tab: Tab.BILLING },
   { prefix: '/app/admin', tab: Tab.ADMIN },
@@ -457,9 +516,6 @@ const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
 export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | undefined): Tab | null => {
   const pathname = String(pathnameInput || '').trim().toLowerCase();
   if (!pathname) return null;
-  if (pathname === '/reader' || pathname.startsWith('/reader/')) {
-    return Tab.READER;
-  }
   for (const entry of WORKSPACE_PATH_TO_TAB) {
     if (pathname === entry.prefix || pathname.startsWith(`${entry.prefix}/`)) {
       return entry.tab;
@@ -471,12 +527,10 @@ export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | u
 
 export const resolveWorkspaceRoutePath = (tab: Tab): string => {
   switch (tab) {
-    case Tab.READER:
-      return '/app/reader';
+    case Tab.WRITING:
+      return '/app/writing';
     case Tab.VOICE_CLONING:
       return '/app/voices';
-    case Tab.NOVEL:
-      return '/app/writing';
     case Tab.HISTORY:
       return '/app/runs';
     case Tab.BILLING:
@@ -529,6 +583,9 @@ export const resolveWorkspaceTabFromUrl = (): Tab | null => {
 
 export const resolveWorkspaceTabFromStorage = (): Tab | null => {
   const persisted = String(readStorageString(STORAGE_KEYS.workspaceActiveTab) || '').trim().toUpperCase();
+  if (persisted === 'NOVEL') return Tab.WRITING;
+  if (persisted === 'WRITING') return Tab.WRITING;
+  if (persisted === 'LIBRARY') return Tab.WRITING;
   return Object.values(Tab).includes(persisted as Tab) ? (persisted as Tab) : null;
 };
 
@@ -597,8 +654,6 @@ export const formatMobileAvailableCreditsPercent = (input: {
 
 const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['VECTOR', 'PRIME']);
 const LEGACY_ENGINE_TOKEN_MAP: Record<string, GenerationSettings['engine']> = {
-  KOKORO: 'VECTOR',
-  KOKORO_RUNTIME: 'VECTOR',
   BASIC: 'VECTOR',
   GEMINI: 'PRIME',
   GEMINI_RUNTIME: 'PRIME',
@@ -765,4 +820,3 @@ export const createDubbingClip = (file: File, objectUrl: string, durationMs: num
   reportUrl: null,
   error: '',
 });
-

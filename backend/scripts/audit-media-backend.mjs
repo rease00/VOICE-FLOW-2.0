@@ -107,10 +107,6 @@ const main = async () => {
       method: 'GET',
       headers: { Accept: 'application/json' },
     }),
-    fetchCheck('backend_engine_status', `${BACKEND_BASE_URL}/tts/engines/status`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    }),
     fetchCheck('runtime_health_gemini', `${GEMINI_RUNTIME_URL}/health`, {
       method: 'GET',
       headers: { Accept: 'application/json' },

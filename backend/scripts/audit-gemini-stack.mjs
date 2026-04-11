@@ -76,13 +76,9 @@ const main = async () => {
       method: 'GET',
       headers: { Accept: 'application/json' },
     }),
-    fetchCheck('backend_engine_status', `${BACKEND_BASE_URL}/tts/engines/status`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    }),
     fetchCheck('backend_engine_capabilities', `${BACKEND_BASE_URL}/tts/engines/capabilities`, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: backendAuthHeaders,
     }),
     fetchCheck('backend_gemini_pools', `${BACKEND_BASE_URL}/admin/gemini/pools`, {
       method: 'GET',

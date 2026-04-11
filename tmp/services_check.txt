@@ -1,0 +1,22 @@
+
+> v-flow-ai-backend-workspace@0.0.0 services:check
+> node scripts/bootstrap-services.mjs check
+
+Concurrency autotune enabled: profile=cool logicalCpu=8 reserved=2 usable=6
+Autotune result: queueWorkers=3 gemConcurrency=5 gemBatch=2/3
+
+Running endpoint validation...
+[ok] Gemini Runtime
+[ok] Seed VC Runtime
+[ok] Vertex Text Runtime
+[ok] Media Backend
+┌─────────┬───────────────────────┬───────────────────────┬────────┬──────────┬────────────┬────────┐
+│ (index) │ serviceId             │ service               │ status │ attempts │ elapsedSec │ detail │
+├─────────┼───────────────────────┼───────────────────────┼────────┼──────────┼────────────┼────────┤
+│ 0       │ 'media-backend'       │ 'Media Backend'       │ 'PASS' │ 1        │ '0.5'      │ 'ok'   │
+│ 1       │ 'gemini-runtime'      │ 'Gemini Runtime'      │ 'PASS' │ 1        │ '0.1'      │ 'ok'   │
+│ 2       │ 'seed-vc-runtime'     │ 'Seed VC Runtime'     │ 'PASS' │ 1        │ '0.1'      │ 'ok'   │
+│ 3       │ 'vertex-text-runtime' │ 'Vertex Text Runtime' │ 'PASS' │ 1        │ '0.2'      │ 'ok'   │
+└─────────┴───────────────────────┴───────────────────────┴────────┴──────────┴────────────┴────────┘
+
+All endpoint checks passed.

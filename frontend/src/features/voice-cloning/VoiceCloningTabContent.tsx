@@ -44,6 +44,11 @@ import {
   shouldPollVoiceCloneStressStatus,
 } from './voiceCloneStressHelpers';
 import {
+  formatVoiceCloneStatusRetryDelayLabel,
+  resolveVoiceCloneStatusRetryDelayMs,
+  VOICE_CLONE_STATUS_RETRY_INTERVAL_MS,
+} from './voiceCloneStatusRetry';
+import {
   cancelVoiceCloneJob,
   cancelVoiceCloneStressTest,
   fetchVoiceCloneStatus,
@@ -134,6 +139,8 @@ interface TrimmedSourceMixState {
   endSec: number;
 }
 
+const PAID_VOICE_CLONE_PLANS = new Set(['Launcher', 'Starter', 'Creator', 'Pro', 'Scale', 'Enterprise']);
+
 type VoiceUtilityTab = 'clone' | 'separate' | 'library';
 type VoiceCloneTaskKind = 'clone' | 'separate';
 
@@ -159,7 +166,7 @@ const VOICE_UTILITY_TAB_ITEMS: Array<{ id: VoiceUtilityTab }> = [
 
 const TRIM_DURATION_EPSILON = 0.001;
 const MAX_STEM_EXTRACTION_SOURCE_BYTES = getVoiceCloneStemExtractionMaxBytes();
-const VOICE_CLONE_STATUS_RETRY_INTERVAL_MS = 15_000;
+const VOICE_CLONE_STATUS_EVENT_REFRESH_COOLDOWN_MS = 5_000;
 const VOICE_CLONE_CONSENT_STORAGE_KEY = 'vf_voice_clone_consent_v1';
 const VOICE_CLONE_JOB_POLL_INTERVAL_MS = 2_500;
 const VOICE_LIBRARY_CARD_RENDER_STYLE: React.CSSProperties = {
@@ -1342,9 +1349,12 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   diagnosticsExpanded,
   onDiagnosticsExpandedChange,
 }) => {
-  const { user, clonedVoices } = useUser();
+  const { user, clonedVoices, stats, refreshEntitlements } = useUser();
   const isWorkspaceLayout = layout === 'workspace';
   const shouldShowWorkspaceRail = isWorkspaceLayout && showRail;
+  const isAdminVoiceCloneUser = Boolean(user?.isAdmin || user?.adminActor);
+  const isPaidVoiceClonePlan = PAID_VOICE_CLONE_PLANS.has(String(stats?.planName || '').trim());
+  const vcSpendableBalance = Math.max(0, Number(stats?.wallet?.vcSpendableBalance || 0));
   const [activeToolTab, setActiveToolTab] = useState<VoiceUtilityTab>('clone');
   const [referenceAudio, setReferenceAudio] = useState<File | null>(null);
   const [targetAudio, setTargetAudio] = useState<File | null>(null);
@@ -1385,15 +1395,19 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const [openVoiceStatus, setOpenVoiceStatus] = useState<VoiceCloneBenchmarkStatusResponse | null>(null);
   const [isLoadingOpenVoiceStatus, setIsLoadingOpenVoiceStatus] = useState(false);
   const [openVoiceStatusError, setOpenVoiceStatusError] = useState('');
+  const [openVoiceStatusRetryDelayMs, setOpenVoiceStatusRetryDelayMs] = useState(VOICE_CLONE_STATUS_RETRY_INTERVAL_MS);
   const [cloneConsentAccepted, setCloneConsentAccepted] = useState(false);
   const [cloneSafetyAccepted, setCloneSafetyAccepted] = useState(false);
   const [isCloneConsentPersisted, setIsCloneConsentPersisted] = useState(false);
   const [localRuntimeDiagnosticsExpanded, setLocalRuntimeDiagnosticsExpanded] = useState(false);
   const [voiceLibrarySearch, setVoiceLibrarySearch] = useState('');
   const voiceCloneTaskControllerRef = useRef<AbortController | null>(null);
+  const openVoiceStatusLastRefreshAtRef = useRef(Date.now());
+  const openVoiceStatusRequestInFlightRef = useRef(false);
   const mountedRef = useRef(true);
   const cloneWorkspaceHydratingRef = useRef(false);
   const cloneJobRecoveryInFlightRef = useRef(false);
+  const cloneRecoveryRestartedRequestsRef = useRef<Set<string>>(new Set());
   const cloneSubmitLockRef = useRef(false);
   const handledTerminalCloneRequestRef = useRef('');
   const stemExtractionInFlightRef = useRef<Set<string>>(new Set());
@@ -1410,15 +1424,27 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const showRuntimeDiagnostics = diagnosticsExpanded ?? localRuntimeDiagnosticsExpanded;
   const setRuntimeDiagnosticsExpanded = onDiagnosticsExpandedChange || setLocalRuntimeDiagnosticsExpanded;
   const showRuntimeDiagnosticsUi = false;
+  const getVoiceCloneAccessBlockMessage = useCallback((): string => {
+    if (isAdminVoiceCloneUser) return '';
+    if (!isPaidVoiceClonePlan) {
+      return 'Voice cloning and Demucs separation require an active paid plan.';
+    }
+    if (vcSpendableBalance <= 0) {
+      return 'VC balance is required before running voice cloning or Demucs separation.';
+    }
+    return '';
+  }, [isAdminVoiceCloneUser, isPaidVoiceClonePlan, vcSpendableBalance]);
 
   useEffect(() => {
+    const cloneRecoveryRestartedRequests = cloneRecoveryRestartedRequestsRef;
+    const stemExtractionInFlight = stemExtractionInFlightRef;
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       cloneSubmitLockRef.current = false;
       voiceCloneTaskControllerRef.current?.abort();
       voiceCloneTaskControllerRef.current = null;
-      const stemExtractionInFlight = stemExtractionInFlightRef;
+      cloneRecoveryRestartedRequests.current.clear();
       stemExtractionInFlight.current.clear();
     };
   }, []);
@@ -1576,6 +1602,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const isStressTerminal = isVoiceCloneStressTerminalStatus(stressStatusToken);
   const canSeeStressControls = useMemo(() => canViewVoiceCloneStressControls(user), [user]);
   const refreshVoiceCloneStatus = useCallback(async (showLoading = true): Promise<void> => {
+    if (openVoiceStatusRequestInFlightRef.current) {
+      return;
+    }
+    openVoiceStatusLastRefreshAtRef.current = Date.now();
+    openVoiceStatusRequestInFlightRef.current = true;
     if (showLoading) {
       setIsLoadingOpenVoiceStatus(true);
     }
@@ -1583,14 +1614,25 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       const status = await fetchVoiceCloneStatus(
         backendBaseUrl ? { baseUrl: backendBaseUrl } : undefined
       );
+      if (!mountedRef.current) {
+        return;
+      }
       setOpenVoiceStatus(status);
       setOpenVoiceStatusError('');
+      setOpenVoiceStatusRetryDelayMs(resolveVoiceCloneStatusRetryDelayMs(status));
     } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
       setOpenVoiceStatus(null);
       setOpenVoiceStatusError(getErrorMessage(error));
+      setOpenVoiceStatusRetryDelayMs(resolveVoiceCloneStatusRetryDelayMs(null, error));
     } finally {
+      openVoiceStatusRequestInFlightRef.current = false;
       if (showLoading) {
-        setIsLoadingOpenVoiceStatus(false);
+        if (mountedRef.current) {
+          setIsLoadingOpenVoiceStatus(false);
+        }
       }
     }
   }, [backendBaseUrl]);
@@ -1903,12 +1945,13 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       response,
       cloneMode: 'modal_vc',
     });
+    await refreshEntitlements().catch(() => undefined);
 
     setErrorMessage('');
     setIsCloning(false);
     clearVoiceCloneTask();
     setActiveCloneJob(null);
-  }, [backendBaseUrl, clearVoiceCloneTask, referenceAudio, targetAudio]);
+  }, [backendBaseUrl, clearVoiceCloneTask, referenceAudio, refreshEntitlements, targetAudio]);
 
   const submitCloneJob = useCallback(async (
     requestId: string,
@@ -1971,6 +2014,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     if (!activeCloneJob || !isVoiceCloneJobTerminalStatus(activeCloneJob.status)) return;
     if (handledTerminalCloneRequestRef.current === activeCloneJob.requestId) return;
     handledTerminalCloneRequestRef.current = activeCloneJob.requestId;
+    cloneRecoveryRestartedRequestsRef.current.delete(String(activeCloneJob.requestId || '').trim());
     if (String(activeCloneJob.status || '').trim().toLowerCase() === 'completed') {
       void finalizeCloneJobSuccess(activeCloneJob).catch((error) => {
         if (!mountedRef.current) return;
@@ -2053,6 +2097,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
               return;
             }
           }
+          if (cloneRecoveryRestartedRequestsRef.current.has(requestId)) {
+            setErrorMessage('Clone recovery is in progress. Waiting for provider status without creating duplicate jobs.');
+            return;
+          }
+          cloneRecoveryRestartedRequestsRef.current.add(requestId);
           try {
             const restartedJob = await submitCloneJob(requestId, controller.signal);
             if (cancelled) return;
@@ -2262,13 +2311,51 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     if (isVoiceCloneRuntimeReady) {
       return undefined;
     }
+    if (openVoiceStatusRetryDelayMs <= 0) {
+      return undefined;
+    }
     const timer = window.setInterval(() => {
+      if (openVoiceStatusRequestInFlightRef.current) return;
+      if (Date.now() - openVoiceStatusLastRefreshAtRef.current < openVoiceStatusRetryDelayMs) return;
       void refreshVoiceCloneStatus(false);
-    }, VOICE_CLONE_STATUS_RETRY_INTERVAL_MS);
+    }, openVoiceStatusRetryDelayMs);
     return () => {
       window.clearInterval(timer);
     };
-  }, [isVoiceCloneRuntimeReady, refreshVoiceCloneStatus]);
+  }, [isVoiceCloneRuntimeReady, openVoiceStatusRetryDelayMs, refreshVoiceCloneStatus]);
+
+  useEffect(() => {
+    if (isVoiceCloneRuntimeReady) {
+      return undefined;
+    }
+
+    const refreshOnVisibilityOrFocus = (): void => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return;
+      }
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      const eventRefreshCooldownMs = Math.max(openVoiceStatusRetryDelayMs, VOICE_CLONE_STATUS_EVENT_REFRESH_COOLDOWN_MS);
+      if (Date.now() - openVoiceStatusLastRefreshAtRef.current < eventRefreshCooldownMs) {
+        return;
+      }
+      if (openVoiceStatusRequestInFlightRef.current) {
+        return;
+      }
+      void refreshVoiceCloneStatus(false);
+    };
+
+    window.addEventListener('focus', refreshOnVisibilityOrFocus);
+    window.addEventListener('online', refreshOnVisibilityOrFocus);
+    document.addEventListener('visibilitychange', refreshOnVisibilityOrFocus);
+
+    return () => {
+      window.removeEventListener('focus', refreshOnVisibilityOrFocus);
+      window.removeEventListener('online', refreshOnVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', refreshOnVisibilityOrFocus);
+    };
+  }, [isVoiceCloneRuntimeReady, openVoiceStatusRetryDelayMs, refreshVoiceCloneStatus]);
 
   useEffect(() => {
     const stressJobId = String(stressStatus?.jobId || '').trim();
@@ -2394,6 +2481,12 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       cloneSubmitLockRef.current = false;
       return;
     }
+    const accessBlockMessage = getVoiceCloneAccessBlockMessage();
+    if (accessBlockMessage) {
+      setErrorMessage(accessBlockMessage);
+      cloneSubmitLockRef.current = false;
+      return;
+    }
 
     const requestId = makeRequestId();
     handledTerminalCloneRequestRef.current = '';
@@ -2459,6 +2552,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     clearVoiceCloneTask,
     cloneConsentAccepted,
     cloneSafetyAccepted,
+    getVoiceCloneAccessBlockMessage,
     isVoiceCloneRuntimeReady,
     isVoiceCloneActionBusy,
     referenceAudio,
@@ -2548,6 +2642,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       );
       if (hasExplicitSourceTrim && !matchesAppliedTrim) {
         setStemErrorMessage('Click "Apply source trim" before extraction to use this source trim range.');
+        return;
+      }
+      const accessBlockMessage = getVoiceCloneAccessBlockMessage();
+      if (accessBlockMessage) {
+        setStemErrorMessage(accessBlockMessage);
         return;
       }
 
@@ -2662,7 +2761,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         Number(response.consumedVcUnits ?? response.vcBilling?.consumedUnits ?? 0)
       );
       const runtimeRateVcPerMin = Math.max(0.000001, Number(response.vcBilling?.rateVcUnitsPerMin || 1));
-      const runtimeRateInrPerMin = Math.max(0, Number(response.vcBilling?.rateInrPerMin || 1.2));
+      const runtimeRateInrPerMin = Math.max(0, Number(response.vcBilling?.rateInrPerMin || 1));
       const inferredChargedInr = consumedVcUnits > 0
         ? (consumedVcUnits / runtimeRateVcPerMin) * runtimeRateInrPerMin
         : 0;
@@ -2695,6 +2794,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         chargedInr,
       });
       setTrimmedStemResult(null);
+      void refreshEntitlements().catch(() => undefined);
     } catch (error) {
       if (!mountedRef.current) return;
       if (extractionRunId > 0 && extractionRunId !== stemExtractionRunIdRef.current) {
@@ -2718,7 +2818,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   }, [
     backendBaseUrl,
     clearVoiceCloneTask,
+    getVoiceCloneAccessBlockMessage,
     isVoiceCloneActionBusy,
+    refreshEntitlements,
     sourceMixAudio,
     sourceMixDurationSec,
     sourceTrimEndInput,
@@ -3049,7 +3151,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   </Button>
                   {!isVoiceCloneRuntimeReady ? (
                     <span className="text-[10px] text-slate-500 sm:text-[11px]">
-                      Availability checks auto-retry every {Math.round(VOICE_CLONE_STATUS_RETRY_INTERVAL_MS / 1000)}s while the provider is not ready.
+                      Availability checks auto-retry every {formatVoiceCloneStatusRetryDelayLabel(openVoiceStatusRetryDelayMs)} while the provider is not ready.
                     </span>
                   ) : null}
                 </div>

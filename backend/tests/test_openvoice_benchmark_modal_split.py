@@ -21,6 +21,11 @@ import backend.app as backend_app
 from services.openvoice_modal import OpenVoiceBenchmarkRequest
 
 
+@pytest.fixture(autouse=True)
+def _voice_clone_admin_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(backend_app, "_request_is_admin", lambda request, uid=None: True)
+
+
 def _build_wav_bytes(*, duration_sec: float = 0.25, sample_rate: int = 24_000) -> bytes:
     frame_count = max(1, int(duration_sec * sample_rate))
     pcm = b"\x00\x00" * frame_count
@@ -296,11 +301,12 @@ def test_openvoice_benchmark_extracts_source_vocals_with_demucs_fast_cpu(monkeyp
 def test_voice_clone_alias_forces_vc_and_warm(monkeypatch):
     captured: dict[str, object] = {}
 
-    def _fake_openvoice_payload(payload, request, uid=None):
+    def _fake_openvoice_payload(payload, request, uid=None, is_admin=False):
         captured["mode"] = payload.mode
         captured["runKind"] = payload.runKind
         captured["request"] = request
         captured["uid"] = uid
+        captured["isAdmin"] = is_admin
         return {"ok": True, "mode": payload.mode, "runKind": payload.runKind, "source": "seed-vc-vc"}
 
     monkeypatch.setattr(backend_app, "_openvoice_benchmark_payload", _fake_openvoice_payload)
@@ -335,9 +341,9 @@ def test_voice_clone_openvoice_route_reuses_idempotent_response(monkeypatch):
     backend_app._INMEMORY_REQUEST_IDEMPOTENCY.clear()
     calls: list[dict[str, object]] = []
 
-    def _fake_openvoice_payload(payload, request=None, uid=""):
+    def _fake_openvoice_payload(payload, request=None, uid="", is_admin=False):
         _ = request
-        calls.append({"requestId": payload.requestId, "uid": uid})
+        calls.append({"requestId": payload.requestId, "uid": uid, "isAdmin": is_admin})
         return {"ok": True, "requestId": payload.requestId, "traceId": payload.traceId, "status": "completed"}
 
     monkeypatch.setattr(backend_app, "_require_request_uid", lambda _request: "test-uid")

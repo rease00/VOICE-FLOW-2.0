@@ -76,6 +76,42 @@ REQUEST_SENSITIVE_SOURCE_POLICY_KEYS = {
     "vertex_service_account_ref",
     "selectedVertexSlotId",
 }
+VF_TTS_QUEUE_SLOT_SLA_MS = max(
+    1_000,
+    int((os.getenv("VF_TTS_QUEUE_SLOT_SLA_MS") or "15000").strip() or "15000"),
+)
+VF_TTS_QUEUE_DEADLINE_MS = max(
+    VF_TTS_QUEUE_SLOT_SLA_MS * 2,
+    int((os.getenv("VF_TTS_QUEUE_DEADLINE_MS") or "90000").strip() or "90000"),
+)
+VF_TTS_QUEUE_MAX_ATTEMPTS = max(
+    1,
+    int((os.getenv("VF_TTS_QUEUE_MAX_ATTEMPTS") or "3").strip() or "3"),
+)
+VF_TTS_ENGINE_RETRY_LIMIT_VECTOR = max(
+    1,
+    int(
+        (
+            os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_VECTOR")
+            or str(VF_TTS_QUEUE_MAX_ATTEMPTS)
+        ).strip()
+        or str(VF_TTS_QUEUE_MAX_ATTEMPTS)
+    ),
+)
+VF_TTS_ENGINE_RETRY_LIMIT_PRIME = max(
+    1,
+    int(
+        (
+            os.getenv("VF_TTS_ENGINE_RETRY_LIMIT_PRIME")
+            or str(VF_TTS_QUEUE_MAX_ATTEMPTS)
+        ).strip()
+        or str(VF_TTS_QUEUE_MAX_ATTEMPTS)
+    ),
+)
+VF_TTS_ENGINE_RETRY_LIMITS = {
+    "VECTOR": VF_TTS_ENGINE_RETRY_LIMIT_VECTOR,
+    "PRIME": VF_TTS_ENGINE_RETRY_LIMIT_PRIME,
+}
 SPLIT_PATTERNS = [
     re.compile(r"(?<=[.!?\u0964])\s+"),
     re.compile(r"\n{2,}"),
@@ -277,11 +313,16 @@ def _now_ms() -> int:
 
 def _norm_engine(value: Any) -> str:
     token = str(value or "").strip().upper()
-    if token in {"KOKORO", "KOKORO_RUNTIME", "BASIC"}:
+    if token in {"BASIC"}:
         return "VECTOR"
     if token in {"VECTOR", "NEURAL_2", "NURAL2", "NURAL_2"}:
         return "VECTOR"
     return "PRIME"
+
+
+def _tts_engine_retry_limit(value: Any) -> int:
+    safe_engine = _norm_engine(value)
+    return max(1, int(VF_TTS_ENGINE_RETRY_LIMITS.get(safe_engine) or VF_TTS_QUEUE_MAX_ATTEMPTS))
 
 
 def _strict_engine(value: Any) -> str:
@@ -315,9 +356,7 @@ def _canonicalize_engine_token(value: Any) -> str:
         "HD": "VECTOR",
         "GEM1": "VECTOR",
         "G1": "VECTOR",
-        "KOKORO": "VECTOR",
         "BASIC": "VECTOR",
-        "KOKORO_RUNTIME": "VECTOR",
     }
     return legacy_map.get(token, "")
 
@@ -477,13 +516,7 @@ def _normalize_wav_for_stitch(
         frames = pcm_mul(frames, width, gain)
         rms = int(pcm_rms(frames, width) if frames else 0)
 
-    out = BytesIO()
-    with wave.open(out, "wb") as wav_out:
-        wav_out.setnchannels(channels)
-        wav_out.setsampwidth(width)
-        wav_out.setframerate(rate)
-        wav_out.writeframes(frames)
-    return out.getvalue(), (channels, width, rate), rms
+    return frames, (channels, width, rate), rms
 
 
 def _protect_text_for_chunking(text: str) -> tuple[str, dict[str, str]]:
@@ -785,7 +818,7 @@ def _concat_wav(chunks: list[bytes], unit_ids: list[str], same_ms: int = 35, int
             if _allow_relaxed_wav_validation():
                 return b"".join(bytes(chunk or b"") for chunk in chunks)
             raise
-        if target_rms is None:
+        if target_rms is None and normalized_rms > 0:
             target_rms = normalized_rms
         if index > 0:
             prev = unit_ids[index - 1] if index - 1 < len(unit_ids) else ""
@@ -1080,6 +1113,8 @@ class TtsV2Engine:
         text = str(payload.get("text") or "").strip()
         if not text:
             raise V2ValidationError("text is required.")
+        if len(text) > 10_000:
+            raise V2ValidationError("text exceeds 10k character queue limit.")
         _validate_multi_speaker_hard_cap(payload)
         claimed, owner = self._claim_idempotency(request_id, uid)
         if not claimed and owner and owner != uid and not is_admin:
@@ -1135,6 +1170,8 @@ class TtsV2Engine:
             or payload.get("workerCategory")
             or DEFAULT_WORKER_CATEGORY
         )
+        deadline_at_ms = now + VF_TTS_QUEUE_DEADLINE_MS
+        max_attempts = max(1, min(VF_TTS_QUEUE_MAX_ATTEMPTS, _tts_engine_retry_limit(payload.get("engine"))))
         return {
             "jobId": request_id,
             "idempotencyKey": request_id,
@@ -1148,6 +1185,10 @@ class TtsV2Engine:
             "updatedAtMs": now,
             "status": "queued",
             "attempts": 0,
+            "maxAttempts": max_attempts,
+            "deadlineAtMs": deadline_at_ms,
+            "leaseExpiresAtMs": deadline_at_ms,
+            "queueSlotSlaMs": VF_TTS_QUEUE_SLOT_SLA_MS,
             "cancelRequested": False,
             "planKey": str(plan_key or "free").strip().lower() or "free",
             "engine": _norm_engine(payload.get("engine")),

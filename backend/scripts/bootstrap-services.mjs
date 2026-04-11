@@ -87,23 +87,40 @@ const RUNTIME_CONCURRENCY_ENV = AUTO_TUNE_WORKERS
       VF_CONCURRENCY_PROFILE: CONCURRENCY_PROFILE,
       VF_HOST_RESERVED_CPUS: String(HOST_RESERVED_CPUS),
       VF_TTS_QUEUE_WORKER_COUNT: String(AUTO_TUNED_CONCURRENCY.queueWorkers),
+      VF_TTS_ENGINE_CONCURRENCY_VECTOR: String(AUTO_TUNED_CONCURRENCY.gemConcurrency),
+      VF_TTS_ENGINE_CONCURRENCY_PRIME: String(AUTO_TUNED_CONCURRENCY.gemConcurrency),
       VF_TTS_ENGINE_CONCURRENCY_GEM: String(AUTO_TUNED_CONCURRENCY.gemConcurrency),
       GEMINI_BATCH_DEFAULT_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel),
       GEMINI_BATCH_MAX_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel),
     }
   : {};
+const LOCAL_SEED_VC_RUNTIME_URL = String(
+  process.env.VF_VOICE_CLONE_RUNTIME_URL
+  || process.env.VF_OPENVOICE_RUNTIME_URL
+  || "http://127.0.0.1:7830"
+).trim() || "http://127.0.0.1:7830";
+const LOCAL_SEED_VC_RUNTIME_TOKEN = String(
+  process.env.VF_VOICE_CLONE_RUNTIME_TOKEN
+  || process.env.VF_OPENVOICE_RUNTIME_TOKEN
+  || "local-seed-vc-token"
+).trim() || "local-seed-vc-token";
+const LOCAL_VOICE_CLONE_ARTIFACT_SECRET = String(
+  process.env.VF_VOICE_CLONE_ARTIFACT_SECRET
+  || process.env.VF_OPENVOICE_ARTIFACT_SECRET
+  || "local-artifact-secret"
+).trim() || "local-artifact-secret";
 
 const RETRY_INTERVAL_MS = Number(process.env.VF_BOOTSTRAP_RETRY_INTERVAL_MS || 4000);
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_REQUEST_TIMEOUT_MS || 15000);
 const DEFAULT_CHECK_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_CHECK_TIMEOUT_MS || 60000);
 const FAST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_TIMEOUT_FAST_MS || DEFAULT_CHECK_TIMEOUT_MS);
 const STARTUP_HEALTH_RETRY_INTERVAL_MS = clampInt(
-  toIntEnv(process.env.VF_STARTUP_HEALTH_RETRY_INTERVAL_MS, 1000),
+  toIntEnv(process.env.VF_STARTUP_HEALTH_RETRY_INTERVAL_MS, 500),
   250,
   10000
 );
 const POST_START_VERIFY_TIMEOUT_MS = clampInt(
-  toIntEnv(process.env.VF_POST_START_VERIFY_TIMEOUT_MS, 5000),
+  toIntEnv(process.env.VF_POST_START_VERIFY_TIMEOUT_MS, 3000),
   1000,
   30000
 );
@@ -252,6 +269,12 @@ const BASE_SERVICES = [
       VF_BACKEND_PORT: "7800",
       VF_TTS_RUNTIME_URL: "http://127.0.0.1:7810",
       VF_VERTEX_TEXT_RUNTIME_URL: "http://127.0.0.1:7820",
+      VF_VOICE_CLONE_RUNTIME_URL: LOCAL_SEED_VC_RUNTIME_URL,
+      VF_OPENVOICE_RUNTIME_URL: LOCAL_SEED_VC_RUNTIME_URL,
+      VF_VOICE_CLONE_RUNTIME_TOKEN: LOCAL_SEED_VC_RUNTIME_TOKEN,
+      VF_OPENVOICE_RUNTIME_TOKEN: LOCAL_SEED_VC_RUNTIME_TOKEN,
+      VF_VOICE_CLONE_ARTIFACT_SECRET: LOCAL_VOICE_CLONE_ARTIFACT_SECRET,
+      VF_OPENVOICE_ARTIFACT_SECRET: LOCAL_VOICE_CLONE_ARTIFACT_SECRET,
       VF_WHISPER_DEVICE: "cpu",
       VF_WHISPER_COMPUTE: "int8",
       CUDA_VISIBLE_DEVICES: "",
@@ -282,8 +305,37 @@ const BASE_SERVICES = [
       VF_RUNTIME_NAME: "tts-runtime",
       VF_RUNTIME_ROLE: "tts_only",
       VF_TTS_TEXTTOSPEECH_ONLY: "1",
+      VF_TTS_TEXTTOSPEECH_AUTH_MODE:
+        String(process.env.VF_TTS_TEXTTOSPEECH_AUTH_MODE || "google_cloud").trim() || "google_cloud",
       CUDA_VISIBLE_DEVICES: "",
       ...RUNTIME_CONCURRENCY_ENV,
+    }),
+  },
+  {
+    id: "seed-vc-runtime",
+    name: "Seed VC Runtime",
+    port: 7830,
+    venv: "seed-vc-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_SEED_VC_RUNTIME",
+    requirements: ["engines/seed-vc-runtime/requirements.txt"],
+    sourceFiles: ["engines/seed-vc-runtime/app.py", "scripts/bootstrap-services.mjs"],
+    command: (pythonBin) => [
+      pythonBin,
+      "-m",
+      "uvicorn",
+      "app:app",
+      "--app-dir",
+      "engines/seed-vc-runtime",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "7830",
+    ],
+    env: () => ({
+      VF_OPENVOICE_RUNTIME_TOKEN: LOCAL_SEED_VC_RUNTIME_TOKEN,
+      VF_OPENVOICE_RUNTIME_DEVICE: String(process.env.VF_OPENVOICE_RUNTIME_DEVICE || "cuda:L4").trim() || "cuda:L4",
+      VF_OPENVOICE_RUNTIME_MODEL: String(process.env.VF_OPENVOICE_RUNTIME_MODEL || "seed-vc-l4").trim() || "seed-vc-l4",
+      CUDA_VISIBLE_DEVICES: "",
     }),
   },
   {
@@ -343,6 +395,16 @@ const BASE_CHECKS = [
     serviceId: "gemini-runtime",
     name: "Gemini Runtime",
     url: "http://127.0.0.1:7810/health",
+    timeoutMs: FAST_TIMEOUT_MS,
+    validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
+  },
+  {
+    serviceId: "seed-vc-runtime",
+    name: "Seed VC Runtime",
+    url: "http://127.0.0.1:7830/health",
+    headers: {
+      authorization: `Bearer ${LOCAL_SEED_VC_RUNTIME_TOKEN}`,
+    },
     timeoutMs: FAST_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
@@ -591,13 +653,24 @@ function listListeningPidsOnPort(port) {
   if (!Number.isFinite(numericPort) || numericPort <= 0) return [];
 
   if (process.platform === "win32") {
-    const netstat = spawnSync(
-      "cmd.exe",
-      ["/d", "/s", "/c", `netstat -ano -p tcp | findstr /R /C:\":${numericPort} .*LISTENING\"`],
-      { cwd: ROOT, encoding: "utf8" }
-    );
-    if (netstat.status === 0 && netstat.stdout?.trim()) {
-      return parsePidsFromText(netstat.stdout);
+    const netstat = spawnSync("netstat.exe", ["-ano", "-p", "tcp"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    if (netstat.status === 0) {
+      const matcher = new RegExp(
+        `^\\s*TCP\\s+\\S+:${numericPort}\\s+\\S+\\s+LISTENING\\s+(\\d+)\\s*$`,
+        "i"
+      );
+      const lines = String(netstat.stdout || "").split(/\r?\n/);
+      const pidMatches = [];
+      for (const line of lines) {
+        const match = line.match(matcher);
+        if (match?.[1]) {
+          pidMatches.push(match[1]);
+        }
+      }
+      return parsePidsFromText(pidMatches.join("\n"));
     }
 
     const ps = spawnSync(
@@ -687,7 +760,10 @@ function buildVisibleWindowsServiceScript(service, cmd, args, logFile) {
     `Set-Location -LiteralPath ${toPowerShellSingleQuoted(ROOT)}`,
     `$cmd = ${toPowerShellSingleQuoted(cmd)}`,
     `$argList = @(${serializedArgs})`,
-    `& $cmd @argList *>&1 | Tee-Object -FilePath ${toPowerShellSingleQuoted(logFile)} -Append`,
+    '$escapedCmd = \'"\' + ($cmd -replace \'"\', \'""\') + \'"\'',
+    '$escapedArgs = @($escapedCmd) + ($argList | ForEach-Object { \'"\' + ($_ -replace \'"\', \'""\') + \'"\' })',
+    "$nativeCommandLine = (($escapedArgs -join ' ') + ' 2>&1')",
+    `cmd.exe /d /s /c $nativeCommandLine | ForEach-Object { $_; $_ | Out-File -FilePath ${toPowerShellSingleQuoted(logFile)} -Append -Encoding utf8 }`,
     "$exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 0 }",
     "if ($exitCode -ne 0) {",
     "  Write-Host ''",
@@ -964,13 +1040,17 @@ function describeCheckError(error) {
   return `${error.message} (${parts.join(" ")})`;
 }
 
-async function getJson(url) {
+async function getJson(url, options = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
   try {
+    const requestHeaders = {
+      Accept: "application/json",
+      ...(options.headers && typeof options.headers === "object" ? options.headers : {}),
+    };
     const response = await fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers: requestHeaders,
       signal: ctrl.signal,
     });
     const text = await response.text();
@@ -1002,7 +1082,7 @@ async function runCheck(check, options = {}) {
   while (Date.now() - started < timeoutMs) {
     attempts += 1;
     try {
-      const payload = await getJson(check.url);
+      const payload = await getJson(check.url, { headers: check.headers });
       if (check.validate(payload)) {
         return {
           serviceId: check.serviceId || "",
@@ -1202,7 +1282,14 @@ async function runDoctor(gpuMode, maxAttempts = DOCTOR_MAX_ATTEMPTS) {
 function printServiceStatusSummary() {
   const rows = SERVICES.map((service) => {
     const trackedPid = readPid(service.id);
-    const listeningPid = service.port ? listListeningPidsOnPort(service.port)[0] || null : trackedPid;
+    let listeningPid = null;
+    if (trackedPid && isPidAlive(trackedPid)) {
+      listeningPid = trackedPid;
+    } else if (service.port) {
+      listeningPid = listListeningPidsOnPort(service.port)[0] || null;
+    } else {
+      listeningPid = trackedPid;
+    }
     let state = serviceStartStates.get(service.id);
     if (!state) {
       if (listeningPid) state = trackedPid && trackedPid !== listeningPid ? "adopted" : "running";

@@ -40,6 +40,8 @@ spec:
               value: tts_only
             - name: VF_TTS_TEXTTOSPEECH_ONLY
               value: "1"
+            - name: VF_TTS_TEXTTOSPEECH_AUTH_MODE
+              value: "google_cloud"
           ports:
             - containerPort: 7810
               name: http

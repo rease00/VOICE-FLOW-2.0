@@ -6,7 +6,7 @@ import { useAuthSession } from '../src/features/auth/hooks/useAuthSession';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { removeStorageKey, readStorageString } from '../src/shared/storage/localStore';
 import { BrandLogo } from '../components/BrandLogo';
-import { useNotifications } from '../src/shared/notifications/NotificationProvider';
+import { useOptionalNotifications } from '../src/shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 import { resolveLegalDocument } from '../src/features/legal/legalContent';
 import { resolveSafeInternalNextPath, type AuthRouteMode } from '../src/app/navigation';
@@ -34,7 +34,8 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     requestPasswordReset,
     signInWithGoogle,
   } = useAuthSession();
-  const { emit } = useNotifications();
+  const notifications = useOptionalNotifications();
+  const emit = notifications?.emit;
   const [mode, setMode] = useState<AuthMode>(initialMode ?? 'login');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
@@ -182,7 +183,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         setPassword('');
         setInfoMsg(message);
         setVerificationCooldownUntil(Date.now() + 30_000);
-        emit('auth.signup.success', {
+        emit?.('auth.signup.success', {
           title: 'Sign Up Success',
           message,
           category: 'security',
@@ -200,7 +201,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         if ('requiresEmailVerification' in result && result.requiresEmailVerification) {
           setNeedsEmailVerification(true);
           setInfoMsg(message);
-          emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
+          emit?.(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
             title: mode === 'signup' ? 'Email Verification Required' : 'Email Verification Required',
             message,
             category: 'security',
@@ -211,7 +212,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         setErrorMsg(message);
         const provisioningHint = 'provisioningHint' in result ? String(result.provisioningHint || '').trim() : '';
         setProvisioningHintMsg(provisioningHint ? sanitizeUiText(provisioningHint) : null);
-        emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
+        emit?.(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
           title: mode === 'signup' ? 'Sign Up Failed' : 'Sign In Failed',
           message,
           category: 'security',
@@ -219,7 +220,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         });
         return;
       }
-      emit(mode === 'signup' ? 'auth.signup.success' : 'auth.signin.success', {
+      emit?.(mode === 'signup' ? 'auth.signup.success' : 'auth.signin.success', {
         title: mode === 'signup' ? 'Sign Up Success' : 'Sign In Success',
         message: mode === 'signup' ? 'Account created successfully.' : 'Signed in successfully.',
         category: 'security',
@@ -251,7 +252,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       if (!result.ok) {
         const message = sanitizeUiText(result.error || 'Could not resend verification email.');
         setErrorMsg(message);
-        emit('auth.signin.failed', {
+        emit?.('auth.signin.failed', {
           title: 'Verification Email Failed',
           message,
           category: 'security',
@@ -263,7 +264,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       setNeedsEmailVerification(true);
       setInfoMsg(message);
       setVerificationCooldownUntil(Date.now() + 30_000);
-      emit('auth.signin.success', {
+      emit?.('auth.signin.success', {
         title: 'Verification Email Sent',
         message,
         category: 'security',
@@ -290,7 +291,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
           result.error || (mode === 'signup' ? 'Google sign-up failed.' : 'Google sign-in failed.')
         );
         setErrorMsg(message);
-        emit('auth.signin.failed', {
+        emit?.('auth.signin.failed', {
           title: 'Google Sign-In Failed',
           message,
           category: 'security',
@@ -298,7 +299,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         });
         return;
       }
-      emit('auth.signin.success', {
+      emit?.('auth.signin.success', {
         title: mode === 'signup' ? 'Account Ready' : 'Sign In Success',
         message: mode === 'signup' ? 'Your account is ready with Google.' : 'Signed in with Google.',
         category: 'security',
@@ -329,7 +330,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       if (!result.ok) {
         const message = sanitizeUiText(result.error || 'Could not request password reset.');
         setErrorMsg(message);
-        emit('auth.reset.failed', {
+        emit?.('auth.reset.failed', {
           title: 'Password Reset Failed',
           message,
           category: 'security',
@@ -339,7 +340,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       }
       const message = 'If an account exists for this email, a reset link has been sent.';
       setInfoMsg(message);
-      emit('auth.reset.success', {
+      emit?.('auth.reset.success', {
         title: 'Password Reset Requested',
         message,
         category: 'security',

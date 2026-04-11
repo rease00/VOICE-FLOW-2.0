@@ -241,6 +241,27 @@ VF_TTS_TEXTTOSPEECH_ONLY = (
     str(os.getenv("VF_TTS_TEXTTOSPEECH_ONLY") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+CLOUD_TTS_AUTH_MODE_AUTO = "auto"
+CLOUD_TTS_AUTH_MODE_VERTEX_SLOT = "vertex_slot"
+CLOUD_TTS_AUTH_MODE_GOOGLE_CLOUD = "google_cloud"
+_cloud_tts_auth_mode_raw = str(os.getenv("VF_TTS_TEXTTOSPEECH_AUTH_MODE") or "").strip().lower()
+if _cloud_tts_auth_mode_raw in {"vertex", "vertex_slot", "vertex-slot"}:
+    VF_TTS_TEXTTOSPEECH_AUTH_MODE = CLOUD_TTS_AUTH_MODE_VERTEX_SLOT
+elif _cloud_tts_auth_mode_raw in {
+    "google",
+    "google_cloud",
+    "google-cloud",
+    "adc",
+    "application_default_credentials",
+}:
+    VF_TTS_TEXTTOSPEECH_AUTH_MODE = CLOUD_TTS_AUTH_MODE_GOOGLE_CLOUD
+else:
+    VF_TTS_TEXTTOSPEECH_AUTH_MODE = CLOUD_TTS_AUTH_MODE_AUTO
+VF_TTS_TEXTTOSPEECH_SERVICE_ACCOUNT_FILE = str(
+    os.getenv("VF_TTS_TEXTTOSPEECH_SERVICE_ACCOUNT_FILE")
+    or os.getenv("VF_CLOUD_TTS_SERVICE_ACCOUNT_FILE")
+    or ""
+).strip()
 VF_TTS_TEXTTOSPEECH_VOICE_CACHE_TTL_SECONDS = max(
     60,
     int(os.getenv("VF_TTS_TEXTTOSPEECH_VOICE_CACHE_TTL_SECONDS", "1800")),
@@ -301,6 +322,12 @@ if GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS and _is_production_like_runtime():
         flush=True,
     )
     GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS = False
+
+
+def _tts_allocator_limits_disabled() -> bool:
+    return bool(GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS or not _runtime_supports_tts())
+
+
 GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS = max(
     1000,
     int(os.getenv("GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS", "22000")),
@@ -961,27 +988,43 @@ def _resolve_cloud_tts_credentials_path(source_policy: Optional[dict[str, Any]] 
     selected_slot_id = str(policy.get("selectedVertexSlotId") or policy.get("vertexSlotId") or "").strip()
     accounts = [dict(item) for item in list(policy.get("vertexAccounts") or []) if isinstance(item, dict)]
     raw_candidates: list[object] = []
-    normalized_selected_slot_id = selected_slot_id.lower()
-    if normalized_selected_slot_id:
-        for account in accounts:
-            slot_id = str(account.get("memberId") or account.get("slotId") or account.get("id") or "").strip().lower()
-            if slot_id and slot_id == normalized_selected_slot_id:
-                raw_candidates.extend(
-                    [
-                        account.get("vertexServiceAccountRef"),
-                        account.get("serviceAccountRef"),
-                        account.get("credentialsPath"),
-                    ]
-                )
-                break
-    raw_candidates.extend(
-        [
-            policy.get("vertexServiceAccountRef"),
-            policy.get("serviceAccountRef"),
-            os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-            GEMINI_VERTEX_SERVICE_ACCOUNT_FILE,
-        ]
-    )
+    include_vertex_slot_candidates = VF_TTS_TEXTTOSPEECH_AUTH_MODE in {
+        CLOUD_TTS_AUTH_MODE_AUTO,
+        CLOUD_TTS_AUTH_MODE_VERTEX_SLOT,
+    }
+    include_google_cloud_candidates = VF_TTS_TEXTTOSPEECH_AUTH_MODE in {
+        CLOUD_TTS_AUTH_MODE_AUTO,
+        CLOUD_TTS_AUTH_MODE_GOOGLE_CLOUD,
+    }
+
+    if VF_TTS_TEXTTOSPEECH_SERVICE_ACCOUNT_FILE:
+        raw_candidates.append(VF_TTS_TEXTTOSPEECH_SERVICE_ACCOUNT_FILE)
+
+    if include_vertex_slot_candidates:
+        normalized_selected_slot_id = selected_slot_id.lower()
+        if normalized_selected_slot_id:
+            for account in accounts:
+                slot_id = str(account.get("memberId") or account.get("slotId") or account.get("id") or "").strip().lower()
+                if slot_id and slot_id == normalized_selected_slot_id:
+                    raw_candidates.extend(
+                        [
+                            account.get("vertexServiceAccountRef"),
+                            account.get("serviceAccountRef"),
+                            account.get("credentialsPath"),
+                        ]
+                    )
+                    break
+        raw_candidates.extend(
+            [
+                policy.get("vertexServiceAccountRef"),
+                policy.get("serviceAccountRef"),
+                GEMINI_VERTEX_SERVICE_ACCOUNT_FILE,
+            ]
+        )
+
+    if include_google_cloud_candidates:
+        raw_candidates.append(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+
     for raw_value in raw_candidates:
         raw_path = str(raw_value or "").strip()
         if not raw_path:
@@ -1110,6 +1153,10 @@ def _cloud_tts_voice_rank(name: str, *, engine: str, language_code: str) -> tupl
     return (locale_score, 4)
 
 
+def _normalize_cloud_tts_voice_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
 def _select_cloud_tts_voice(
     *,
     client: Any,
@@ -1130,16 +1177,62 @@ def _select_cloud_tts_voice(
     ]
     if gender_filtered:
         compatible = gender_filtered
-    compatible = sorted(
-        compatible,
-        key=lambda voice: (
-            _cloud_tts_voice_rank(str(getattr(voice, "name", "")), engine=engine, language_code=language_code),
-            str(getattr(voice, "name", "")),
-        ),
-    )
+
+    requested_voice_lower = str(requested_voice or "").strip().lower()
+    requested_voice_token = _normalize_cloud_tts_voice_token(requested_voice_lower)
+    prefixed_voice_tail_tokens = {
+        _normalize_cloud_tts_voice_token(str(getattr(voice, "name", "") or "").split("-")[-1])
+        for voice in compatible
+        if "-" in str(getattr(voice, "name", "") or "")
+    }
+
+    ranked_candidates: list[tuple[tuple[int, int, tuple[int, int], str], Any]] = []
+    for voice in compatible:
+        voice_name = str(getattr(voice, "name", "") or "").strip()
+        voice_name_lower = voice_name.lower()
+        voice_name_token = _normalize_cloud_tts_voice_token(voice_name_lower)
+        voice_tail_token = _normalize_cloud_tts_voice_token(voice_name_lower.split("-")[-1])
+
+        request_match_rank = 2
+        if requested_voice_token:
+            if voice_name_lower == requested_voice_lower:
+                request_match_rank = 0
+            elif voice_name_token == requested_voice_token or voice_tail_token == requested_voice_token:
+                request_match_rank = 0
+            elif requested_voice_token in voice_name_token:
+                request_match_rank = 1
+
+        model_alias_penalty = 0
+        if "-" not in voice_name and voice_tail_token in prefixed_voice_tail_tokens:
+            # Prefer fully qualified names (for example `en-US-Chirp3-HD-Algieba`) over bare aliases
+            # that can fail with "voice requires a model name".
+            model_alias_penalty = 1
+
+        ranked_candidates.append(
+            (
+                (
+                    request_match_rank,
+                    model_alias_penalty,
+                    _cloud_tts_voice_rank(voice_name, engine=engine, language_code=language_code),
+                    voice_name_lower,
+                ),
+                voice,
+            )
+        )
+
+    ranked_candidates.sort(key=lambda item: item[0])
+    if not ranked_candidates:
+        params = google_texttospeech.VoiceSelectionParams(language_code=language_code)
+        return params, {"requestedVoice": requested_voice, "resolvedVoice": "", "languageCode": language_code}
+
+    best_rank_prefix = ranked_candidates[0][0][:-1]
+    narrowed_candidates = [voice for rank_key, voice in ranked_candidates if rank_key[:-1] == best_rank_prefix]
+    if not narrowed_candidates:
+        narrowed_candidates = [ranked_candidates[0][1]]
+
     seed = str(requested_voice or language_code or engine).strip().lower() or language_code.lower()
-    pick_index = int(hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest(), 16) % len(compatible)
-    selected = compatible[pick_index]
+    pick_index = int(hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest(), 16) % len(narrowed_candidates)
+    selected = narrowed_candidates[pick_index]
     selected_name = str(getattr(selected, "name", "") or "").strip()
     selected_language = list(getattr(selected, "language_codes", []) or [])
     selected_language_code = str(selected_language[0] if selected_language else language_code).strip() or language_code
@@ -2284,12 +2377,12 @@ def _effective_tts_route_limits(model_candidates: Optional[list[str]] = None) ->
     model_limit = ALLOCATOR_CONFIG.models.get(tts_model)
     rpm_limit = (
         -1
-        if GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS
+        if _tts_allocator_limits_disabled()
         else (max(0, int(model_limit.rpm)) if model_limit is not None else 0)
     )
     tpm_limit = (
         -1
-        if GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS
+        if _tts_allocator_limits_disabled()
         else (max(0, int(model_limit.tpm)) if model_limit is not None else 0)
     )
     return {
@@ -2298,7 +2391,7 @@ def _effective_tts_route_limits(model_candidates: Optional[list[str]] = None) ->
         "tpm": tpm_limit,
         "windowSeconds": max(1, int(ALLOCATOR_CONFIG.window_seconds)),
         "defaultWaitTimeoutMs": max(1, int(ALLOCATOR_CONFIG.default_wait_timeout_ms)),
-        "rateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
+        "rateLimitsDisabled": _tts_allocator_limits_disabled(),
     }
 
 
@@ -2346,18 +2439,19 @@ def _recent_error_class_counts() -> Dict[str, int]:
     return counts
 
 
-print(
-    json.dumps(
-        {
-            "event": "allocator_limits",
-            "engine": APP_NAME,
-            "task": "tts",
-            "effectiveTtsLimits": _effective_tts_route_limits(),
-        },
-        ensure_ascii=True,
-    ),
-    flush=True,
-)
+if _runtime_supports_tts():
+    print(
+        json.dumps(
+            {
+                "event": "allocator_limits",
+                "engine": APP_NAME,
+                "task": "tts",
+                "effectiveTtsLimits": _effective_tts_route_limits(),
+            },
+            ensure_ascii=True,
+        ),
+        flush=True,
+    )
 
 
 def _estimate_tts_pool_pressure(
@@ -5291,6 +5385,7 @@ def health(engine: Optional[str] = None) -> JSONResponse:
             "engine": APP_NAME,
             "requestedEngine": safe_engine,
             "authMode": auth_mode,
+            "cloudTtsAuthMode": VF_TTS_TEXTTOSPEECH_AUTH_MODE,
             "model": "google-cloud-text-to-speech" if cloud_tts_enabled else model,
             "modelCandidates": model_candidates,
             "supportsTts": _runtime_supports_tts(),
@@ -5301,7 +5396,7 @@ def health(engine: Optional[str] = None) -> JSONResponse:
             "apiKeyConfigured": bool(configured_pool),
             "keyPoolSize": len(configured_pool),
             "ttsModelFallbackEnabled": _tts_model_fallback_enabled(source_policy),
-            "ttsAllocatorRateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
+            "ttsAllocatorRateLimitsDisabled": _tts_allocator_limits_disabled(),
             "mode": mode,
             "runtimeRole": VF_RUNTIME_ROLE,
             "device": "hosted",
@@ -5383,8 +5478,9 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
                 "keyPoolSize": len(configured_pool),
                 "mode": mode,
                 "authMode": auth_mode,
+                "cloudTtsAuthMode": VF_TTS_TEXTTOSPEECH_AUTH_MODE,
                 "runtimeRole": VF_RUNTIME_ROLE,
-                "ttsAllocatorRateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
+                "ttsAllocatorRateLimitsDisabled": _tts_allocator_limits_disabled(),
                 "device": "hosted",
                 "deviceMode": "remote",
                 "provider": provider,

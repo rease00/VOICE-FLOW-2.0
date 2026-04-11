@@ -157,6 +157,7 @@ export const withBoundedRetry = async (runner, options = {}) => {
   const maxRetries = Math.max(0, Number(options.maxRetries || 0));
   const baseDelayMs = Math.max(100, Number(options.baseDelayMs || 600));
   const shouldRetry = typeof options.shouldRetry === 'function' ? options.shouldRetry : () => false;
+  const getRetryDelayMs = typeof options.getRetryDelayMs === 'function' ? options.getRetryDelayMs : null;
 
   let attempt = 0;
   // Retries are bounded and only applied to transient classes.
@@ -169,7 +170,11 @@ export const withBoundedRetry = async (runner, options = {}) => {
       };
     }
     const backoffMs = baseDelayMs * Math.pow(2, attempt);
-    await sleep(backoffMs);
+    const requestedDelayMs = getRetryDelayMs ? Number(getRetryDelayMs(result, attempt, backoffMs)) : backoffMs;
+    const safeDelayMs = Number.isFinite(requestedDelayMs)
+      ? Math.max(100, Math.round(requestedDelayMs))
+      : backoffMs;
+    await sleep(safeDelayMs);
     attempt += 1;
   }
   return { attempts: maxRetries + 1 };

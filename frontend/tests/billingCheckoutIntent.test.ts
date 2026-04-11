@@ -108,7 +108,7 @@ describe('billingCheckoutIntent', () => {
     const intent = createBillingCheckoutIntent(
       {
         kind: 'vc-token-pack',
-        selection: { vcPackKey: 'standard' },
+        selection: { vcPackKey: 'scale' },
         authMode: 'login',
         resumePath: '/billing?tab=vc-packs',
         createdAt,
@@ -118,12 +118,23 @@ describe('billingCheckoutIntent', () => {
 
     expect(intent).toEqual({
       kind: 'vc-token-pack',
-      selection: { vcPackKey: 'standard' },
+      selection: { vcPackKey: 'scale' },
       authMode: 'login',
       resumePath: '/billing?tab=vc-packs',
       createdAt,
       expiresAt: createdAt + BILLING_CHECKOUT_INTENT_TTL_MS,
     });
+  });
+
+  it('rejects invalid VC pack keys', () => {
+    const intent = createBillingCheckoutIntent({
+      kind: 'vc-token-pack',
+      selection: { vcPackKey: 'enterprise' as unknown as 'starter' },
+      authMode: 'login',
+      resumePath: '/billing?tab=vc-packs',
+    });
+
+    expect(intent).toBeNull();
   });
 
   it('expires stale intents and clears them from storage', () => {

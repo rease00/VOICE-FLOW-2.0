@@ -27,6 +27,7 @@ def _voice_clone_job_isolation(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
     monkeypatch.setattr(backend_app, "_firebase_ready", lambda: False)
     monkeypatch.setattr(backend_app, "_require_request_uid", lambda request: "test_uid")
+    monkeypatch.setattr(backend_app, "_request_is_admin", lambda request, uid=None: True)
     yield
     _reset_voice_clone_jobs()
 
@@ -67,9 +68,10 @@ def _run_jobs_inline(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_openvoice_async_job_is_deduped_and_hides_audio_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     _run_jobs_inline(monkeypatch)
 
-    def _fake_openvoice_payload(payload, *, request=None, uid=""):  # noqa: ANN001
+    def _fake_openvoice_payload(payload, *, request=None, uid="", is_admin=False):  # noqa: ANN001
         _ = request
         assert uid == "test_uid"
+        assert is_admin is True
         return {
             "ok": True,
             "status": "completed",
@@ -141,9 +143,10 @@ def test_openvoice_async_job_registry_survives_restart_and_dedupes_via_redis(mon
     monkeypatch.setattr(backend_app, "_tts_v2_session_redis_client", lambda: fake_redis)
     _run_jobs_inline(monkeypatch)
 
-    def _fake_openvoice_payload(payload, *, request=None, uid=""):  # noqa: ANN001
+    def _fake_openvoice_payload(payload, *, request=None, uid="", is_admin=False):  # noqa: ANN001
         _ = request
         assert uid == "test_uid"
+        assert is_admin is True
         return {
             "ok": True,
             "status": "completed",
@@ -217,9 +220,10 @@ def test_voice_clone_cancel_endpoint_wins_over_inflight_success(monkeypatch: pyt
     started_event = threading.Event()
     release = threading.Event()
 
-    def _slow_success(payload, *, request=None, uid=""):  # noqa: ANN001
+    def _slow_success(payload, *, request=None, uid="", is_admin=False):  # noqa: ANN001
         _ = payload, request
         assert uid == "test_uid"
+        assert is_admin is True
         started_event.set()
         release.wait(timeout=2.0)
         return {

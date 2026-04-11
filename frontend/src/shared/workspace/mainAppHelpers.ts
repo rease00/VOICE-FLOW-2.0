@@ -50,8 +50,6 @@ export const formatMobileAvailableCreditsPercent = (input: {
 
 const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['VECTOR', 'PRIME']);
 const LEGACY_ENGINE_TOKEN_MAP: Record<string, GenerationSettings['engine']> = {
-  KOKORO: 'VECTOR',
-  KOKORO_RUNTIME: 'VECTOR',
   BASIC: 'VECTOR',
   GEMINI: 'PRIME',
   GEMINI_RUNTIME: 'PRIME',

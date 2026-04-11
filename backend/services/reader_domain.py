@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Optional
+from urllib.parse import quote
 
 READER_TEXT_WINDOW_CHARS = 1500
 READER_TEXT_PREFETCH_THRESHOLD_CHARS = 1000
@@ -187,60 +188,6 @@ READER_FALLBACK_CATALOG: tuple[dict[str, Any], ...] = (
             "Hatha nass qasir lil-ibhar bi tajribat Reader."
         ),
     },
-    {
-        "id": "seed_english_pepper_carrot_39",
-        "title": "Episode 39: The Tavern",
-        "author": "David Revoy",
-        "regionId": "english",
-        "contentKind": "comic",
-        "provider": "pepper_carrot",
-        "license": "CC BY 4.0",
-        "sourceUrl": "https://www.peppercarrot.com/en/webcomic/ep39_The-Tavern.html",
-        "contentUrl": "https://www.peppercarrot.com/en/webcomic/ep39_The-Tavern.html",
-        "coverUrl": "https://www.peppercarrot.com/0_sources/ep39_The-Tavern/low-res/en_Pepper-and-Carrot_by-David-Revoy_E39P00.jpg",
-        "summary": "A production-safe Pepper&Carrot shelf pick with full CC BY 4.0 commercial reuse.",
-        "readingModeDefault": "vertical_strip",
-        "direction": "vertical-scroll",
-        "collectionLabel": "Pepper&Carrot",
-        "supportsReadHere": True,
-        "sourceMeta": {"episodeUrl": "https://www.peppercarrot.com/en/webcomic/ep39_The-Tavern.html"},
-    },
-    {
-        "id": "seed_english_pepper_carrot_26",
-        "title": "Episode 26: Books Are Great",
-        "author": "David Revoy",
-        "regionId": "english",
-        "contentKind": "comic",
-        "provider": "pepper_carrot",
-        "license": "CC BY 4.0",
-        "sourceUrl": "https://www.peppercarrot.com/en/webcomic/ep26_Books-Are-Great.html",
-        "contentUrl": "https://www.peppercarrot.com/en/webcomic/ep26_Books-Are-Great.html",
-        "coverUrl": "https://www.peppercarrot.com/0_sources/ep26_Books-Are-Great/low-res/en_Pepper-and-Carrot_by-David-Revoy_E26P00.jpg",
-        "summary": "An open-license Pepper&Carrot episode that fits the Reader's manga and comics shelf.",
-        "readingModeDefault": "vertical_strip",
-        "direction": "vertical-scroll",
-        "collectionLabel": "Pepper&Carrot",
-        "supportsReadHere": True,
-        "sourceMeta": {"episodeUrl": "https://www.peppercarrot.com/en/webcomic/ep26_Books-Are-Great.html"},
-    },
-    {
-        "id": "seed_english_pepper_carrot_01",
-        "title": "Episode 1: The Potion of Flight",
-        "author": "David Revoy",
-        "regionId": "english",
-        "contentKind": "comic",
-        "provider": "pepper_carrot",
-        "license": "CC BY 4.0",
-        "sourceUrl": "https://www.peppercarrot.com/en/webcomic/ep01_Potion-of-Flight.html",
-        "contentUrl": "https://www.peppercarrot.com/en/webcomic/ep01_Potion-of-Flight.html",
-        "coverUrl": "https://www.peppercarrot.com/0_sources/ep01_Potion-of-Flight/low-res/en_Pepper-and-Carrot_by-David-Revoy_E01P00.jpg",
-        "summary": "The first Pepper&Carrot episode, added as a safe fallback comic source for commercial Reader deployments.",
-        "readingModeDefault": "vertical_strip",
-        "direction": "vertical-scroll",
-        "collectionLabel": "Pepper&Carrot",
-        "supportsReadHere": True,
-        "sourceMeta": {"episodeUrl": "https://www.peppercarrot.com/en/webcomic/ep01_Potion-of-Flight.html"},
-    },
 )
 
 
@@ -269,22 +216,20 @@ def normalize_reader_surface(raw_value: object) -> str:
 
 def normalize_reader_content_kind(raw_value: object) -> str:
     token = str(raw_value or "book").strip().lower()
-    if token in {"comic", "manga", "panel"}:
+    if token in {"comic", "manga", "panel", "image"}:
         return "comic"
     return "book"
 
 
 def normalize_reader_direction(raw_value: object, *, content_kind: str = "book") -> str:
     token = str(raw_value or "").strip().lower().replace("_", "-")
-    if token in {"rtl-horizontal", "right-to-left-horizontal", "manga"}:
+    if token in {"rtl-horizontal", "right-to-left-horizontal", "manga", "rtl-paged"}:
         return "rtl-horizontal"
-    if token in {"vertical", "scroll", "vertical-scroll"}:
+    if token in {"vertical", "scroll", "vertical-scroll", "vertical-strip"}:
         return "vertical-scroll"
-    if token in {"ltr-horizontal", "left-to-right-horizontal"}:
+    if token in {"ltr-horizontal", "left-to-right-horizontal", "ltr-paged"}:
         return "ltr-horizontal"
-    if normalize_reader_content_kind(content_kind) == "comic":
-        return "vertical-scroll"
-    return "vertical-scroll"
+    return "vertical-scroll" if normalize_reader_content_kind(content_kind) == "comic" else "vertical-scroll"
 
 
 def collapse_whitespace(value: object) -> str:
@@ -456,6 +401,58 @@ def build_panel_manifest(
     return panels
 
 
+def _extract_nested_language_code(value: object) -> str:
+    if isinstance(value, dict):
+        for key in ("key", "code", "id", "name"):
+            code = normalize_catalog_language(value.get(key))
+            if code:
+                return code
+    if isinstance(value, list):
+        for item in value:
+            code = _extract_nested_language_code(item)
+            if code:
+                return code
+    token = str(value or "").strip().lower()
+    if "/languages/" in token:
+        token = token.rsplit("/languages/", 1)[-1]
+    token = token.replace("_", "-")
+    if len(token) >= 2:
+        return token[:2]
+    return ""
+
+
+def normalize_catalog_language(raw_value: object) -> str:
+    return _extract_nested_language_code(raw_value)
+
+
+def language_matches_region(language: object, region_id: str) -> bool:
+    normalized = normalize_catalog_language(language)
+    if not normalized:
+        return False
+    region = reader_region(region_id)
+    codes = {normalize_catalog_language(item) for item in region.get("languageCodes") or ()}
+    codes.add(normalize_catalog_language(region.get("locale")))
+    return normalized in codes
+
+
+def is_open_license_string(value: object) -> bool:
+    token = collapse_whitespace(value).lower()
+    if not token:
+        return False
+    return any(
+        marker in token
+        for marker in (
+            "public domain",
+            "cc by",
+            "creative commons",
+            "open access",
+            "open license",
+            "gutenberg",
+            "wikisource",
+        )
+    )
+
+
 def normalize_reader_catalog_item(raw_item: dict[str, Any]) -> dict[str, Any]:
     region = reader_region(str(raw_item.get("regionId") or "english"))
     content_kind = normalize_reader_content_kind(raw_item.get("contentKind"))
@@ -469,7 +466,7 @@ def normalize_reader_catalog_item(raw_item: dict[str, Any]) -> dict[str, Any]:
         "regionId": str(region.get("id") or "english"),
         "regionLabel": str(region.get("label") or "English"),
         "contentKind": content_kind,
-        "surface": "books" if content_kind == "book" else "comics",
+        "surface": normalize_reader_surface(raw_item.get("surface") or ("comics" if content_kind == "comic" else "books")),
         "provider": str(raw_item.get("provider") or "catalog").strip() or "catalog",
         "license": str(raw_item.get("license") or "").strip(),
         "sourceUrl": str(raw_item.get("sourceUrl") or "").strip(),
@@ -488,6 +485,108 @@ def normalize_reader_catalog_item(raw_item: dict[str, Any]) -> dict[str, Any]:
         "collectionLabel": str(raw_item.get("collectionLabel") or "").strip(),
         "stats": dict(raw_item.get("stats") or {}),
     }
+
+
+def normalize_openlibrary_item(item: dict[str, Any], *, region_id: str) -> Optional[dict[str, Any]]:
+    language = normalize_catalog_language(item.get("language"))
+    if language and not language_matches_region(language, region_id):
+        return None
+    work_key = str(item.get("key") or "").strip()
+    edition_key = ""
+    edition_keys = item.get("edition_key")
+    if isinstance(edition_keys, list) and edition_keys:
+        edition_key = str(edition_keys[0] or "").strip()
+    identifier = work_key.rsplit("/", 1)[-1] or edition_key or str(item.get("cover_edition_key") or "").strip()
+    if not identifier:
+        return None
+    title = str(item.get("title") or item.get("title_suggest") or "").strip() or "Untitled"
+    authors = item.get("author_name") if isinstance(item.get("author_name"), list) else []
+    author = ", ".join([str(name).strip() for name in authors if str(name).strip()][:2]) or "Open Library"
+    cover_id = str(item.get("cover_i") or "").strip()
+    ia_ids = item.get("ia") if isinstance(item.get("ia"), list) else []
+    archive_id = str(ia_ids[0] or "").strip() if ia_ids else ""
+    return normalize_reader_catalog_item(
+        {
+            "id": f"openlibrary_{identifier}",
+            "title": title,
+            "author": author,
+            "regionId": region_id,
+            "contentKind": "book",
+            "provider": "openlibrary",
+            "license": "Open Library public scan",
+            "sourceUrl": f"https://openlibrary.org{work_key}" if work_key else f"https://openlibrary.org/books/{quote(identifier)}",
+            "summary": collapse_whitespace(item.get("first_sentence") or item.get("subtitle") or ""),
+            "contentUrl": f"https://openlibrary.org{work_key}" if work_key else "",
+            "archiveTxtUrl": f"https://archive.org/download/{quote(archive_id)}/{quote(archive_id)}_djvu.txt" if archive_id else "",
+            "coverUrl": f"https://covers.openlibrary.org/b/id/{quote(cover_id)}-L.jpg" if cover_id else "",
+            "supportsReadHere": bool(archive_id),
+            "sourceMeta": {
+                "workKey": work_key,
+                "editionKey": edition_key,
+                "language": language,
+            },
+        }
+    )
+
+
+def normalize_internet_archive_item(item: dict[str, Any], *, region_id: str) -> Optional[dict[str, Any]]:
+    identifier = str(item.get("identifier") or "").strip()
+    if not identifier:
+        return None
+    language = normalize_catalog_language(item.get("language"))
+    if language and not language_matches_region(language, region_id):
+        return None
+    mediatype = str(item.get("mediatype") or "texts").strip().lower()
+    content_kind = "comic" if mediatype == "image" else "book"
+    license_value = str(item.get("licenseurl") or item.get("rights") or "Internet Archive listing").strip()
+    return normalize_reader_catalog_item(
+        {
+            "id": f"internet_archive_{identifier}",
+            "title": str(item.get("title") or identifier).strip() or identifier,
+            "author": collapse_whitespace(item.get("creator") or "Internet Archive") or "Internet Archive",
+            "regionId": region_id,
+            "contentKind": content_kind,
+            "provider": "internet_archive",
+            "license": license_value,
+            "sourceUrl": f"https://archive.org/details/{quote(identifier)}",
+            "contentUrl": f"https://archive.org/details/{quote(identifier)}",
+            "archiveTxtUrl": str(item.get("archiveTxtUrl") or f"https://archive.org/download/{quote(identifier)}/{quote(identifier)}_djvu.txt").strip(),
+            "summary": collapse_whitespace(item.get("description") or ""),
+            "supportsReadHere": content_kind == "book",
+            "sourceMeta": {
+                "identifier": identifier,
+                "language": language,
+                "mediatype": mediatype,
+                "openLicense": is_open_license_string(license_value),
+            },
+        }
+    )
+
+
+def normalize_mediawiki_item(item: dict[str, Any], *, region_id: str, source_url: str) -> Optional[dict[str, Any]]:
+    page_id = str(item.get("pageid") or item.get("id") or "").strip()
+    title = str(item.get("title") or "").strip()
+    if not page_id and not title:
+        return None
+    identifier = page_id or quote(title.replace(" ", "_"))
+    return normalize_reader_catalog_item(
+        {
+            "id": f"mediawiki_{identifier}",
+            "title": title or "Untitled",
+            "author": "Wikisource",
+            "regionId": region_id,
+            "contentKind": "book",
+            "provider": "mediawiki",
+            "license": "Wikisource open text",
+            "sourceUrl": str(item.get("fullurl") or item.get("canonicalurl") or f"{source_url.rstrip('/')}/wiki/{quote(title.replace(' ', '_'))}").strip(),
+            "contentUrl": str(item.get("fullurl") or item.get("canonicalurl") or "").strip(),
+            "summary": collapse_whitespace(item.get("extract") or ""),
+            "supportsReadHere": True,
+            "sourceMeta": {
+                "pageId": page_id,
+            },
+        }
+    )
 
 
 def fallback_catalog_items(region_id: Optional[str] = None, *, content_kind: str = "book") -> list[dict[str, Any]]:

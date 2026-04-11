@@ -3,8 +3,8 @@ import { AppScreen } from '../../types';
 export const APP_ROUTE_PATHS = {
   main: '/app',
   studio: '/app/studio',
-  reader: '/app/reader',
   writing: '/app/writing',
+  novel: '/app/novel',
   voices: '/app/voices',
   runs: '/app/runs',
   admin: '/app/admin',
@@ -23,13 +23,11 @@ export const PUBLIC_ROUTE_PATHS = {
 export type AppRoutePath = typeof APP_ROUTE_PATHS[keyof typeof APP_ROUTE_PATHS];
 export type AuthRouteMode = 'login' | 'signup';
 
-const READER_ALIAS_PATHNAME = '/reader';
-
 const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.main,
   APP_ROUTE_PATHS.studio,
-  APP_ROUTE_PATHS.reader,
   APP_ROUTE_PATHS.writing,
+  APP_ROUTE_PATHS.novel,
   APP_ROUTE_PATHS.voices,
   APP_ROUTE_PATHS.runs,
   APP_ROUTE_PATHS.admin,
@@ -41,24 +39,6 @@ const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
 ]);
 
 const INTERNAL_NEXT_ORIGIN = 'https://voiceflow.internal';
-
-const isReaderAliasPathname = (pathname: string): boolean => (
-  pathname === READER_ALIAS_PATHNAME || pathname.startsWith(`${READER_ALIAS_PATHNAME}/`)
-);
-
-const normalizeReaderAliasPathname = (pathname: string): string => {
-  if (pathname === READER_ALIAS_PATHNAME) return APP_ROUTE_PATHS.reader;
-  if (pathname.startsWith(`${READER_ALIAS_PATHNAME}/`)) {
-    return `${APP_ROUTE_PATHS.reader}${pathname.slice(READER_ALIAS_PATHNAME.length)}`;
-  }
-  return pathname;
-};
-
-const isAllowedInternalNextPathname = (pathname: string): boolean => {
-  if (INTERNAL_NEXT_ALLOWLIST.has(pathname)) return true;
-  if (pathname.startsWith(`${APP_ROUTE_PATHS.reader}/`)) return true;
-  return isReaderAliasPathname(pathname);
-};
 
 const normalizeInternalPathname = (pathname: string): string => {
   const safePath = String(pathname || '').trim().replace(/\/+$/, '') || '/';
@@ -72,16 +52,16 @@ const parseInternalNextPath = (candidate?: string | null): string | null => {
     const url = new URL(raw, INTERNAL_NEXT_ORIGIN);
     if (url.origin !== INTERNAL_NEXT_ORIGIN) return null;
     const pathname = normalizeInternalPathname(url.pathname);
-    if (!isAllowedInternalNextPathname(pathname)) return null;
-    return `${normalizeReaderAliasPathname(pathname)}${url.search}${url.hash}`;
+    if (!INTERNAL_NEXT_ALLOWLIST.has(pathname)) return null;
+    return `${pathname}${url.search}${url.hash}`;
   } catch {
     return null;
   }
 };
 
-export const resolveSafeInternalNextPath = (candidate?: string | null, fallback: string | null = null): string | null => {
-  return parseInternalNextPath(candidate) || parseInternalNextPath(fallback);
-};
+export const resolveSafeInternalNextPath = (candidate?: string | null, fallback: string | null = null): string | null => (
+  parseInternalNextPath(candidate) || parseInternalNextPath(fallback)
+);
 
 export const resolveLoginPath = (mode?: AuthRouteMode, nextPath?: string | null): string => {
   const params = new URLSearchParams();
@@ -120,19 +100,15 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.profile:
       return AppScreen.PROFILE;
     case APP_ROUTE_PATHS.studio:
-    case APP_ROUTE_PATHS.reader:
     case APP_ROUTE_PATHS.writing:
+    case APP_ROUTE_PATHS.novel:
     case APP_ROUTE_PATHS.voices:
     case APP_ROUTE_PATHS.runs:
     case APP_ROUTE_PATHS.billing:
     case APP_ROUTE_PATHS.admin:
-      return AppScreen.MAIN;
     case APP_ROUTE_PATHS.main:
       return AppScreen.MAIN;
     default:
-      if (isReaderAliasPathname(safePath) || safePath.startsWith(`${APP_ROUTE_PATHS.reader}/`)) {
-        return AppScreen.MAIN;
-      }
       return null;
   }
 };
@@ -141,10 +117,7 @@ export const shouldBootstrapAccountDataForPath = (pathname?: string | null): boo
   const safePath = String(pathname || '').trim().replace(/\/+$/, '') || '/';
   if (!safePath || safePath === '/') return false;
   if (safePath.startsWith('/legal')) return false;
-  if (
-    safePath === APP_ROUTE_PATHS.login
-    || safePath === APP_ROUTE_PATHS.onboarding
-  ) {
+  if (safePath === APP_ROUTE_PATHS.login || safePath === APP_ROUTE_PATHS.onboarding) {
     return false;
   }
   return (
@@ -152,6 +125,5 @@ export const shouldBootstrapAccountDataForPath = (pathname?: string | null): boo
     || safePath === APP_ROUTE_PATHS.billing
     || safePath === PUBLIC_ROUTE_PATHS.billing
     || safePath.startsWith('/app')
-    || isReaderAliasPathname(safePath)
   );
 };

@@ -17,9 +17,24 @@ describe('isPublicDeploymentHost', () => {
 });
 
 describe('shouldEnforcePrivateMode', () => {
-  it('never locks public deployment hosts even when private mode is enabled', () => {
+  it('keeps public deployment hosts open by default even when private mode is enabled', () => {
     expect(shouldEnforcePrivateMode({ VF_SITE_PRIVATE: '1' }, 'v-flow-ai.com')).toBe(false);
     expect(shouldEnforcePrivateMode({ VF_SITE_PRIVATE: '1' }, 'v-flow-ai.pages.dev')).toBe(false);
+  });
+
+  it('can lock public deployment hosts when forced for private preview', () => {
+    expect(
+      shouldEnforcePrivateMode(
+        { VF_SITE_PRIVATE: '1', VF_SITE_PRIVATE_FORCE_PUBLIC: '1' },
+        'v-flow-ai.com',
+      ),
+    ).toBe(true);
+    expect(
+      shouldEnforcePrivateMode(
+        { VF_SITE_PRIVATE: '1', VF_SITE_PRIVATE_FORCE_PUBLIC: '1' },
+        'v-flow-ai.pages.dev',
+      ),
+    ).toBe(true);
   });
 
   it('locks non-public hosts when private mode is enabled', () => {

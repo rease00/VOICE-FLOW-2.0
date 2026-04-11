@@ -447,7 +447,6 @@ const auditEngine = async (config, engineStatus, engineCapabilities) => {
       stream: true,
       liveChunkChars: LIVE_CHUNK_CHARS,
     },
-    statusProbe: engineStatus || null,
     capabilities: engineCapabilities || null,
     expectedText: AUDIT_TEXT,
     normalizedExpectedText: null,
@@ -541,8 +540,13 @@ const auditEngine = async (config, engineStatus, engineCapabilities) => {
 const main = async () => {
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
 
-  const statusProbe = await fetchJson(
-    `${BACKEND_URL}/tts/engines/status`,
+  const healthProbe = await fetchJson(
+    `${BACKEND_URL}/health`,
+    { method: 'GET', headers: AUTH_HEADERS },
+    12_000
+  );
+  const queueMetricsProbe = await fetchJson(
+    `${BACKEND_URL}/admin/tts/queue/metrics`,
     { method: 'GET', headers: AUTH_HEADERS },
     12_000
   );
@@ -551,10 +555,6 @@ const main = async () => {
     { method: 'GET', headers: AUTH_HEADERS },
     12_000
   );
-
-  const statusByEngine = statusProbe.ok && statusProbe.payload?.engines && typeof statusProbe.payload.engines === 'object'
-    ? statusProbe.payload.engines
-    : {};
 
   const capabilitiesByEngine = capabilitiesProbe.ok
     ? {
@@ -567,7 +567,7 @@ const main = async () => {
   for (const config of ENGINES) {
     const entry = await auditEngine(
       config,
-      statusByEngine?.[config.engine] || null,
+      null,
       capabilitiesByEngine?.[config.engine] || null,
     );
     results.push(entry);
@@ -589,10 +589,15 @@ const main = async () => {
       devUid: String(AUTH.devUid || '').trim() || null,
     },
     preflight: {
-      enginesStatus: {
-        ok: statusProbe.ok,
-        status: statusProbe.status,
-        payload: statusProbe.payload,
+      health: {
+        ok: healthProbe.ok,
+        status: healthProbe.status,
+        payload: healthProbe.payload,
+      },
+      queueMetrics: {
+        ok: queueMetricsProbe.ok,
+        status: queueMetricsProbe.status,
+        payload: queueMetricsProbe.payload,
       },
       capabilities: {
         ok: capabilitiesProbe.ok,

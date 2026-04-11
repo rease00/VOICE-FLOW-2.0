@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import pytest
-import threading
-import time
 import uuid
 from fastapi.testclient import TestClient
 
@@ -17,22 +15,23 @@ def _disable_auth_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
 
 
-@pytest.fixture(autouse=True)
-def _reset_runtime_status_cache() -> None:
-    backend_app._invalidate_tts_status_cache()
-    yield
-    backend_app._invalidate_tts_status_cache()
-
 def test_tts_engines_status_contract(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "_probe_runtime_health", lambda _url, timeout_sec=3.0: (True, "online"))
-    monkeypatch.setattr(backend_app, "_probe_runtime_capabilities", lambda _engine, timeout_sec=3.0: {"ready": True})
-
+    monkeypatch.setattr(
+        backend_app,
+        "_probe_engine_runtime_health",
+        lambda _engine, **_kwargs: (True, "Runtime online", "http://runtime.test/health"),
+    )
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
     response = client.get("/tts/engines/status", params={"engine": "PRIME"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["engines"]["PRIME"]["state"] == "online"
-    assert "runtimeUrl" in payload["engines"]["PRIME"]
+    engine_payload = payload["engines"]["PRIME"]
+    assert engine_payload["state"] == "online"
+    assert engine_payload["ready"] is True
+    assert "runtimeUrl" in engine_payload
+    assert "runtime online" in str(engine_payload["detail"]).lower()
 
 
 @pytest.mark.parametrize("legacy_engine", ["NEURAL2", "GEM", "GEM1", "GEM PRO"])
@@ -42,135 +41,103 @@ def test_tts_engines_status_rejects_legacy_engine_tokens(legacy_engine: str) -> 
     assert "VECTOR or PRIME" in str(response.json().get("detail") or response.text)
 
 
-def test_tts_engines_status_all_uses_canonical_keys(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "_probe_runtime_health", lambda _url, timeout_sec=3.0: (True, "online"))
-    monkeypatch.setattr(backend_app, "_probe_runtime_capabilities", lambda _engine, timeout_sec=3.0: {"ready": True})
-
+def test_tts_engines_status_all_uses_canonical_keys() -> None:
     response = client.get("/tts/engines/status", params={"engine": "all"})
     assert response.status_code == 200
     payload = response.json()
     assert set(payload["engines"].keys()) == {"VECTOR", "PRIME"}
 
 
-def test_tts_engines_status_uses_cache_within_ttl(monkeypatch) -> None:
-    calls = {"count": 0}
+def test_tts_engines_status_all_reuses_shared_health_probe(monkeypatch) -> None:
+    call_counter = {"count": 0}
 
-    def _fake_uncached(engine: str) -> dict[str, object]:
-        calls["count"] += 1
-        return {
-            "engine": engine,
-            "runtimeUrl": "http://127.0.0.1:7810",
-            "healthUrl": "http://127.0.0.1:7810/health",
-            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
-            "ready": True,
-            "state": "online",
-            "detail": "Runtime online",
-            "capabilities": {"ready": True},
+    def _probe(_engine: str, **_kwargs):
+        call_counter["count"] += 1
+        return True, "Runtime online", "http://runtime.test/health"
+
+    monkeypatch.setattr(backend_app, "_probe_engine_runtime_health", _probe)
+    monkeypatch.setattr(backend_app, "VF_TTS_STATUS_CACHE_TTL_MS", 60_000)
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
+
+    response = client.get("/tts/engines/status", params={"engine": "all"})
+    assert response.status_code == 200
+    expected_probe_calls = len(
+        {
+            str(backend_app.TTS_ENGINE_HEALTH_URLS.get(engine) or "").strip().lower()
+            for engine in {"VECTOR", "PRIME"}
+            if str(backend_app.TTS_ENGINE_HEALTH_URLS.get(engine) or "").strip()
         }
-
-    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 5_000)
-
-    first = client.get("/tts/engines/status", params={"engine": "PRIME"})
-    second = client.get("/tts/engines/status", params={"engine": "PRIME"})
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert calls["count"] == 1
+    )
+    assert call_counter["count"] == expected_probe_calls
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
 
 
-def test_tts_engines_status_degraded_cache_refreshes_quickly(monkeypatch) -> None:
-    calls = {"count": 0}
+def test_tts_engines_status_force_refresh_bypasses_cache(monkeypatch) -> None:
+    call_counter = {"count": 0}
 
-    def _fake_uncached(engine: str) -> dict[str, object]:
-        calls["count"] += 1
-        return {
-            "engine": engine,
-            "runtimeUrl": "http://127.0.0.1:7810",
-            "healthUrl": "http://127.0.0.1:7810/health",
-            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
-            "ready": False,
-            "state": "offline",
-            "detail": "Runtime offline",
-            "capabilities": {"ready": False},
-        }
+    def _probe(_engine: str, **_kwargs):
+        call_counter["count"] += 1
+        return True, f"Runtime online #{call_counter['count']}", "http://runtime.test/health"
 
-    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 10)
+    monkeypatch.setattr(backend_app, "_probe_engine_runtime_health", _probe)
+    monkeypatch.setattr(
+        backend_app,
+        "VF_TTS_STATUS_CACHE_TTL_MS",
+        60_000,
+    )
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
 
     first = client.get("/tts/engines/status", params={"engine": "PRIME"})
     assert first.status_code == 200
-    time.sleep(0.03)
+    assert call_counter["count"] == 1
+    assert "online #1" in str(first.json()["engines"]["PRIME"]["detail"]).lower()
+
     second = client.get("/tts/engines/status", params={"engine": "PRIME"})
     assert second.status_code == 200
-    assert calls["count"] == 2
+    assert call_counter["count"] == 1
+    assert "online #1" in str(second.json()["engines"]["PRIME"]["detail"]).lower()
+
+    forced = client.get("/tts/engines/status", params={"engine": "PRIME", "force": "1"})
+    assert forced.status_code == 200
+    assert call_counter["count"] == 2
+    assert "online #2" in str(forced.json()["engines"]["PRIME"]["detail"]).lower()
+
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
 
 
-def test_tts_engines_capabilities_reuses_status_cache(monkeypatch) -> None:
-    calls = {"count": 0}
-
-    def _fake_uncached(engine: str) -> dict[str, object]:
-        calls["count"] += 1
-        return {
-            "engine": engine,
-            "runtimeUrl": "http://127.0.0.1:7810",
-            "healthUrl": "http://127.0.0.1:7810/health",
-            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
-            "ready": True,
-            "state": "online",
-            "detail": "Runtime online",
-            "capabilities": {"ready": True, "metadata": {"source": "runtime"}},
-        }
-
-    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 5_000)
-
-    status_response = client.get("/tts/engines/status", params={"engine": "PRIME"})
-    caps_response = client.get("/tts/engines/capabilities", params={"engine": "PRIME"})
-    assert status_response.status_code == 200
+def test_tts_engines_capabilities_returns_static_contract() -> None:
+    caps_response = client.get("/tts/engines/capabilities", params={"engine": "PRIME", "force": "1"})
     assert caps_response.status_code == 200
-    assert calls["count"] == 1
-    assert caps_response.json()["engines"]["PRIME"]["ready"] is True
+    payload = caps_response.json()
+    prime_caps = payload["engines"]["PRIME"]
+    metadata = prime_caps.get("metadata") if isinstance(prime_caps, dict) else {}
+    assert prime_caps["ready"] is False
+    assert metadata["source"] == "compatibility_static"
+    assert metadata["statusProbeDisabled"] is True
 
 
-def test_tts_status_cache_coalesces_concurrent_refresh(monkeypatch) -> None:
-    calls = {"count": 0}
-
-    def _fake_uncached(engine: str) -> dict[str, object]:
-        calls["count"] += 1
-        time.sleep(0.08)
-        return {
-            "engine": engine,
-            "runtimeUrl": "http://127.0.0.1:7810",
-            "healthUrl": "http://127.0.0.1:7810/health",
-            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
-            "ready": True,
-            "state": "online",
-            "detail": "Runtime online",
-            "capabilities": {"ready": True},
-        }
-
-    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
-    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 5_000)
-
-    results: list[str] = []
-
-    def _worker() -> None:
-        payload = backend_app._engine_status_entry("PRIME")
-        results.append(str(payload.get("state") or ""))
-
-    threads = [threading.Thread(target=_worker) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=2.0)
-
-    assert len(results) == 4
-    assert calls["count"] == 1
-    assert all(state == "online" for state in results)
+def test_tts_engines_status_cache_returns_live_probe_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        backend_app,
+        "_probe_engine_runtime_health",
+        lambda _engine, **_kwargs: (False, "Runtime offline", "http://runtime.test/health"),
+    )
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
+    response = client.get("/tts/engines/status", params={"engine": "PRIME"})
+    assert response.status_code == 200
+    engine_payload = response.json()["engines"]["PRIME"]
+    assert engine_payload["state"] == "offline"
+    assert engine_payload["ready"] is False
+    metadata = ((engine_payload.get("capabilities") or {}).get("metadata") or {})
+    assert metadata.get("source") == "status_live_probe"
+    assert metadata.get("statusProbeDisabled") is False
+    backend_app._TTS_ENGINE_STATUS_CACHE.clear()
+    backend_app._TTS_RUNTIME_HEALTH_CACHE.clear()
 
 
 def test_frontend_gateway_routes_are_registered() -> None:
@@ -313,8 +280,6 @@ def test_tts_v2_job_create_rejects_non_canonical_engines(monkeypatch, engine: st
 def test_phase2_startup_does_not_start_legacy_tts_workers(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_SERVICE_IS_API", False)
     monkeypatch.setattr(backend_app, "VF_SERVICE_IS_WORKER", True)
-    monkeypatch.setattr(backend_app, "_reader_session_load_from_disk", lambda: None)
-    monkeypatch.setattr(backend_app, "_reader_resume_remote_comic_hydration_jobs", lambda: None)
     monkeypatch.setattr(backend_app, "_ensure_scheduler_started", lambda: None)
     monkeypatch.setattr(
         backend_app,
@@ -349,30 +314,6 @@ def test_removed_podcast_and_lab_routes_return_404() -> None:
     for path in removed_routes:
         response = client.get(path, headers={"x-dev-uid": "route_check_user"})
         assert response.status_code == 404
-
-
-def test_tts_engines_status_reports_not_configured_when_gemini_keys_missing(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "_probe_runtime_health", lambda _url, timeout_sec=3.0: (True, "online"))
-    monkeypatch.setattr(
-        backend_app,
-        "_probe_runtime_capabilities",
-        lambda _engine, timeout_sec=3.0: {
-            "ready": True,
-            "metadata": {
-                "authMode": "gemini_api",
-                "apiKeyConfigured": False,
-            },
-        },
-    )
-
-    response = client.get("/tts/engines/status", params={"engine": "PRIME"})
-    assert response.status_code == 200
-    payload = response.json()
-    engine = payload["engines"]["PRIME"]
-    assert engine["state"] == "not_configured"
-    assert engine["ready"] is False
-    assert "slot" in str(engine["detail"]).lower()
-
 
 def test_probe_runtime_health_treats_explicit_unhealthy_payload_as_offline(monkeypatch) -> None:
     class _FakeResponse:

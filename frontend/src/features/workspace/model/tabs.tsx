@@ -1,21 +1,20 @@
 import React from 'react';
-import { BookOpen, BookText, Coins, History, Mic, ShieldCheck } from 'lucide-react';
+import { BookOpen, Coins, History, Mic, ShieldCheck } from 'lucide-react';
 
 export enum WorkspaceTab {
+  WRITING = 'WRITING',
+  NOVEL = 'WRITING',
   STUDIO = 'STUDIO',
-  READER = 'READER',
   VOICE_CLONING = 'VOICE_CLONING',
-  NOVEL = 'NOVEL',
   HISTORY = 'HISTORY',
   BILLING = 'BILLING',
   ADMIN = 'ADMIN',
 }
 
-export type WorkspaceNavSection = 'create' | 'library' | 'account' | 'admin';
+export type WorkspaceNavSection = 'create' | 'account' | 'admin';
 
 export const WORKSPACE_NAV_SECTION_LABELS: Record<WorkspaceNavSection, string> = {
   create: 'Create',
-  library: 'Library',
   account: 'Account',
   admin: 'Admin',
 };
@@ -30,7 +29,6 @@ export interface WorkspaceTabItem {
 }
 
 export interface WorkspacePreloadTargetOptions {
-  allowReaderPreload?: boolean;
   allowNextPreloadFromStudio?: boolean;
 }
 
@@ -53,7 +51,7 @@ export const buildWorkspaceTabs = (isAdmin: boolean): WorkspaceTabItem[] => {
       route: '/app/voices',
     },
     {
-      id: WorkspaceTab.NOVEL,
+      id: WorkspaceTab.WRITING,
       icon: <BookOpen size={18} />,
       label: 'Writing',
       displayLabel: 'Writing',
@@ -61,19 +59,11 @@ export const buildWorkspaceTabs = (isAdmin: boolean): WorkspaceTabItem[] => {
       route: '/app/writing',
     },
     {
-      id: WorkspaceTab.READER,
-      icon: <BookText size={18} />,
-      label: 'Reader',
-      displayLabel: 'Reader',
-      section: 'library',
-      route: '/app/reader',
-    },
-    {
       id: WorkspaceTab.HISTORY,
       icon: <History size={18} />,
       label: 'Runs',
       displayLabel: 'Runs',
-      section: 'library',
+      section: 'account',
       route: '/app/runs',
     },
     {
@@ -109,10 +99,10 @@ export const resolveWorkspaceNextPreloadTab = (
   const nextTab = tabs[activeIndex + 1]?.id;
   if (!nextTab) return null;
 
-  if (activeTab === WorkspaceTab.STUDIO && options.allowNextPreloadFromStudio !== true) {
-    return null;
-  }
-  if (nextTab === WorkspaceTab.READER && options.allowReaderPreload !== true) {
+  if (
+    activeTab === WorkspaceTab.STUDIO
+    && options.allowNextPreloadFromStudio !== true
+  ) {
     return null;
   }
   return nextTab;

@@ -5,8 +5,6 @@ param(
     [string]$Profile = "",
     [string]$Tag = "",
     [string]$RedisUrl = $env:VF_REDIS_URL,
-    [string]$KokoroRuntimeUrl = $env:VF_KOKORO_RUNTIME_URL,
-    [string]$KokoroRuntimeToken = $env:VF_KOKORO_RUNTIME_TOKEN,
     [string]$VoiceCloneRuntimeUrl = $env:VF_VOICE_CLONE_MODAL_RUNTIME_URL,
     [string]$VoiceCloneRuntimeToken = $env:VF_VOICE_CLONE_RUNTIME_TOKEN,
     [string]$VoiceCloneArtifactSecret = $env:VF_VOICE_CLONE_ARTIFACT_SECRET,
@@ -192,16 +190,6 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
-            "__KOKORO_RUNTIME_URL__" {
-                if (-not $KokoroRuntimeUrl) {
-                    if ($DryRun) {
-                        $resolved[$key] = "https://modal-kokoro-runtime.example"
-                        break
-                    }
-                    throw "Modal Kokoro runtime URL is required. Pass -KokoroRuntimeUrl or set VF_KOKORO_RUNTIME_URL."
-                }
-                $resolved[$key] = [string]$KokoroRuntimeUrl
-            }
             "__VOICE_CLONE_RUNTIME_URL__" {
                 if (-not $VoiceCloneRuntimeUrl) {
                     if ($DryRun) {
@@ -252,13 +240,6 @@ function Resolve-EnvMap {
             "__VOICE_CLONE_MODAL_RUNTIME_TOKEN__" {
                 if ($VoiceCloneRuntimeToken) {
                     $resolved[$key] = [string]$VoiceCloneRuntimeToken
-                    break
-                }
-                $resolved[$key] = ""
-            }
-            "__KOKORO_RUNTIME_TOKEN__" {
-                if ($KokoroRuntimeToken) {
-                    $resolved[$key] = [string]$KokoroRuntimeToken
                     break
                 }
                 $resolved[$key] = ""

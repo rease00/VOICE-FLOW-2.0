@@ -1,12 +1,12 @@
 import React from 'react';
 import type { GenerationSettings } from '../../../../types';
-import { NovelWorkspaceV2 } from '../../../../components/NovelWorkspaceV2';
+import { NovelWorkspaceShell } from './NovelWorkspaceShell';
 
 interface NovelTabContentProps {
   settings: GenerationSettings;
   mediaBackendUrl: string;
   onToast: (message: string, type?: 'success' | 'error' | 'info') => void;
-  onSendToStudio?: (content: string) => void;
+  onSendToStudio?: ((content: string) => void) | undefined;
 }
 
 export const NovelTabContent: React.FC<NovelTabContentProps> = ({
@@ -16,11 +16,11 @@ export const NovelTabContent: React.FC<NovelTabContentProps> = ({
   onSendToStudio,
 }) => {
   return (
-    <NovelWorkspaceV2
+    <NovelWorkspaceShell
       settings={settings}
       mediaBackendUrl={mediaBackendUrl}
       onToast={onToast}
-      onSendToStudio={onSendToStudio || (() => {})}
+      onSendToStudio={onSendToStudio}
     />
   );
 };

@@ -1,18 +1,18 @@
 import type { Metadata } from 'next';
 
-const landingPath = '/landing';
+const landingPath = '/';
 
 export const landingMetadata: Metadata = {
-  title: 'Premium AI Voice Studio for Prime Cast Scenes, Direction, and Voice Cloning',
+  title: 'V FLOW AI | Premium voice studio',
   description:
-    'V FLOW AI combines Prime multi-speaker scenes, live voice direction, voice cloning, and reader-ready approvals in one premium production studio.',
+    'Prime scenes, voice clone checks, direction, and writing review in one clean flow.',
   keywords: [
     'ai voice studio',
     'voice cloning',
     'prime multi-speaker voice',
     'ai narration',
     'production audio',
-    'reader audio',
+    'writing review',
     'voice workflow',
   ],
   alternates: {
@@ -25,9 +25,8 @@ export const landingMetadata: Metadata = {
   openGraph: {
     type: 'website',
     url: landingPath,
-    title: 'V FLOW AI | Premium AI Voice Studio',
-    description:
-      'Hear Prime cast scenes, direct performances, compare voice clones, and publish from a single premium AI studio.',
+    title: 'V FLOW AI | Premium voice studio',
+    description: 'Prime scenes, clone checks, direction, and writing review.',
     siteName: 'V FLOW AI',
     images: [
       {
@@ -40,9 +39,8 @@ export const landingMetadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'V FLOW AI | Premium AI Voice Studio',
-    description:
-      'Hear Prime cast scenes, direct performances, compare voice clones, and publish from a single premium AI studio.',
+    title: 'V FLOW AI | Premium voice studio',
+    description: 'Prime scenes, clone checks, direction, and writing review.',
     images: ['/brand-logo.svg'],
   },
 };

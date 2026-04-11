@@ -39,9 +39,10 @@ export const resolveRequestHost = (request: RequestHostSource): string => {
 };
 
 export const shouldEnforcePrivateMode = (
-  env: { VF_SITE_PRIVATE?: string | undefined } | undefined,
+  env: { VF_SITE_PRIVATE?: string | undefined; VF_SITE_PRIVATE_FORCE_PUBLIC?: string | undefined } | undefined,
   hostname: string,
 ): boolean => {
   if (!readEnvBoolean(env?.VF_SITE_PRIVATE)) return false;
+  if (readEnvBoolean(env?.VF_SITE_PRIVATE_FORCE_PUBLIC)) return true;
   return !isPublicDeploymentHost(hostname);
 };

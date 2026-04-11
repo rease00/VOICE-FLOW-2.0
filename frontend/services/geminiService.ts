@@ -1,61 +1,61 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+﻿import { GoogleGenAI } from "@google/genai";
 import { GenerationSettings, RemoteSpeaker, ClonedVoice, CharacterProfile, VoiceOption, VoiceSampleAnalysis } from "../types";
-import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES } from "../constants";
-import { getEngineDisplayName } from "./engineDisplay";
-import { getSharedAudioContext } from "../src/shared/audio/audioContext";
-import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisContractService";
+import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, KOKORO_VOICES } from "../constants";
+import { createSynthesisTraceId } from "./synthesisContractService";
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
 import { resolveApiBaseUrl } from "../src/shared/api/config";
-import {
-  cancelTtsJob,
-  extractAudioFromVideo as gatewayExtractAudioFromVideo,
-  issueTtsV2SessionKey,
-} from "../src/shared/api/gatewayClient";
+import { extractAudioFromVideo as gatewayExtractAudioFromVideo } from "../src/shared/api/gatewayClient";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
-import { shouldFailFastOnGeminiRuntimeError } from "./geminiRuntimeErrorUtils";
+
 import {
-  emitGatewayAudioChunk,
-  emitGatewayProgress,
-  extractGatewayJobId,
-  pollTtsGatewayJobForAudio,
-  TTS_GATEWAY_AUDIO_CHUNK_EVENT,
-  TTS_GATEWAY_JOB_PROGRESS_EVENT,
-} from "./ttsGatewayJobService";
-import {
+  MAX_WORDS_PER_WINDOW,
   MAX_WORDS_PER_REQUEST,
   RETRY_ATTEMPTS_PER_CHUNK,
   RETRY_BACKOFF_MS,
-  buildLongTextChunks,
+  buildSentenceAlignedWordWindows,
   countWords,
   getChunkProfile,
   isPrimaryTtsEngine,
   mergeChunkBuffersWithCrossfade,
   preflightWordLimit,
-  resolveLiveChunkRequest,
   sleepMs,
+  type PrimaryTtsEngine,
 } from "./ttsLongTextService";
-import { getSessionClonedVoices } from "./clonedVoiceSessionStore";
-import { fetchUrlToBase64 } from "../src/shared/audio/base64";
-import {
-  guessAgeGroupFromSpeaker,
-  guessGenderFromName,
-  normalizeSpeakerMapKey,
-  parseScriptToSegments,
-  resolveSpeakerMappedVoiceId,
-  type SpeakerAgeGroup,
-} from "./speakerScriptService";
 
-// Gemini helper defaults to the backend-held slot set; user key is optional override.
-export const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
-export { TTS_GATEWAY_AUDIO_CHUNK_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT } from "./ttsGatewayJobService";
-export {
-  guessAgeGroupFromSpeaker,
-  guessGenderFromName,
-  normalizeSpeakerMapKey,
-  parseScriptToSegments,
-  resolveSpeakerMappedVoiceId,
+type RuntimeEngine = 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO';
+
+const resolvePrimaryTtsEngineForRouting = (value: string): PrimaryTtsEngine | null => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) return null;
+  if (
+    normalized === 'PRIME'
+    || normalized === 'GEM'
+    || normalized === 'GEMINI'
+    || normalized === 'GEMINI_RUNTIME'
+    || normalized === 'GEMINI_PRO'
+  ) {
+    return 'PRIME';
+  }
+  if (
+    normalized === 'VECTOR'
+    || normalized === 'GOOD'
+    || normalized === 'GOOD_RUNTIME'
+    || normalized === 'GEMINI_2_5_LITE_TTS'
+    || normalized === 'NEURAL2'
+    || normalized === 'NEURAL_2'
+    || normalized === 'NURAL2'
+    || normalized === 'NURAL_2'
+  ) {
+    return 'VECTOR';
+  }
+  return null;
 };
+
+// Gemini helper defaults to local runtime/server key pool; user key is optional override.
+export const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
+export const TTS_GATEWAY_JOB_PROGRESS_EVENT = 'voiceflow:tts-gateway-job-progress';
+export const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk';
 
 interface RuntimeDiagnosticsPayload {
   engine?: string | undefined;
@@ -70,8 +70,29 @@ interface RuntimeDiagnosticsPayload {
   runtimeLabel?: string | undefined;
 }
 
+interface GatewayJobProgressPayload {
+  jobId: string;
+  status: string;
+  engine?: string | undefined;
+  queueAgeMs?: number | undefined;
+  queueDepth?: number | undefined;
+  stage?: string | undefined;
+  progressPct?: number | undefined;
+}
+
+interface GatewayAudioChunkPayload {
+  jobId: string;
+  index: number;
+  engine?: string | undefined;
+  contentType?: string | undefined;
+  durationMs?: number | undefined;
+  textChars?: number | undefined;
+  traceId?: string | undefined;
+  audioBase64: string;
+}
+
 export interface GenerateSpeechOptions {
-  context?: 'studio' | 'preview' | 'asyncJob';
+  context?: 'studio' | 'preview' | 'dubbing' | 'asyncJob';
   preferLiveChunks?: boolean;
   requestId?: string;
   traceId?: string;
@@ -144,44 +165,6 @@ const quotaRuntimeMessage = (retryAfterMs?: number): string => {
   return `${RUNTIME_QUOTA_MESSAGE}${formatRetryDelayHint(retryAfterMs)}`.trim();
 };
 
-const createAbortError = (): DOMException => new DOMException('Aborted', 'AbortError');
-
-interface SegmentedBatchRunnerOptions<TSegment> {
-  segments: TSegment[];
-  batchSize: number;
-  runSerially: boolean;
-  signal?: AbortSignal;
-  processSegment: (segment: TSegment) => Promise<void>;
-}
-
-export const runSegmentedBatchRunner = async <TSegment>({
-  segments,
-  batchSize,
-  runSerially,
-  signal,
-  processSegment,
-}: SegmentedBatchRunnerOptions<TSegment>): Promise<void> => {
-  const safeBatchSize = Math.max(1, Math.floor(Number(batchSize) || 1));
-  for (let index = 0; index < segments.length; index += safeBatchSize) {
-    if (signal?.aborted) throw createAbortError();
-    const batch = segments.slice(index, index + safeBatchSize);
-    const guardedProcessSegment = async (segment: TSegment): Promise<void> => {
-      if (signal?.aborted) throw createAbortError();
-      await processSegment(segment);
-      if (signal?.aborted) throw createAbortError();
-    };
-    if (runSerially) {
-      for (const segment of batch) {
-        await guardedProcessSegment(segment);
-      }
-    } else {
-      await Promise.all(batch.map((segment) => guardedProcessSegment(segment)));
-    }
-    if (signal?.aborted) throw createAbortError();
-  }
-  if (signal?.aborted) throw createAbortError();
-};
-
 const normalizeRuntimeUserMessage = (value: string, retryAfterMs?: number): string => {
   const normalized = collapseRuntimeErrorWhitespace(value);
   if (!normalized) return '';
@@ -199,27 +182,20 @@ const mapGeminiRuntimeErrorCode = (
   const code = String(errorCode || '').trim().toUpperCase();
   const retryHint = formatRetryDelayHint(retryAfterMs);
   if (!code) return null;
-  if (code === 'GEMINI_SLOT_SET_MISSING') {
-    return 'Primary AI slot set is empty. Configure the backend-held service-account slots and retry.';
+  if (code === 'GEMINI_API_KEY_MISSING') {
+    return 'Gemini runtime key pool is empty. Configure GEMINI_API_KEYS_FILE (recommended), GEMINI_API_KEYS, or GEMINI_API_KEY.';
   }
   if (code === 'GEMINI_RUNTIME_SDK_UNAVAILABLE') {
     return 'Gemini runtime dependencies are unavailable. Install runtime requirements and restart services.';
   }
-  if (code === 'GEMINI_ALL_SLOTS_AUTH_FAILED') {
-    return 'All Gemini service-account slots were rejected by upstream auth. Replace invalid credentials and retry.';
+  if (code === 'GEMINI_ALL_KEYS_AUTH_FAILED') {
+    return 'All Gemini API keys were rejected by upstream auth. Replace invalid keys and retry.';
   }
-  if (code === 'GEMINI_ALL_SLOTS_RATE_LIMITED') {
+  if (code === 'GEMINI_ALL_KEYS_RATE_LIMITED') {
     return quotaRuntimeMessage(retryAfterMs);
   }
-  if (code === 'GEMINI_SLOT_SET_OVERLOADED' || code === 'GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT') {
-    return `Gemini TTS capacity is saturated.${retryHint}`.trim();
-  }
-  if (code === 'GEMINI_SLOT_SET_TIMEOUT') {
-    return `Gemini slot set timed out while waiting for an available slot.${retryHint}`.trim();
-  }
-  if (code === 'GEMINI_UPSTREAM_REQUEST_TIMEOUT') {
-    const normalizedSummary = normalizeRuntimeUserMessage(summary, retryAfterMs);
-    return normalizedSummary || `Gemini upstream request timed out.${retryHint}`.trim();
+  if (code === 'GEMINI_KEY_POOL_TIMEOUT') {
+    return `Gemini key pool timed out while waiting for an available key.${retryHint}`.trim();
   }
   if (code === 'GEMINI_UPSTREAM_MODEL_FAILED') {
     const normalizedSummary = normalizeRuntimeUserMessage(summary, retryAfterMs);
@@ -285,79 +261,97 @@ const parseRuntimeErrorDetail = (payload: any, status: number, statusText: strin
   return truncateRuntimeErrorDetail(`${status} ${statusText}`);
 };
 
+const isKnownGeminiPoolMisconfigError = (message: string): boolean => {
+  const lower = String(message || '').toLowerCase();
+  if (!lower) return false;
+  return (
+    lower.includes('gemini_api_key_missing') ||
+    lower.includes('key pool is empty') ||
+    lower.includes('configure gemini_api_keys_file') ||
+    lower.includes('api key is missing')
+  );
+};
+
 const optionalBearerAuthHeaders = (apiKey?: string): Record<string, string> => {
   const token = String(apiKey || '').trim();
   if (!token) return {};
   return { Authorization: `Bearer ${token}` };
 };
 
+const normalizeModelCandidateInput = (candidate: string): string => (
+  String(candidate || '').trim().replace(/^models\//i, '').trim()
+);
+
 // --- MODEL FALLBACK LISTS (Priority High -> Low) ---
 // Keep direct personal-key mode aligned with runtime allocator routing.
 export const TEXT_MODELS_FALLBACK = [
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-3-flash",
-  "gemma-3-27b",
-  "gemma-3-12b",
-  "gemma-3-4b",
-  "gemma-3-2b",
-  "gemma-3-1b",
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-3-flash',
+  'gemma-3-27b',
+  'gemma-3-12b',
+  'gemma-3-4b',
+  'gemma-3-2b',
+  'gemma-3-1b',
 ];
 
-export const RUNTIME_TEXT_MODELS_FALLBACK = [
-  "gemini-3-flash-preview",
-  "gemini-3-pro-preview",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemma-3-27b",
-  "gemma-3-12b",
-  "gemma-3-4b",
-  "gemma-3-2b",
-  "gemma-3-1b",
-];
+export const RUNTIME_TEXT_MODELS_FALLBACK = [...TEXT_MODELS_FALLBACK];
+const RUNTIME_TEXT_MODEL_ALLOWLIST = new Set<string>([
+  ...RUNTIME_TEXT_MODELS_FALLBACK,
+  'gemini-3-flash-preview',
+]);
 
 export const STUDIO_CAST_TEXT_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash-lite",
-  "gemini-3-flash",
-];
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash-lite',
+  'gemini-3-flash',
+] as const;
 
-const DIRECTOR_LIGHT_MODELS = [
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-];
+export const resolveTextModelCandidates = (requestedModels?: string[]): string[] => {
+  const normalized = Array.isArray(requestedModels)
+    ? requestedModels.map(normalizeModelCandidateInput).filter(Boolean)
+    : [];
+  if (normalized.length === 0) {
+    return [...TEXT_MODELS_FALLBACK];
+  }
+  return Array.from(new Set(normalized));
+};
 
-const DIRECTOR_STANDARD_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash-lite",
-];
+export const resolveRuntimeTextModelCandidates = (requestedModels?: string[]): string[] | undefined => {
+  const normalized = Array.isArray(requestedModels)
+    ? requestedModels.map(normalizeModelCandidateInput).filter(Boolean)
+    : [];
+  if (normalized.length === 0) {
+    return [...RUNTIME_TEXT_MODELS_FALLBACK];
+  }
+  const runtimeSafe = Array.from(
+    new Set(normalized.filter((candidate) => RUNTIME_TEXT_MODEL_ALLOWLIST.has(candidate)))
+  );
+  return runtimeSafe.length > 0 ? runtimeSafe : undefined;
+};
 
-const DIRECTOR_HEAVY_MODELS = [
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-];
-
-const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'PRIME' | 'VECTOR', string[]> = {
-  VECTOR: [
-    "gemini-2.5-flash-tts",
-    "gemini-2.5-pro-tts",
+const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'GOOD' | 'NEURAL2', string[]> = {
+  GOOD: [
+    "gemini-2.5-flash-lite-preview-tts",
+    "gemini-2.5-flash-preview-tts",
   ],
-  PRIME: [
-    "gemini-2.5-flash-tts",
-    "gemini-2.5-pro-tts",
+  NEURAL2: [
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-flash-lite-preview-tts",
+  ],
+  GEM: [
+    "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-preview-tts",
   ],
 };
 
 const resolveDirectTtsFallbackModels = (engine: string): string[] => {
   const normalized = String(engine || '').trim().toUpperCase();
-  if (normalized === 'VECTOR') return [...TTS_MODELS_FALLBACK_BY_ENGINE.VECTOR];
-  return [...TTS_MODELS_FALLBACK_BY_ENGINE.PRIME];
+  if (normalized === 'GOOD') return [...TTS_MODELS_FALLBACK_BY_ENGINE.GOOD];
+  if (normalized === 'NEURAL2') return [...TTS_MODELS_FALLBACK_BY_ENGINE.NEURAL2];
+  return [...TTS_MODELS_FALLBACK_BY_ENGINE.GEM];
 };
 
 const GEMINI_MODEL_DISCOVERY_TTL_MS = 10 * 60 * 1000;
@@ -397,39 +391,6 @@ const mergeGeminiModelCandidates = (preferred: string[], discovered: string[], f
   preferred.forEach((model) => pushModel(model));
   discovered.forEach((model) => pushModel(model));
   return out;
-};
-
-const GEMINI_TEXT_MODEL_ALLOWLIST = new Set<string>(
-  RUNTIME_TEXT_MODELS_FALLBACK
-    .map((model) => normalizeGeminiModelName(model).toLowerCase())
-    .filter((model) => Boolean(model))
-);
-
-const sanitizeGeminiRuntimeTextModelCandidates = (candidates: string[]): string[] => {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    const normalized = normalizeGeminiModelName(candidate);
-    if (!normalized) continue;
-    const lower = normalized.toLowerCase();
-    if (!GEMINI_TEXT_MODEL_ALLOWLIST.has(lower)) continue;
-    if (seen.has(lower)) continue;
-    seen.add(lower);
-    out.push(normalized);
-  }
-  return out;
-};
-
-export const resolveRuntimeTextModelCandidates = (
-  preferredModels?: string[],
-  forcedModel?: string
-): string[] | undefined => {
-  const preferred = Array.isArray(preferredModels) && preferredModels.length > 0
-    ? preferredModels
-    : RUNTIME_TEXT_MODELS_FALLBACK;
-  const merged = mergeGeminiModelCandidates(preferred, [], forcedModel);
-  const sanitized = sanitizeGeminiRuntimeTextModelCandidates(merged);
-  return sanitized.length > 0 ? sanitized : undefined;
 };
 
 const discoverGeminiModels = async (
@@ -519,13 +480,26 @@ const VALID_VOICE_NAMES = [
   "vindemiatrix", "zephyr", "zubenelgenubi"
 ];
 
+// Singleton AudioContext - Lazy Initialization
+let audioContextInstance: AudioContext | null = null;
+
 export function getAudioContext(): AudioContext {
-  try {
-    return getSharedAudioContext();
-  } catch (error) {
-    console.error("AudioContext not supported", error);
-    throw error;
+  if (!audioContextInstance || audioContextInstance.state === 'closed') {
+    try {
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      audioContextInstance = new AudioContext();
+    } catch (e) {
+      console.error("AudioContext not supported", e);
+      throw new Error("Audio playback is not supported in this browser.");
+    }
   }
+  
+  // Attempt to resume if suspended (browser policy)
+  if (audioContextInstance.state === 'suspended') {
+    audioContextInstance.resume().catch(err => console.warn("Auto-resume AudioContext:", err));
+  }
+  
+  return audioContextInstance;
 }
 
 // Helper to parse API error message nicely
@@ -555,7 +529,7 @@ function cleanErrorMessage(error: any): string {
     lowerMsg.includes('response modalities') ||
     lowerMsg.includes('audio output')
   ) {
-    return "Selected Gemini model is text-only. Switch to a Gemini TTS model (for example gemini-2.5-flash-tts).";
+    return "Selected Gemini model is text-only. Switch to a Gemini TTS model (for example gemini-2.5-flash-preview-tts).";
   }
   if (lowerMsg.includes('fetch failed') || lowerMsg.includes('network request failed')) {
     return "Network Error: Could not connect to the AI service or Backend. Check your internet or Colab URL.";
@@ -598,25 +572,7 @@ interface GenerationOptions {
   jsonMode?: boolean;
   retries?: number;
   model?: string;
-  preferredModels?: string[];
-  temperature?: number;
 }
-
-const extractGeminiTextFromCandidates = (response: any): string => {
-  const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
-  const chunks: string[] = [];
-  candidates.forEach((candidate: any) => {
-    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
-    parts.forEach((part: any) => {
-      const token = String(part?.text || '').trim();
-      if (token) chunks.push(token);
-    });
-  });
-  if (chunks.length > 0) {
-    return chunks.join('\n').trim();
-  }
-  return String(response?.text || '').trim();
-};
 
 // Core function to handle Model Fallback
 async function callGeminiWithFallback(
@@ -628,9 +584,7 @@ async function callGeminiWithFallback(
   const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const config: any = {
-    temperature: Number.isFinite(Number(options.temperature))
-      ? Number(options.temperature)
-      : 0.7,
+    temperature: 0.7,
   };
   
   if (options.systemPrompt) {
@@ -651,9 +605,7 @@ async function callGeminiWithFallback(
     ai,
     apiKey,
     'text',
-    Array.isArray(options.preferredModels) && options.preferredModels.length > 0
-      ? options.preferredModels
-      : TEXT_MODELS_FALLBACK,
+    TEXT_MODELS_FALLBACK,
     options.model
   );
   let lastError: any = null;
@@ -665,7 +617,7 @@ async function callGeminiWithFallback(
         contents: contents,
         config: config
       });
-      const text = extractGeminiTextFromCandidates(response);
+      const text = String(response.text || '').trim();
       if (!text) {
         throw new Error(`Gemini model "${model}" returned empty text.`);
       }
@@ -680,46 +632,24 @@ async function callGeminiWithFallback(
   throw new Error(cleanErrorMessage(lastError || new Error("All Gemini models failed.")));
 }
 
-interface RuntimeTextOptions {
-  jsonMode?: boolean;
-  preferredModels?: string[];
-  model?: string;
-  temperature?: number;
-}
-
-export const resolveTextModelCandidates = (
-  preferredModels?: string[],
-  forcedModel?: string
-): string[] => {
-  const preferred = Array.isArray(preferredModels) && preferredModels.length > 0
-    ? preferredModels
-    : TEXT_MODELS_FALLBACK;
-  return mergeGeminiModelCandidates(preferred, [], forcedModel);
-};
-
 async function callGeminiRuntimeText(
   systemPrompt: string,
   userPrompt: string,
   settings: Pick<GenerationSettings, 'mediaBackendUrl' | 'geminiApiKey'>,
-  options: RuntimeTextOptions = {}
+  jsonMode: boolean = false
 ): Promise<string> {
   const baseUrl = resolveMediaBackendBaseUrl(settings);
-  const modelCandidates = resolveRuntimeTextModelCandidates(options.preferredModels, options.model);
-  const body: Record<string, unknown> = {
-    systemPrompt,
-    userPrompt,
-    jsonMode: Boolean(options.jsonMode),
-    temperature: Number.isFinite(Number(options.temperature))
-      ? Number(options.temperature)
-      : 0.7,
-  };
-  if (modelCandidates && modelCandidates.length > 0) {
-    body.modelCandidates = modelCandidates;
-  }
   const response = await authFetch(`${baseUrl}/ai/generate-text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      systemPrompt,
+      userPrompt,
+      jsonMode,
+      // Optional user key can still be passed to runtime endpoint.
+      apiKey: resolveGeminiApiKey(settings),
+      temperature: 0.7,
+    }),
   }, { requireAuth: true });
 
   const payload = await response.json().catch(() => null);
@@ -735,6 +665,54 @@ async function callGeminiRuntimeText(
   return text;
 }
 
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+// --- PERPLEXITY SERVICE ---
+const PERPLEXITY_REQUEST_TIMEOUT_MS = 65000;
+
+async function callPerplexityChat(messages: ChatMessage[], apiKey: string): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PERPLEXITY_REQUEST_TIMEOUT_MS);
+  const options = {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: "sonar-pro",
+      messages: messages,
+      temperature: 0.7
+    }),
+    signal: controller.signal,
+  };
+
+  try {
+    const response = await fetch('https://api.perplexity.ai/chat/completions', options);
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Perplexity API Error: ${response.status} - ${err}`);
+    }
+
+    const data = await response.json();
+    const content = String(data?.choices?.[0]?.message?.content || '').trim();
+    if (!content) {
+      throw new Error('Perplexity returned an empty response.');
+    }
+    return content;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Perplexity request timed out after ${Math.round(PERPLEXITY_REQUEST_TIMEOUT_MS / 1000)}s.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // --- UNIFIED GENERATION DISPATCHER ---
 export interface AssistantTextDispatchPlan {
   controlsEnabled: boolean;
@@ -744,15 +722,33 @@ export interface AssistantTextDispatchPlan {
   useUserGeminiKey: boolean;
 }
 
+export const PROJECT_SCOPED_TEXT_SYSTEM_PROMPT = [
+  'You are a project-scoped creative writing assistant.',
+  'Stay focused on the user\'s current project, script, scene, outline, characters, dialogue, or revision task.',
+  'If the user asks for unrelated help, redirect the user back to project-related work before continuing.',
+].join(' ');
+
 export const resolveAssistantTextDispatchPlan = (settings: GenerationSettings): AssistantTextDispatchPlan => {
   const routing = resolveAssistantProviderRouting(settings);
-  const provider: GenerationSettings['helperProvider'] = 'GEMINI';
-  const useUserGeminiKey = false;
+  const provider = routing.provider;
+
+  if (provider === 'PERPLEXITY') {
+    return {
+      controlsEnabled: routing.controlsEnabled,
+      provider,
+      usePerplexity: true,
+      useRuntimeGemini: false,
+      useUserGeminiKey: false,
+    };
+  }
+
+  // Local helper mode currently shares Gemini runtime/user-key paths.
+  const useUserGeminiKey = routing.controlsEnabled && Boolean(settings.preferUserGeminiKey);
   return {
     controlsEnabled: routing.controlsEnabled,
     provider,
     usePerplexity: false,
-    useRuntimeGemini: true,
+    useRuntimeGemini: !useUserGeminiKey,
     useUserGeminiKey,
   };
 };
@@ -761,37 +757,31 @@ export const generateText = async (
   systemPrompt: string,
   userPrompt: string,
   settings: GenerationSettings,
-  jsonMode: boolean = false,
-  options: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {}
+  jsonMode: boolean = false
 ): Promise<string> => {
   const dispatchPlan = resolveAssistantTextDispatchPlan(settings);
-  const preferredModels = resolveTextModelCandidates(
-    options.preferredModels,
-    options.model
-  );
   
   try {
-    // Gemini runtime path only: backend-held slot set (Vertex-backed).
+    if (dispatchPlan.usePerplexity) {
+      const perplexityKey = String(settings.perplexityApiKey || '').trim();
+      if (!perplexityKey) {
+        throw new Error("Perplexity provider selected but API key is missing.");
+      }
+      const messages: ChatMessage[] = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ];
+      return await callPerplexityChat(messages, perplexityKey);
+    }
+    
+    // Gemini path: runtime/server key pool by default, with optional personal key override.
     const forceUserKey = dispatchPlan.useUserGeminiKey;
     const geminiKey = resolveGeminiApiKey(settings);
     if (forceUserKey) {
       if (!geminiKey) throw new Error("Personal Gemini key is enabled, but API key is missing.");
-      const directOptions: GenerationOptions = {
-        systemPrompt,
-        jsonMode,
-        preferredModels,
-      };
-      if (options.model) directOptions.model = options.model;
-      if (typeof options.temperature === 'number') directOptions.temperature = options.temperature;
-      return await callGeminiWithFallback(userPrompt, geminiKey, directOptions);
+      return await callGeminiWithFallback(userPrompt, geminiKey, { systemPrompt, jsonMode });
     }
-    const runtimeOptions: RuntimeTextOptions = {
-      jsonMode,
-      preferredModels,
-      ...(String(options.model || '').trim() ? { model: String(options.model || '').trim() } : {}),
-    };
-    if (typeof options.temperature === 'number') runtimeOptions.temperature = options.temperature;
-    return await callGeminiRuntimeText(systemPrompt, userPrompt, settings, runtimeOptions);
+    return await callGeminiRuntimeText(systemPrompt, userPrompt, settings, jsonMode);
     
   } catch (e: any) {
     throw new Error(cleanErrorMessage(e));
@@ -1014,6 +1004,45 @@ export const extractAudioFromVideo = async (videoFile: File, backendUrl?: string
   }
 };
 
+// --- GENDER DETECTION HEURISTICS ---
+// Common indicators for gender guessing when AI isn't available
+const MALE_INDICATORS = ['mr', 'lord', 'king', 'sir', 'father', 'dad', 'uncle', 'brother', 'boy', 'man', 'he', 'him', 'his', 'john', 'david', 'michael', 'james', 'robert', 'william', 'joseph', 'thomas', 'charles', 'christopher', 'daniel', 'matthew', 'anthony', 'mark', 'donald', 'steven', 'paul', 'andrew', 'joshua', 'kenneth', 'kevin', 'brian', 'george', 'edward', 'ronald', 'timothy', 'jason', 'jeffrey', 'ryan', 'jacob', 'gary', 'nicholas', 'eric', 'jonathan', 'stephen', 'larry', 'justin', 'scott', 'brandon', 'benjamin', 'samuel', 'gregory', 'frank', 'alexander', 'raymond', 'patrick', 'jack', 'dennis', 'jerry', 'tyler', 'aaron', 'jose', 'adam', 'henry', 'nathan', 'douglas', 'zachary', 'peter', 'kyle', 'walter', 'ethan', 'jeremy', 'harold', 'keith', 'christian', 'roger', 'noah', 'gerald', 'terry', 'sean', 'austin', 'carl', 'arthur', 'lawrence', 'dylan', 'jesse', 'jordan', 'bryan', 'billy', 'joe', 'bruce', 'gabriel', 'logan', 'albert', 'willie', 'alan', 'juan', 'wayne', 'elijah', 'randy', 'roy', 'vincent', 'ralph', 'eugene', 'russell', 'bobby', 'mason', 'philip', 'louis', 'detective', 'officer', 'sergeant', 'captain', 'commander', 'chief', 'boss', 'guard', 'soldier'];
+const FEMALE_INDICATORS = ['mrs', 'ms', 'miss', 'lady', 'queen', 'madam', 'mother', 'mom', 'aunt', 'sister', 'girl', 'woman', 'she', 'her', 'hers', 'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica', 'sarah', 'karen', 'nancy', 'lisa', 'betty', 'margaret', 'sandra', 'ashley', 'kimberly', 'emily', 'donna', 'michelle', 'dorothy', 'carol', 'amanda', 'melissa', 'deborah', 'stephanie', 'rebecca', 'sharon', 'laura', 'cynthia', 'kathleen', 'amy', 'shirley', 'angela', 'helen', 'anna', 'brenda', 'pamela', 'nicole', 'samantha', 'katherine', 'emma', 'ruth', 'christine', 'catherine', 'debra', 'rachel', 'carolyn', 'janet', 'virginia', 'maria', 'heather', 'diane', 'julie', 'joyce', 'evelyn', 'joan', 'victoria', 'kelly', 'christina', 'lauren', 'frances', 'martha', 'judith', 'cheryl', 'megan', 'andrea', 'olivia', 'ann', 'alice', 'jean', 'doris', 'jacqueline', 'kathryn', 'hannah', 'julia', 'gloria', 'teresa', 'velma', 'sara', 'janice', 'phyllis', 'marie', 'julia', 'grace', 'judy', 'theresa', 'madison', 'beverly', 'denise', 'marilyn', 'amber', 'danielle', 'rose', 'brittany', 'diana', 'abigail', 'natalie', 'jane', 'lori', 'alexis', 'tiffany', 'kayla', 'witch', 'princess', 'bride', 'nurse', 'waitress', 'actress'];
+
+export function guessGenderFromName(name: string): 'Male' | 'Female' | 'Unknown' {
+  const raw = String(name || '').trim();
+  const n = raw.toLowerCase().trim();
+  const parts = n.split(' ');
+
+  // Hindi + Hinglish kinship/title hints.
+  if (/(?:\u092e\u093e\u0901|\u0906\u0902\u091f\u0940|\u0926\u0940\u0926\u0940|\u092c\u0939\u0928|\u092e\u0948\u0921\u092e|\u0936\u094d\u0930\u0940\u092e\u0924\u0940)/u.test(raw)) {
+    return 'Female';
+  }
+  if (/(?:\u092a\u093e\u092a\u093e|\u091a\u093e\u091a\u093e|\u092d\u093e\u0908|\u092d\u0948\u092f\u093e|\u0938\u0930|\u0936\u094d\u0930\u0940\u092e\u093e\u0928)/u.test(raw)) {
+    return 'Male';
+  }
+  if (/\b(mom|mother|mummy|maa|aunty|aunt|didi|sister|madam|mrs|ms)\b/i.test(n)) {
+    return 'Female';
+  }
+  if (/\b(dad|father|papa|uncle|brother|bhai|bhaiya|sir|mr)\b/i.test(n)) {
+    return 'Male';
+  }
+  
+  // Check full name parts
+  for (const part of parts) {
+    if (MALE_INDICATORS.includes(part)) return 'Male';
+    if (FEMALE_INDICATORS.includes(part)) return 'Female';
+  }
+  
+  // Suffix checks (rough heuristics for English)
+  if (n.endsWith('a') || n.endsWith('ie') || n.endsWith('elle') || n.endsWith('i') || n.endsWith('enne') || n.endsWith('ine')) return 'Female';
+  if (n.endsWith('o') || n.endsWith('us') || n.endsWith('er') || n.endsWith('or') || n.endsWith('son') || n.endsWith('an')) return 'Male';
+  
+  return 'Unknown';
+}
+
+export type SpeakerAgeGroup = 'Child' | 'Adult' | 'Elderly' | 'Unknown';
+
 const CHILD_AGE_INDICATORS = [
   'child', 'kid', 'boy', 'girl', 'teen', 'son', 'daughter', 'school', 'student',
   'beta', 'bacha', 'bachi', 'ladka', 'ladki', 'baccha',
@@ -1033,6 +1062,27 @@ const normalizeAgeGroupToken = (value: string): SpeakerAgeGroup => {
   if (ELDER_AGE_INDICATORS.some((item) => token.includes(item))) return 'Elderly';
   return 'Unknown';
 };
+
+export function guessAgeGroupFromSpeaker(name: string): SpeakerAgeGroup {
+  const raw = String(name || '').trim();
+  if (!raw) return 'Unknown';
+  const normalized = raw.toLowerCase();
+
+  if (
+    /(?:\u092c\u091a\u094d\u091a\u093e|\u092c\u091a\u094d\u091a\u0940|\u0932\u0921\u093c\u0915\u093e|\u0932\u0921\u093c\u0915\u0940|\u0915\u093f\u0936\u094b\u0930)/u.test(raw)
+  ) {
+    return 'Child';
+  }
+  if (
+    /(?:\u092c\u0941\u091c\u0941\u0930\u094d\u0917|\u0935\u0943\u0926\u094d\u0927|\u0926\u093e\u0926\u093e|\u0926\u093e\u0926\u0940|\u0928\u093e\u0928\u093e|\u0928\u093e\u0928\u0940)/u.test(raw)
+  ) {
+    return 'Elderly';
+  }
+
+  if (CHILD_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Child';
+  if (ELDER_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Elderly';
+  return 'Unknown';
+}
 
 const inferVoiceAgeGroup = (voice: { ageGroup?: string; name?: string; id?: string }): SpeakerAgeGroup => {
   const fromAgeGroup = normalizeAgeGroupToken(String(voice?.ageGroup || ''));
@@ -1071,6 +1121,46 @@ const normalizeSpeakerName = (raw: string): string => (
     .replace(/\s+/g, ' ')
     .trim()
 );
+
+export const normalizeSpeakerMapKey = (raw: string): string => (
+  normalizeSpeakerName(raw)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s._'-]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const findSpeakerMappingKey = (
+  speakerMapping: Record<string, string> | undefined,
+  speaker: string,
+): string => {
+  if (!speakerMapping || typeof speakerMapping !== 'object') return '';
+  const rawSpeaker = String(speaker || '');
+  if (!rawSpeaker.trim()) return '';
+  if (speakerMapping[rawSpeaker]) return rawSpeaker;
+  const trimmed = rawSpeaker.trim();
+  if (trimmed && speakerMapping[trimmed]) return trimmed;
+
+  const normalizedTarget = normalizeSpeakerMapKey(rawSpeaker);
+  if (!normalizedTarget) return '';
+
+  for (const key of Object.keys(speakerMapping)) {
+    if (!key) continue;
+    if (normalizeSpeakerMapKey(key) === normalizedTarget) {
+      return key;
+    }
+  }
+  return '';
+};
+
+export const resolveSpeakerMappedVoiceId = (
+  speakerMapping: Record<string, string> | undefined,
+  speaker: string,
+): string => {
+  const matchedKey = findSpeakerMappingKey(speakerMapping, speaker);
+  if (!matchedKey) return '';
+  return String(speakerMapping?.[matchedKey] || '').trim();
+};
 
 const isLikelySpeakerName = (name: string): boolean => {
   const normalized = normalizeSpeakerName(name);
@@ -1258,13 +1348,14 @@ const normalizeDirectedTitleMeta = (sourceText: string, directedScript: string):
   if (firstIndex < 0) return directedScript;
 
   const firstLine = String(lines[firstIndex] || '').trim();
-  if (parseSpeakerLine(firstLine) || SFX_REGEX.test(firstLine)) return directedScript;
+  if (SFX_REGEX.test(firstLine)) return directedScript;
 
   const sourceFirstLine = String(sourceText || '')
     .split('\n')
     .map((line) => String(line || '').trim())
     .find((line) => line.length > 0) || '';
-  const normalizedFirst = normalizeScriptTextLine(firstLine).toLowerCase();
+  const parsedFirstLine = parseSpeakerLine(firstLine);
+  const normalizedFirst = normalizeScriptTextLine(parsedFirstLine?.speaker || firstLine).toLowerCase();
   const normalizedSourceFirst = normalizeScriptTextLine(sourceFirstLine).toLowerCase();
   const looksLikeTitle =
     normalizedFirst.length > 0 &&
@@ -1276,7 +1367,16 @@ const normalizeDirectedTitleMeta = (sourceText: string, directedScript: string):
     );
   if (!looksLikeTitle) return directedScript;
 
-  lines[firstIndex] = `Narrator (Neutral): ${firstLine.replace(/^["Ã¢â‚¬Å“Ã¢â‚¬Â']|["Ã¢â‚¬Å“Ã¢â‚¬Â']$/g, '').trim()}`;
+  const titleTextCandidate =
+    (normalizedSourceFirst && normalizedFirst === normalizedSourceFirst)
+      ? sourceFirstLine
+      : (parsedFirstLine?.speaker || firstLine);
+  const titleText = String(titleTextCandidate || '')
+    .replace(/^["Ã¢â‚¬Å“Ã¢â‚¬Â']|["Ã¢â‚¬Å“Ã¢â‚¬Â']$/g, '')
+    .trim();
+  if (!titleText) return directedScript;
+
+  lines[firstIndex] = `Narrator (Neutral): ${titleText}`;
   return lines.join('\n');
 };
 
@@ -1592,6 +1692,127 @@ export const parseStudioDialogue = (text: string): {
   return segments;
 };
 
+export const parseScriptToSegments = (text: string): {
+  startTime: number;
+  endTime?: number | undefined;
+  speaker: string;
+  text: string;
+  emotion?: string | undefined;
+  crewTags?: string[] | undefined;
+  emotionTags?: string[] | undefined;
+}[] => {
+  const lines = normalizeInlineBracketSpeakerScript(text).split('\n');
+  const segments: {
+    startTime: number;
+    endTime?: number | undefined;
+    speaker: string;
+    text: string;
+    emotion?: string | undefined;
+    crewTags?: string[] | undefined;
+    emotionTags?: string[] | undefined;
+  }[] = [];
+  let fallbackCursor = 0;
+  let currentSpeaker = 'Narrator';
+  let currentEmotion = 'Neutral';
+  let currentCrewTags: string[] = [];
+  let currentEmotionTags: string[] = [];
+
+  const timeToSeconds = (timestamp: string) => {
+    const parts = String(timestamp || '').split(':').map((part) => Number(part));
+    if (parts.length === 2) return ((parts[0] ?? 0) * 60) + (parts[1] ?? 0);
+    if (parts.length === 3) return ((parts[0] ?? 0) * 3600) + ((parts[1] ?? 0) * 60) + (parts[2] ?? 0);
+    return 0;
+  };
+
+  const estimateSpeechDuration = (dialogue: string) => {
+    const words = dialogue.trim().split(/\s+/).filter(Boolean).length;
+    const punctuation = (dialogue.match(/[,.!?;:]/g) || []).length;
+    const base = Math.max(1, words) / 2.6;
+    return Math.max(0.7, Math.min(12, base + (punctuation * 0.08)));
+  };
+  
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    let working = trimmed;
+    let explicitStart: number | undefined;
+    let explicitEnd: number | undefined;
+
+    // Accept [00:00], (00:00), bare 00:00, and range formats like (00:01.20-00:03.85).
+    const timestampMatch = working.match(
+      /^[\[(]?\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?)(?:\s*[-Ã¢â‚¬â€œ]\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?))?\s*[\])]?\s*(.*)$/
+    );
+    if (timestampMatch) {
+      explicitStart = timeToSeconds(String(timestampMatch[1] || '0:00'));
+      if (timestampMatch[2]) {
+        const parsedEnd = timeToSeconds(String(timestampMatch[2] || '0:00'));
+        if (parsedEnd > explicitStart) explicitEnd = parsedEnd;
+      }
+      working = (timestampMatch[3] || '').trim();
+    }
+
+    if (!working) return;
+
+    const sfxMatch = working.match(SFX_REGEX);
+    if (sfxMatch) {
+      const label = String(sfxMatch[1] || '').trim();
+      const start = explicitStart ?? fallbackCursor;
+      const dur = estimateSfxDurationSeconds(label);
+      segments.push({
+        startTime: start,
+        endTime: explicitEnd,
+        speaker: 'SFX',
+        text: label,
+        emotion: 'Neutral',
+      });
+      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + dur;
+      return;
+    }
+
+    const parsed = parseSpeakerLine(working);
+    if (parsed) {
+      currentSpeaker = parsed.speaker;
+      currentEmotion = parsed.emotion || 'Neutral';
+      currentCrewTags = parsed.crewTags;
+      currentEmotionTags = parsed.emotionTags;
+
+      const dialogue = addCrewCueToDialogue(parsed.dialogue, parsed.crewTags);
+      if (!dialogue) return;
+
+      const start = explicitStart ?? fallbackCursor;
+      segments.push({
+        startTime: start,
+        endTime: explicitEnd,
+        speaker: currentSpeaker,
+        text: dialogue,
+        emotion: currentEmotion,
+        crewTags: currentCrewTags,
+        emotionTags: currentEmotionTags,
+      });
+      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + estimateSpeechDuration(dialogue);
+      return;
+    }
+
+    const fallbackDialogue = addCrewCueToDialogue(working, currentCrewTags);
+    if (!fallbackDialogue) return;
+
+    const start = explicitStart ?? fallbackCursor;
+    segments.push({
+      startTime: start,
+      endTime: explicitEnd,
+      speaker: currentSpeaker,
+      text: fallbackDialogue,
+      emotion: currentEmotion,
+      crewTags: currentCrewTags,
+      emotionTags: currentEmotionTags,
+    });
+    fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + estimateSpeechDuration(fallbackDialogue);
+  });
+
+  return segments;
+};
+
 // --- AI DIRECTOR SERVICES ---
 export const autoCorrectText = async (text: string, settings: GenerationSettings): Promise<string> => {
   const systemPrompt = `You are an expert Audio Script Editor.
@@ -1609,47 +1830,18 @@ Output ONLY the script with NO additional commentary.`;
   const userPrompt = `Format this text:\n"${text}"`;
   
   try {
-    const result = await generateText(systemPrompt, userPrompt, settings, false, {
-      preferredModels: DIRECTOR_LIGHT_MODELS,
-      temperature: 0.2,
-    });
+    const result = await generateText(systemPrompt, userPrompt, settings, false);
     return result.replace(/^Here is the.*?:\s*/i, '').trim();
   } catch (e: any) {
     throw new Error(cleanErrorMessage(e));
   }
 };
 
-export const autoDirectStudioScript = async (
-  text: string,
-  settings: GenerationSettings,
-  options?: DirectorOptions,
-  existingCharacters: CharacterProfile[] = []
-): Promise<{
-  directedText: string;
-  cast: {
-    name: string;
-    gender: 'Male' | 'Female' | 'Unknown';
-    age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly' | undefined;
-  }[];
-  mood?: string | undefined;
-  crewTags?: string[] | undefined;
-  suggestedMusicTrackId?: string | undefined;
-}> => {
-  const result = await autoFormatScript(text, settings, 'audio_drama', options, existingCharacters);
-  return {
-    directedText: result.formattedText,
-    cast: result.cast,
-    mood: result.mood,
-    crewTags: result.crewTags,
-    suggestedMusicTrackId: result.suggestedMusicTrackId,
-  };
-};
-
 export const proofreadScript = async (
   text: string, 
   settings: GenerationSettings,
   mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow',
-  options?: { languageCode?: string; model?: string }
+  _options?: { languageCode?: string }
 ): Promise<string> => {
   let systemPrompt = `You are an Expert Audio Script Editor and Proofreader.
 Your goal is to prepare text for Ultra-Realistic Text-to-Speech synthesis.
@@ -1669,15 +1861,10 @@ CRITICAL RULES for REALISM:
 
 Output ONLY the corrected text. Do not add "Here is the corrected version".`;
 
-  const languageCode = String(options?.languageCode || '').trim();
-  if (languageCode) {
-    systemPrompt += `\n\nLANGUAGE CONTEXT: The source text language code is ${languageCode}. Preserve the language and only improve readability for speech.`;
-  }
-
   if (mode === 'novel') {
       systemPrompt = `You are a World-Class Audio Drama Director and Novelist.
       
-      GOAL: Transform the input text into an immersive "AI Audio Novel" script.
+      GOAL: Transform the input text into an immersive "Audio Novel" script.
       
       INSTRUCTIONS:
       1. **Unified Advanced Flow**: Merge creative writing with natural speech rhythm.
@@ -1704,13 +1891,7 @@ Output ONLY the corrected text. Do not add "Here is the corrected version".`;
   const userPrompt = `Mode: ${mode.toUpperCase()}\n\nText to Proofread:\n"${text}"`;
 
   try {
-    const isHeavyMode = mode === 'creative' || mode === 'novel';
-    const forcedModel = String(options?.model || '').trim() || (mode === 'novel' ? 'gemini-2.5-pro' : '');
-    const result = await generateText(systemPrompt, userPrompt, settings, false, {
-      ...(forcedModel ? { model: forcedModel } : {}),
-      preferredModels: isHeavyMode ? DIRECTOR_HEAVY_MODELS : DIRECTOR_LIGHT_MODELS,
-      temperature: isHeavyMode ? 0.35 : 0.2,
-    });
+    const result = await generateText(systemPrompt, userPrompt, settings, false);
     return result.replace(/^Here is.*?:\s*/i, '').trim();
   } catch (e: any) {
     throw new Error(cleanErrorMessage(e));
@@ -1720,8 +1901,6 @@ Output ONLY the corrected text. Do not add "Here is the corrected version".`;
 export interface DirectorOptions {
   style: 'lip_sync' | 'natural' | 'summary';
   tone: 'neutral' | 'dramatic' | 'funny' | 'professional' | 'hype';
-  model?: string;
-  preferredModels?: string[];
   expressiveEmotion?: boolean;
   autoRewrite?: boolean;
 }
@@ -1736,9 +1915,7 @@ export interface DirectorPromptProfile {
   temperature: number;
 }
 
-export const resolveDirectorPromptProfile = (
-  options?: Partial<DirectorOptions>
-): DirectorPromptProfile => {
+export const resolveDirectorPromptProfile = (options?: Partial<DirectorOptions>): DirectorPromptProfile => {
   const expressiveEmotion = Boolean(options?.expressiveEmotion);
   const autoRewrite = Boolean(options?.autoRewrite);
   const requestedStyle = options?.style || 'natural';
@@ -1811,6 +1988,53 @@ const suggestMusicTrackFromMood = (rawMood: unknown): string | undefined => {
   return 'm_novel_mystery_night';
 };
 
+export const runSegmentedBatchRunner = async <T>({
+  segments,
+  batchSize,
+  runSerially = false,
+  signal,
+  processSegment,
+}: {
+  segments: T[];
+  batchSize: number;
+  runSerially?: boolean;
+  signal?: AbortSignal;
+  processSegment: (segment: T, index: number) => Promise<void>;
+}): Promise<void> => {
+  const safeSegments = Array.isArray(segments) ? segments : [];
+  const safeBatchSize = Math.max(1, Math.floor(batchSize || 1));
+
+  for (let index = 0; index < safeSegments.length; index += safeBatchSize) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    const batch = safeSegments.slice(index, index + safeBatchSize);
+    if (runSerially) {
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        await processSegment(batch[offset] as T, index + offset);
+      }
+      continue;
+    }
+
+    await Promise.all(
+      batch.map(async (segment, offset) => {
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        await processSegment(segment as T, index + offset);
+      })
+    );
+  }
+
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+};
+
 export const autoFormatScript = async (
   text: string,
   settings: GenerationSettings,
@@ -1832,9 +2056,9 @@ export const autoFormatScript = async (
     ? `**EXISTING CAST:** ${existingCharacters.map(c => `${c.name} (${c.gender})`).join(', ')}. Reuse these if applicable.`
     : "Detect characters.";
   const requestedMode = 'audio drama';
-  const directorPromptProfile = resolveDirectorPromptProfile(options);
-  const requestedStyle = directorPromptProfile.requestedStyle;
-  const requestedTone = directorPromptProfile.requestedTone;
+  const promptProfile = resolveDirectorPromptProfile(options);
+  const requestedStyle = promptProfile.requestedStyle;
+  const requestedTone = promptProfile.requestedTone;
   
   const systemPrompt = `You are a World-Class Audio Drama Director.
 Transform input text into a strict audio script format.
@@ -1843,7 +2067,6 @@ ${castContext}
 Target mode: ${requestedMode}
 Preferred style: ${requestedStyle}
 Preferred tone: ${requestedTone}
-Director pass profile: ${directorPromptProfile.modeLabel}
 
 **TASK:**
 1. Identify speakers. Detect Gender (Male/Female) and Age (Child/Young Adult/Adult/Elderly).
@@ -1854,13 +2077,14 @@ Director pass profile: ${directorPromptProfile.modeLabel}
    - Additional comma-separated tags are crew/performance cues (e.g., Wearing earphones, Whispering to self, Smiling).
    - Keep emotion and cue tags concise.
 5. For quoted/direct speech in source, always emit an explicit speaker line. Do not swallow attributed speech inside narrator lines.
-6. Keep narrator lines only for non-spoken prose.
+6. Keep narrator lines only for non-spoken prose, titles, headings, and scene labels.
 7. Speaker names must remain in source script consistently across all lines.
 8. If speaker is unknown, use "Unknown Speaker (Neutral): ...".
 9. Preserve capitalization for character names.
 10. Never invent new conversations that are not implied by the source text.
 11. Language Fidelity: Keep output in the same language(s), script(s), and code-switch pattern as the source text. Do not translate, normalize, or romanize unless already present in the source.
-${directorPromptProfile.extraInstructions.join('\n')}
+12. Titles, chapter headings, scene headings, and label-like first lines must stay narrator lines instead of character dialogue.
+${promptProfile.extraInstructions.join('\n')}
 
 Bad example (do not do this):
 Narrator (Neutral): Mother told him to buy vegetables.
@@ -1881,22 +2105,10 @@ Language Lock: Preserve source-language output exactly; no cross-language conver
 
 IMPORTANT: Return ONLY valid JSON with NO additional text.`;
   
-  const userPrompt = `${directorPromptProfile.userPromptLead}:\n"${text.substring(0, 50000)}"`;
+  const userPrompt = `${promptProfile.userPromptLead}:\n"${text.substring(0, 50000)}"`;
   
   try {
-    const preferredSeed =
-      Array.isArray(options?.preferredModels) && options.preferredModels.length > 0
-        ? options.preferredModels
-        : STUDIO_CAST_TEXT_MODELS;
-    const preferredModels = resolveTextModelCandidates(
-      preferredSeed,
-      options?.model
-    );
-    const resultText = await generateText(systemPrompt, userPrompt, settings, true, {
-      preferredModels,
-      ...(String(options?.model || '').trim() ? { model: String(options?.model || '').trim() } : {}),
-      temperature: directorPromptProfile.temperature,
-    });
+    const resultText = await generateText(systemPrompt, userPrompt, settings, true);
     const json = extractJSON(resultText);
     
     if (!json || !json.script) {
@@ -1915,7 +2127,7 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
     const attributionGuard = enforceAttributionFidelity(text, scriptText);
     const finalScriptText = attributionGuard.script;
     if (attributionGuard.rewrites > 0) {
-      console.debug(`[ai-director] attribution_guard_rewrites=${attributionGuard.rewrites}`);
+      console.warn(`[ai-director] attribution_guard_rewrites=${attributionGuard.rewrites}`);
     }
     const parsedFromScript = parseMultiSpeakerScript(finalScriptText);
     const castMap = new Map<string, {
@@ -1962,171 +2174,51 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
   }
 };
 
-type SpeakerToneHint = 'calm' | 'energetic' | 'serious';
-
-export interface StudioSpeakerTraitHint {
-  gender: VoiceOption['gender'];
-  ageGroup: SpeakerAgeGroup;
-  tone: SpeakerToneHint;
-  reason?: string | undefined;
-}
-
-export interface StudioSpeakerTraitAnalysis {
-  speakers: string[];
-  traitHints: Record<string, StudioSpeakerTraitHint>;
-}
-
-const normalizeSpeakerToneHint = (value: unknown): SpeakerToneHint => {
-  const token = String(value || '').trim().toLowerCase();
-  if (!token) return 'calm';
-  if (token.includes('energy') || token.includes('excited') || token.includes('loud') || token.includes('playful')) {
-    return 'energetic';
-  }
-  if (token.includes('serious') || token.includes('grim') || token.includes('deep') || token.includes('formal')) {
-    return 'serious';
-  }
-  return 'calm';
-};
-
-const normalizeSpeakerGenderHint = (value: unknown, speaker: string): VoiceOption['gender'] => {
-  const token = String(value || '').trim().toLowerCase();
-  if (token === 'male') return 'Male';
-  if (token === 'female') return 'Female';
-  return guessGenderFromName(speaker);
-};
-
-const normalizeSpeakerAgeHint = (value: unknown, speaker: string): SpeakerAgeGroup => {
-  const fromValue = normalizeAgeGroupToken(String(value || ''));
-  if (fromValue !== 'Unknown') return fromValue;
-  return guessAgeGroupFromSpeaker(speaker);
-};
-
-const buildSpeakerDetectionExcerpt = (text: string, maxChars: number = 12000): string => {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return '';
-  if (normalized.length <= maxChars) return normalized;
-
-  const headBudget = Math.max(2400, Math.floor(maxChars * 0.45));
-  const tailBudget = Math.max(1800, Math.floor(maxChars * 0.2));
-  const middleBudget = Math.max(1600, maxChars - headBudget - tailBudget);
-  const middleStart = Math.max(0, Math.floor((normalized.length - middleBudget) / 2));
-  const middleEnd = Math.min(normalized.length, middleStart + middleBudget);
-
-  return [
-    normalized.slice(0, headBudget).trim(),
-    normalized.slice(middleStart, middleEnd).trim(),
-    normalized.slice(Math.max(0, normalized.length - tailBudget)).trim(),
-  ]
-    .filter(Boolean)
-    .join('\n...\n');
+export const autoDirectStudioScript = async (
+  text: string,
+  settings: GenerationSettings,
+  options?: DirectorOptions,
+  existingCharacters: CharacterProfile[] = []
+): Promise<{
+  directedText: string;
+  cast: {
+    name: string;
+    gender: 'Male' | 'Female' | 'Unknown';
+    age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly' | undefined;
+  }[];
+  mood?: string | undefined;
+  crewTags?: string[] | undefined;
+  suggestedMusicTrackId?: string | undefined;
+}> => {
+  const result = await autoFormatScript(text, settings, 'audio_drama', options, existingCharacters);
+  return {
+    directedText: result.formattedText,
+    cast: result.cast,
+    mood: result.mood,
+    crewTags: result.crewTags,
+    suggestedMusicTrackId: result.suggestedMusicTrackId,
+  };
 };
 
 export const inferSpeakerTraitHintsWithAi = async (
   text: string,
-  settings: GenerationSettings,
+  _settings: GenerationSettings,
   knownSpeakers: string[] = []
-): Promise<StudioSpeakerTraitAnalysis> => {
-  const fallbackSpeakers = [
-    ...new Set(
-      [
-        ...knownSpeakers,
-        ...parseMultiSpeakerScript(text).speakersList,
-      ]
-        .map((speaker) => normalizeSpeakerName(String(speaker || '')))
-        .filter((speaker) => speaker && isLikelySpeakerName(speaker))
-    ),
-  ];
-  const sample = buildSpeakerDetectionExcerpt(text);
-  if (!sample) {
-    return {
-      speakers: fallbackSpeakers,
-      traitHints: {},
-    };
-  }
-
-  const hasLockedSpeakers = fallbackSpeakers.length > 0;
-  const systemPrompt = `You extract speaking characters from a script sample and infer compact voice-casting hints.
-
-Return ONLY valid JSON in this schema:
-{
-  "speakers": [
-    {
-      "name": "string",
-      "gender": "Male|Female|Unknown",
-      "ageGroup": "Child|Adult|Elderly|Unknown",
-      "tone": "calm|energetic|serious",
-      "reason": "short string"
-    }
-  ]
-}
-
-Rules:
-1. If known speakers are provided, reuse exactly those names. Do not invent or rename them.
-2. Otherwise detect only actual speaking characters or narrator-like roles that clearly speak in the text.
-3. Keep the list short: maximum 12 speakers.
-4. Keep "reason" under 12 words.
-5. Use "Unknown" if gender or age is unclear.
-6. Tone must be one of calm, energetic, serious.
-7. No markdown, no prose, no commentary.`;
-
-  const userPrompt = [
-    hasLockedSpeakers
-      ? `Known speakers (must preserve exactly): ${JSON.stringify(fallbackSpeakers)}`
-      : 'Known speakers: []',
-    'Script sample:',
-    sample,
-  ].join('\n\n');
-
-  const resultText = await generateText(systemPrompt, userPrompt, settings, true, {
-    preferredModels: DIRECTOR_LIGHT_MODELS,
-    temperature: 0.2,
-  });
-  const json = extractJSON(resultText);
-  const rawSpeakers = Array.isArray(json?.speakers) ? json.speakers : [];
-  const normalizedSpeakers: string[] = [];
-  const traitHints: Record<string, StudioSpeakerTraitHint> = {};
-  const knownSpeakerLookup = new Map<string, string>();
-
-  fallbackSpeakers.forEach((speaker) => {
-    knownSpeakerLookup.set(speaker.toLowerCase(), speaker);
-  });
-
-  rawSpeakers.forEach((entry: any) => {
-    const parsedName = normalizeSpeakerName(String(entry?.name || ''));
-    if (!parsedName || !isLikelySpeakerName(parsedName)) return;
-    const canonicalName = hasLockedSpeakers
-      ? (knownSpeakerLookup.get(parsedName.toLowerCase()) || '')
-      : parsedName;
-    const speaker = canonicalName || parsedName;
-    if (!speaker) return;
-    const key = speaker.toLowerCase();
-    if (!normalizedSpeakers.some((item) => item.toLowerCase() === key)) {
-      normalizedSpeakers.push(speaker);
-    }
-    traitHints[speaker] = {
-      gender: normalizeSpeakerGenderHint(entry?.gender, speaker),
-      ageGroup: normalizeSpeakerAgeHint(entry?.ageGroup ?? entry?.age, speaker),
-      tone: normalizeSpeakerToneHint(entry?.tone),
-      reason: String(entry?.reason || '').trim().slice(0, 120) || undefined,
-    };
-  });
-
-  const resolvedSpeakers = normalizedSpeakers.length > 0
-    ? normalizedSpeakers
-    : fallbackSpeakers;
-
-  resolvedSpeakers.forEach((speaker) => {
-    if (traitHints[speaker]) return;
-    traitHints[speaker] = {
-      gender: guessGenderFromName(speaker),
-      ageGroup: guessAgeGroupFromSpeaker(speaker),
-      tone: 'calm',
-    };
-  });
-
+): Promise<{
+  speakers: string[];
+  traitHints: Record<string, {
+    gender?: 'Male' | 'Female' | 'Unknown';
+    ageGroup?: 'Child' | 'Adult' | 'Elderly' | 'Unknown';
+    tone?: 'calm' | 'energetic' | 'serious';
+  }>;
+}> => {
+  const parsed = parseMultiSpeakerScript(text);
+  const speakers = Array.from(
+    new Set([...knownSpeakers, ...parsed.speakersList].map((speaker) => String(speaker || '').trim()).filter(Boolean))
+  );
   return {
-    speakers: resolvedSpeakers,
-    traitHints,
+    speakers,
+    traitHints: {},
   };
 };
 
@@ -2141,21 +2233,10 @@ export const detectLanguage = async (text: string, _settings: GenerationSettings
   return 'en';
 };
 
-export const PROJECT_SCOPED_TEXT_SYSTEM_PROMPT = [
-  'You are a project-scoped creative writing assistant for this app.',
-  'Help only with the current project, script, scene, narration, dialogue, translation, editing, direction, or brainstorming.',
-  'If the request is unrelated to the project, politely decline and redirect the user back to project-related work.',
-  'Output only the requested text with no additional commentary.',
-].join(' ');
-
-export const generateTextContent = async (
-  prompt: string,
-  currentText: string | undefined,
-  settings: GenerationSettings,
-  options: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {}
-): Promise<string> => {
-  const userPrompt = currentText ? `Project Text: "${currentText}"\n\nTask: ${prompt}` : `Task: ${prompt}`;
-  return await generateText(PROJECT_SCOPED_TEXT_SYSTEM_PROMPT, userPrompt, settings, false, options);
+export const generateTextContent = async (prompt: string, currentText: string | undefined, settings: GenerationSettings): Promise<string> => {
+  const systemPrompt = "You are a creative writing assistant. Output ONLY the requested text with NO additional commentary.";
+  const userPrompt = currentText ? `Original Text: "${currentText}"\n\nTask: ${prompt}` : `Task: ${prompt}`;
+  return await generateText(systemPrompt, userPrompt, settings, false);
 };
 
 export const translateText = async (text: string, targetLanguage: string, settings: GenerationSettings): Promise<string> => {
@@ -2193,12 +2274,7 @@ IMPORTANT RULES:
     systemPrompt += ` Preserve "Speaker: " format if present.`;
   }
   
-  const normalized = String(text || "").trim();
-  const heavyTranslation = normalized.length >= 12000;
-  return await generateText(systemPrompt, text, settings, false, {
-    preferredModels: heavyTranslation ? DIRECTOR_HEAVY_MODELS : DIRECTOR_STANDARD_MODELS,
-    temperature: 0.2,
-  });
+  return await generateText(systemPrompt, text, settings, false);
 };
 
 export const translateVideoContent = async (videoFile: File, targetLanguage: string, settings: GenerationSettings): Promise<string> => {
@@ -2316,28 +2392,21 @@ export const fetchRemoteSpeakers = async (backendUrl: string): Promise<RemoteSpe
   }
 };
 
-const extractOpenVoiceArtifactIdFromUrl = (url: string): string => {
-  const raw = String(url || '').trim();
-  if (!raw) return '';
-  try {
-    const parsed = new URL(raw, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
-    const segments = parsed.pathname.split('/').filter(Boolean);
-    const artifactIndex = segments.findIndex((segment) => segment === 'artifacts');
-    if (artifactIndex < 0) return '';
-    return String(segments[artifactIndex + 1] || '').trim();
-  } catch {
-    const match = raw.match(/\/voice-lab\/openvoice\/artifacts\/([^/?#]+)/i);
-    return String(match?.[1] || '').trim();
-  }
-};
-
 // Helper to fetch clone audio data as base64
 async function getCloneBase64(sampleUrl: string): Promise<string | null> {
   try {
-    const safeUrl = String(sampleUrl || '').trim();
-    if (!safeUrl) return null;
-    return await fetchUrlToBase64(safeUrl);
-  } catch (e) {
+    const res = await fetch(sampleUrl);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i] ?? 0);
+    }
+    return btoa(binary);
+  } catch(e) {
     console.warn("Clone base64 failed:", e);
     return null;
   }
@@ -2357,28 +2426,42 @@ export const generateSpeech = async (
     engine?: string;
     backendUrl?: string;
     backendApiKey?: string;
+    chatterboxId?: string;
     openaiModel?: string;
     f5Model?: string;
     enableWebGpu?: boolean;
     runtimeVoiceCatalog?: VoiceOption[];
     runtimeSpeakerHint?: string;
-    runtimeProvider?: string;
   };
   const runtimeVoiceCatalog = Array.isArray(runtimeSettings.runtimeVoiceCatalog)
     ? runtimeSettings.runtimeVoiceCatalog
     : [];
-  const allowPersonalGeminiBypass = false;
-  const rawEngine = String(runtimeSettings.engine || 'PRIME').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  const canonicalEngine = rawEngine;
-  if (canonicalEngine !== 'VECTOR' && canonicalEngine !== 'PRIME') {
-    throw new Error(`Unsupported TTS engine "${String(runtimeSettings.engine || '').trim()}". Use ${getEngineDisplayName('VECTOR')} or ${getEngineDisplayName('PRIME')}.`);
-  }
-  const activeEngine: GenerationSettings['engine'] = canonicalEngine;
-  const runtimeProvider = String(runtimeSettings.runtimeProvider || '').trim().toUpperCase();
-  const usesGemRuntime = activeEngine === 'PRIME' || activeEngine === 'VECTOR';
-  const runtimeSupportsStructuredGeminiMultiSpeaker = usesGemRuntime;
-  const runtimeEngine: GenerationSettings['engine'] = activeEngine;
-  const primaryEngine = isPrimaryTtsEngine(activeEngine) ? activeEngine : null;
+  const allowPersonalGeminiBypass = Boolean(runtimeSettings.preferUserGeminiKey);
+  const rawEngine = String(runtimeSettings.engine || 'PRIME').trim().toUpperCase();
+  const primaryEngine = resolvePrimaryTtsEngineForRouting(rawEngine);
+  const activeEngine =
+    rawEngine === 'PRIME'
+      ? 'GEM'
+      : rawEngine === 'VECTOR'
+        ? 'GOOD'
+      : rawEngine === 'GEMINI'
+      ? 'GEM'
+      : rawEngine === 'GOOD_RUNTIME' || rawEngine === 'GEMINI_2_5_LITE_TTS'
+        ? 'GOOD'
+      : rawEngine === 'NEURAL_2' || rawEngine === 'NURAL2' || rawEngine === 'NURAL_2'
+        ? 'NEURAL2'
+      : rawEngine === 'KOKORO_RUNTIME'
+        ? 'KOKORO'
+        : rawEngine;
+  const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'GOOD' || activeEngine === 'NEURAL2';
+  const runtimeEngine: RuntimeEngine =
+    activeEngine === 'KOKORO'
+      ? 'KOKORO'
+      : activeEngine === 'GOOD'
+        ? 'GOOD'
+      : activeEngine === 'NEURAL2'
+        ? 'NEURAL2'
+        : 'GEM';
   const configuredTraceId = String(options?.traceId || '').trim();
   const configuredRequestId = String(options?.requestId || '').trim();
   const traceId = configuredTraceId || configuredRequestId || createSynthesisTraceId(runtimeEngine);
@@ -2406,12 +2489,6 @@ export const generateSpeech = async (
     return 'en';
   };
 
-  const isHindiFamilyLanguage = (value: string): boolean => (
-    new Set(['hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'or', 'ur', 'ne', 'si']).has(
-      normalizeLanguageCode(value)
-    )
-  );
-
   let lang = 'en';
   if (settings.language && settings.language !== 'Auto') {
     const langObj = LANGUAGES.find(
@@ -2422,7 +2499,6 @@ export const generateSpeech = async (
     lang = inferLanguageFromText(text);
   }
   if (lang === 'hi-latn') lang = 'hi';
-  const runtimeLanguage = lang;
   
   // Clean text helper (removes metadata)
   const cleanText = (rawText: string) => {
@@ -2457,12 +2533,6 @@ export const generateSpeech = async (
     return cleanedLines.join(' ').replace(/\s+/g, ' ').trim();
   };
 
-  const normalizeRuntimeUrl = (url: string | undefined, fallback: string): string => {
-    const normalized = String(url || '').trim().replace(/\/+$/, '');
-    if (normalized) return normalized;
-    return fallback.replace(/\/+$/, '');
-  };
-
   const parseRuntimeError = async (response: Response): Promise<string> => {
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
     try {
@@ -2492,223 +2562,55 @@ export const generateSpeech = async (
     return bytes.buffer;
   };
 
-  const synthesizeViaRuntime = async (
-    runtimeUrl: string,
-    endpointPath: string,
-    payload: Record<string, unknown>,
-    runtimeLabel: string
+  const synthesizeViaCloudTts = async (
+    chunkText: string,
+    engine: 'PRIME' | 'VECTOR',
+    voiceName: string,
+    multiSpeaker?: boolean,
+    speakerVoices?: Array<{ speaker: string; voiceName: string }>
   ): Promise<AudioBuffer> => {
-    const response = await fetch(`${runtimeUrl}${endpointPath}`, {
+    const response = await fetch('/api/tts/synthesize', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-      },
-      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: chunkText,
+        voice: voiceName,
+        engine,
+        language: lang,
+        speed: settings.speed,
+        multiSpeaker: multiSpeaker || false,
+        speakerVoices,
+      }),
       ...(signal ? { signal } : {}),
     });
 
     if (!response.ok) {
-      const detail = await parseRuntimeError(response);
-      throw new Error(`${runtimeLabel} failed (${response.status}): ${detail}`);
-    }
-    const responseTraceId = response.headers.get('x-voiceflow-trace-id') || String((payload as any)?.trace_id || '');
-    if (responseTraceId) {
-      console.debug(`[TTS][${runtimeLabel}] trace_id=${responseTraceId}`);
-    }
-    const runtimeDiagnostics = parseRuntimeDiagnosticsHeader(response.headers.get('x-voiceflow-diagnostics'));
-    if (runtimeDiagnostics) {
-      const detail: RuntimeDiagnosticsPayload = {
-        ...runtimeDiagnostics,
-        traceId: runtimeDiagnostics.traceId || responseTraceId || undefined,
-        runtimeLabel,
-      };
-      if (detail.recoveryUsed) {
-        console.info(
-          `[TTS][${runtimeLabel}] recovery used ` +
-          `(retryChunks=${detail.retryChunks || 0}, qualityRecoveries=${detail.qualityGuardRecoveries || 0}, splitChunks=${detail.splitChunks || 0})`
-        );
+      const errorText = await response.text().catch(() => '');
+      let detail = `Cloud TTS failed (${response.status})`;
+      try {
+        const parsed = JSON.parse(errorText);
+        if (parsed?.error) detail = parsed.error;
+      } catch {
+        if (errorText) detail = errorText.substring(0, 200);
       }
-      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-        window.dispatchEvent(new CustomEvent(TTS_RUNTIME_DIAGNOSTICS_EVENT, { detail }));
-      }
+      throw new Error(detail);
     }
 
-    const audioBytes = await response.arrayBuffer();
-    if (audioBytes.byteLength < 100) {
-      throw new Error(`${runtimeLabel} returned empty audio.`);
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength < 100) {
+      throw new Error('Cloud TTS returned empty audio.');
     }
 
     try {
-      return await ctx.decodeAudioData(audioBytes);
-    } catch (decodeError: any) {
-      throw new Error(
-        `Failed to decode audio from ${runtimeLabel}. ` +
-        `Possible codec issue or corrupted response. Details: ${decodeError?.message || 'unknown error'}`
-      );
-    }
-  };
-
-  const synthesizeViaBackendGateway = async (
-    engine: 'PRIME' | 'VECTOR',
-    runtimeUrl: string,
-    endpointPath: string,
-    payload: Record<string, unknown>,
-    runtimeLabel: string
-  ): Promise<AudioBuffer> => {
-    const backendBase = resolveMediaBackendBaseUrl(settings);
-    const liveChunkRequest = resolveLiveChunkRequest(engine, lang);
-    const livePayload = {
-      ...payload,
-      engine,
-      stream: true,
-      live_chunk_chars: liveChunkRequest.liveChunkChars,
-      live_chunk_words: liveChunkRequest.liveChunkWords,
-    };
-    const requestId = String((livePayload as any)?.request_id || (livePayload as any)?.trace_id || '').trim();
-    if (!requestId) {
-      throw new Error('Gateway request_id is required and cannot be empty.');
-    }
-    (livePayload as any).request_id = requestId;
-    (livePayload as any).trace_id = String((livePayload as any)?.trace_id || requestId).trim() || requestId;
-    const ttsSessionKey = await issueTtsV2SessionKey({ baseUrl: backendBase });
-
-    const submitGatewayRequest = async (url: string): Promise<Response> => (
-      authFetch(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'ngrok-skip-browser-warning': 'true',
-            'Idempotency-Key': requestId,
-            'x-vf-tts-session-key': ttsSessionKey,
-          },
-          body: JSON.stringify(livePayload),
-          ...(signal ? { signal } : {}),
-        },
-        { requireAuth: true }
-      )
-    );
-
-    let response: Response;
-    try {
-      response = await submitGatewayRequest(`${backendBase}/tts/v2/jobs`);
-    } catch (gatewayError: unknown) {
-      if (signal?.aborted && requestId) {
-        try {
-          await cancelTtsJob(requestId, { baseUrl: backendBase });
-        } catch {
-          // Best-effort cancellation by deterministic request_id/job_id.
-        }
+      return await ctx.decodeAudioData(arrayBuffer);
+    } catch {
+      // WAV decoding failed â€” try manual PCM16 decode (LINEAR16 24kHz mono)
+      const headerSize = 44;
+      if (arrayBuffer.byteLength > headerSize) {
+        const pcmData = new Int16Array(arrayBuffer.slice(headerSize));
+        return pcm16ToAudioBuffer(pcmData, ctx, 24000, 1);
       }
-      if (gatewayError instanceof DOMException && gatewayError.name === 'AbortError') {
-        throw gatewayError;
-      }
-      const detail = gatewayError instanceof Error ? gatewayError.message : 'Unknown gateway error';
-      throw new Error(`Media backend gateway is unreachable at ${backendBase}: ${detail}`);
-    }
-
-    if (!response.ok) {
-      const detail = await parseRuntimeError(response);
-      throw new Error(`${runtimeLabel} failed (${response.status}): ${detail}`);
-    }
-
-    const responseTraceId = response.headers.get('x-voiceflow-trace-id') || String((payload as any)?.trace_id || '');
-    if (responseTraceId) {
-      console.debug(`[TTS][${runtimeLabel}] trace_id=${responseTraceId}`);
-    }
-    const runtimeDiagnostics = parseRuntimeDiagnosticsHeader(response.headers.get('x-voiceflow-diagnostics'));
-    if (runtimeDiagnostics) {
-      const detail: RuntimeDiagnosticsPayload = {
-        ...runtimeDiagnostics,
-        traceId: runtimeDiagnostics.traceId || responseTraceId || undefined,
-        runtimeLabel,
-      };
-      if (detail.recoveryUsed) {
-        console.info(
-          `[TTS][${runtimeLabel}] recovery used ` +
-          `(retryChunks=${detail.retryChunks || 0}, qualityRecoveries=${detail.qualityGuardRecoveries || 0}, splitChunks=${detail.splitChunks || 0})`
-        );
-      }
-      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-        window.dispatchEvent(new CustomEvent(TTS_RUNTIME_DIAGNOSTICS_EVENT, { detail }));
-      }
-    }
-
-    let audioBytes: ArrayBuffer | null = null;
-    let gatewayHeaders: Record<string, string> = {};
-    const responseContentType = String(response.headers.get('content-type') || '').toLowerCase();
-    const returnsAudioDirectly = responseContentType.includes('audio/');
-    const canParseJson = responseContentType.includes('application/json') || response.status === 202 || response.status === 200;
-
-    if (returnsAudioDirectly) {
-      audioBytes = await response.arrayBuffer();
-    } else if (canParseJson) {
-      const acceptedPayload = await response.json().catch(() => null) as any;
-      const acceptedStatus = String(acceptedPayload?.status || '').trim().toLowerCase();
-      if (acceptedStatus === 'completed' && acceptedPayload?.result && typeof acceptedPayload.result === 'object') {
-        const finalBase64 = String(acceptedPayload.result.audioBase64 || '').trim();
-        if (!finalBase64) {
-          throw new Error(`${runtimeLabel} completed response is missing audio payload.`);
-        }
-        audioBytes = base64ToArrayBuffer(finalBase64);
-        const rawHeaders = acceptedPayload.result.headers && typeof acceptedPayload.result.headers === 'object'
-          ? acceptedPayload.result.headers
-          : {};
-        Object.entries(rawHeaders).forEach(([key, value]) => {
-          const safeKey = String(key || '').trim().toLowerCase();
-          if (!safeKey) return;
-          gatewayHeaders[safeKey] = String(value ?? '');
-        });
-      } else {
-        const jobId = extractGatewayJobId(acceptedPayload, response.headers);
-        if (!jobId) {
-          throw new Error(`${runtimeLabel} accepted queue request but did not return a job id.`);
-        }
-        emitGatewayProgress({
-          jobId,
-          status: 'queued',
-          engine,
-          stage: 'Queued for synthesis...',
-          progressPct: 8,
-        });
-        const queuedResult = await pollTtsGatewayJobForAudio({
-          baseUrl: backendBase,
-          jobId,
-          runtimeLabel,
-          engine,
-          signal,
-        });
-        audioBytes = queuedResult.audioBytes;
-        gatewayHeaders = queuedResult.responseHeaders;
-      }
-    } else {
-      audioBytes = await response.arrayBuffer();
-    }
-    if (!audioBytes || audioBytes.byteLength < 100) {
-      throw new Error(`${runtimeLabel} returned empty audio.`);
-    }
-
-    const conversionHeader =
-      String(response.headers.get('x-vf-post-tts-conversion') || gatewayHeaders['x-vf-post-tts-conversion'] || '').trim();
-    const profileHeader =
-      String(response.headers.get('x-vf-post-tts-profile') || gatewayHeaders['x-vf-post-tts-profile'] || '').trim();
-    const modelHeader =
-      String(response.headers.get('x-vf-post-tts-model') || gatewayHeaders['x-vf-post-tts-model'] || '').trim();
-    if (conversionHeader || profileHeader || modelHeader) {
-      console.debug(
-        `[TTS][${runtimeLabel}] post_tts_conversion=${conversionHeader || 'unknown'} profile=${profileHeader || '-'} model=${modelHeader || '-'}`
-      );
-    }
-
-    try {
-      return await ctx.decodeAudioData(audioBytes);
-    } catch (decodeError: any) {
-      throw new Error(
-        `Failed to decode audio from ${runtimeLabel}. ` +
-        `Possible codec issue or corrupted response. Details: ${decodeError?.message || 'unknown error'}`
-      );
+      throw new Error('Failed to decode Cloud TTS audio response.');
     }
   };
 
@@ -2873,8 +2775,6 @@ export const generateSpeech = async (
             'ngrok-skip-browser-warning': 'true',
           },
           body: JSON.stringify({
-            // Source audio is already synthesized from the active TTS buffer.
-            // This endpoint call is strictly the post-TTS VC pass.
             mode: 'vc',
             runKind: 'warm',
             durationSec: Math.max(1, Math.ceil(buffer.duration || 1)),
@@ -2910,8 +2810,7 @@ export const generateSpeech = async (
         throw new Error('OpenVoice clone returned no audio.');
       }
 
-      const finalBuffer = await ctx.decodeAudioData(base64ToArrayBuffer(finalBase64));
-      return finalBuffer;
+      return await ctx.decodeAudioData(base64ToArrayBuffer(finalBase64));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error || '');
       if (cloneTarget?.required) {
@@ -2925,7 +2824,7 @@ export const generateSpeech = async (
   };
 
   const maybeSynthesizePrimaryLongText = async (
-    engine: 'PRIME' | 'VECTOR',
+    engine: PrimaryTtsEngine,
     candidateText: string,
     synthesizeChunk: (
       chunkText: string,
@@ -2935,20 +2834,10 @@ export const generateSpeech = async (
     ) => Promise<AudioBuffer>
   ): Promise<AudioBuffer | null> => {
     const profile = getChunkProfile(engine, lang);
-    const candidateWordCount = countWords(candidateText);
-    const shouldForceChunking = (
-      candidateText.length > Math.max(profile.hardCharCap * 2, 540)
-      || candidateWordCount > Math.max(profile.maxWordsPerChunk * 2, 96)
-    );
-    if (!shouldForceChunking) {
-      return null;
-    }
-    const windows = buildLongTextChunks({
-      engine,
-      language: lang,
-      text: candidateText,
-    });
-    if (windows.length <= 1) {
+
+    const windowWordLimit = MAX_WORDS_PER_WINDOW;
+    const windows = buildSentenceAlignedWordWindows(candidateText, windowWordLimit);
+    if (windows.length <= 1 && candidateText.length <= profile.targetCharCap) {
       return null;
     }
 
@@ -2971,8 +2860,7 @@ export const generateSpeech = async (
         } catch (error) {
           lastError = error;
           const detail = error instanceof Error ? error.message : String(error);
-          const shouldFailFast = shouldFailFastOnGeminiRuntimeError(detail);
-          if (shouldFailFast) {
+          if (isKnownGeminiPoolMisconfigError(detail)) {
             break;
           }
           if (attempt < RETRY_ATTEMPTS_PER_CHUNK) {
@@ -2993,22 +2881,20 @@ export const generateSpeech = async (
     return mergeChunkBuffersWithCrossfade(ctx, buffers, profile.joinCrossfadeMs);
   };
   
-  const availableClones = getSessionClonedVoices();
+  // Load cloned voices
+  let availableClones: ClonedVoice[] = [];
+  try { 
+    availableClones = JSON.parse(localStorage.getItem('vf_clones') || '[]'); 
+  } catch (e) {}
+
   const normalizeCloneLookupToken = (value: string | undefined): string => String(value || '').trim().toLowerCase();
   const resolveSessionClonedVoice = (candidateId?: string, candidateName?: string): ClonedVoice | undefined => {
-    const tokens = [
-      candidateId,
-      candidateName,
-    ]
+    const tokens = [candidateId, candidateName]
       .map((item) => normalizeCloneLookupToken(item))
       .filter(Boolean);
     if (tokens.length === 0) return undefined;
     return availableClones.find((voice) => {
-      const candidates = [
-        voice.id,
-        voice.name,
-        voice.geminiVoiceName,
-      ]
+      const candidates = [voice.id, voice.name, voice.geminiVoiceName]
         .map((item) => normalizeCloneLookupToken(item))
         .filter(Boolean);
       return tokens.some((token) => candidates.includes(token));
@@ -3121,7 +3007,6 @@ export const generateSpeech = async (
   const defaultGeminiVoice = resolveGeminiVoiceName(resolvedVoiceInput || 'Fenrir', 'Fenrir');
   const geminiStudioPairGroupsPlan = (() => {
     if (!usesGemRuntime) return null;
-    if (!runtimeSupportsStructuredGeminiMultiSpeaker) return null;
     if (!multiSpeakerEnabled) return null;
     if (!hasTrueMultiSpeakerScript || hasSfx) return null;
     if (hasActiveSpeakerVcReferences) return null;
@@ -3201,28 +3086,9 @@ export const generateSpeech = async (
       .trim();
     enforceWordLimit(totalSpeechText || cleanText(text));
   }
-
-  const hasSegmentLevelSpeakerVcReference = hasActiveSpeakerVcReferences && studioSegments.some((segment) => {
-    if (segment.isSfx) return false;
-    const speaker = String(segment.speaker || '').trim();
-    if (!speaker) return false;
-    if (resolveSpeakerVcReference(speaker)) return true;
-    const mappedVoiceId = resolveSpeakerMappedVoiceId(settings.speakerMapping, speaker);
-    return Boolean(resolveSpeakerVcReferenceByVoiceId(mappedVoiceId));
-  });
-  const forceSegmentedForSpeakerVc = hasSegmentLevelSpeakerVcReference;
-  const useSegmentedGeneration = forceSegmentedForSpeakerVc || hasSfx || (
-    multiSpeakerEnabled && (
-      usesGemRuntime
-        ? (hasTrueMultiSpeakerScript && !useGeminiBuiltInMultiSpeaker)
-        : (
-          (isMultiSpeaker && speakersList.length > 0) ||
-          runtimeProvider === 'COQ' ||
-          runtimeProvider === 'OPENAI' ||
-          runtimeProvider === 'F5' ||
-          studioSegments.length > 1
-        )
-    )
+  
+  const useSegmentedGeneration = hasSfx || (
+    multiSpeakerEnabled && hasTrueMultiSpeakerScript && !useGeminiBuiltInMultiSpeaker
   );
   
   const synthesizeViaSegmentedGeneration = async (): Promise<AudioBuffer> => {
@@ -3231,30 +3097,20 @@ export const generateSpeech = async (
       .filter(s => s.text.trim() || s.isSfx);
     
     const segmentResults: { index: number, buffer: AudioBuffer }[] = [];
-    const expectedSegmentCount = validSegments.length;
     const autoSpeakerVoiceCache = new Map<string, { voiceId: string; voiceName: string }>();
-    const BATCH_SIZE = 2;
+    const BATCH_SIZE = activeEngine === 'KOKORO' ? 1 : 2;
 
-      const processSegment = async (seg: typeof validSegments[number]): Promise<void> => {
-        if (signal?.aborted) throw createAbortError();
-        
+    await runSegmentedBatchRunner({
+      segments: validSegments,
+      batchSize: BATCH_SIZE,
+      runSerially: activeEngine === 'KOKORO',
+      ...(signal ? { signal } : {}),
+      processSegment: async (seg) => {
         try {
           const speakerName = String(seg.speaker || '').trim();
+          const speakerVcReference = speakerName ? resolveSpeakerVcReference(speakerName) : undefined;
           const speakerKey = speakerName.toLowerCase();
-          const mappedSpeakerVoiceId = speakerKey
-            ? String(resolveSpeakerMappedVoiceId(settings.speakerMapping, speakerName) || '').trim()
-            : '';
-          const mappedSpeakerVcReference = speakerKey ? resolveSpeakerVcReference(speakerName) : undefined;
-          const mappedSpeakerVcReferenceByVoiceId = mappedSpeakerVoiceId
-            ? resolveSpeakerVcReferenceByVoiceId(mappedSpeakerVoiceId)
-            : undefined;
-          const resolvedSpeakerVcReference = mappedSpeakerVcReference || mappedSpeakerVcReferenceByVoiceId;
-          const hasExplicitSpeaker = Boolean(speakerKey) && (
-            explicitSpeakerSet.has(speakerKey) ||
-            Boolean(mappedSpeakerVoiceId) ||
-            Boolean(resolvedSpeakerVcReference)
-          );
-          const speakerVcReference = hasExplicitSpeaker ? resolvedSpeakerVcReference : undefined;
+          const hasExplicitSpeaker = Boolean(speakerKey) && explicitSpeakerSet.has(speakerKey);
           const allowAutoSpeakerRouting = hasExplicitSpeaker && hasTrueMultiSpeakerScript;
 
           // Handle SFX
@@ -3282,9 +3138,15 @@ export const generateSpeech = async (
           let effectiveSpeed = settings.speed;
           
           if (hasExplicitSpeaker) {
-            const mappedId = mappedSpeakerVoiceId;
+            const mappedId = resolveSpeakerMappedVoiceId(settings.speakerMapping, speakerName);
             if (mappedId) {
-               effectiveVoiceId = mappedId;
+               if (activeEngine === 'KOKORO' && runtimeVoiceCatalog.length > 0) {
+                 const validIds = new Set(runtimeVoiceCatalog.map((voice) => voice.id));
+                 const fallbackRuntimeVoiceId = runtimeVoiceCatalog[0]?.id || mappedId;
+                 effectiveVoiceId = validIds.has(mappedId) ? mappedId : fallbackRuntimeVoiceId;
+               } else {
+                 effectiveVoiceId = mappedId;
+               }
 
                if (usesGemRuntime) {
                  const v = VOICES.find(x => x.id === mappedId) || availableClones.find(x => x.id === mappedId);
@@ -3311,12 +3173,22 @@ export const generateSpeech = async (
                
                // Select Candidate Pool based on Engine
                let candidates: any[] = [];
-               if (runtimeProvider === 'OPENAI') candidates = OPENAI_VOICES;
-               else if (runtimeProvider === 'F5') candidates = F5_VOICES;
+               if (activeEngine === 'OPENAI') candidates = OPENAI_VOICES;
+               else if (activeEngine === 'F5') candidates = F5_VOICES;
+               else if (activeEngine === 'KOKORO') candidates = runtimeVoiceCatalog.length > 0 ? runtimeVoiceCatalog : KOKORO_VOICES;
                else candidates = VOICES;
 
+               if (activeEngine === 'KOKORO') {
+                 const isHindiTarget = lang.startsWith('hi');
+                 const hindiCandidates = candidates.filter((v) => /hindi|india|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.country || ''}`));
+                 const englishCandidates = candidates.filter((v) => !/hindi|india|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.country || ''}`));
+                 if (isHindiTarget && hindiCandidates.length > 0) candidates = hindiCandidates;
+                 if (!isHindiTarget && englishCandidates.length > 0) candidates = englishCandidates;
+               }
+
                if (candidates.length === 0) {
-                 candidates = VOICES;
+                 if (activeEngine === 'KOKORO') candidates = KOKORO_VOICES;
+                 else candidates = VOICES;
                }
 
                const detectedAgeGroup = guessAgeGroupFromSpeaker(speakerName);
@@ -3376,6 +3248,7 @@ export const generateSpeech = async (
           // Create segment-specific settings
           const segSettings = { 
             ...settings, 
+            chatterboxId: effectiveVoiceId, 
             voiceId: effectiveVoiceId,
             emotion: normalizedSegmentEmotion,
             speed: effectiveSpeed,
@@ -3410,6 +3283,7 @@ export const generateSpeech = async (
                 }
               )
             : buf;
+
           segmentResults.push({ index: seg.originalIndex, buffer: vcBuffer });
           
         } catch (e: any) {
@@ -3425,21 +3299,8 @@ export const generateSpeech = async (
             buffer: ctx.createBuffer(1, Math.ceil(estimatedDuration * 24000), 24000) 
           });
         }
-      };
-
-    await runSegmentedBatchRunner({
-      segments: validSegments,
-      batchSize: BATCH_SIZE,
-      runSerially: usesGemRuntime,
-      processSegment,
-      ...(signal ? { signal } : {}),
+      },
     });
-    if (segmentResults.length !== expectedSegmentCount) {
-      if (signal?.aborted) throw createAbortError();
-      throw new Error(
-        `Segmented synthesis produced incomplete output (${segmentResults.length}/${expectedSegmentCount} segments).`
-      );
-    }
     
     // Sort and concatenate
     segmentResults.sort((a, b) => a.index - b.index);
@@ -3459,390 +3320,42 @@ export const generateSpeech = async (
   }
   enforceWordLimit(processedText);
 
-  // --- LOCAL GEMINI RUNTIME ---
-  if (usesGemRuntime) {
-    const runtimeUrl = normalizeRuntimeUrl(settings.geminiTtsServiceUrl, 'http://127.0.0.1:7810');
-    const targetVoiceName = defaultGeminiVoice;
-    const speakerHint = String(runtimeSettings.runtimeSpeakerHint || '').trim();
+  // --- CLOUD TTS SYNTHESIS ---
+  const resolvedEngine: 'PRIME' | 'VECTOR' = primaryEngine === 'PRIME' ? 'PRIME' : 'VECTOR';
+  const targetVoiceName = defaultGeminiVoice;
 
-    try {
-      const normalizedRequest = normalizeSynthesisRequest({
-        engine: runtimeEngine,
-        text: processedText,
-        voiceId: targetVoiceName,
-        language: lang,
-        speed: settings.speed,
-        emotion: settings.emotion,
-        style: settings.style,
-        traceId,
-        requestId: requestIdBase,
-      });
-      return await synthesizeViaBackendGateway(
-        runtimeEngine,
-        runtimeUrl,
-        '/synthesize',
-        {
-          text: useGeminiBuiltInMultiSpeaker ? processedText : normalizedRequest.text,
-          voiceName: targetVoiceName,
-          voice_id: normalizedRequest.voice_id,
-          language: normalizedRequest.language,
-          speaker_voices: geminiStudioPairGroupsPlan?.speakerVoices,
-          multi_speaker_mode: useGeminiBuiltInMultiSpeaker ? 'studio_pair_groups' : undefined,
-          multi_speaker_max_concurrency: useGeminiBuiltInMultiSpeaker ? 3 : undefined,
-          multi_speaker_retry_once: useGeminiBuiltInMultiSpeaker ? true : undefined,
-          multi_speaker_line_map: useGeminiBuiltInMultiSpeaker
-            ? geminiStudioPairGroupsPlan?.lineMap.map((line) => ({
-                lineIndex: line.lineIndex,
-                speaker: line.speaker,
-                text: line.text,
-              }))
-            : undefined,
-          speed: normalizedRequest.speed,
-          emotion: normalizedRequest.emotion,
-          style: normalizedRequest.style,
-          trace_id: normalizedRequest.trace_id,
-          request_id: normalizedRequest.request_id,
-          mode: useGeminiBuiltInMultiSpeaker ? 'multi_speaker' : 'single_speaker',
-          speaker: speakerHint || undefined,
-        },
-        'Gemini runtime synthesis'
-      ).then((buffer) => maybeApplyOpenVoiceClone(buffer, processedText));
-    } catch (runtimeError: any) {
-      const runtimeDetail = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
-      if (useGeminiBuiltInMultiSpeaker && shouldFailFastOnGeminiRuntimeError(runtimeDetail)) {
-        console.warn(
-          'Gemini grouped multi-speaker synthesis failed with a fail-fast runtime error; skipping segmented fallback.',
-          runtimeError
-        );
-      }
-      if (!allowPersonalGeminiBypass) {
-        throw runtimeError;
-      }
-      const configuredApiKey = resolveGeminiApiKey(settings);
-      if (!configuredApiKey) {
-        throw new Error("Personal Gemini key mode is enabled, but API key is missing.");
-      }
-      console.warn('Gemini runtime synthesis failed; personal-key mode enabled, switching to direct Gemini API.', runtimeError);
-    }
-  }
-
-  // --- F5-TTS ENGINE (BACKEND) ---
-  if (runtimeProvider === 'F5') {
-      if (!runtimeSettings.backendUrl) throw new Error("Backend URL is required for F5-TTS.");
-      
-      try {
-          let url = runtimeSettings.backendUrl.replace(/\/$/, '');
-          // Standard OpenAI-like endpoint wrapper often used for F5 deployments
-          if (!url.includes('/v1/audio/speech')) url += '/v1/audio/speech';
-
-          // Determine the voice
-          let targetVoiceId = resolvedVoiceInput || voiceName || settings.voiceId;
-          let voicePayload: any = targetVoiceId;
-
-          // Map default presets
-          if (!F5_VOICES.find(v => v.id === targetVoiceId)) {
-               // If user selects a Gemini voice, map to a default F5 voice
-               const geminiVoice = VOICES.find(v => v.id === targetVoiceId);
-               voicePayload = (geminiVoice?.gender === 'Female') ? 'f5_female' : 'f5_male';
-          }
-
-          // F5 is sensitive to punctuation, do NOT strip it aggressively
-          let processedText = cleanText(text); 
-          if (!processedText) throw new Error("Input text is empty");
-
-          // Request Body
-          const body = {
-              model: runtimeSettings.f5Model || 'f5-tts',
-              input: processedText,
-              voice: voicePayload,
-              speed: settings.speed || 1.0,
-              response_format: 'pcm', // Request raw PCM if supported for optimization
-          };
-
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'ngrok-skip-browser-warning': 'true',
-              ...optionalBearerAuthHeaders(runtimeSettings.backendApiKey),
-            },
-            body: JSON.stringify(body),
-            ...(signal ? { signal } : {})
-          });
-
-          if (!res.ok) {
-             const errorText = await res.text();
-             throw new Error(`F5 Backend Error ${res.status}: ${errorText.substring(0, 100)}`);
-          }
-
-          const arrayBuffer = await res.arrayBuffer();
-          if (arrayBuffer.byteLength < 100) throw new Error("Empty audio response from F5");
-
-          // Optimization: WebGPU / AudioWorklet style processing
-          // If backend returned raw PCM (optimal) vs MP3/WAV
-          if (runtimeSettings.enableWebGpu && arrayBuffer.byteLength % 2 === 0) {
-               // Assume raw PCM 16-bit 24khz/44.1khz if 'enableWebGpu' flag is effectively 'Enable Raw PCM'
-               const int16 = new Int16Array(arrayBuffer);
-               // F5 usually defaults to 24000 or 44100. We guess 24000 for speech models.
-               return await maybeApplyOpenVoiceClone(pcm16ToAudioBuffer(int16, ctx, 24000, 1), processedText);
-          }
-
-          // Standard Decoding (WAV/MP3)
-          try {
-            return await maybeApplyOpenVoiceClone(await ctx.decodeAudioData(arrayBuffer), processedText);
-          } catch (decodeErr: any) {
-            throw new Error(
-              `Failed to decode F5 audio response. ` +
-              `File may be corrupted or in unsupported format. Details: ${decodeErr?.message || 'unknown error'}`
-            );
-          }
-
-      } catch (err: any) {
-          if (err.name === 'AbortError') throw err;
-          console.error("F5-TTS failed:", err);
-          throw err;
-      }
-  }
-  
-  // --- OPENAI COMPATIBLE ENGINE ---
-  if (runtimeProvider === 'OPENAI') {
-    if (!runtimeSettings.backendUrl) throw new Error("Backend URL is required for OpenAI/Local engine.");
-    
-    try {
-      let url = runtimeSettings.backendUrl.replace(/\/$/, '');
-      if (!url.includes('/v1/audio/speech')) url += '/v1/audio/speech';
-      
-      const modelName = runtimeSettings.openaiModel || 'openedai-speech-bilingual-tts-1';
-      
-      // FIX FOR "KeyError: 'v1'"
-      // Ensure we don't send Gemini Voice IDs to OpenAI/Compatible Backend
-      let targetVoice = resolvedVoiceInput || voiceName || settings.voiceId || 'alloy';
-      
-      // Check if this is a Gemini voice ID (v1-v30)
-      const isGeminiVoice = VOICES.some(v => v.id === targetVoice);
-      // Check if it's a standard OpenAI voice
-      const isOpenAIVoice = OPENAI_VOICES.some(v => v.id === targetVoice);
-      
-      // If it looks like a Gemini voice and isn't a known OpenAI voice, map it to a safe default
-      if (isGeminiVoice && !isOpenAIVoice) {
-          const geminiData = VOICES.find(v => v.id === targetVoice);
-          // Try to respect gender if possible
-          if (geminiData?.gender === 'Male') targetVoice = 'onyx';
-          else if (geminiData?.gender === 'Female') targetVoice = 'nova';
-          else targetVoice = 'alloy';
-      }
-      
-      let processedText = cleanText(text);
-      if (!processedText && text.trim()) processedText = text.trim();
-      
-      if (!processedText) throw new Error("Input text is empty after processing.");
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true',
-          ...optionalBearerAuthHeaders(runtimeSettings.backendApiKey),
-        },
-        body: JSON.stringify({
-          model: modelName,
-          input: processedText,
-          voice: targetVoice, // Use the corrected voice ID
-          speed: settings.speed || 1.0
-        }),
-        ...(signal ? { signal } : {})
-      });
-
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("text/html")) {
-        throw new Error("Backend returned HTML (Ngrok Warning Page).");
-      }
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Backend Error ${res.status}: ${errorText.substring(0, 100)}`);
-      }
-
-      const arrayBuffer = await res.arrayBuffer();
-      if (arrayBuffer.byteLength < 100) throw new Error("Empty audio response.");
-      
-      try {
-        return await maybeApplyOpenVoiceClone(await ctx.decodeAudioData(arrayBuffer), processedText);
-      } catch (decodeErr: any) {
-        throw new Error(
-          `Failed to decode OpenAI/F5 audio response. ` +
-          `File may be corrupted or in unsupported format. Details: ${decodeErr?.message || 'unknown error'}`
-        );
-      }
-      
-    } catch (err: any) {
-      if (err.name === 'AbortError') throw err;
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      console.error("OpenAI backend failed:", err);
-      throw err;
-    }
-  }
-
-  // --- COQUI ENGINE ---
-  if (runtimeProvider === 'COQ') {
-    if (!runtimeSettings.backendUrl) throw new Error("Backend URL is required for Coqui.");
-    
-    try {
-      let url = runtimeSettings.backendUrl.replace(/\/$/, '');
-      if (!url.endsWith('/tts') && !url.endsWith('/api/tts')) url += '/tts';
-      
-      let speakerId = resolvedVoiceInput || voiceName;
-      
-      // If voiceName is a Gemini name (or present in our list of known Gemini voices),
-      // we should prefer the stored runtime voice id unless speakerId is explicitly set.
-      const isGeminiName = VOICES.some(v => v.geminiVoiceName === speakerId || v.id === speakerId) || VALID_VOICE_NAMES.includes(String(speakerId || '').toLowerCase());
-      
-      if (!speakerId || isGeminiName) {
-        speakerId = resolvedVoiceInput || settings.voiceId || '';
-      }
-      
-      // Fallback if empty
-      if (!speakerId) speakerId = 'p226'; // Default VCTK speaker often present
-      
-      let processedText = cleanText(text);
-      if (!processedText && text.trim()) processedText = text.trim();
-      
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true',
-        },
-        body: JSON.stringify({
-          text: processedText,
-          speaker_id: speakerId,
-          language_id: lang,
-          emotion: settings.emotion || 'Neutral'
-        }),
-        ...(signal ? { signal } : {})
-      });
-      
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("text/html")) {
-        throw new Error("Backend returned HTML (Ngrok Warning Page).");
-      }
-      
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Backend Error ${res.status}: ${errorText.substring(0, 100)}`);
-      }
-      
-      const arrayBuffer = await res.arrayBuffer();
-      if (arrayBuffer.byteLength < 100) throw new Error("Empty audio response.");
-      
-      try {
-        return await maybeApplyOpenVoiceClone(await ctx.decodeAudioData(arrayBuffer), processedText);
-      } catch (e) {
-        // Check for JSON error
-        try {
-          const textDec = new TextDecoder().decode(arrayBuffer);
-          if (textDec.trim().startsWith('{')) {
-            throw new Error(JSON.parse(textDec).detail || "Backend Error");
-          }
-        } catch(jsonEx) {}
-        
-        // RAW PCM FALLBACK
-        if (arrayBuffer.byteLength % 2 !== 0) throw new Error("Invalid PCM length.");
-        const int16 = new Int16Array(arrayBuffer);
-        return await maybeApplyOpenVoiceClone(pcm16ToAudioBuffer(int16, ctx, 24000, 1), processedText);
-      }
-      
-    } catch (err: any) {
-      if (err.name === 'AbortError') throw err;
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      console.error("Coqui backend failed:", err);
-      throw err;
-    }
-  }
-  
-  // --- GEMINI TTS ---
-  if (!allowPersonalGeminiBypass) {
-    throw new Error('Gemini direct API bypass is disabled. Enable personal key mode to bypass runtime.');
-  }
-  const geminiKey = resolveGeminiApiKey(settings);
-  if (!geminiKey) throw new Error("API Key is missing for Gemini TTS.");
-  
-  const ai = new GoogleGenAI({ apiKey: geminiKey });
-  
-  try {
-    const targetVoice = defaultGeminiVoice;
-    const textToSpeak = processedText;
-    const directGeminiMultiSpeaker =
-      useGeminiBuiltInMultiSpeaker &&
-      geminiStudioPairGroupsPlan &&
-      geminiStudioPairGroupsPlan.speakerVoices.length === 2
+  const synthCloudChunk = async (chunkText: string): Promise<AudioBuffer> => {
+    const multiSpeakerVoices =
+      useGeminiBuiltInMultiSpeaker && geminiStudioPairGroupsPlan
         ? geminiStudioPairGroupsPlan.speakerVoices
-        : null;
-    const ttsModelsToTry = await getGeminiModelCandidates(
-      ai,
-      geminiKey,
-      'tts',
-      resolveDirectTtsFallbackModels(runtimeEngine)
+        : undefined;
+    return await synthesizeViaCloudTts(
+      chunkText,
+      resolvedEngine,
+      targetVoiceName,
+      useGeminiBuiltInMultiSpeaker,
+      multiSpeakerVoices
     );
-    
-    let lastError: any = null;
-    
-    for (const model of ttsModelsToTry) {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      
-      try {
-        const response = await ai.models.generateContent({
-          model: model,
-          contents: [{ parts: [{ text: textToSpeak }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: directGeminiMultiSpeaker
-              ? {
-                languageCode: lang,
-                multiSpeakerVoiceConfig: {
-                  speakerVoiceConfigs: directGeminiMultiSpeaker.map((entry) => ({
-                    speaker: entry.speaker,
-                    voiceConfig: {
-                      prebuiltVoiceConfig: {
-                        voiceName: entry.voiceName,
-                      },
-                    },
-                  })),
-                },
-              }
-              : {
-                languageCode: lang,
-                voiceConfig: { 
-                  prebuiltVoiceConfig: { voiceName: targetVoice } 
-                },
-              },
-          },
-        });
-        
-        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (!base64Audio) throw new Error(`No audio from ${model}`);
-        
-        const audioBytes = decode(base64Audio);
-        const int16Data = new Int16Array(audioBytes.buffer);
-        
-        return await maybeApplyOpenVoiceClone(pcm16ToAudioBuffer(int16Data, ctx, 24000, 1), textToSpeak);
-        
-      } catch (error: any) {
-        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        console.warn(`TTS Model ${model} failed.`, error);
-        lastError = error;
-      }
+  };
+
+  try {
+    // Try long-text chunking first for large texts
+    const longTextBuffer = await maybeSynthesizePrimaryLongText(
+      resolvedEngine,
+      processedText,
+      async (chunkText) => synthCloudChunk(chunkText)
+    );
+    if (longTextBuffer) {
+      return await maybeApplyOpenVoiceClone(longTextBuffer, processedText);
     }
-    
-    throw new Error(cleanErrorMessage(lastError || new Error("All TTS models failed.")));
-    
+
+    // Single-chunk synthesis
+    const buffer = await synthCloudChunk(processedText);
+    return await maybeApplyOpenVoiceClone(buffer, processedText);
   } catch (error: any) {
-    if (signal?.aborted || error.name === 'AbortError') {
+    if (signal?.aborted || error?.name === 'AbortError') {
       throw new DOMException("Aborted", "AbortError");
     }
     throw new Error(cleanErrorMessage(error));
   }
 };
-
-
-

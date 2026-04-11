@@ -68,11 +68,11 @@ describe('admin audio metadata service', () => {
     const blob = await exportAdminAudioMetadataCsv('http://backend.test', {
       uid: 'uid_1',
       status: 'failed',
-      engine: 'DUNO',
+      engine: 'VECTOR',
     });
 
     expect(mockAuthFetch).toHaveBeenCalledWith(
-      'http://backend.test/admin/audio-metadata/export.csv?uid=uid_1&status=failed&engine=DUNO',
+      'http://backend.test/admin/audio-metadata/export.csv?uid=uid_1&status=failed&engine=VECTOR',
       undefined,
       expect.objectContaining({ requireAuth: true, timeoutMs: 12_000 })
     );

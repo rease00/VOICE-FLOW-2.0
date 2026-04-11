@@ -7,42 +7,6 @@ import { AppProviders } from '../../src/app/providers/AppProviders';
 import { DEFAULT_UI_BRAND_THEME } from '../../src/shared/theme/brandThemes';
 import './app/app-shell.css';
 
-const DEV_SW_RECOVERY_SCRIPT = `
-(() => {
-  try {
-    if (!('serviceWorker' in navigator)) return;
-    const shouldRun = ${process.env.NODE_ENV !== 'production' ? 'true' : 'false'};
-    if (!shouldRun) return;
-    if (window.__vfSwDevRecoveryDone) return;
-    window.__vfSwDevRecoveryDone = true;
-
-    navigator.serviceWorker.getRegistrations()
-      .then((registrations) => Promise.all(
-        registrations
-          .filter((registration) => {
-            const urls = [
-              registration.active?.scriptURL || '',
-              registration.waiting?.scriptURL || '',
-              registration.installing?.scriptURL || '',
-            ].join(' ');
-            return urls.includes('/reader-sw.js');
-          })
-          .map((registration) => registration.unregister())
-      ))
-      .then(() => {
-        if (!('caches' in window)) return Promise.resolve();
-        return caches.keys().then((names) => Promise.all(
-          names
-            .filter((name) => name.startsWith('vf-reader-shell-'))
-            .map((name) => caches.delete(name))
-        ));
-      });
-  } catch {
-    // no-op
-  }
-})();
-`;
-
 export const metadata: Metadata = {
   title: 'V FLOW AI | AI STUDIO',
   description: 'V FLOW AI workspace for creators and production teams.',
@@ -62,9 +26,6 @@ export default function AppLayout({ children }: Readonly<{ children: ReactNode }
       data-vf-theme-mode="dark"
       data-vf-resolved-theme="dark"
     >
-      <script
-        dangerouslySetInnerHTML={{ __html: DEV_SW_RECOVERY_SCRIPT }}
-      />
       <AppThemeBootstrap />
       <AppShellVisualBootstrap />
       <div className="vf-live-wallpaper" aria-hidden="true" />

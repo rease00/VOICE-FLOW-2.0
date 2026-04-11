@@ -35,6 +35,7 @@ const TOKEN_TIMING_HINTS = [
   "check that your computer's clock is set correctly",
 ];
 const TOKEN_TIMING_RETRY_DELAYS_MS = [1500, 3000, 6000, 12000];
+const SAFE_TOKEN_TIMING_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 const isLikelyNetworkFetchFailure = (error: unknown): boolean => {
   const message = String((error as { message?: string })?.message || error || '').trim().toLowerCase();
@@ -66,6 +67,53 @@ const resolveRequestTarget = (input: RequestInfo | URL): string => {
     if (safeRaw.startsWith('/')) return safeRaw;
     return safeRaw;
   }
+};
+
+const resolveRequestMethod = (input: RequestInfo | URL, init: RequestInit): string => {
+  const initMethod = String(init.method || '').trim();
+  if (initMethod) {
+    return initMethod.toUpperCase();
+  }
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    const requestMethod = String(input.method || '').trim();
+    if (requestMethod) {
+      return requestMethod.toUpperCase();
+    }
+  }
+  return 'GET';
+};
+
+const resolveMergedRequestHeaders = (
+  input: RequestInfo | URL,
+  initHeaders: RequestInit['headers']
+): Headers => {
+  const merged = new Headers();
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    for (const [key, value] of input.headers.entries()) {
+      merged.set(key, value);
+    }
+  }
+  if (initHeaders) {
+    const nextHeaders = new Headers(initHeaders);
+    for (const [key, value] of nextHeaders.entries()) {
+      merged.set(key, value);
+    }
+  }
+  return merged;
+};
+
+const shouldRetryTokenTimingFailure = (
+  input: RequestInfo | URL,
+  init: RequestInit
+): boolean => {
+  const requestMethod = resolveRequestMethod(input, init);
+  if (SAFE_TOKEN_TIMING_RETRY_METHODS.has(requestMethod)) {
+    return true;
+  }
+  const headers = resolveMergedRequestHeaders(input, init.headers);
+  return Boolean(
+    String(headers.get('x-idempotency-key') || headers.get('idempotency-key') || '').trim()
+  );
 };
 
 const isLocalRequestHostname = (hostname: string): boolean => {
@@ -223,6 +271,7 @@ export const authFetch = async (
   options: AuthFetchOptions = {}
 ): Promise<Response> => {
   const trustedAuthTarget = isTrustedAuthTarget(input);
+  const allowTokenTimingRetries = shouldRetryTokenTimingFailure(input, init);
   const resolveRequestHeaders = async (forceTokenRefresh: boolean) => {
     if (!trustedAuthTarget) {
       if (options.requireAuth) {
@@ -319,6 +368,9 @@ export const authFetch = async (
   try {
     let { response, hasFirebaseToken } = await runAttempt(false);
     if (!hasFirebaseToken || (response.status !== 401 && response.status !== 403)) {
+      return response;
+    }
+    if (!allowTokenTimingRetries) {
       return response;
     }
 

@@ -54,7 +54,7 @@ The current service layout is:
 - `voiceflow-api`
 - `voiceflow-worker`
 - `voiceflow-gemini-runtime`
-- Duno runtime (Modal-hosted endpoint configured via `VF_DUNO_RUNTIME_URL`)
+- Cloud TTS runtime plus a separate Vertex text runtime
 
 This is the correct permanent shape. Do not collapse everything just because it is possible.
 
@@ -123,7 +123,7 @@ Users
 
 ### Free = Standard Lane
 
-- Engine access: `DUNO`, `VECTOR`
+- Engine access: `VECTOR`
 - Delivery mode: async-first
 - Queue lane: `free`
 - Priority: best effort
@@ -170,7 +170,7 @@ This is the launch architecture I would actually use.
 | API | Cloud Run | permanent | bursty public HTTP |
 | Worker | Cloud Run | temporary-but-valid | repo requires a dedicated worker role |
 | Gemini runtime | Cloud Run + Vertex mode | permanent | lets paid fast lane consume Google Cloud credits |
-| Duno runtime | Modal | permanent | external runtime configured via `VF_DUNO_RUNTIME_URL` |
+| Vertex text runtime | Cloud Run | permanent | internal authenticated runtime configured via `VF_VERTEX_TEXT_RUNTIME_URL` |
 | Redis | Upstash Free | temporary | shared queue state without cash spend |
 | Auth/Profile | Firebase Auth + Firestore | permanent | already integrated |
 | Artifact storage | local TTL first, R2 later | staged | current code already supports local file refs |
@@ -207,7 +207,7 @@ These are the blueprint targets, not a promise that every number is already opti
 
 ### Duno runtime (Modal)
 
-- configure `VF_DUNO_RUNTIME_URL` on API/worker
+- configure `VF_TTS_RUNTIME_URL` and `VF_VERTEX_TEXT_RUNTIME_URL` on API/worker
 - treat it as the free or standard lane
 - avoid promising premium latency on this path
 
@@ -382,7 +382,7 @@ These are the changes the project should eventually absorb to match this bluepri
 - lower `voiceflow-api` minimum instances to zero
 - lower `voiceflow-gemini-runtime` minimum instances to zero
 - keep `voiceflow-worker` as a distinct service
-- ensure `VF_DUNO_RUNTIME_URL` points at the Modal endpoint in the credit-preservation phase
+- ensure `VF_TTS_RUNTIME_URL` and `VF_VERTEX_TEXT_RUNTIME_URL` point at the dedicated runtimes in the credit-preservation phase
 
 ### 2. Gemini provider strategy
 

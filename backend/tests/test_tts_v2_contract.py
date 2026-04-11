@@ -15,9 +15,7 @@ import requests
 import app as backend_app
 from services.queue.redis_queue import WeightedInMemoryQueue
 
-
 client = TestClient(backend_app.app)
-
 
 @pytest.fixture(autouse=True)
 def _reset_tts_engine_state() -> None:
@@ -52,7 +50,6 @@ def _reset_tts_engine_state() -> None:
             anomalies.clear()
     yield
 
-
 def _wav_bytes(duration_ms: int = 40, sample_rate: int = 24000) -> bytes:
     frame_count = max(1, int((sample_rate * max(1, duration_ms)) / 1000))
     out = BytesIO()
@@ -63,14 +60,12 @@ def _wav_bytes(duration_ms: int = 40, sample_rate: int = 24000) -> bytes:
         handle.writeframes(b"\x00\x00" * frame_count)
     return out.getvalue()
 
-
 def _issue_session_key(uid: str) -> str:
     response = client.post("/tts/v2/sessions", headers={"x-dev-uid": uid})
     assert response.status_code == 201
     session_key = str(response.json().get("sessionKey") or "").strip()
     assert session_key
     return session_key
-
 
 def _dev_headers(uid: str, *, include_session: bool = True, request_id: str | None = None) -> dict[str, str]:
     headers = {"x-dev-uid": uid}
@@ -80,7 +75,6 @@ def _dev_headers(uid: str, *, include_session: bool = True, request_id: str | No
         headers["Idempotency-Key"] = str(request_id)
     return headers
 
-
 def _make_probe_response() -> requests.Response:
     response = requests.Response()
     response.status_code = 200
@@ -88,7 +82,6 @@ def _make_probe_response() -> requests.Response:
     response.headers = requests.structures.CaseInsensitiveDict({"content-type": "application/json"})
     response.url = "http://example.test/health"
     return response
-
 
 def _slot_probe_json(payload: dict[str, object]) -> str:
     source_policy = payload.get("sourcePolicy") if isinstance(payload.get("sourcePolicy"), dict) else {}
@@ -100,7 +93,6 @@ def _slot_probe_json(payload: dict[str, object]) -> str:
     if pool_hint:
         return pool_hint
     return str(payload.get("_probeSlotId") or "").strip()
-
 
 def _slot_probe_headers(headers: dict[str, object]) -> str:
     safe_headers = headers if isinstance(headers, dict) else {}
@@ -116,7 +108,6 @@ def _slot_probe_headers(headers: dict[str, object]) -> str:
         return "slot_3"
     return ""
 
-
 def test_tts_v2_job_create_requires_request_id(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     response = client.post(
@@ -125,7 +116,6 @@ def test_tts_v2_job_create_requires_request_id(monkeypatch) -> None:
         json={"mode": "single_speaker", "engine": "VECTOR", "text": "hello"},
     )
     assert response.status_code == 400
-
 
 def test_tts_v2_job_create_rejects_more_than_eight_speakers(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -147,7 +137,6 @@ def test_tts_v2_job_create_rejects_more_than_eight_speakers(monkeypatch) -> None
     assert response.status_code == 400
     assert "up to 8 speakers" in str(response.json().get("detail") or "").lower()
 
-
 def test_tts_v2_job_create_rejects_line_map_over_eight_speakers(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     request_id = f"test_{uuid.uuid4().hex}"
@@ -168,7 +157,6 @@ def test_tts_v2_job_create_rejects_line_map_over_eight_speakers(monkeypatch) -> 
     assert response.status_code == 400
     assert "up to 8 speakers" in str(response.json().get("detail") or "").lower()
 
-
 def test_tts_v2_job_create_requires_session_key(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     request_id = f"test_{uuid.uuid4().hex}"
@@ -185,7 +173,6 @@ def test_tts_v2_job_create_requires_session_key(monkeypatch) -> None:
     assert response.status_code == 401
     detail = str(response.json().get("detail") or "").lower()
     assert "x-vf-tts-session-key" in detail
-
 
 def test_tts_v2_job_create_rejects_invalid_session_key(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -206,7 +193,6 @@ def test_tts_v2_job_create_rejects_invalid_session_key(monkeypatch) -> None:
     )
     assert response.status_code == 401
     assert "invalid or expired tts session key" in str(response.json().get("detail") or "").lower()
-
 
 def test_tts_v2_job_create_rejects_expired_session_key(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -235,7 +221,6 @@ def test_tts_v2_job_create_rejects_expired_session_key(monkeypatch) -> None:
     assert response.status_code == 401
     assert "expired" in str(response.json().get("detail") or "").lower()
 
-
 def test_tts_v2_job_create_rejects_session_ownership_mismatch(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     owner_uid = "v2_session_owner"
@@ -261,7 +246,6 @@ def test_tts_v2_job_create_rejects_session_ownership_mismatch(monkeypatch) -> No
     assert response.status_code == 403
     assert "ownership mismatch" in str(response.json().get("detail") or "").lower()
 
-
 def test_tts_v2_session_key_ttl_defaults_to_30_minutes(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     response = client.post("/tts/v2/sessions", headers={"x-dev-uid": "v2_session_ttl"})
@@ -272,7 +256,6 @@ def test_tts_v2_session_key_ttl_defaults_to_30_minutes(monkeypatch) -> None:
     expires_at = int(payload.get("expiresAtMs") or 0)
     delta_ms = expires_at - created_at
     assert 1_790_000 <= delta_ms <= 1_800_000
-
 
 def test_tts_v2_session_probe_selects_lowest_rtt_and_tie_breaks_by_slot_id(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -336,7 +319,6 @@ def test_tts_v2_session_probe_selects_lowest_rtt_and_tie_breaks_by_slot_id(monke
     assert int(row["latencyMs"]) >= 10
     assert str(row["pinSource"] or "").strip()
 
-
 def test_tts_v2_session_does_not_probe_slots_by_default(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "_tts_v2_session_redis_client", lambda: None)
@@ -376,7 +358,6 @@ def test_tts_v2_session_does_not_probe_slots_by_default(monkeypatch) -> None:
     assert not str(payload.get("selectedRegion") or "").strip()
     assert not probe_calls
     assert not probe_urls
-
 
 def test_tts_v2_session_metadata_round_trips_via_redis_stub(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -470,7 +451,6 @@ def test_tts_v2_session_metadata_round_trips_via_redis_stub(monkeypatch) -> None
     assert read_row["pinnedVertexSlotId"] == "slot_1"
     assert read_row["pinnedLaneId"] == "L1"
 
-
 def test_tts_v2_job_create_rejects_forbidden_fields(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     request_id = f"test_{uuid.uuid4().hex}"
@@ -487,7 +467,6 @@ def test_tts_v2_job_create_rejects_forbidden_fields(monkeypatch) -> None:
         json=payload,
     )
     assert response.status_code == 422
-
 
 def test_tts_v2_job_create_rejects_provider_key_and_credential_fields(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -512,7 +491,6 @@ def test_tts_v2_job_create_rejects_provider_key_and_credential_fields(monkeypatc
         )
         assert response.status_code == 422
 
-
 def test_tts_v2_job_create_is_idempotent_for_same_request_id(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(
@@ -536,7 +514,6 @@ def test_tts_v2_job_create_is_idempotent_for_same_request_id(monkeypatch) -> Non
     second_job_id = str(second.json().get("jobId") or "")
     assert first_job_id == request_id
     assert second_job_id == request_id
-
 
 def test_tts_v2_job_status_uses_202_for_active_and_200_for_terminal(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -580,7 +557,6 @@ def test_tts_v2_job_status_uses_202_for_active_and_200_for_terminal(monkeypatch)
     assert final_status in {"cancelled", "completed", "failed"}
     assert final_code == 200
 
-
 def test_tts_v2_queue_admission_timeout_returns_standardized_503(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ADMISSION_WAIT_TIMEOUT_MS", 250)
@@ -623,7 +599,6 @@ def test_tts_v2_queue_admission_timeout_returns_standardized_503(monkeypatch) ->
         and error_detail == backend_app.QUEUE_WAIT_TIMEOUT
         for uid, rid, success, error_detail in finalize_calls
     )
-
 
 def test_tts_v2_session_cancel_cascades_to_active_jobs(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -681,10 +656,8 @@ def test_tts_v2_session_cancel_cascades_to_active_jobs(monkeypatch) -> None:
         assert terminal_status in {"cancelled", "completed", "failed"}
         assert terminal_code == 200
 
-
 def test_tts_v2_engine_uses_shared_queue_prefix() -> None:
     assert str(getattr(backend_app._TTS_V2_ENGINE._queue, "key_prefix", "") or "") == str(backend_app.VF_TTS_QUEUE_KEY_PREFIX)
-
 
 def test_tts_v2_audio_audit_id_extraction_prefers_top_level_ids_and_legacy_fallback() -> None:
     assert backend_app._audio_generation_audit_ids_from_job(
@@ -710,7 +683,6 @@ def test_tts_v2_audio_audit_id_extraction_prefers_top_level_ids_and_legacy_fallb
             }
         }
     ) == ["audit_nested_legacy"]
-
 
 def test_tts_v2_result_audio_finalizes_audio_provenance_on_download(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -778,7 +750,6 @@ def test_tts_v2_result_audio_finalizes_audio_provenance_on_download(monkeypatch)
     assert row_after_download.get("watermarkDetectable") is True
     assert str(row_after_download.get("provenanceError") or "") == ""
 
-
 def test_tts_v2_job_create_resolves_existing_same_owner_durable_job(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     engine = backend_app._TTS_V2_ENGINE
@@ -830,7 +801,6 @@ def test_tts_v2_job_create_resolves_existing_same_owner_durable_job(monkeypatch)
     assert job.uid == "idem_owner"
     assert str(job.status or "").lower() == "queued"
 
-
 def test_tts_v2_cancel_auth_checks_before_queue_mutation(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     engine = backend_app._TTS_V2_ENGINE
@@ -876,7 +846,6 @@ def test_tts_v2_cancel_auth_checks_before_queue_mutation(monkeypatch) -> None:
         engine.cancel_job(uid="other_user", is_admin=False, job_id=request_id)
 
     assert cancel_calls == []
-
 
 def test_tts_v2_lane_uses_backend_slot_binding(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -929,7 +898,6 @@ def test_tts_v2_lane_uses_backend_slot_binding(monkeypatch) -> None:
             lanes_seen.add(lane_id)
             assert slot_id == expected_slot_by_lane[lane_id]
     assert lanes_seen == {"L1", "L2", "L3"}
-
 
 def test_tts_v2_gemini_jobs_honor_pinned_lane_and_slot_metadata(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -991,7 +959,6 @@ def test_tts_v2_gemini_jobs_honor_pinned_lane_and_slot_metadata(monkeypatch) -> 
     assert lane_id == "L2"
     assert slot_id == "slot_2"
 
-
 def test_tts_v2_vector_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     session_key = _issue_session_key("vector_pin_user")
@@ -1051,7 +1018,6 @@ def test_tts_v2_vector_jobs_ignore_pinned_session_metadata(monkeypatch) -> None:
     _lane_id, slot_id = captured[0]
     assert slot_id == ""
 
-
 def test_tts_v2_session_probe_failure_falls_back_without_blocking_job_creation(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "_tts_v2_session_redis_client", lambda: None)
@@ -1110,7 +1076,6 @@ def test_tts_v2_session_probe_failure_falls_back_without_blocking_job_creation(m
     )
     assert job.status_code in {200, 202}
 
-
 def test_tts_v2_error_payloads_redact_secret_like_runtime_details(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
 
@@ -1168,59 +1133,6 @@ def test_tts_v2_error_payloads_redact_secret_like_runtime_details(monkeypatch) -
     assert secret_path not in raw_result
     assert private_key_marker not in raw_result
 
-
-def test_reader_tts_job_creation_routes_through_v2_helper(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-
-    def _legacy_submit(*args, **kwargs):
-        _ = args, kwargs
-        raise AssertionError("Reader should not call legacy _submit_tts_job anymore.")
-
-    captured: dict[str, object] = {}
-
-    def _fake_create_tts_v2_job_response(request, payload, *, require_session=True):
-        _ = request
-        captured["require_session"] = require_session
-        captured["payload"] = dict(payload or {})
-        return backend_app.JSONResponse(
-            {
-                "jobId": str(payload.get("request_id") or ""),
-                "requestId": str(payload.get("request_id") or ""),
-                "status": "queued",
-                "engine": "VECTOR",
-            },
-            status_code=202,
-        )
-
-    monkeypatch.setattr(backend_app, "_submit_tts_job", _legacy_submit)
-    monkeypatch.setattr(backend_app, "_create_tts_v2_job_response", _fake_create_tts_v2_job_response)
-
-    request = backend_app._reader_internal_request("reader_v2_user")
-    session = {"audioEngine": "tts_hd"}
-    request_id = f"reader_{uuid.uuid4().hex}"
-    speaker_voices = [{"speaker": f"Speaker {idx}", "voice_id": f"v{idx}"} for idx in range(1, 7)]
-    job_id = backend_app._reader_create_tts_job(
-        request,
-        session=session,
-        text="Speaker 1: hello\nSpeaker 2: world",
-        request_id=request_id,
-        voice_id="v22",
-        language="en",
-        multi_speaker_mode="studio_pair_groups",
-        line_map=[{"lineIndex": 0, "speaker": "Speaker 1", "text": "hello"}],
-        speaker_voices=speaker_voices,
-    )
-
-    assert job_id == request_id
-    assert captured["require_session"] is False
-    payload = dict(captured["payload"] or {})
-    assert payload["request_id"] == request_id
-    assert payload["mode"] == "multi_speaker"
-    assert payload["workerCategory"] == "APP_LOCAL"
-    assert "apiKey" not in payload
-    assert "providerApiKey" not in payload
-
-
 def test_tts_v2_job_cancel_stays_cancelled(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
 
@@ -1247,7 +1159,6 @@ def test_tts_v2_job_cancel_stays_cancelled(monkeypatch) -> None:
     poll = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "cancel_user"})
     assert poll.status_code == 200
     assert str(poll.json().get("status") or "").lower() == "cancelled"
-
 
 def test_tts_v2_job_cancel_does_not_relabel_terminal_job_audit(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1281,7 +1192,6 @@ def test_tts_v2_job_cancel_does_not_relabel_terminal_job_audit(monkeypatch) -> N
     assert cancel.status_code == 200
     assert str(cancel.json().get("status") or "").lower() == "completed"
     assert audit_marks == []
-
 
 def test_tts_v2_cancel_releases_lane_inflight(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1330,7 +1240,6 @@ def test_tts_v2_cancel_releases_lane_inflight(monkeypatch) -> None:
     assert lanes, "Expected lane snapshot in status payload."
     assert all(int(lane.get("inflight") or 0) == 0 for lane in lanes)
 
-
 def test_tts_v2_cross_user_access_denied(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(
@@ -1353,7 +1262,6 @@ def test_tts_v2_cross_user_access_denied(monkeypatch) -> None:
     forbidden = client.get(f"/tts/v2/jobs/{request_id}", headers={"x-dev-uid": "other_user"})
     assert forbidden.status_code == 403
 
-
 def test_tts_v2_request_id_conflict_rejects_cross_user_create(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(
@@ -1373,76 +1281,3 @@ def test_tts_v2_request_id_conflict_rejects_cross_user_create(monkeypatch) -> No
 
     second = client.post("/tts/v2/jobs", headers=_dev_headers("other_user", request_id=request_id), json=payload)
     assert second.status_code == 409
-
-
-def test_reader_job_status_summary_prefers_v2_jobs(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-
-    def _legacy_get(*args, **kwargs):
-        _ = args, kwargs
-        raise AssertionError("Reader job status should prefer V2 before legacy queue.")
-
-    monkeypatch.setattr(backend_app._TTS_JOB_QUEUE, "get", _legacy_get)
-    monkeypatch.setattr(
-        backend_app._TTS_V2_ENGINE,
-        "get_job",
-        lambda *, uid, is_admin, job_id: object(),
-    )
-    monkeypatch.setattr(
-        backend_app._TTS_V2_ENGINE,
-        "status_payload",
-        lambda **kwargs: {
-            "status": "running",
-            "engine": "VECTOR",
-            "chunkCursorNext": 3,
-            "live": {"playableChunks": 2, "playableDurationMs": 3800},
-        },
-    )
-
-    summary = backend_app._reader_job_status_summary("reader_summary_user", "job_v2_summary")
-    assert summary["status"] == "running"
-    assert summary["engine"] == "VECTOR"
-    assert summary["chunkCursorNext"] == 3
-    assert summary["playableChunks"] == 2
-    assert summary["playableDurationMs"] == 3800
-
-
-def test_reader_export_prefers_v2_result_audio(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-
-    def _legacy_get(*args, **kwargs):
-        _ = args, kwargs
-        raise AssertionError("Reader export should prefer V2 result audio before legacy queue.")
-
-    monkeypatch.setattr(backend_app._TTS_JOB_QUEUE, "get", _legacy_get)
-    monkeypatch.setattr(
-        backend_app._TTS_V2_ENGINE,
-        "get_result_audio",
-        lambda *, uid, is_admin, job_id: (_wav_bytes(200), "audio/wav"),
-    )
-
-    audio = backend_app._reader_tts_job_result_audio_bytes("reader_export_user", "job_v2_export", is_admin=False)
-    assert audio == _wav_bytes(200)
-
-
-def test_reader_delete_prefers_v2_cancel(monkeypatch) -> None:
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    calls = {"v2": 0, "legacy": 0}
-
-    def _v2_cancel(*, uid, is_admin, job_id):
-        _ = uid, is_admin, job_id
-        calls["v2"] += 1
-        return object()
-
-    def _legacy_cancel(*args, **kwargs):
-        _ = args, kwargs
-        calls["legacy"] += 1
-        raise AssertionError("Reader delete should not reach legacy queue cancel when V2 is available.")
-
-    monkeypatch.setattr(backend_app._TTS_V2_ENGINE, "cancel_job", _v2_cancel)
-    monkeypatch.setattr(backend_app._TTS_JOB_QUEUE, "cancel", _legacy_cancel)
-
-    cancelled = backend_app._reader_cancel_tts_job("reader_cancel_user", "job_v2_cancel", is_admin=False)
-    assert cancelled is True
-    assert calls["v2"] == 1
-    assert calls["legacy"] == 0

@@ -4,6 +4,8 @@ const BOT_UA_PATTERN =
   /(bot|crawler|spider|slurp|bingpreview|facebookexternalhit|discordbot|whatsapp|telegrambot|linkedinbot|semrush|ahrefs|mj12bot|dotbot|yandex)/i;
 
 const PRIVATE_HEADER_VALUE = 'noindex, nofollow, noarchive, nosnippet, noimageindex';
+const SITE_LOCK_COOKIE_NAME = 'vf_site_lock';
+const SITE_LOCK_COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60;
 
 const unauthorizedResponse = (status, message) =>
   new Response(message, {
@@ -31,10 +33,46 @@ const parseBasicAuth = (authorizationHeader) => {
   }
 };
 
-const decoratePrivateHeaders = (response) => {
+const normalizeCredential = (value) => String(value ?? '').replace(/[\r\n]+$/g, '');
+
+const readCookie = (request, name) => {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  for (const cookieEntry of cookieHeader.split(';')) {
+    const trimmed = cookieEntry.trim();
+    if (!trimmed) continue;
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex < 0) continue;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    if (key !== name) continue;
+    return decodeURIComponent(trimmed.slice(separatorIndex + 1).trim());
+  }
+  return '';
+};
+
+const base64UrlFromBytes = (bytes) =>
+  btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+
+const buildSiteLockToken = async (username, password, host) => {
+  const payload = `${normalizeCredential(username)}\n${normalizeCredential(password)}\n${String(host || '')
+    .trim()
+    .toLowerCase()}`;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
+  return base64UrlFromBytes(new Uint8Array(digest));
+};
+
+const decoratePrivateHeaders = (response, siteLockToken) => {
   const headers = new Headers(response.headers);
   headers.set('Cache-Control', 'no-store');
   headers.set('X-Robots-Tag', PRIVATE_HEADER_VALUE);
+  if (siteLockToken) {
+    headers.append(
+      'Set-Cookie',
+      `${SITE_LOCK_COOKIE_NAME}=${encodeURIComponent(siteLockToken)}; Path=/; Max-Age=${SITE_LOCK_COOKIE_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax`,
+    );
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -48,8 +86,8 @@ export async function onRequest(context) {
     return context.next();
   }
 
-  const configuredUser = String(context.env.SITE_LOCK_USER ?? '');
-  const configuredPass = String(context.env.SITE_LOCK_PASS ?? '');
+  const configuredUser = normalizeCredential(context.env.SITE_LOCK_USER);
+  const configuredPass = normalizeCredential(context.env.SITE_LOCK_PASS);
   if (!configuredUser || !configuredPass) {
     return unauthorizedResponse(
       503,
@@ -58,8 +96,16 @@ export async function onRequest(context) {
   }
 
   const userAgent = context.request.headers.get('User-Agent') || '';
-  const auth = parseBasicAuth(context.request.headers.get('Authorization'));
-  const isAuthed = !!auth && auth.username === configuredUser && auth.password === configuredPass;
+  const expectedSiteLockToken = await buildSiteLockToken(configuredUser, configuredPass, requestHost);
+  const cookieToken = readCookie(context.request, SITE_LOCK_COOKIE_NAME);
+  let isAuthed = cookieToken === expectedSiteLockToken;
+  if (!isAuthed) {
+    const auth = parseBasicAuth(context.request.headers.get('Authorization'));
+    isAuthed =
+      !!auth &&
+      normalizeCredential(auth.username) === configuredUser &&
+      normalizeCredential(auth.password) === configuredPass;
+  }
   if (!isAuthed) {
     if (BOT_UA_PATTERN.test(userAgent)) {
       return new Response('Forbidden', {
@@ -74,5 +120,6 @@ export async function onRequest(context) {
   }
 
   const response = await context.next();
-  return decoratePrivateHeaders(response);
+  const shouldSetSiteLockCookie = cookieToken !== expectedSiteLockToken;
+  return decoratePrivateHeaders(response, shouldSetSiteLockCookie ? expectedSiteLockToken : '');
 }

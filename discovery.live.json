@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-04-10T07:57:23.891940+00:00",
+  "scope": "all-accessible",
+  "window_days": 30,
+  "status": "ok",
+  "environment": {
+    "active_account": "firebase-adminsdk-fbsvc@v-flow-ai-491311.iam.gserviceaccount.com",
+    "active_project": "v-flow-ai-491311",
+    "gcloud_available": true
+  },
+  "inventory": {
+    "organizations": [],
+    "folders": [],
+    "projects": [
+      {
+        "createTime": "2026-03-25T11:50:41.978Z",
+        "labels": {
+          "firebase": "enabled",
+          "firebase-core": "disabled"
+        },
+        "lifecycleState": "ACTIVE",
+        "name": "V FLOW AI",
+        "projectId": "v-flow-ai-491311",
+        "projectNumber": "820011798437"
+      }
+    ]
+  },
+  "billing": {
+    "accounts": [],
+    "links_by_account": {},
+    "budgets_by_account": {}
+  },
+  "service_usage": {
+    "project_service_counts": [
+      {
+        "project_id": "v-flow-ai-491311",
+        "enabled_service_count": 69,
+        "high_cost_services": [
+          "aiplatform.googleapis.com",
+          "bigquery.googleapis.com",
+          "compute.googleapis.com",
+          "container.googleapis.com",
+          "run.googleapis.com",
+          "storage.googleapis.com"
+        ]
+      }
+    ]
+  },
+  "iam_posture": {
+    "public_exposures": [],
+    "summary": {
+      "public_exposure_count": 0
+    }
+  },
+  "cost_accounting": {
+    "totals": {
+      "project_count": 1,
+      "linked_project_count": 0,
+      "unlinked_project_count": 1,
+      "billing_account_count": 0,
+      "open_billing_account_count": 0,
+      "monthly_budget_total_usd": 0.0,
+      "projects_with_high_cost_services": 1
+    },
+    "by_billing_account": []
+  },
+  "anomalies": [
+    {
+      "id": "unlinked-billing-v-flow-ai-491311",
+      "severity": "high",
+      "category": "billing-coverage",
+      "project_id": "v-flow-ai-491311",
+      "message": "Project is not linked to a billing account with billing enabled.",
+      "recommended_action": "Link project to the correct billing account and verify budget guardrails."
+    }
+  ],
+  "errors": [],
+  "notes": [
+    "Actual cost/spend values require Cloud Billing export pipelines (for example BigQuery export). This report uses billing-account, budget, service, and coverage signals."
+  ]
+}

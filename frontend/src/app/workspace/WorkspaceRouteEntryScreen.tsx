@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowRight, RefreshCw } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+
+import { ArrowRight } from 'lucide-react';
 import { usePathname, useRouter } from 'next/navigation';
 import { BrandLogo } from '../../../components/BrandLogo';
 import { firebaseAuth } from '../../../services/firebaseClient';
@@ -29,9 +30,12 @@ const DEFAULT_LOADING_BADGES: WorkspaceRouteBadge[] = [
   { label: 'Workspace', value: 'Preparing' },
   { label: 'Access', value: 'Waiting' },
 ];
+
 const AUTH_GATE_FALLBACK_MS = 350;
 const WORKSPACE_STYLESHEET_CHECK_DELAY_MS = 1_000;
 const WORKSPACE_STYLESHEET_RECOVERY_EVENT = 'vf:workspace-stylesheet-healthcheck-failed';
+
+const WAVE_HEIGHTS = [0.55, 0.82, 0.48, 0.9, 0.65, 0.78, 0.52, 0.88] as const;
 
 const hasHealthyWorkspaceStylesheets = (): boolean => {
   if (typeof document === 'undefined') return true;
@@ -41,15 +45,37 @@ const hasHealthyWorkspaceStylesheets = (): boolean => {
   if (nextStyleSheets.length === 0) return false;
   return nextStyleSheets.some((sheet) => {
     const candidate = sheet as CSSStyleSheet;
-    try {
-      return candidate.cssRules.length > 0;
-    } catch {
-      return false;
-    }
+    try { return candidate.cssRules.length > 0; } catch { return false; }
   });
 };
 
-function WorkspaceRouteShell(props: {
+// ── Shared shell ─────────────────────────────────────────────────────────────
+
+function PremiumShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="ap-shell" role="status" aria-live="polite">
+      <div className="ap-grid" aria-hidden="true" />
+      <div className="ap-aurora ap-aurora--a" aria-hidden="true" />
+      <div className="ap-aurora ap-aurora--b" aria-hidden="true" />
+      <div className="ap-aurora ap-aurora--c" aria-hidden="true" />
+      <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-8">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── WorkspaceRouteShell ───────────────────────────────────────────────────────
+
+function WorkspaceRouteShell({
+  eyebrow,
+  title,
+  description,
+  loading = false,
+  badges = DEFAULT_LOADING_BADGES,
+  loginHref = '',
+  signupHref = '',
+}: {
   eyebrow: string;
   title: string;
   description: string;
@@ -58,84 +84,78 @@ function WorkspaceRouteShell(props: {
   loginHref?: string;
   signupHref?: string;
 }) {
-  const {
-    eyebrow,
-    title,
-    description,
-    loading = false,
-    badges = DEFAULT_LOADING_BADGES,
-    loginHref = '',
-    signupHref = '',
-  } = props;
-
   return (
-    <div
-      className="min-h-[100dvh] overflow-hidden bg-[radial-gradient(82%_72%_at_12%_10%,rgba(34,211,238,0.16),transparent_58%),radial-gradient(74%_66%_at_88%_14%,rgba(99,102,241,0.18),transparent_60%),linear-gradient(165deg,#020617_0%,#081226_52%,#050913_100%)] px-4 py-6 text-slate-100"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="mx-auto flex min-h-[100dvh] w-full max-w-5xl items-center justify-center">
-        <div className="w-full max-w-xl rounded-[2rem] border border-white/10 bg-slate-950/68 p-6 shadow-[0_28px_70px_rgba(2,6,23,0.58)] backdrop-blur-xl sm:p-7">
-          <div className="inline-flex rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100">
-            {eyebrow}
-          </div>
-          <div className="mt-5 flex items-start justify-between gap-4">
-            <div>
-              <BrandLogo size="lg" tone="light" />
-              <h1 className="mt-5 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-                {title}
-              </h1>
-              <p className="mt-3 max-w-lg text-sm leading-7 text-slate-300 sm:text-base">
-                {description}
-              </p>
-            </div>
-            <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-400/25 bg-cyan-500/12 text-cyan-100">
-              {loading ? <RefreshCw size={18} className="animate-spin" /> : <ArrowRight size={18} />}
-            </span>
+    <PremiumShell>
+      <div className="ap-card w-full max-w-lg p-6 sm:p-8">
+
+        {/* Eyebrow */}
+        <span className="ap-eyebrow">
+          {loading && <span className="ap-live-dot" style={{ height: '6px', width: '6px' }} />}
+          {eyebrow}
+        </span>
+
+        {/* Brand + heading */}
+        <div className="mt-6 flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <BrandLogo size="md" tone="light" />
+            <h1 className="mt-4 text-2xl font-black tracking-tight text-white sm:text-3xl">{title}</h1>
+            <p className="mt-2 text-sm leading-7 text-slate-400">{description}</p>
           </div>
 
-          <div className="mt-6 min-h-[11rem]">
-            {loading ? (
-              <>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  {badges.map((item) => (
-                    <div key={item.label} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                        {item.label}
-                      </div>
-                      <div className="mt-2 text-sm font-semibold text-white">{item.value}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-6 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-slate-300">
-                  <span>Waiting for secure workspace access.</span>
-                  <span className="inline-flex items-center gap-1 text-cyan-100">
-                    Keep this tab open <ArrowRight size={13} />
-                  </span>
-                </div>
-              </>
-            ) : (
-              <div className="flex min-h-[11rem] flex-wrap items-end gap-2">
-                <a
-                  href={loginHref}
-                  className="rounded-full bg-gradient-to-r from-cyan-400 via-sky-500 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-[0_16px_36px_rgba(34,211,238,0.22)] transition hover:translate-y-[-1px] hover:brightness-105"
-                >
-                  Open secure sign-in
-                </a>
-                <a
-                  href={signupHref}
-                  className="rounded-full border border-white/12 bg-white/[0.03] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-white/[0.08]"
-                >
-                  Create account
-                </a>
-              </div>
-            )}
-          </div>
+          {/* Waveform if loading */}
+          {loading && (
+            <div className="ap-wave-loader shrink-0 pt-1" aria-hidden="true">
+              {WAVE_HEIGHTS.map((h, i) => (
+                <span
+                  key={`rwave-${i}`}
+                  className="ap-wave-bar"
+                  style={{ height: `${h * 100}%`, animationDelay: `${i * 120}ms` } as CSSProperties}
+                />
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* Loading state */}
+        {loading ? (
+          <div className="mt-6 space-y-4">
+            {/* Progress bar */}
+            <div className="ap-progress-track">
+              <div className="ap-progress-bar" />
+            </div>
+
+            {/* Status grid */}
+            <div className="ap-status-grid">
+              {badges.map((item) => (
+                <div key={item.label} className="ap-status-item">
+                  <p className="ap-status-item__label">{item.label}</p>
+                  <p className="ap-status-item__value">{item.value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400">
+              <span>Waiting for secure workspace access.</span>
+              <span className="flex items-center gap-1 text-cyan-300">Keep this tab open <ArrowRight size={12} /></span>
+            </div>
+          </div>
+        ) : (
+          /* Auth gate buttons */
+          <div className="mt-6 flex flex-wrap gap-3">
+            <a href={loginHref} className="ap-btn-primary flex-1 sm:flex-none" style={{ width: 'auto' }}>
+              Open secure sign-in <ArrowRight size={15} />
+            </a>
+            <a href={signupHref} className="ap-btn-secondary flex-1 sm:flex-none" style={{ width: 'auto' }}>
+              Create account
+            </a>
+          </div>
+        )}
       </div>
-    </div>
+    </PremiumShell>
   );
 }
+
+// ── Main export ───────────────────────────────────────────────────────────────
 
 export function WorkspaceRouteEntryScreen({
   eyebrow,
@@ -148,7 +168,7 @@ export function WorkspaceRouteEntryScreen({
   const router = useRouter();
   const pathname = usePathname();
   const { authReady, isAuthenticated } = useUser();
-  const hasImmediateFirebaseSession = Boolean(firebaseAuth.currentUser);
+  const [hasImmediateFirebaseSession, setHasImmediateFirebaseSession] = useState(() => Boolean(firebaseAuth.currentUser));
   const [authGateFallbackElapsed, setAuthGateFallbackElapsed] = useState(false);
   const shouldWarmWorkspaceShell = authReady ? isAuthenticated : hasImmediateFirebaseSession;
   const shouldShowOptimisticSignInGate = !authReady && !hasImmediateFirebaseSession && authGateFallbackElapsed;
@@ -160,19 +180,20 @@ export function WorkspaceRouteEntryScreen({
   }, [router]);
 
   useEffect(() => {
+    setHasImmediateFirebaseSession(Boolean(firebaseAuth.currentUser));
+  }, []);
+
+  useEffect(() => {
     if (!shouldWarmWorkspaceShell) return;
     if (typeof window === 'undefined') return;
-
     const recoveryTimer = window.setTimeout(() => {
       if (hasHealthyWorkspaceStylesheets()) {
         document.documentElement.removeAttribute('data-vf-workspace-style-fallback');
         return;
       }
-      // Do not hard-reload the page; emit a soft recovery signal only.
       document.documentElement.setAttribute('data-vf-workspace-style-fallback', '1');
       window.dispatchEvent(new CustomEvent(WORKSPACE_STYLESHEET_RECOVERY_EVENT));
     }, WORKSPACE_STYLESHEET_CHECK_DELAY_MS);
-
     return () => window.clearTimeout(recoveryTimer);
   }, [shouldWarmWorkspaceShell]);
 
@@ -181,9 +202,7 @@ export function WorkspaceRouteEntryScreen({
       setAuthGateFallbackElapsed(false);
       return undefined;
     }
-    const timeoutId = window.setTimeout(() => {
-      setAuthGateFallbackElapsed(true);
-    }, AUTH_GATE_FALLBACK_MS);
+    const timeoutId = window.setTimeout(() => { setAuthGateFallbackElapsed(true); }, AUTH_GATE_FALLBACK_MS);
     return () => window.clearTimeout(timeoutId);
   }, [authReady, hasImmediateFirebaseSession]);
 

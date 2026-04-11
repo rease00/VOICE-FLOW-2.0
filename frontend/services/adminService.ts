@@ -2,7 +2,6 @@
 import { AccountEntitlements } from './accountService';
 import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
-import type { ReaderCatalogItem, ReaderOwnershipBasis } from '../types';
 
 const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
@@ -80,10 +79,36 @@ export interface AdminUserSummary {
   wallet: {
     paidVfBalance: number;
     vffBalance: number;
+    vcFreeBalance?: number;
+    vcGrantedBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
   };
   usage: {
     monthlyVfUsed: number;
     dailyGenerationUsed: number;
+  };
+}
+
+export interface AdminUserVcGrantRecord {
+  id: string;
+  amount: number;
+  createdAt?: string;
+  note?: string;
+  requestId?: string;
+  actorUid?: string;
+  actorUserId?: string;
+  before?: {
+    vcFreeBalance?: number;
+    vcGrantedBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
+  };
+  after?: {
+    vcFreeBalance?: number;
+    vcGrantedBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
   };
 }
 
@@ -806,6 +831,41 @@ export const patchAdminUser = async (
     { requireAuth: true }
   ));
   return payload?.entitlements as AccountEntitlements;
+};
+
+export const fetchAdminUserVcGrants = async (
+  uid: string,
+  options?: { limit?: number },
+  baseUrl?: string
+): Promise<AdminUserVcGrantRecord[]> => {
+  const query = new URLSearchParams();
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: AdminUserVcGrantRecord[] }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/billing/users/${encodeURIComponent(uid)}/vc-grants${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const grantAdminUserVc = async (
+  uid: string,
+  input: { amount: number; note?: string; requestId?: string },
+  baseUrl?: string
+): Promise<{ entitlements: AccountEntitlements; items: AdminUserVcGrantRecord[] }> => {
+  const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements; items?: AdminUserVcGrantRecord[] }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/billing/users/${encodeURIComponent(uid)}/vc-grants`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return {
+    entitlements: payload.entitlements as AccountEntitlements,
+    items: Array.isArray(payload?.items) ? payload.items : [],
+  };
 };
 
 export const forceAdminUserIdChange = async (
@@ -1932,110 +1992,3 @@ export const deleteAdminBroadcastNotice = async (noticeId: string, baseUrl?: str
 export const fetchAdminNotices = fetchAdminBroadcastNotices;
 export const createAdminNotice = createAdminBroadcastNotice;
 export const deleteAdminNotice = deleteAdminBroadcastNotice;
-
-export interface AdminReaderCatalogItem extends ReaderCatalogItem {
-  publishState?: 'published' | 'draft' | string;
-  publishedAt?: string;
-}
-
-export const fetchAdminReaderCatalogItems = async (baseUrl?: string): Promise<AdminReaderCatalogItem[]> => {
-  const payload = await readJsonOrThrow<{ items?: AdminReaderCatalogItem[] }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items`,
-    undefined,
-    { requireAuth: true }
-  ));
-  return Array.isArray(payload?.items) ? payload.items : [];
-};
-
-export const fetchAdminReaderCatalogItem = async (
-  itemId: string,
-  baseUrl?: string
-): Promise<AdminReaderCatalogItem> => {
-  const payload = await readJsonOrThrow<{ item: AdminReaderCatalogItem }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items/${encodeURIComponent(itemId)}`,
-    undefined,
-    { requireAuth: true }
-  ));
-  return payload.item;
-};
-
-export const createAdminReaderCatalogItem = async (
-  payload: {
-    files: File[];
-    title: string;
-    author: string;
-    contentType: 'novel' | 'manga';
-    ownershipBasis: ReaderOwnershipBasis;
-    regionId: string;
-    license: string;
-    summary: string;
-    collectionLabel: string;
-    directionOverride: string;
-    publishState: 'published' | 'draft';
-  },
-  baseUrl?: string
-): Promise<AdminReaderCatalogItem> => {
-  const formData = new FormData();
-  payload.files.forEach((file) => formData.append('files', file));
-  formData.append('title', payload.title);
-  formData.append('author', payload.author);
-  formData.append('contentType', payload.contentType);
-  formData.append('ownershipBasis', payload.ownershipBasis);
-  formData.append('regionId', payload.regionId);
-  formData.append('license', payload.license);
-  formData.append('summary', payload.summary);
-  formData.append('collectionLabel', payload.collectionLabel);
-  formData.append('directionOverride', payload.directionOverride);
-  formData.append('publishState', payload.publishState);
-  const response = await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items`,
-    {
-      method: 'POST',
-      body: formData,
-    },
-    { requireAuth: true }
-  );
-  const data = await readJsonOrThrow<{ item: AdminReaderCatalogItem }>(response);
-  return data.item;
-};
-
-export const patchAdminReaderCatalogItem = async (
-  itemId: string,
-  patch: Partial<{
-    title: string;
-    author: string;
-    regionId: string;
-    license: string;
-    ownershipBasis: ReaderOwnershipBasis;
-    direction: string;
-    summary: string;
-    collectionLabel: string;
-    publishState: 'published' | 'draft';
-  }>,
-  baseUrl?: string
-): Promise<AdminReaderCatalogItem> => {
-  const payload = await readJsonOrThrow<{ item: AdminReaderCatalogItem }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items/${encodeURIComponent(itemId)}`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    },
-    { requireAuth: true }
-  ));
-  return payload.item;
-};
-
-export const deleteAdminReaderCatalogItem = async (itemId: string, baseUrl?: string): Promise<void> => {
-  const response = await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items/${encodeURIComponent(itemId)}`,
-    {
-      method: 'DELETE',
-    },
-    { requireAuth: true }
-  );
-  if (!response.ok) {
-    throw await parseResponseError(response);
-  }
-};
-

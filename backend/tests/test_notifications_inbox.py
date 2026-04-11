@@ -754,6 +754,44 @@ def test_notifications_list_get_can_sync_when_flag_enabled(monkeypatch) -> None:
     assert payload["items"][0]["title"] == "Synced notice"
 
 
+def test_notifications_preserve_channel_audience_and_copy_fields(monkeypatch) -> None:
+    _reset_notification_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+
+    uid = "notification_shape_user"
+    now_iso = backend_app._utc_now().isoformat()
+    backend_app._INMEMORY_NOTIFICATION_INBOX.setdefault(uid, {})["notif_shape_1"] = {
+        "id": "notif_shape_1",
+        "uid": uid,
+        "eventCode": "custom.message",
+        "title": "Queue notice",
+        "message": "Fallback message",
+        "userMessage": "Servers are busy right now. Please try again in a little while.",
+        "details": "Queue age exceeded 90 seconds.",
+        "adminDetail": "trace_id=busy-123",
+        "audience": "all",
+        "roleScope": "all_users",
+        "channel": "toast",
+        "status": "active",
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+
+    client = TestClient(backend_app.app)
+    response = client.get("/account/notifications", headers=_admin_headers(uid))
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["audience"] == "all"
+    assert item["channel"] == "toast"
+    assert item["roleScope"] == "all_users"
+    assert item["message"] == "Servers are busy right now. Please try again in a little while."
+    assert item["userMessage"] == "Servers are busy right now. Please try again in a little while."
+    assert item["adminDetail"] == "trace_id=busy-123"
+
+
 @ADMIN_NOTICES_UNAVAILABLE
 def test_admin_notices_expired_and_deleted_not_returned_from_account_inbox(monkeypatch) -> None:
     _reset_notification_state()

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildStudioLiveMultiSpeakerPrompt } from '../../shared/prompts/liveMultiSpeakerPrompt';
 
 interface VectorDemoSample {
@@ -118,14 +119,14 @@ export interface LandingDirectorProof {
   bullets: LandingDirectorBullet[];
 }
 
-export interface LandingReaderUnit {
+export interface LandingWritingUnit {
   id: string;
   title: string;
   status: string;
   body: string;
 }
 
-export interface LandingReaderProof {
+export interface LandingWritingProof {
   title: string;
   summary: string;
   modeLabel: string;
@@ -133,7 +134,7 @@ export interface LandingReaderProof {
   progressLabel: string;
   activeTitle: string;
   activeStatus: string;
-  units: LandingReaderUnit[];
+  units: LandingWritingUnit[];
 }
 
 const SINGLE_SPEAKER_COPY: Record<
@@ -145,58 +146,61 @@ const SINGLE_SPEAKER_COPY: Record<
   }
 > = {
   'en-us': {
-    title: 'Daily assistant check-in',
-    summary: 'Smart-home weather, schedule, and a playful reminder in one pass.',
-    cue: 'Bright, friendly, warm.',
+    title: 'Daily check-in',
+    summary: 'Weather, calendar, reminder.',
+    cue: 'Bright, warm, clear.',
   },
   hi: {
-    title: 'Hindi support response',
-    summary: 'Support reply built around reassurance and clear next steps.',
-    cue: 'Calm, steady, reassuring.',
+    title: 'Support reply',
+    summary: 'Calm help with the next step.',
+    cue: 'Steady, reassuring.',
   },
   es: {
-    title: 'Spanish delivery update',
-    summary: 'Delivery status with light urgency and practical guidance.',
-    cue: 'Upbeat, practical, crisp.',
+    title: 'Delivery update',
+    summary: 'Quick status, clear next action.',
+    cue: 'Crisp, practical.',
   },
   ja: {
-    title: 'Japanese meeting reminder',
-    summary: 'Business reminder with composed pre-meeting pacing.',
-    cue: 'Measured, professional, supportive.',
+    title: 'Meeting reminder',
+    summary: 'Polished reminder before the call.',
+    cue: 'Measured, professional.',
   },
   fr: {
-    title: 'French lifestyle narrative',
-    summary: 'Dreamy travel-style narration with a soft finish.',
-    cue: 'Airy, warm, gentle.',
+    title: 'Travel line',
+    summary: 'Soft, cinematic narration.',
+    cue: 'Airy, warm.',
   },
 };
 
 const MULTI_SPEAKER_SUMMARY_COPY: Record<string, string> = {
-  'en-weekend-plan': 'Three friends pitch a blockbuster, an indie drama, and a playful middle ground.',
-  'hi-family-dinner': 'A family dinner scene that balances warmth, teasing, and gentle authority.',
-  'es-boutique-shop': 'A retail exchange that moves from polite ask to confident close.',
-  'ja-office-deadline': 'An office handoff scene with tired focus and professional restraint.',
-  'fr-city-tour': 'A guide and tourist move through a romantic city recommendation.',
+  'en-weekend-plan': 'A fast weekend pitch-off.',
+  'hi-family-dinner': 'Warm family timing.',
+  'es-boutique-shop': 'A shop exchange with a clean close.',
+  'ja-office-deadline': 'An office handoff under pressure.',
+  'fr-city-tour': 'A guide and traveler in sync.',
 };
 
 const MULTI_SPEAKER_TITLE_COPY: Record<string, string> = {
-  'en-weekend-plan': 'The weekend plan',
+  'en-weekend-plan': 'Weekend plan',
   'hi-family-dinner': 'Family dinner',
-  'es-boutique-shop': 'The boutique shop',
-  'ja-office-deadline': 'The office deadline',
-  'fr-city-tour': 'The city tour',
+  'es-boutique-shop': 'Boutique stop',
+  'ja-office-deadline': 'Office deadline',
+  'fr-city-tour': 'City tour',
 };
 
 const MULTI_SPEAKER_CUE_COPY: Record<string, string> = {
-  'en-weekend-plan': 'Fast turns with crisp character contrast.',
-  'hi-family-dinner': 'Warm family timing with teasing authority.',
-  'es-boutique-shop': 'Helpful retail pacing with a bright finish.',
-  'ja-office-deadline': 'Tired but professional handoff energy.',
-  'fr-city-tour': 'Elegant guide pacing with a romantic finish.',
+  'en-weekend-plan': 'Quick turns. Clean contrast.',
+  'hi-family-dinner': 'Warm and teasing.',
+  'es-boutique-shop': 'Helpful and bright.',
+  'ja-office-deadline': 'Tight, professional.',
+  'fr-city-tour': 'Elegant, easy.',
 };
 
+const landingDataDirectory = path.dirname(fileURLToPath(import.meta.url));
+const landingPublicDirectory = path.resolve(landingDataDirectory, '../../../public');
+
 const readJsonWithBom = <T,>(...segments: string[]): T => (
-  JSON.parse(readFileSync(path.join('public', ...segments), 'utf8').replace(/^\uFEFF/, '')) as T
+  JSON.parse(readFileSync(path.join(landingPublicDirectory, ...segments), 'utf8').replace(/^\uFEFF/, '')) as T
 );
 
 const asVectorDemoManifest = readJsonWithBom<VectorDemoManifest>('audio', 'vector-demo', 'manifest.json');
@@ -294,9 +298,8 @@ const referenceFile = requireCloneFile('reference');
 const renderedFile = requireCloneFile('rendered');
 
 export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
-  title: 'Voice Clone proof',
-  summary:
-    'Compare the reference clip against the rendered clone before opening the studio.',
+  title: 'Clone proof',
+  summary: 'Compare source and render side by side.',
   source: {
     label: 'Reference take',
     name: 'reference.wav',
@@ -311,45 +314,43 @@ export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
 
 export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
   title: 'AI Director lane',
-  summary:
-    'Use the same prompt contract as the studio to tighten emphasis and pacing before render.',
+  summary: 'Tighten pace before render.',
   prompt: LANDING_DIRECTOR_PROMPT_BUNDLE.systemPrompt.split('\n').slice(0, 8).join('\n'),
-  before: 'Flat pacing with weak contrast between the three voices.',
-  after: 'Clearer handoffs, cleaner skepticism, warmer resolution.',
+  before: 'Flat pacing, weak contrast.',
+  after: 'Cleaner handoffs, better lift.',
   bullets: [
-    { label: 'Prompt contract', value: 'Stable JSON keeps direction usable.' },
-    { label: 'Scene-safe edits', value: 'Delivery changes without rewriting the scene.' },
-    { label: 'Publish speed', value: 'Review, rerender, and keep the scene moving.' },
+    { label: 'Prompt', value: 'Stable JSON keeps direction usable.' },
+    { label: 'Scene-safe', value: 'Tweak delivery, keep meaning.' },
+    { label: 'Speed', value: 'Review, rerender, ship.' },
   ],
 };
 
-export const LANDING_READER_PROOF: LandingReaderProof = {
-  title: 'Reader playback',
-  summary:
-    'The reader closes the loop between script review and final listening.',
-  modeLabel: 'Reader review',
+export const LANDING_WRITING_PROOF: LandingWritingProof = {
+  title: 'Writing',
+  summary: 'Review by ear before release.',
+  modeLabel: 'Writing review',
   coverLabel: 'Approval surface',
   progressLabel: '4 scenes locked',
-  activeTitle: 'Episode 03 - Final listening pass',
+  activeTitle: 'Episode 03 - Final pass',
   activeStatus: 'Reviewing',
   units: [
     {
       id: 'scene-1',
       title: 'Scene 01 - Cold open',
       status: 'Locked',
-      body: 'Lead with the promise, then move straight into proof.',
+      body: 'Lead with the promise.',
     },
     {
       id: 'scene-2',
       title: 'Scene 02 - Prime cast reel',
       status: 'Live',
-      body: 'Keep the cast reel easy to compare while the team reviews handoffs.',
+      body: 'Keep the reel easy to scan.',
     },
     {
       id: 'scene-3',
       title: 'Scene 03 - Clone approval',
       status: 'Ready',
-      body: 'Keep reference and clone takes together for fast approval.',
+      body: 'Keep source and clone together.',
     },
   ],
 };

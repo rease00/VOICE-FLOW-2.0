@@ -1,7 +1,6 @@
 User-agent: *
 Allow: /
 Disallow: /app/
-Disallow: /reader/
 Disallow: /api/
 
 Sitemap: https://v-flow-ai.com/sitemap.xml

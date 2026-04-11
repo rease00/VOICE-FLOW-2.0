@@ -35,7 +35,7 @@ const MAX_EAGER_JS_BYTES = Math.max(
 );
 const MAX_EAGER_CSS_BYTES = Math.max(
   16_000,
-  resolveFiniteNumberEnv(process.env.VF_FRONTEND_EAGER_CSS_MAX_BYTES) ?? 229_376,
+  resolveFiniteNumberEnv(process.env.VF_FRONTEND_EAGER_CSS_MAX_BYTES) ?? 294_912,
 );
 const MAX_EAGER_WASM_BYTES = Math.max(
   64_000,

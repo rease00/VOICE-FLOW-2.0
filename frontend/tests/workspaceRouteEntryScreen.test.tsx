@@ -77,9 +77,9 @@ describe('WorkspaceRouteEntryScreen', () => {
       <WorkspaceRouteEntryScreen
         eyebrow="Voices workspace"
         loadingLabel="Opening Voices"
-        loadingDescription="Checking your session before loading voice cloning, library tools, and cast presets."
+        loadingDescription="Checking your session before loading voice cloning tools and cast presets."
         signInTitle="Sign in to open Voices"
-        signInDescription="Voice library filters, clone tools, and cast presets stay behind secure workspace access."
+        signInDescription="Voice tools, clone flows, and cast presets stay behind secure workspace access."
       />
     );
 
@@ -95,9 +95,9 @@ describe('WorkspaceRouteEntryScreen', () => {
       <WorkspaceRouteEntryScreen
         eyebrow="Voices workspace"
         loadingLabel="Opening Voices"
-        loadingDescription="Checking your session before loading voice cloning, library tools, and cast presets."
+        loadingDescription="Checking your session before loading voice cloning tools and cast presets."
         signInTitle="Sign in to open Voices"
-        signInDescription="Voice library filters, clone tools, and cast presets stay behind secure workspace access."
+        signInDescription="Voice tools, clone flows, and cast presets stay behind secure workspace access."
       />
     );
 

@@ -11,6 +11,7 @@ import {
   FolderOpen,
   Loader2,
   Lock,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Save,
@@ -19,6 +20,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { Button } from './Button';
+import { ProofreadCluster } from './ProofreadCluster';
 import { LANGUAGES } from '../constants';
 import { useUser } from '../contexts/UserContext';
 import {
@@ -67,6 +69,7 @@ import {
   readNovelWorkspaceSnapshot,
   writeNovelWorkspaceSnapshot,
 } from '../src/features/novel/services/localSnapshotStorage';
+import { PublishingPanel } from '../src/features/publishing/components/PublishingPanel';
 
 type ToastKind = 'success' | 'error' | 'info';
 
@@ -365,7 +368,7 @@ const buildMemoryInstruction = (ledger: ProjectMemoryLedger): string => {
 };
 
 type NovelCreateMode = 'novel' | 'chapter';
-type MobileToolsTab = 'adaptation' | 'summary' | 'ledger' | 'drive';
+type MobileToolsTab = 'adaptation' | 'memory' | 'settings' | 'publish';
 
 export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, mediaBackendUrl, onToast, onSendToStudio }) => {
   const { width, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
@@ -430,6 +433,29 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const chapterVersionsRef = useRef(chapterVersionsByProjectId);
   const importModalRef = useRef<HTMLDivElement>(null);
   const importTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('novel-v2-library-collapsed');
+      return saved === 'true';
+    }
+    return false;
+  });
+  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('novel-v2-inspector-collapsed');
+      return saved === 'true';
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('novel-v2-library-collapsed', String(isLibraryCollapsed));
+  }, [isLibraryCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem('novel-v2-inspector-collapsed', String(isInspectorCollapsed));
+  }, [isInspectorCollapsed]);
 
   const toggleMobilePanel = (panel: keyof typeof mobilePanelOpen) => {
     setMobilePanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
@@ -694,12 +720,14 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   ]);
 
   useEffect(() => {
-    if (isHydratingLocal || !selectedProjectId) return;
+    if (isHydratingLocal || !selectedProjectId || isAdapting || isBatchRunning) return;
     const timer = window.setTimeout(() => {
       void syncProjectToLocalFolder(selectedProjectId).catch(() => undefined);
     }, 700);
     return () => window.clearTimeout(timer);
   }, [
+    isAdapting,
+    isBatchRunning,
     isHydratingLocal,
     selectedProjectId,
     chaptersByProjectId,
@@ -1125,6 +1153,32 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     onSendToStudio(nextText);
   };
 
+  const handleProofread = useCallback(async (mode: 'grammar' | 'flow' | 'novel') => {
+    if (!selectedChapterId || !chapterText.trim()) {
+      onToast('Chapter text is empty.', 'info');
+      return;
+    }
+    setIsAdapting(true);
+    try {
+      const systemPrompt = mode === 'grammar'
+        ? 'Act as a professional proofreader. Fix spelling, punctuation, and syntax errors while keeping the story exactly the same. Output ONLY the corrected text.'
+        : mode === 'flow'
+        ? 'Act as an editor. Optimize the flow, readability, and naturalness of the prose while preserving the meaning and tone. Output ONLY the corrected text.'
+        : 'Act as a professional novel editor. Enhance the text for a premium AI Audio Novel experience. Improve descriptive language and emotional resonance. Output ONLY the corrected text.';
+
+      const corrected = await generateTextContent(systemPrompt, chapterText, settings);
+      if (corrected) {
+        setAdaptedOutput(corrected);
+        onToast(`Proofreading (${mode}) complete. View results in Adapted tab.`, 'success');
+        appendChapterVersion(selectedProjectId, selectedChapterId, chapterText, corrected, `proofread_${mode}`, 'ai_proofread');
+      }
+    } catch (error: any) {
+      onToast(`Proofreading failed: ${toNovelPublicError(error, 'Proofreading failed.')}`, 'error');
+    } finally {
+      setIsAdapting(false);
+    }
+  }, [chapterText, selectedChapterId, selectedProjectId, settings, onToast, toNovelPublicError, appendChapterVersion]);
+
   const applyAdaptedToEditor = (): void => {
     if (!adaptedOutput.trim()) return;
     setChapterText(adaptedOutput);
@@ -1261,7 +1315,12 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     try {
       const driveProject = await createNovelProject(driveToken, selectedProject.name);
       const chaptersToUpload = [...(chaptersByProjectId[selectedProjectId] || [])].sort(chapterSort);
-      for (const chapter of chaptersToUpload) await createChapter(driveToken, driveProject.id, chapter.title, chapter.text);
+      const remoteChapters = await listChapters(driveToken, driveProject.id);
+      let nextChapterIndex = Math.max(1, ...remoteChapters.map((chapter) => chapter.index + 1));
+      for (const chapter of chaptersToUpload) {
+        await createChapter(driveToken, driveProject.id, chapter.title, chapter.text, nextChapterIndex);
+        nextChapterIndex += 1;
+      }
       onToast('Uploaded selected novel to Drive.', 'success');
     } catch (error: any) {
       onToast(`Upload failed: ${toNovelPublicError(error, 'Upload failed.')}`, 'error');
@@ -1523,16 +1582,30 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
 
   const workspaceGridClassName = isPhone
     ? 'grid grid-cols-1 gap-3 min-h-0'
-    : 'grid flex-1 min-h-0 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-[16.5rem_minmax(0,1.15fr)_16.5rem] 2xl:grid-cols-[17.5rem_minmax(0,1.2fr)_17.5rem]';
+    : `grid flex-1 min-h-0 items-stretch gap-4 ${
+        isLibraryCollapsed && isInspectorCollapsed
+          ? 'grid-cols-1'
+          : isLibraryCollapsed
+          ? 'xl:grid-cols-[2rem_minmax(0,1.15fr)_16.5rem] 2xl:grid-cols-[2rem_minmax(0,1.2fr)_17.5rem]'
+          : isInspectorCollapsed
+          ? 'xl:grid-cols-[16.5rem_minmax(0,1.15fr)_2rem] 2xl:grid-cols-[17.5rem_minmax(0,1.2fr)_2rem]'
+          : 'xl:grid-cols-[16.5rem_minmax(0,1.15fr)_16.5rem] 2xl:grid-cols-[17.5rem_minmax(0,1.2fr)_17.5rem]'
+      }`;
   const workspaceLibraryColumnClassName = isPhone
     ? 'order-2'
-    : 'md:col-start-1 md:row-start-1 md:row-span-2 xl:col-start-1 xl:row-start-1 xl:row-span-1';
+    : isLibraryCollapsed
+      ? 'xl:w-8 overflow-hidden'
+      : 'md:col-start-1 md:row-start-1 md:row-span-2 xl:col-start-1 xl:row-start-1 xl:row-span-1';
   const workspaceEditorColumnClassName = isPhone
     ? 'order-1'
-    : 'md:col-start-2 md:row-start-1 xl:col-start-2 xl:row-start-1 xl:row-span-1';
+    : isLibraryCollapsed && isInspectorCollapsed
+      ? 'col-span-1'
+      : 'md:col-start-2 md:row-start-1 xl:col-start-2 xl:row-start-1 xl:row-span-1';
   const workspaceSupportColumnClassName = isPhone
     ? 'order-3'
-    : 'md:col-start-2 md:row-start-2 xl:col-start-3 xl:row-start-1 xl:row-span-1';
+    : isInspectorCollapsed
+      ? 'xl:w-8 overflow-hidden'
+      : 'md:col-start-2 md:row-start-2 xl:col-start-3 xl:row-start-1 xl:row-span-1';
   const showNovelLibraryControls = mobileLibraryTab === 'novel';
   const showChapterLibraryControls = mobileLibraryTab === 'chapter';
   const libraryTabButtonClassName = (tab: NovelCreateMode): string => [
@@ -1546,184 +1619,235 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     mobileToolsTab === tab ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600',
   ].join(' ');
 
-  const adaptationSectionContent = (
-    <>
-      <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={`mb-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 ${isPhone ? phoneInputClassName : 'min-h-11 text-sm'}`}>
-        <option value="Hinglish">Hinglish</option>
-        <option value="English">English</option>
-        <option value="Hindi">Hindi</option>
-        {LANGUAGES.map((lang) => <option key={lang.code} value={lang.name}>{lang.name}</option>)}
-      </select>
-      <input value={targetCulture} onChange={(e) => setTargetCulture(e.target.value)} placeholder="Target culture" className={`mb-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 ${isPhone ? phoneInputClassName : 'min-h-11 text-sm'}`} />
-      {isPhone ? (
-        <div className="mb-1.5 flex flex-wrap gap-1">
-          <button onClick={() => { void handleAdaptSelected(); }} disabled={isAdapting || isBatchRunning || !selectedChapterId} className={`inline-flex items-center justify-center bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isAdapting ? 'Adapting...' : 'Adapt'}</button>
-          <button onClick={() => { void handleRunBatch(); }} disabled={isAdapting || !selectedChapterId} className={`inline-flex items-center justify-center border border-emerald-200 bg-emerald-50 text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isBatchRunning ? 'Stop Batch' : 'Run Batch'}</button>
-          <button onClick={() => { void handleResumeFailedBatch(); }} disabled={isBatchRunning} className={`inline-flex items-center justify-center border border-amber-200 bg-amber-50 text-amber-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>Resume Failed</button>
-        </div>
-      ) : (
-        <>
-          <button onClick={() => { void handleAdaptSelected(); }} disabled={isAdapting || isBatchRunning || !selectedChapterId} className="mb-2 w-full rounded-lg bg-indigo-600 px-4 min-h-11 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">{isAdapting ? 'Adapting...' : 'Adapt Chapter'}</button>
-          <button onClick={() => { void handleRunBatch(); }} disabled={isAdapting || !selectedChapterId} className="mb-2 w-full rounded-lg border border-emerald-200 bg-emerald-50 px-4 min-h-11 text-sm font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{isBatchRunning ? 'Stop Batch' : 'Run Batch'}</button>
-          <button onClick={() => { void handleResumeFailedBatch(); }} disabled={isBatchRunning} className="w-full rounded-lg border border-amber-200 bg-amber-50 px-4 min-h-11 text-sm font-semibold text-amber-700 disabled:cursor-not-allowed disabled:opacity-50">Resume Failed</button>
-        </>
-      )}
-      {batchMessage && <p className="mt-2 text-[11px] text-gray-600">{batchMessage}</p>}
-    </>
-  );
+  const memorySectionContent = (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <h4 className="text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Chapter Summary</h4>
+        {selectedChapterSummary ? (
+          <div className="space-y-2 text-xs text-gray-700">
+            <p className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-3 leading-relaxed shadow-sm">
+              {selectedChapterSummary.summary || 'No summary generated yet.'}
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg bg-gray-50/50 p-2 border border-gray-100">
+                <p className="text-[10px] font-bold text-gray-500 mb-1 uppercase">Characters</p>
+                <p className="text-[11px] text-gray-700 leading-tight">
+                  {selectedChapterSummary.newCharacters.length > 0 ? selectedChapterSummary.newCharacters.join(', ') : 'None'}
+                </p>
+              </div>
+              <div className="rounded-lg bg-gray-50/50 p-2 border border-gray-100">
+                <p className="text-[10px] font-bold text-gray-500 mb-1 uppercase">Places</p>
+                <p className="text-[11px] text-gray-700 leading-tight">
+                  {selectedChapterSummary.newPlaces.length > 0 ? selectedChapterSummary.newPlaces.join(', ') : 'None'}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-center text-[11px] text-gray-400">
+            Run adaptation to generate chapter summary.
+          </p>
+        )}
+      </div>
 
-  const summarySectionContent = (
-    <>
-      {selectedChapterSummary ? (
-        <div className="space-y-2 text-xs text-gray-700">
-          <p className="rounded-lg border border-gray-200 bg-gray-50 p-2">{selectedChapterSummary.summary || 'No summary generated yet.'}</p>
-          <div>
-            <p className="text-[11px] font-semibold text-gray-600 mb-1">New Characters</p>
-            <p className="text-[11px] text-gray-700">{selectedChapterSummary.newCharacters.length > 0 ? selectedChapterSummary.newCharacters.join(', ') : 'None'}</p>
-          </div>
-          <div>
-            <p className="text-[11px] font-semibold text-gray-600 mb-1">New Places</p>
-            <p className="text-[11px] text-gray-700">{selectedChapterSummary.newPlaces.length > 0 ? selectedChapterSummary.newPlaces.join(', ') : 'None'}</p>
+      <div className="pt-2 border-t border-gray-100">
+        <div className="mb-3 flex items-center justify-between">
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Memory Ledger</h4>
+          <div className="flex bg-gray-100 rounded-full p-0.5">
+            <button onClick={() => setMemoryTab('character')} className={`rounded-full px-2.5 py-0.5 text-[9px] font-bold transition-all ${memoryTab === 'character' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Chars</button>
+            <button onClick={() => setMemoryTab('place')} className={`rounded-full px-2.5 py-0.5 text-[9px] font-bold transition-all ${memoryTab === 'place' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Places</button>
           </div>
         </div>
-      ) : (
-        <p className="text-xs text-gray-500">Run adaptation to generate chapter summary.</p>
-      )}
-      <div className="mt-3 border-t border-gray-100 pt-3">
-        <p className="text-xs font-bold text-gray-600 mb-2">Versions (Revert)</p>
-        <div className="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5">
-          {selectedChapterVersions.length === 0 && <p className="text-[11px] text-gray-500">No snapshots yet.</p>}
-          {selectedChapterVersions.slice(0, 12).map((row) => (
-            <div key={row.id} className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-[11px] font-semibold text-gray-700">{row.label}</p>
-                  <p className="text-[10px] text-gray-500">{new Date(row.timestamp).toLocaleString()}</p>
-                </div>
+        
+        <div className="mb-3 space-y-2">
+          <div className="flex items-center gap-1.5 rounded-xl border border-indigo-100 bg-indigo-50/20 p-2 shadow-inner">
+            <input
+              value={memoryDraftSource}
+              onChange={(e) => setMemoryDraftSource(e.target.value)}
+              placeholder="Source..."
+              className="min-w-0 flex-1 bg-transparent px-1 text-[11px] font-medium outline-none placeholder:text-gray-400"
+            />
+            <ArrowRight size={10} className="text-indigo-300" />
+            <input
+              value={memoryDraftAdapted}
+              onChange={(e) => setMemoryDraftAdapted(e.target.value)}
+              placeholder="Adapted..."
+              className="min-w-0 flex-1 bg-transparent px-1 text-[11px] font-bold text-indigo-600 outline-none placeholder:text-gray-400"
+            />
+            <button onClick={addMemoryTagRow} title="Add memory tag" aria-label="Add memory tag" className="flex h-6 w-6 items-center justify-center rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">
+              <Plus size={14} />
+            </button>
+          </div>
+          <input 
+            value={memoryFilter} 
+            onChange={(e) => setMemoryFilter(e.target.value)} 
+            placeholder="Filter recordings..." 
+            className="w-full rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 text-[10px] outline-none focus:border-indigo-200 transition-colors" 
+          />
+        </div>
+
+        <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+          {filteredMemoryRows.length === 0 && <p className="py-4 text-center text-[11px] text-gray-400">No {memoryTab} tags found.</p>}
+          {filteredMemoryRows.map((row) => (
+            <div key={row.id} className="group relative rounded-xl border border-gray-100 bg-white p-2 shadow-sm transition-all hover:border-indigo-200 hover:shadow-md">
+              <div className="flex items-center gap-2">
+                <input
+                  value={row.sourceName}
+                  onChange={(e) => updateMemoryRow(memoryTab, row.id, { sourceName: e.target.value })}
+                  title="Source name"
+                  aria-label="Source name"
+                  className="min-w-0 flex-1 bg-transparent text-[11px] font-medium text-gray-600 outline-none"
+                />
+                <ArrowRight size={10} className="text-gray-300" />
+                <input
+                  value={row.adaptedName}
+                  onChange={(e) => updateMemoryRow(memoryTab, row.id, { adaptedName: e.target.value })}
+                  title="Adapted name"
+                  aria-label="Adapted name"
+                  className="min-w-0 flex-1 bg-transparent text-[11px] font-bold text-indigo-700 outline-none"
+                />
+              </div>
+              <div className="mt-2 flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
-                  onClick={() => handleRevertVersion(row)}
-                  className={`${pillActionButtonClassName} border border-indigo-200 bg-white text-indigo-700`}
+                  onClick={() => updateMemoryRow(memoryTab, row.id, { locked: !row.locked })}
+                  className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold transition-colors ${row.locked ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-500'}`}
                 >
-                  Revert
+                  {row.locked ? <Lock size={9} /> : <Unlock size={9} />}
+                  {row.locked ? 'Locked' : 'Open'}
+                </button>
+                <button onClick={() => removeMemoryRow(memoryTab, row.id)} title="Remove memory tag" aria-label="Remove memory tag" className="rounded-full bg-red-50 p-1 text-red-500 hover:bg-red-100 transition-colors">
+                  <Trash2 size={10} />
                 </button>
               </div>
             </div>
           ))}
         </div>
       </div>
-    </>
+
+      <div className="pt-2 border-t border-gray-100">
+        <h4 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Version History</h4>
+        <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-1.5 pr-1">
+          {selectedChapterVersions.length === 0 && <p className="text-[10px] text-gray-400">No snapshots yet.</p>}
+          {selectedChapterVersions.slice(0, 10).map((row) => (
+            <div key={row.id} className="rounded-lg border border-gray-100 bg-gray-50/50 p-2 transition-colors hover:bg-gray-100">
+              <div className="flex items-center justify-between gap-1.5">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[10px] font-bold text-gray-700">{row.label}</p>
+                  <p className="text-[9px] text-gray-400">{new Date(row.timestamp).toLocaleTimeString()}</p>
+                </div>
+                <button onClick={() => handleRevertVersion(row)} className="rounded-full bg-indigo-50 px-2 py-1 text-[9px] font-bold text-indigo-600 hover:bg-indigo-100 transition-colors">Revert</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 
-  const ledgerSectionContent = (
-    <>
-      <div className={`mb-2 ${isPhone ? 'flex items-center justify-between' : 'hidden'}`}>
-        <h4 className={phoneSectionTitleClassName}>Memory Tags</h4>
-        <button onClick={addMemoryTagRow} className={`${pillActionButtonClassName} bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}>+ Add Tag</button>
+  const adaptationSectionContent = (
+    <div className="space-y-3 rounded-xl border border-gray-100 bg-white p-3">
+      <h4 className="text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Adaptation</h4>
+      <p className="text-[11px] text-gray-700">
+        {selectedProject
+          ? 'Chapter adaptation tools are available from the active chapter workflow.'
+          : 'Select a novel to view adaptation tools.'}
+      </p>
+    </div>
+  );
+
+  const settingsSectionContent = (
+    <div className="space-y-4">
+      <div className="space-y-3">
+        <h4 className="text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Cloud Sync (Drive)</h4>
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-3 shadow-sm">
+          <p className="mb-3 text-[11px] text-gray-600 leading-relaxed font-medium">{driveState.message}</p>
+          <div className="grid grid-cols-1 gap-2">
+            <Button onClick={handleDriveConnectAction} disabled={!canConnectDrive || isConnectingDrive} className={`w-full bg-indigo-600 text-white hover:bg-indigo-700 shadow-md shadow-indigo-200/50 font-bold ${isPhone ? 'min-h-10 text-xs' : 'min-h-11 text-sm'}`}>
+              {isConnectingDrive ? <Loader2 size={14} className="animate-spin mr-2" /> : <FolderOpen size={14} className="mr-2" />}
+              {driveState.status === 'connected' ? 'Connected' : connectLabel}
+            </Button>
+            {driveState.status === 'connected' && (
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => { void handleUploadCurrentNovelToDrive(); }} disabled={isUploadingToDrive || !selectedProjectId} className="flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 transition-all disabled:opacity-50">
+                  {isUploadingToDrive ? <Loader2 size={12} className="animate-spin" /> : <CloudUpload size={14} />} Upload
+                </button>
+                <button onClick={() => { void handleDownloadNovelFromDrive(); }} disabled={isDownloadingFromDrive} className="flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 transition-all disabled:opacity-50">
+                  {isDownloadingFromDrive ? <Loader2 size={12} className="animate-spin" /> : <CloudDownload size={14} />} Download
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
-      <div className="mb-2 flex gap-2">
-        <button onClick={() => setMemoryTab('character')} className={`flex-1 rounded-full px-3 font-semibold ${memoryTab === 'character' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}>Characters</button>
-        <button onClick={() => setMemoryTab('place')} className={`flex-1 rounded-full px-3 font-semibold ${memoryTab === 'place' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}>Places</button>
-      </div>
-      <div className="mb-2 rounded-xl border border-gray-200 bg-gray-50 p-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <input
-            value={memoryDraftSource}
-            onChange={(event) => setMemoryDraftSource(event.target.value)}
-            placeholder="Source name"
-            className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
-          />
-          <ArrowRight size={12} className="text-gray-400" />
-          <input
-            value={memoryDraftAdapted}
-            onChange={(event) => setMemoryDraftAdapted(event.target.value)}
-            placeholder="Adapted name"
-            className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
-          />
+
+      <div className="pt-2 border-t border-gray-100">
+        <h4 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Local Strategy</h4>
+        <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-3">
+          <div className="flex items-start gap-2.5">
+            <div className={`mt-0.5 h-2 w-2 rounded-full ${boundLocalFolderName ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-gray-300'}`} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-bold text-gray-800">{boundLocalFolderName || 'No local folder bound'}</p>
+              {localFolderStatus && localFolderStatus !== 'No local folder bound.' && (
+                <p className="mt-0.5 text-[10px] text-gray-500 leading-normal">{localFolderStatus}</p>
+              )}
+            </div>
+          </div>
           <button
-            onClick={addMemoryTagRow}
-            className={`${pillActionButtonClassName} border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50`}
+            onClick={() => { void bindLocalFolder(); }}
+            disabled={isBindingLocalFolder}
+            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white py-2 text-[10px] font-bold text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
           >
-            Add
+            {isBindingLocalFolder ? <Loader2 size={12} className="animate-spin" /> : <FolderOpen size={12} />}
+            Bind Different Folder
           </button>
         </div>
       </div>
-      <input value={memoryFilter} onChange={(e) => setMemoryFilter(e.target.value)} placeholder="Filter" className={`mb-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 ${isPhone ? phoneInputClassName : 'min-h-11 text-sm'}`} />
-      <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
-        {filteredMemoryRows.map((row) => (
-          <div key={row.id} className="vf-card-lift rounded-xl border border-gray-200 bg-gray-50 p-2.5">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <input
-                value={row.sourceName}
-                onChange={(e) => updateMemoryRow(memoryTab, row.id, { sourceName: e.target.value })}
-                className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 font-medium text-gray-700 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
-              />
-              <ArrowRight size={12} className="text-gray-400" />
-              <input
-                value={row.adaptedName}
-                onChange={(e) => updateMemoryRow(memoryTab, row.id, { adaptedName: e.target.value })}
-                className={`min-w-[110px] flex-1 rounded-full border border-gray-200 bg-white px-3 font-semibold text-indigo-700 outline-none focus:border-indigo-400 ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
-              />
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-[10px] font-medium text-gray-500">
-                {row.locked ? 'Locked mapping' : 'Editable mapping'}
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => updateMemoryRow(memoryTab, row.id, { locked: !row.locked })}
-                  className={`${pillActionButtonClassName} ${
-                    row.locked ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600'
-                  }`}
-                >
-                  {row.locked ? <Lock size={11} className="inline mr-1" /> : <Unlock size={11} className="inline mr-1" />}
-                  {row.locked ? 'Locked' : 'Open'}
-                </button>
-                <button onClick={() => removeMemoryRow(memoryTab, row.id)} className={`${pillActionButtonClassName} border border-red-200 bg-red-50 text-red-700`}>
-                  Delete
-                </button>
-              </div>
-            </div>
+
+      <div className="pt-2 border-t border-gray-100">
+        <h4 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-indigo-600/70">Novel Metadata</h4>
+        <div className="rounded-xl border border-gray-100 bg-white p-3 space-y-3">
+          <div>
+            <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">Created</p>
+            <p className="text-[11px] text-gray-700">{selectedProject?.createdTime ? new Date(selectedProject.createdTime).toLocaleDateString() : 'N/A'}</p>
           </div>
-        ))}
+          <div className="flex gap-2">
+            <button onClick={() => selectedProject && handleRenameNovel(selectedProject)} className="flex-1 rounded-lg border border-gray-200 py-1.5 text-[10px] font-bold text-gray-600 hover:bg-gray-50">Rename Novel</button>
+            <button onClick={() => selectedProject && handleDeleteNovel(selectedProject)} className="flex-1 rounded-lg border border-red-100 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">Delete Permanently</button>
+          </div>
+        </div>
       </div>
-    </>
+    </div>
   );
 
-  const driveSectionContent = (
-    <div className="space-y-2">
-      <p className="text-xs text-gray-600">{driveState.message}</p>
-      {isPhone ? (
-        <div className="flex flex-wrap gap-1">
-          <Button onClick={handleDriveConnectAction} disabled={!canConnectDrive || isConnectingDrive} className={`bg-indigo-600 hover:bg-indigo-700 ${phoneChipControlClassName}`}>{isConnectingDrive ? <Loader2 size={14} className="animate-spin mr-1" /> : <FolderOpen size={14} className="mr-1" />}{driveState.status === 'connected' ? 'Connected' : connectLabel}</Button>
-          <button onClick={() => { void handleUploadCurrentNovelToDrive(); }} disabled={driveState.status !== 'connected' || isUploadingToDrive || !selectedProjectId} className={`inline-flex items-center justify-center gap-1 border border-indigo-200 bg-indigo-50 text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isUploadingToDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudUpload size={14} />}Upload</button>
-          <button onClick={() => { void handleDownloadNovelFromDrive(); }} disabled={driveState.status !== 'connected' || isDownloadingFromDrive} className={`inline-flex items-center justify-center gap-1 border border-emerald-200 bg-emerald-50 text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 ${phoneChipControlClassName}`}>{isDownloadingFromDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}Download</button>
-        </div>
-      ) : (
-        <>
-          <Button onClick={handleDriveConnectAction} disabled={!canConnectDrive || isConnectingDrive} className="w-full bg-indigo-600 hover:bg-indigo-700">{isConnectingDrive ? <Loader2 size={14} className="animate-spin mr-2" /> : <FolderOpen size={14} className="mr-2" />}{driveState.status === 'connected' ? 'Drive Connected' : connectLabel}</Button>
-          <button onClick={() => { void handleUploadCurrentNovelToDrive(); }} disabled={driveState.status !== 'connected' || isUploadingToDrive || !selectedProjectId} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 text-sm font-semibold text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">{isUploadingToDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudUpload size={14} />}Upload Selected Folder</button>
-          <button onClick={() => { void handleDownloadNovelFromDrive(); }} disabled={driveState.status !== 'connected' || isDownloadingFromDrive} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{isDownloadingFromDrive ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}Download Folder to Local</button>
-        </>
-      )}
+  const publishingSectionContent = selectedProject ? (
+    <PublishingPanel
+      novelProjectId={selectedProject.id}
+      novelTitle={selectedProject.name}
+      chapters={(chaptersByProjectId[selectedProject.id] ?? []).map(c => ({ id: c.id, title: c.title, text: c.text || '' }))}
+      onToast={onToast}
+    />
+  ) : (
+    <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-8 text-center text-[11px] text-gray-400">
+      Select a novel to access publishing tools.
     </div>
   );
 
   const inspectorTabBarContent = (
-    <div className="grid grid-cols-4 gap-1.5 rounded-full border border-gray-200 bg-gray-100 p-1.5" data-testid="novel-tools-tabs">
+    <div className="grid grid-cols-4 gap-1 rounded-full border border-gray-200 bg-gray-100 p-1" data-testid="novel-tools-tabs">
       <button type="button" onClick={() => setMobileToolsTab('adaptation')} className={inspectorTabButtonClassName('adaptation')} data-testid="novel-tools-tab-adapt">Adapt</button>
-      <button type="button" onClick={() => setMobileToolsTab('summary')} className={inspectorTabButtonClassName('summary')} data-testid="novel-tools-tab-memory">Memory</button>
-      <button type="button" onClick={() => setMobileToolsTab('ledger')} className={inspectorTabButtonClassName('ledger')} data-testid="novel-tools-tab-ledger">Ledger</button>
-      <button type="button" onClick={() => setMobileToolsTab('drive')} className={inspectorTabButtonClassName('drive')} data-testid="novel-tools-tab-drive">Drive</button>
+      <button type="button" onClick={() => setMobileToolsTab('memory')} className={inspectorTabButtonClassName('memory')} data-testid="novel-tools-tab-memory">Memory</button>
+      <button type="button" onClick={() => setMobileToolsTab('settings')} className={inspectorTabButtonClassName('settings')} data-testid="novel-tools-tab-settings">Settings</button>
+      <button type="button" onClick={() => setMobileToolsTab('publish')} className={inspectorTabButtonClassName('publish')} data-testid="novel-tools-tab-publish">Publish</button>
     </div>
   );
 
   const inspectorTabContent = mobileToolsTab === 'adaptation'
     ? adaptationSectionContent
-    : mobileToolsTab === 'summary'
-      ? summarySectionContent
-      : mobileToolsTab === 'ledger'
-        ? ledgerSectionContent
-        : driveSectionContent;
+    : mobileToolsTab === 'memory'
+      ? memorySectionContent
+      : mobileToolsTab === 'publish'
+        ? publishingSectionContent
+        : settingsSectionContent;
 
   return (
     <div className={workspaceRootClassName} data-novel-layout={layoutMode} data-testid="novel-workspace">
@@ -1757,205 +1881,227 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
             </button>
           </div>
         </div>
-        <div className={`rounded-xl border border-indigo-100 bg-indigo-50/60 text-indigo-700 ${isPhone ? 'mb-2 px-2.5 py-1.5 text-[11px]' : 'mb-3 px-3 py-2 text-xs'}`}>
-          {boundLocalFolderName ? `Local folder: ${boundLocalFolderName}` : 'No local folder bound'}.
-          {localFolderStatus && localFolderStatus !== 'No local folder bound.' ? ` ${localFolderStatus}` : ''}
-        </div>
 
         <div className={workspaceGridClassName}>
-        <div className={`${workspaceLibraryColumnClassName} ${workspacePanelClassName} ${workspacePanelSpacingClassName} ${isPhone ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}>
-          {isPhone ? (
-            <div className="mb-1.5 rounded-xl px-0.5">
-              <div className="flex min-h-9 items-center gap-1.5">
-                <button type="button" onClick={() => toggleMobilePanel('library')} className="min-w-0 flex flex-1 items-center gap-2 text-left">
+        {/* Library Sidebar */}
+        {!isPhone && isLibraryCollapsed ? (
+          <div 
+            className="group flex w-8 flex-col items-center border-r border-gray-200 bg-gradient-to-b from-gray-50/50 to-white py-4 hover:bg-indigo-50/30 transition-all duration-300 cursor-pointer relative overflow-hidden" 
+            onClick={() => setIsLibraryCollapsed(false)}
+          >
+            <div className="absolute inset-0 bg-indigo-500/0 group-hover:bg-indigo-500/5 transition-colors" />
+            <button title="Expand library" aria-label="Expand library" className="text-gray-400 group-hover:text-indigo-600 transition-colors transform group-hover:scale-110">
+              <ChevronRight size={18} />
+            </button>
+            <div className="mt-8 flex flex-col gap-3 items-center">
+              <FolderOpen size={16} className="text-gray-400 group-hover:text-indigo-500 transition-colors" />
+              <span className="[writing-mode:vertical-lr] text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 group-hover:text-indigo-600 select-none transition-colors">Library</span>
+            </div>
+            <div className="absolute bottom-4 h-1 w-1 rounded-full bg-indigo-500 opacity-0 group-hover:opacity-100 transition-all group-hover:scale-[2]" />
+          </div>
+        ) : (
+          <div className={`${workspaceLibraryColumnClassName} ${workspacePanelClassName} ${workspacePanelSpacingClassName} ${isPhone ? '' : 'flex min-h-0 flex-col overflow-hidden relative'}`}>
+            {!isPhone && (
+              <button
+                onClick={() => setIsLibraryCollapsed(true)}
+                className="absolute right-2 top-4 text-gray-400 hover:text-indigo-600 transition-colors p-1"
+                aria-label="Collapse Library"
+              >
+                <ChevronLeft size={16} />
+              </button>
+            )}
+            {isPhone ? (
+              <div className="mb-1.5 rounded-xl px-0.5">
+                <div className="flex min-h-9 items-center gap-1.5">
+                  <button type="button" onClick={() => toggleMobilePanel('library')} className="min-w-0 flex flex-1 items-center gap-2 text-left">
+                    <FolderOpen size={16} className="shrink-0 text-indigo-600" />
+                    <div className="min-w-0">
+                      <h3 className="truncate text-xs font-bold text-gray-800">Library</h3>
+                      <p className="truncate text-[10px] text-gray-500">
+                        {selectedProject?.name || 'No novel selected'}
+                        {selectedChapter ? ` / ${selectedChapter.title}` : ''}
+                      </p>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleMobilePanel('library')}
+                    className="inline-flex min-h-9 w-7 items-center justify-center rounded-full text-gray-500"
+                    aria-label={mobilePanelOpen.library ? 'Collapse library' : 'Expand library'}
+                  >
+                    {mobilePanelOpen.library ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </button>
+                </div>
+                <div className={`mt-1.5 flex items-center gap-1 ${isTightPhone ? 'flex-col items-stretch' : ''}`}>
+                  <div className="grid flex-1 grid-cols-2 gap-1 rounded-full border border-gray-200 bg-gray-100 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setMobileLibraryTab('novel')}
+                      className={`min-h-8 rounded-full px-2 text-[10px] font-semibold transition-colors ${
+                        mobileLibraryTab === 'novel' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600'
+                      }`}
+                    >
+                      Novel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMobileLibraryTab('chapter')}
+                      className={`min-h-8 rounded-full px-2 text-[10px] font-semibold transition-colors ${
+                        mobileLibraryTab === 'chapter' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600'
+                      }`}
+                    >
+                      Chapter
+                    </button>
+                  </div>
+                  <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+                    {novelCountLabel}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+            {!isPhone && (
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="min-w-0 items-center gap-2 flex">
                   <FolderOpen size={16} className="shrink-0 text-indigo-600" />
                   <div className="min-w-0">
-                    <h3 className="truncate text-xs font-bold text-gray-800">Library</h3>
-                    <p className="truncate text-[10px] text-gray-500">
+                    <h3 className="truncate text-sm font-bold text-gray-800">Library</h3>
+                    <p className="truncate text-[11px] text-gray-500">
                       {selectedProject?.name || 'No novel selected'}
                       {selectedChapter ? ` / ${selectedChapter.title}` : ''}
                     </p>
                   </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => toggleMobilePanel('library')}
-                  className="inline-flex min-h-9 w-7 items-center justify-center rounded-full text-gray-500"
-                  aria-label={mobilePanelOpen.library ? 'Collapse library' : 'Expand library'}
-                >
-                  {mobilePanelOpen.library ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                </button>
-              </div>
-              <div className={`mt-1.5 flex items-center gap-1 ${isTightPhone ? 'flex-col items-stretch' : ''}`}>
-                <div className="grid flex-1 grid-cols-2 gap-1 rounded-full border border-gray-200 bg-gray-100 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setMobileLibraryTab('novel')}
-                    className={`min-h-8 rounded-full px-2 text-[10px] font-semibold transition-colors ${
-                      mobileLibraryTab === 'novel' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600'
-                    }`}
-                    aria-selected={mobileLibraryTab === 'novel'}
-                  >
-                    Novel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMobileLibraryTab('chapter')}
-                    className={`min-h-8 rounded-full px-2 text-[10px] font-semibold transition-colors ${
-                      mobileLibraryTab === 'chapter' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600'
-                    }`}
-                    aria-selected={mobileLibraryTab === 'chapter'}
-                  >
-                    Chapter
-                  </button>
                 </div>
                 <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500">
                   {novelCountLabel}
                 </span>
               </div>
-            </div>
-          ) : null}
-          {!isPhone && (
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <FolderOpen size={16} className="shrink-0 text-indigo-600" />
-                <div className="min-w-0">
-                  <h3 className="truncate text-sm font-bold text-gray-800">Library</h3>
-                  <p className="truncate text-[11px] text-gray-500">
-                    {selectedProject?.name || 'No novel selected'}
-                    {selectedChapter ? ` / ${selectedChapter.title}` : ''}
-                  </p>
-                </div>
+            )}
+            {!isPhone && (
+              <div className="grid grid-cols-2 gap-1.5 rounded-full border border-gray-200 bg-gray-100 p-1.5" data-testid="novel-library-tabs">
+                <button
+                  type="button"
+                  onClick={() => setMobileLibraryTab('novel')}
+                  className={libraryTabButtonClassName('novel')}
+                >
+                  Novel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileLibraryTab('chapter')}
+                  className={libraryTabButtonClassName('chapter')}
+                >
+                  Chapter
+                </button>
               </div>
-              <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500">
-                {novelCountLabel}
-              </span>
-            </div>
-          )}
-          {!isPhone && (
-            <div className="grid grid-cols-2 gap-1.5 rounded-full border border-gray-200 bg-gray-100 p-1.5" data-testid="novel-library-tabs">
-              <button
-                type="button"
-                onClick={() => setMobileLibraryTab('novel')}
-                className={libraryTabButtonClassName('novel')}
-                aria-selected={mobileLibraryTab === 'novel'}
-              >
-                Novel
-              </button>
-              <button
-                type="button"
-                onClick={() => setMobileLibraryTab('chapter')}
-                className={libraryTabButtonClassName('chapter')}
-                aria-selected={mobileLibraryTab === 'chapter'}
-              >
-                Chapter
-              </button>
-            </div>
-          )}
-          <div className={isPhone ? '' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1'}>
-            {(!isPhone || mobilePanelOpen.library) && (
-              <>
-              {showNovelLibraryControls && (
+            )}
+            <div className={isPhone ? '' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1'}>
+              {(!isPhone || mobilePanelOpen.library) && (
                 <>
-                  <div>
-                    <label className={`block mb-1 ${isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}`}>Create Novel</label>
-                    <div className={`flex flex-col sm:flex-row ${isPhone ? 'gap-1.5' : 'gap-2'}`}>
-                      <input
-                        value={newProjectName}
-                        onChange={(e) => setNewProjectName(e.target.value)}
-                        placeholder="Novel name"
-                        className={`flex-1 border border-gray-200 bg-gray-50 outline-none ${isPhone ? phoneInputClassName : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-3 text-sm'}`}
-                      />
-                      <button
-                        onClick={handleCreateNovel}
-                        className={`inline-flex items-center justify-center gap-1.5 bg-indigo-600 font-semibold text-white hover:bg-indigo-700 sm:min-w-11 ${isPhone ? `${phoneChipControlClassName} px-3` : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-4 text-sm'}`}
-                        aria-label="Create novel"
-                      >
-                        <Plus size={16} className="shrink-0" />
-                        <span className="sm:hidden">Create novel</span>
-                      </button>
-                    </div>
-                  </div>
-                  <div className={`max-h-56 overflow-y-auto custom-scrollbar ${isPhone ? 'space-y-1' : 'space-y-1.5'}`}>
-                    {projects.length === 0 && <p className="text-xs text-gray-500">No local novels yet.</p>}
-                    {projects.map((project) => (
-                      <div key={project.id} className={`${isPhone ? 'p-2 rounded-xl' : 'p-2.5 rounded-xl'} border ${selectedProjectId === project.id ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
-                        <div className="flex items-center justify-between gap-2">
+                  {showNovelLibraryControls && (
+                    <>
+                      <div>
+                        <label className={`block mb-1 ${isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}`}>Create Novel</label>
+                        <div className={`flex flex-col sm:flex-row ${isPhone ? 'gap-1.5' : 'gap-2'}`}>
+                          <input
+                            value={newProjectName}
+                            onChange={(e) => setNewProjectName(e.target.value)}
+                            placeholder="Novel name"
+                            className={`flex-1 border border-gray-200 bg-gray-50 outline-none ${isPhone ? phoneInputClassName : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-3 text-sm'}`}
+                          />
                           <button
-                            type="button"
-                            onClick={() => setSelectedProjectId(project.id)}
-                            className={`min-w-0 flex-1 rounded-lg px-2 text-left font-semibold text-gray-800 truncate ${isPhone ? 'min-h-9 text-xs' : 'min-h-11 text-sm'}`}
+                            onClick={handleCreateNovel}
+                            className={`inline-flex items-center justify-center gap-1.5 bg-indigo-600 font-semibold text-white hover:bg-indigo-700 sm:min-w-11 ${isPhone ? `${phoneChipControlClassName} px-3` : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-4 text-sm'}`}
+                            aria-label="Create novel"
                           >
-                            {project.name}
+                            <Plus size={16} className="shrink-0" />
+                            <span className="sm:hidden">Create novel</span>
                           </button>
-                          <div className="flex gap-1">
-                            <button onClick={() => handleRenameNovel(project)} className={`${compactActionButtonClassName} bg-gray-100 text-gray-600 hover:bg-gray-200`}>Rename</button>
-                            <button onClick={() => handleDeleteNovel(project)} className={`${compactActionButtonClassName} bg-red-50 text-red-700 hover:bg-red-100`} aria-label={`Delete novel ${project.name}`}><Trash2 size={13} /></button>
-                          </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                      <div className={`max-h-56 overflow-y-auto custom-scrollbar ${isPhone ? 'space-y-1' : 'space-y-1.5'}`}>
+                        {projects.length === 0 && <p className="text-xs text-gray-500">No local novels yet.</p>}
+                        {projects.map((project) => (
+                          <div key={project.id} className={`${isPhone ? 'p-2 rounded-xl' : 'p-2.5 rounded-xl'} border ${selectedProjectId === project.id ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedProjectId(project.id)}
+                                className={`min-w-0 flex-1 rounded-lg px-2 text-left font-semibold text-gray-800 truncate ${isPhone ? 'min-h-9 text-xs' : 'min-h-11 text-sm'}`}
+                              >
+                                {project.name}
+                              </button>
+                              <div className="flex gap-1">
+                                <button onClick={() => handleRenameNovel(project)} className={`${compactActionButtonClassName} bg-gray-100 text-gray-600 hover:bg-gray-200`}>Rename</button>
+                                <button onClick={() => handleDeleteNovel(project)} className={`${compactActionButtonClassName} bg-red-50 text-red-700 hover:bg-red-100`} aria-label={`Delete novel ${project.name}`}><Trash2 size={13} /></button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {showChapterLibraryControls && (
+                    selectedProjectId ? (
+                      <div>
+                        <label className={`block mb-1 ${isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}`}>Create Chapter</label>
+                        <div className={`flex flex-col sm:flex-row ${isPhone ? 'gap-1.5' : 'gap-2'}`}>
+                          <input
+                            value={newChapterTitle}
+                            onChange={(e) => setNewChapterTitle(e.target.value)}
+                            placeholder="Chapter title"
+                            className={`flex-1 border border-gray-200 bg-gray-50 outline-none ${isPhone ? phoneInputClassName : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-3 text-sm'}`}
+                          />
+                          <button
+                            onClick={handleCreateChapter}
+                            className={`inline-flex items-center justify-center gap-1.5 bg-emerald-600 font-semibold text-white hover:bg-emerald-700 sm:min-w-11 ${isPhone ? `${phoneChipControlClassName} px-3` : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-4 text-sm'}`}
+                            aria-label="Create chapter"
+                          >
+                            <Plus size={16} className="shrink-0" />
+                            <span className="sm:hidden">Create chapter</span>
+                          </button>
+                        </div>
+                        <div className={`mt-2.5 max-h-44 overflow-y-auto custom-scrollbar ${isPhone ? 'space-y-1' : 'space-y-1.5'}`}>
+                          {chapters.length === 0 && <p className="text-xs text-gray-500">No local chapters yet.</p>}
+                          {chapters.map((chapter) => {
+                            const state = selectedStateMap.get(chapter.id)?.status || chapter.adaptationStatus || 'idle';
+                            return (
+                              <div key={chapter.id} className="flex items-center gap-1.5">
+                                <button onClick={() => setSelectedChapterId(chapter.id)} className={`flex-1 rounded-lg border text-left text-xs font-semibold ${isPhone ? 'min-h-9 p-2' : 'min-h-11 p-3'} ${chapter.id === selectedChapterId ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-white text-gray-700'}`}>
+                                  <div className="truncate">{chapter.name}</div>
+                                  <div className="text-[10px] text-gray-500 mt-1">{state}</div>
+                                </button>
+                                <button onClick={() => handleDeleteChapter(chapter)} className={`inline-flex items-center justify-center border border-red-100 bg-red-50 text-red-700 hover:bg-red-100 ${isPhone ? 'min-h-9 min-w-9 rounded-full px-2.5' : 'min-h-11 min-w-11 rounded-lg px-3'}`} aria-label={`Delete chapter ${chapter.name}`}><Trash2 size={14} /></button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-500">
+                        Create a novel first to unlock chapter controls.
+                      </p>
+                    )
+                  )}
                 </>
               )}
-              {showChapterLibraryControls && (
-                selectedProjectId ? (
-                  <div>
-                    <label className={`block mb-1 ${isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}`}>Create Chapter</label>
-                    <div className={`flex flex-col sm:flex-row ${isPhone ? 'gap-1.5' : 'gap-2'}`}>
-                      <input
-                        value={newChapterTitle}
-                        onChange={(e) => setNewChapterTitle(e.target.value)}
-                        placeholder="Chapter title"
-                        className={`flex-1 border border-gray-200 bg-gray-50 outline-none ${isPhone ? phoneInputClassName : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-3 text-sm'}`}
-                      />
-                      <button
-                        onClick={handleCreateChapter}
-                        className={`inline-flex items-center justify-center gap-1.5 bg-emerald-600 font-semibold text-white hover:bg-emerald-700 sm:min-w-11 ${isPhone ? `${phoneChipControlClassName} px-3` : isTablet ? 'min-h-10 rounded-xl px-3 text-xs' : 'min-h-11 rounded-xl px-4 text-sm'}`}
-                        aria-label="Create chapter"
-                      >
-                        <Plus size={16} className="shrink-0" />
-                        <span className="sm:hidden">Create chapter</span>
-                      </button>
-                    </div>
-                    <div className={`mt-2.5 max-h-44 overflow-y-auto custom-scrollbar ${isPhone ? 'space-y-1' : 'space-y-1.5'}`}>
-                      {chapters.length === 0 && <p className="text-xs text-gray-500">No local chapters yet.</p>}
-                      {chapters.map((chapter) => {
-                        const state = selectedStateMap.get(chapter.id)?.status || chapter.adaptationStatus || 'idle';
-                        return (
-                          <div key={chapter.id} className="flex items-center gap-1.5">
-                            <button onClick={() => setSelectedChapterId(chapter.id)} className={`flex-1 rounded-lg border text-left text-xs font-semibold ${isPhone ? 'min-h-9 p-2' : 'min-h-11 p-3'} ${chapter.id === selectedChapterId ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-white text-gray-700'}`}>
-                              <div className="truncate">{chapter.name}</div>
-                              <div className="text-[10px] text-gray-500 mt-1">{state}</div>
-                            </button>
-                            <button onClick={() => handleDeleteChapter(chapter)} className={`inline-flex items-center justify-center border border-red-100 bg-red-50 text-red-700 hover:bg-red-100 ${isPhone ? 'min-h-9 min-w-9 rounded-full px-2.5' : 'min-h-11 min-w-11 rounded-lg px-3'}`} aria-label={`Delete chapter ${chapter.name}`}><Trash2 size={14} /></button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-500">
-                    Create a novel first to unlock chapter controls.
-                  </p>
-                )
-              )}
-            </>
-          )}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className={`${workspaceEditorColumnClassName} bg-white ${isPhone ? 'rounded-xl' : 'rounded-2xl'} border border-gray-200 flex min-h-0 flex-col overflow-hidden`}>
+        {/* Editor Main Column */}
+        <div className={`${workspaceEditorColumnClassName} bg-white ${isPhone ? 'rounded-xl' : 'rounded-2xl'} border border-gray-200 flex min-h-0 flex-col overflow-hidden relative shadow-sm`}>
+          {!isPhone && selectedChapterId && (
+            <div className="absolute top-2.5 right-40 z-10">
+              <ProofreadCluster isBusy={isAdapting} onProofread={handleProofread} />
+            </div>
+          )}
           <div className={workspaceEditorHeaderClassName}>
             <div className="min-w-0">
               <p className={isPhone ? phoneSectionTitleClassName : 'text-xs font-bold text-gray-500 uppercase'}>Editor</p>
               <p className={`${isPhone ? 'text-xs' : 'text-sm'} font-semibold text-gray-800 truncate`}>{selectedProject?.name || 'No novel selected'} {selectedChapter ? ` / ${selectedChapter.title}` : ''}</p>
               {!isPhone && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  <span
-                    className={cacheBadgeClassName}
-                    title="Saved in browser cache. Clearing browser storage removes this workspace."
-                  >
+                  <span className={cacheBadgeClassName} title="Saved in browser cache. Clearing browser storage removes this workspace.">
                     Browser cache autosave
                   </span>
                   <span className="rounded-full border border-gray-200 bg-white px-3 py-0.5 text-[10px] font-semibold text-gray-500">
@@ -1967,56 +2113,22 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
             <div className="flex flex-wrap items-center justify-end gap-1.5">
               {!isPhone && (
                 <div className="flex items-center rounded-full border border-gray-200 bg-white p-1 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
-                  <button
-                    type="button"
-                    onClick={goToPreviousChapter}
-                    disabled={!hasPreviousChapter}
-                    className={headerSegmentButtonClassName}
-                    data-testid="novel-workspace-back"
-                    aria-label="Previous chapter"
-                  >
-                    <ChevronLeft size={14} />
-                    Back
+                  <button type="button" onClick={goToPreviousChapter} disabled={!hasPreviousChapter} className={headerSegmentButtonClassName} aria-label="Previous chapter" data-testid="novel-workspace-back">
+                    <ChevronLeft size={14} /> Back
                   </button>
-                  <button
-                    type="button"
-                    onClick={goToNextChapter}
-                    disabled={!hasNextChapter}
-                    className={headerSegmentButtonClassName}
-                    data-testid="novel-workspace-forward"
-                    aria-label="Next chapter"
-                  >
-                    <ChevronRight size={14} />
-                    Forward
+                  <button type="button" onClick={goToNextChapter} disabled={!hasNextChapter} className={headerSegmentButtonClassName} aria-label="Next chapter" data-testid="novel-workspace-forward">
+                    <ChevronRight size={14} /> Forward
                   </button>
                 </div>
               )}
-              <button
-                onClick={handleManualSave}
-                disabled={!selectedChapterId}
-                className={headerPrimaryActionButtonClassName}
-                data-testid="novel-workspace-save"
-              >
-                <Save size={14} />
-                Save
+              <button onClick={handleManualSave} disabled={!selectedChapterId} className={headerPrimaryActionButtonClassName}>
+                <Save size={14} /> Save
               </button>
             </div>
           </div>
           <div className={workspaceEditorTabsClassName} data-testid="novel-editor-tabs">
-            <button
-              type="button"
-              onClick={() => setMobileEditorPane('source')}
-              className={`rounded-full px-3 font-semibold transition-colors ${mobileEditorPane === 'source' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
-            >
-              Source
-            </button>
-            <button
-              type="button"
-              onClick={() => setMobileEditorPane('adapted')}
-              className={`rounded-full px-3 font-semibold transition-colors ${mobileEditorPane === 'adapted' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}
-            >
-              Adapted
-            </button>
+            <button type="button" onClick={() => setMobileEditorPane('source')} className={`rounded-full px-3 font-semibold transition-colors ${mobileEditorPane === 'source' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}>Source</button>
+            <button type="button" onClick={() => setMobileEditorPane('adapted')} className={`rounded-full px-3 font-semibold transition-colors ${mobileEditorPane === 'adapted' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'} ${isPhone ? 'min-h-8 text-[10px]' : 'min-h-11 text-sm'}`}>Adapted</button>
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
             <div className={`flex min-h-0 flex-1 flex-col border-gray-100 ${mobileEditorPane !== 'source' ? 'hidden' : ''}`}>
@@ -2037,64 +2149,76 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
               )}
             </div>
             <div className={workspaceEditorFooterActionsClassName}>
-              <button
-                onClick={() => sendEditorTextToStudio('source')}
-                disabled={!chapterText.trim()}
-                className={`${compactActionButtonClassName} border border-indigo-200 text-indigo-700`}
-              >
-                Send Source to Studio
-              </button>
-              <button
-                onClick={() => sendEditorTextToStudio('adapted')}
-                disabled={!adaptedOutput.trim()}
-                className={`${compactActionButtonClassName} border border-indigo-200 text-indigo-700`}
-              >
-                Send Adapted to Studio
-              </button>
+              <button onClick={() => sendEditorTextToStudio('source')} disabled={!chapterText.trim()} className={`${compactActionButtonClassName} border border-indigo-200 text-indigo-700`}>Send Source to Studio</button>
+              <button onClick={() => sendEditorTextToStudio('adapted')} disabled={!adaptedOutput.trim()} className={`${compactActionButtonClassName} border border-indigo-200 text-indigo-700`}>Send Adapted to Studio</button>
               <button onClick={applyAdaptedToEditor} disabled={!adaptedOutput.trim()} className={`${compactActionButtonClassName} border border-gray-200 text-gray-700`}>Replace Source</button>
               <button onClick={saveAdaptedAsNewChapter} disabled={!adaptedOutput.trim()} className={`${compactActionButtonClassName} border border-emerald-200 text-emerald-700`}>Save Adapted as Chapter</button>
             </div>
           </div>
         </div>
 
-        <div className={`${workspaceSupportColumnClassName} ${isPhone ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}>
-          {isPhone ? (
-            <div className={`${workspacePanelClassName} flex min-h-0 flex-col overflow-hidden`}>
-              <button type="button" onClick={() => setMobileToolsOpen((previous) => !previous)} className={sectionToggleButtonClassName} data-testid="novel-tools-toggle">
-                <div className="flex items-center gap-1.5">
-                  <Wand2 size={15} className="text-indigo-600" />
-                  <h3 className="text-xs font-bold text-gray-800">Tools</h3>
-                </div>
-                {mobileToolsOpen ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+        {/* Inspector Sidebar */}
+        {!isPhone && isInspectorCollapsed ? (
+          <div 
+            className="group flex w-8 flex-col items-center border-l border-gray-200 bg-gradient-to-b from-gray-50/50 to-white py-4 hover:bg-indigo-50/30 transition-all duration-300 cursor-pointer relative overflow-hidden" 
+            onClick={() => setIsInspectorCollapsed(false)}
+          >
+            <div className="absolute inset-0 bg-indigo-500/0 group-hover:bg-indigo-500/5 transition-colors" />
+            <button title="Expand tools" aria-label="Expand tools" className="text-gray-400 group-hover:text-indigo-600 transition-colors transform group-hover:scale-110">
+              <ChevronLeft size={18} />
+            </button>
+            <div className="mt-8 flex flex-col gap-3 items-center">
+              <Wand2 size={16} className="text-gray-400 group-hover:text-indigo-500 transition-colors" />
+              <span className="[writing-mode:vertical-lr] text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 group-hover:text-indigo-600 select-none transition-colors">Inspector</span>
+            </div>
+            <div className="absolute bottom-4 h-1 w-1 rounded-full bg-indigo-500 opacity-0 group-hover:opacity-100 transition-all group-hover:scale-[2]" />
+          </div>
+        ) : (
+          <div className={`${workspaceSupportColumnClassName} ${isPhone ? '' : 'flex min-h-0 flex-col overflow-hidden relative'}`}>
+            {!isPhone && (
+              <button onClick={() => setIsInspectorCollapsed(true)} className="absolute left-2 top-4 text-gray-400 hover:text-indigo-600 transition-colors p-1" aria-label="Collapse Inspector">
+                <MoreHorizontal size={16} className="rotate-90" />
               </button>
-              {mobileToolsOpen && (
-                <>
-                  {inspectorTabBarContent}
-                  <div className="mt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
-                    {inspectorTabContent}
+            )}
+            {isPhone ? (
+              <div className={`${workspacePanelClassName} flex min-h-0 flex-col overflow-hidden`}>
+                <button type="button" onClick={() => setMobileToolsOpen((prev) => !prev)} className={sectionToggleButtonClassName}>
+                  <div className="flex items-center gap-1.5">
+                    <Wand2 size={15} className="text-indigo-600" />
+                    <h3 className="text-xs font-bold text-gray-800">Tools</h3>
                   </div>
-                </>
-              )}
-            </div>
-          ) : (
-            <div className={`${workspacePanelClassName} flex min-h-0 flex-col overflow-hidden`}>
-              <div className="mb-2 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <Wand2 size={16} className="text-indigo-600" />
-                    <h3 className="text-sm font-bold text-gray-800">Inspector</h3>
+                  {mobileToolsOpen ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                </button>
+                {mobileToolsOpen && (
+                  <>
+                    {inspectorTabBarContent}
+                    <div className="mt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
+                      {inspectorTabContent}
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className={`${workspacePanelClassName} flex min-h-0 flex-col overflow-hidden`}>
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Wand2 size={16} className="text-indigo-600" />
+                      <h3 className="text-sm font-bold text-gray-800">Inspector</h3>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-gray-500">Adaptation, memory, ledger, and drive.</p>
                   </div>
-                  <p className="mt-0.5 text-[11px] text-gray-500">Adaptation, memory, ledger, and drive.</p>
                 </div>
-              </div>
-              {inspectorTabBarContent}
-              <div className="mt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
-                {inspectorTabContent}
-              </div>
-            </div>
-          )}
-        </div>
+                {inspectorTabBarContent}
+                <div className="mt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
+                  {inspectorTabContent}
+                </div>
+             </div>
+            )}
+          </div>
+        )}
       </div>
+
       {isImportModalOpen && (
         <div
           className={`vf-scrim vf-scrim--modal fixed inset-0 z-[90] flex ${isPhone ? 'items-stretch justify-stretch p-0' : 'items-center justify-center p-4'} lg:left-64 lg:p-6`}
@@ -2108,55 +2232,106 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
             className={`w-full border border-gray-200 bg-white shadow-xl ${isPhone ? 'flex h-full max-w-none flex-col rounded-none border-x-0 border-y-0 p-4' : 'max-w-3xl rounded-2xl p-4'}`}
           >
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-lg font-bold text-gray-800">Import Novel File(s)</h3>
-                  <button onClick={() => { setIsImportModalOpen(false); resetImportState(); }} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-gray-200 px-4 text-sm font-semibold text-gray-600 hover:bg-gray-50" aria-label="Close import dialog">Close</button>
-                </div>
+              <h3 className="text-lg font-bold text-gray-800">Import Novel File(s)</h3>
+              <button
+                onClick={() => { setIsImportModalOpen(false); resetImportState(); }}
+                className="inline-flex min-h-11 items-center justify-center rounded-lg border border-gray-200 px-4 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                aria-label="Close import dialog"
+              >
+                Close
+              </button>
+            </div>
+            
             <div className={isPhone ? 'min-h-0 flex-1 overflow-y-auto pr-1' : ''}>
-            <div className="mb-2">
-              <UploadDropzone
-                accept=".txt,.pdf,.png,.jpg,.jpeg,.webp"
-                multiple
-                files={importFiles}
-                onFilesSelected={(incoming) => addImportFiles(incoming)}
-                label="Drag and drop files here"
-                hint="TXT, PDF, PNG, JPG, JPEG, WEBP"
-                dragLabel="Drop files to import"
-                className="min-h-[96px] flex items-center justify-center"
-              />
+              <div className="mb-2">
+                <UploadDropzone
+                  accept=".txt,.pdf,.png,.jpg,.jpeg,.webp"
+                  multiple
+                  files={importFiles}
+                  onFilesSelected={(incoming) => addImportFiles(incoming)}
+                  label="Drag and drop files here"
+                  hint="TXT, PDF, PNG, JPG, JPEG, WEBP"
+                  dragLabel="Drop files to import"
+                  className="min-h-[96px] flex items-center justify-center"
+                />
+                
+                {importFiles.length > 0 && (
+                  <div className="mt-2 max-h-24 space-y-1 overflow-y-auto custom-scrollbar">
+                    {importFiles.map((file) => (
+                      <div key={`${file.name}_${file.size}_${file.lastModified}`} className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-2 py-1">
+                        <span className="truncate text-[11px] text-gray-700">{file.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setImportFiles((prev) => prev.filter((item) => !(item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)))}
+                          className="ml-2 text-[11px] font-semibold text-red-600 hover:text-red-700"
+                          aria-label={`Remove ${file.name}`}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <div className="mb-2 flex flex-col gap-2 sm:flex-row">
+                <button
+                  onClick={() => { void handleExtractImport(); }}
+                  disabled={importFiles.length === 0 || isImportExtracting || isImportSplitting}
+                  className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {isImportExtracting ? 'Extracting...' : 'Extract + Auto Split'}
+                </button>
+                <button
+                  onClick={handleApplyImportChapters}
+                  disabled={importPreviewChapters.length === 0 || !selectedProjectId}
+                  className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  Create Chapters
+                </button>
+              </div>
+              
               {importFiles.length > 0 && (
-                <div className="mt-2 max-h-24 space-y-1 overflow-y-auto custom-scrollbar">
-                  {importFiles.map((file) => (
-                    <div key={`${file.name}_${file.size}_${file.lastModified}`} className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-2 py-1">
-                      <span className="truncate text-[11px] text-gray-700">{file.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => setImportFiles((previous) => previous.filter((item) => !(item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)))}
-                        className="ml-2 text-[11px] font-semibold text-red-600 hover:text-red-700"
-                        aria-label={`Remove ${file.name}`}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+                <div className="text-[11px] text-gray-500 mb-2">{importFiles.length} file(s) selected</div>
+              )}
+              
+              {importDiagnostics && (
+                <div className="text-xs text-indigo-700 mb-2">
+                  Mode: {importDiagnostics.mode} | AI fallback: {importDiagnostics.usedAiFallback ? 'Yes' : 'No'}
                 </div>
               )}
-            </div>
-            <div className="mb-2 flex flex-col gap-2 sm:flex-row">
-              <button onClick={() => { void handleExtractImport(); }} disabled={importFiles.length === 0 || isImportExtracting || isImportSplitting} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 disabled:opacity-50">{isImportExtracting ? 'Extracting...' : 'Extract + Auto Split'}</button>
-              <button onClick={handleApplyImportChapters} disabled={importPreviewChapters.length === 0 || !selectedProjectId} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50">Create Chapters</button>
-            </div>
-            {importFiles.length > 0 && <div className="text-[11px] text-gray-500 mb-2">{importFiles.length} file(s) selected</div>}
-            {importDiagnostics && <div className="text-xs text-indigo-700 mb-2">Mode: {importDiagnostics.mode} | AI fallback: {importDiagnostics.usedAiFallback ? 'Yes' : 'No'}</div>}
-            <textarea value={importRawText} onChange={(e) => setImportRawText(e.target.value)} className="w-full h-40 p-2 border border-gray-200 rounded-xl text-xs mb-2" />
-            <div className="space-y-2 max-h-44 overflow-y-auto custom-scrollbar">
-              {importPreviewChapters.map((chapter) => (
-                <div key={chapter.id} className="p-2 border border-gray-200 rounded-lg bg-gray-50">
-                  {chapter.sourceFileName && <div className="mb-1 text-[10px] font-semibold text-gray-500">{chapter.sourceFileName}</div>}
-                  <input value={chapter.title} onChange={(e) => setImportPreviewChapters((prev) => prev.map((row) => row.id === chapter.id ? { ...row, title: e.target.value } : row))} className="w-full p-1.5 border border-gray-200 rounded text-xs mb-1" />
-                  <textarea value={chapter.text} onChange={(e) => setImportPreviewChapters((prev) => prev.map((row) => row.id === chapter.id ? { ...row, text: e.target.value } : row))} className="w-full h-20 p-1.5 border border-gray-200 rounded text-xs" />
-                </div>
-              ))}
-            </div>
+              
+              <textarea
+                value={importRawText}
+                onChange={(e) => setImportRawText(e.target.value)}
+                title="Import raw text"
+                aria-label="Import raw text"
+                className="w-full h-40 p-2 border border-gray-200 rounded-xl text-xs mb-2"
+              />
+              
+              <div className="space-y-2 max-h-44 overflow-y-auto custom-scrollbar">
+                {importPreviewChapters.map((chapter) => (
+                  <div key={chapter.id} className="p-2 border border-gray-200 rounded-lg bg-gray-50">
+                    {chapter.sourceFileName && (
+                      <div className="mb-1 text-[10px] font-semibold text-gray-500">{chapter.sourceFileName}</div>
+                    )}
+                    <input
+                      value={chapter.title}
+                      onChange={(e) => setImportPreviewChapters((prev) => prev.map((row) => row.id === chapter.id ? { ...row, title: e.target.value } : row))}
+                      title="Chapter title"
+                      aria-label="Chapter title"
+                      className="w-full p-1.5 border border-gray-200 rounded text-xs mb-1"
+                    />
+                    <textarea
+                      value={chapter.text}
+                      onChange={(e) => setImportPreviewChapters((prev) => prev.map((row) => row.id === chapter.id ? { ...row, text: e.target.value } : row))}
+                      title="Chapter text"
+                      aria-label="Chapter text"
+                      className="w-full h-20 p-1.5 border border-gray-200 rounded text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

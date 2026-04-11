@@ -258,7 +258,7 @@ const runBackendPreflight = async () => {
   const checks = [];
   const targets = [
     { name: 'health', url: `${MEDIA_BACKEND_URL}/health` },
-    { name: 'enginesStatus', url: `${MEDIA_BACKEND_URL}/tts/engines/status` },
+    { name: 'queueMetrics', url: `${MEDIA_BACKEND_URL}/admin/tts/queue/metrics` },
   ];
 
   for (const target of targets) {

@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, BookOpen, Key, Loader2, MessageSquareText, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
+import { Activity, Key, Loader2, MessageSquareText, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { useAdminCoupons } from '../src/features/admin/hooks/useAdminCoupons';
 import { useAdminUsers } from '../src/features/admin/hooks/useAdminUsers';
@@ -10,6 +10,7 @@ import {
   type AdminRoleAssignment,
   type AdminRoleCatalogPayload,
   type AdminUserSummary,
+  type AdminUserVcGrantRecord,
   clearAdminUnlockToken,
   type AlertDestination,
   type AlertEvent,
@@ -114,7 +115,6 @@ import {
   type AdminDataSection,
   type OpsTab,
 } from '../src/features/admin/model/loadPlan';
-import { AdminReaderLibraryPanel } from '../src/features/admin/components/AdminReaderLibraryPanel';
 import {
   getAudioMetadataProvenanceEntries,
   isRbacGuardError,
@@ -405,6 +405,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     isLoadingUsers,
     reloadUsers,
     patchAdminUser,
+    fetchAdminUserVcGrants,
+    grantAdminUserVc,
     resetAdminUserPassword,
     revokeAdminUserSessions,
     deleteAdminUser,
@@ -420,6 +422,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [search, setSearch] = useState('');
   const [isSaving, setIsSaving] = useState('');
   const [userDrafts, setUserDrafts] = useState<Record<string, AdminUserDraft>>({});
+  const [vcGrantInputs, setVcGrantInputs] = useState<Record<string, { amount: string; note: string }>>({});
+  const [vcGrantHistoryByUid, setVcGrantHistoryByUid] = useState<Record<string, AdminUserVcGrantRecord[]>>({});
   const [couponTab, setCouponTab] = useState<CouponKind>('wallet_credit');
   const [newCouponCode, setNewCouponCode] = useState('');
   const [newCouponCredit, setNewCouponCredit] = useState('1000');
@@ -1596,7 +1600,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const adminUnlockTokenPresent = Boolean(getAdminUnlockToken());
   const adminUnlockActive = Boolean(adminUnlockStatus?.isUnlocked) && adminUnlockTokenPresent;
   const canMutateBroadcastNotices = canSupportReply && (!adminUnlockRequired || adminUnlockTokenPresent);
-  const canManageReaderLibrary = canUseAdminUnlock && (!adminUnlockRequired || adminUnlockTokenPresent);
   const currentActorUid = String(currentActorAssignment?.uid || user?.uid || '').trim();
   const activeSuperAdminCount = useMemo(
     () => rbacAssignments.filter((assignment) => String(assignment.role || '').trim().toLowerCase() === 'super_admin' && String(assignment.status || '').trim().toLowerCase() === 'active').length,
@@ -1820,6 +1823,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const loadUserVcGrantHistory = async (uid: string) => {
+    await withSaving(`vc_history_${uid}`, async () => {
+      const items = await fetchAdminUserVcGrants(uid, { limit: 8 });
+      setVcGrantHistoryByUid((previous) => ({ ...previous, [uid]: items }));
+    }, 'Failed to load VC grant history.');
+  };
+
+  const handleGrantUserVc = async (row: AdminUserSummary) => {
+    const draft = vcGrantInputs[row.uid] || { amount: '', note: '' };
+    const amount = Number(draft.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      onToast('Enter a VC amount greater than 0.', 'info');
+      return;
+    }
+    await withSaving(`vc_grant_${row.uid}`, async () => {
+      const requestId = `admin_vc_grant_${row.uid}_${Date.now()}`;
+      const payload = await grantAdminUserVc(row.uid, {
+        amount,
+        requestId,
+        ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+      });
+      setVcGrantInputs((previous) => ({
+        ...previous,
+        [row.uid]: { amount: '', note: '' },
+      }));
+      setVcGrantHistoryByUid((previous) => ({
+        ...previous,
+        [row.uid]: payload.items,
+      }));
+      await reloadUsersSafely(search);
+      await onRefreshEntitlements();
+      onToast(`Granted ${amount.toLocaleString()} VC to ${row.email || row.uid}.`, 'success');
+    }, 'Failed to grant VC.');
+  };
+
   const filteredCoupons = useMemo(
     () => coupons.filter((coupon) => normalizeType(coupon.couponType) === couponTab),
     [coupons, couponTab]
@@ -1995,7 +2033,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             ['unlock', 'Unlock', <Key size={13} key="unlock-icon" />],
             ['users', 'Users', <Users size={13} key="users-icon" />],
             ['messages', 'Messages', <MessageSquareText size={13} key="messages-icon" />],
-            ['readerLibrary', 'Reader Library', <BookOpen size={13} key="reader-library-icon" />],
             ['pools', 'Primary AI Pool', <Key size={13} key="pools-icon" />],
             ['ops', 'Ops', <Activity size={13} key="ops-icon" />],
           ] as Array<[AdminMainTab, string, React.ReactNode]>).map(([tabId, label, icon]) => (
@@ -2740,14 +2777,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
       </section>
 
-      <section className={`${adminMainTab === 'readerLibrary' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
-        <AdminReaderLibraryPanel
-          mediaBackendUrl={mediaBackendUrl}
-          onToast={onToast}
-          canManage={canManageReaderLibrary}
-        />
-      </section>
-
       <section className={`${adminMainTab === 'users' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
@@ -2815,6 +2844,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {!isLoadingUsers &&
                 sortedUsers.map((row) => {
                   const rowDraft = userDrafts[row.uid] || {};
+                  const vcGrantDraft = vcGrantInputs[row.uid] || { amount: '', note: '' };
+                  const vcGrantHistory = vcGrantHistoryByUid[row.uid] || [];
                   const pendingPatch = getPendingUserPatch(row);
                   const isRowDirty = Boolean(pendingPatch);
                   const effectivePlan = rowDraft.plan || row.plan;
@@ -2823,6 +2854,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   const vffDelta = Math.trunc(Number(rowDraft.vffDelta || 0));
                   const effectivePaidBalance = row.wallet.paidVfBalance + paidDelta;
                   const effectiveVffBalance = row.wallet.vffBalance + vffDelta;
+                  const vcFreeBalance = Number(row.wallet.vcFreeBalance || 0);
+                  const vcGrantedBalance = Number(row.wallet.vcGrantedBalance || 0);
+                  const vcPaidBalance = Number(row.wallet.vcPaidBalance || 0);
+                  const vcSpendableBalance = Number(
+                    row.wallet.vcSpendableBalance ?? (vcFreeBalance + vcGrantedBalance + vcPaidBalance)
+                  );
                   const isActiveUser = !effectiveDisabled;
                   const statusBadgeTone = isActiveUser
                     ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -2830,6 +2867,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   const statusDotTone = isActiveUser ? 'bg-emerald-500' : 'bg-red-500';
                   const statusBarTone = isActiveUser ? 'border-emerald-300 bg-emerald-400/80' : 'border-red-300 bg-red-400/80';
                   const isRowSaving = isSaving.includes(row.uid) || (isSaving === 'save_all_users' && isRowDirty);
+                  const isVcGrantBusy = isSaving === `vc_grant_${row.uid}` || isSaving === `vc_history_${row.uid}`;
                   return (
                     <tr key={row.uid} className="border-t border-gray-100 align-top">
                       <td className="px-2 py-2">
@@ -2863,6 +2901,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <td className="px-2 py-2">
                         <div className="text-[11px] text-gray-700">Paid VF: {effectivePaidBalance.toLocaleString()}</div>
                         <div className="text-[11px] text-gray-700">Free VFF: {effectiveVffBalance.toLocaleString()}</div>
+                        <div className="mt-2 border-t border-gray-100 pt-2">
+                          <div className="text-[11px] font-semibold text-gray-800">VC wallet</div>
+                          <div className="text-[11px] text-gray-700">VC free: {vcFreeBalance.toLocaleString()}</div>
+                          <div className="text-[11px] text-gray-700">VC granted: {vcGrantedBalance.toLocaleString()}</div>
+                          <div className="text-[11px] text-gray-700">VC paid: {vcPaidBalance.toLocaleString()}</div>
+                          <div className="text-[11px] font-semibold text-gray-800">VC spendable: {vcSpendableBalance.toLocaleString()}</div>
+                        </div>
                         <div className="mt-1 flex items-center gap-1">
                           <button
                             className="rounded border border-emerald-200 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
@@ -2896,6 +2941,77 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             {vffDelta !== 0 ? `${vffDelta > 0 ? '+' : ''}${vffDelta.toLocaleString()} VFF` : ''}
                           </div>
                         )}
+                        <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-700">VC grant</div>
+                            <button
+                              onClick={() => {
+                                void loadUserVcGrantHistory(row.uid);
+                              }}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-semibold text-gray-700"
+                              disabled={!canBillingRead || isVcGrantBusy}
+                            >
+                              {isSaving === `vc_history_${row.uid}` ? 'Loading...' : 'History'}
+                            </button>
+                          </div>
+                          <div className="grid gap-1">
+                            <input
+                              value={vcGrantDraft.amount}
+                              onChange={(event) => {
+                                const nextAmount = event.target.value;
+                                setVcGrantInputs((previous) => ({
+                                  ...previous,
+                                  [row.uid]: {
+                                    amount: nextAmount,
+                                    note: previous[row.uid]?.note || '',
+                                  },
+                                }));
+                              }}
+                              inputMode="decimal"
+                              placeholder="VC amount"
+                              className="h-8 rounded border border-gray-200 bg-white px-2 text-[11px]"
+                              disabled={!canBillingWrite}
+                            />
+                            <input
+                              value={vcGrantDraft.note}
+                              onChange={(event) => {
+                                const nextNote = event.target.value;
+                                setVcGrantInputs((previous) => ({
+                                  ...previous,
+                                  [row.uid]: {
+                                    amount: previous[row.uid]?.amount || '',
+                                    note: nextNote,
+                                  },
+                                }));
+                              }}
+                              placeholder="Grant note"
+                              className="h-8 rounded border border-gray-200 bg-white px-2 text-[11px]"
+                              disabled={!canBillingWrite}
+                            />
+                            <button
+                              onClick={() => {
+                                void handleGrantUserVc(row);
+                              }}
+                              className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              disabled={!canBillingWrite || isVcGrantBusy}
+                            >
+                              {isSaving === `vc_grant_${row.uid}` ? 'Granting...' : 'Grant VC'}
+                            </button>
+                          </div>
+                          {vcGrantHistory.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {vcGrantHistory.slice(0, 3).map((grant) => (
+                                <div key={grant.id} className="rounded border border-gray-200 bg-white px-2 py-1 text-[10px] text-gray-600">
+                                  <div className="font-semibold text-gray-700">
+                                    +{Number(grant.amount || 0).toLocaleString()} VC
+                                  </div>
+                                  <div>{grant.note || 'No note'}</div>
+                                  <div>{grant.createdAt ? formatDate(grant.createdAt) : 'Just now'}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td className="px-2 py-2">
                         <div className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusBadgeTone}`}>

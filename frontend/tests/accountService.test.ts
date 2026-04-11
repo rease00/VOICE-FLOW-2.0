@@ -41,6 +41,11 @@ describe('billing checkout idempotency headers', () => {
     await createCheckoutSession('pro', 'https://backend.example.test', { couponCode: 'SAVE10' });
 
     expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    expect(requestJsonMock.mock.calls[0]?.[0]).toBe('/billing/checkout-session');
+    expect(requestJsonMock.mock.calls[0]?.[2]).toMatchObject({
+      baseUrl: 'https://backend.example.test',
+      requireAuth: true,
+    });
     const firstInit = requestJsonMock.mock.calls[0]?.[1] as RequestInit;
     const secondInit = requestJsonMock.mock.calls[1]?.[1] as RequestInit;
     const firstHeaders = new Headers(firstInit?.headers);
@@ -60,9 +65,19 @@ describe('billing checkout idempotency headers', () => {
     const { createTokenPackCheckoutSession, startVcTokenPackCheckout } = await import('../services/accountService');
 
     await createTokenPackCheckoutSession('standard', 'https://backend.example.test');
-    await startVcTokenPackCheckout('gold', 'https://backend.example.test');
+    await startVcTokenPackCheckout('scale', 'https://backend.example.test');
 
     expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    expect(requestJsonMock.mock.calls[0]?.[0]).toBe('/billing/token-pack/checkout-session');
+    expect(requestJsonMock.mock.calls[0]?.[2]).toMatchObject({
+      baseUrl: 'https://backend.example.test',
+      requireAuth: true,
+    });
+    expect(requestJsonMock.mock.calls[1]?.[0]).toBe('/billing/vc-token-pack/checkout-session');
+    expect(requestJsonMock.mock.calls[1]?.[2]).toMatchObject({
+      baseUrl: 'https://backend.example.test',
+      requireAuth: true,
+    });
 
     const tokenPackHeaders = new Headers((requestJsonMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
     const vcPackHeaders = new Headers((requestJsonMock.mock.calls[1]?.[1] as RequestInit | undefined)?.headers);
@@ -70,7 +85,30 @@ describe('billing checkout idempotency headers', () => {
     expect(tokenPackHeaders.get('Idempotency-Key')).toContain('token-pack');
     expect(tokenPackHeaders.get('Idempotency-Key')).toContain('standard');
     expect(vcPackHeaders.get('Idempotency-Key')).toContain('vc-token-pack');
-    expect(vcPackHeaders.get('Idempotency-Key')).toContain('gold');
+    expect(vcPackHeaders.get('Idempotency-Key')).toContain('scale');
+  });
+
+  it('expands the VC pack union for billing checkout helpers', async () => {
+    requestJsonMock.mockResolvedValueOnce({
+      ok: true,
+      provider: 'razorpay',
+      kind: 'checkout',
+      sessionId: 'vc-session-scale',
+      packKey: 'scale',
+      packVc: 2600,
+      standardAmountInr: 5000,
+      finalAmountInr: 4750,
+      discountPercent: 5,
+    });
+
+    const { startVcTokenPackCheckout } = await import('../services/accountService');
+    const launch = await startVcTokenPackCheckout('scale', 'https://backend.example.test');
+
+    expect(launch.packKey).toBe('scale');
+    expect(launch.packVc).toBe(2600);
+    expect(launch.standardAmountInr).toBe(5000);
+    expect(launch.finalAmountInr).toBe(4750);
+    expect(launch.discountPercent).toBe(5);
   });
 
   it('creates a billing portal session for self-serve billing management', async () => {

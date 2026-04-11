@@ -30,8 +30,8 @@ import {
 import {
   CharacterProfile,
   ClonedVoice,
-  Draft,
   HistoryItem,
+  ActiveTtsEngineKey,
   GenerationSettings,
   UserContextType,
   UserProfile,
@@ -315,21 +315,23 @@ const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
 const isPaidPlanName = (planName: UserStats['planName']): boolean =>
   planName === 'Launcher' || planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
 
-const normalizeAllowedEngines = (input: unknown): GenerationSettings['engine'][] => {
-  if (!Array.isArray(input)) return ['DUNO', 'VECTOR'];
-  const allowed = new Set<GenerationSettings['engine']>();
+const normalizeActiveEngine = (value: unknown): ActiveTtsEngineKey => {
+  const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return token === 'PRIME' ? 'PRIME' : 'VECTOR';
+};
+
+const normalizeAllowedEngines = (input: unknown): ActiveTtsEngineKey[] => {
+  if (!Array.isArray(input)) return ['VECTOR'];
+  const allowed = new Set<ActiveTtsEngineKey>();
   for (const value of input) {
-    const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    if (token === 'DUNO' || token === 'VECTOR' || token === 'PRIME') {
-      allowed.add(token);
-    }
+    allowed.add(normalizeActiveEngine(value));
   }
-  return allowed.size > 0 ? Array.from(allowed) : ['DUNO', 'VECTOR'];
+  return allowed.size > 0 ? Array.from(allowed) : ['VECTOR'];
 };
 
 const readCanonicalEngineBucket = (
   bucket: Record<string, { chars: number; vf: number }> | undefined,
-  engine: GenerationSettings['engine']
+  engine: ActiveTtsEngineKey
 ): { chars: number; vf: number } => ({
   chars: Math.max(0, Number(bucket?.[engine]?.chars || 0)),
   vf: Math.max(0, Number(bucket?.[engine]?.vf || 0)),
@@ -344,20 +346,31 @@ const normalizeStoredStats = (stored: any): UserStats => {
     generationsUsed: Number.isFinite(stored?.generationsUsed) ? Math.max(0, Math.floor(stored.generationsUsed)) : INITIAL_STATS.generationsUsed,
     isPremium: Boolean(stored?.isPremium) || isPaidPlanName(planName),
     planName,
+    billingCountry: typeof stored?.billingCountry === 'string' ? stored.billingCountry : undefined,
     lastResetDate: typeof stored?.lastResetDate === 'string' ? stored.lastResetDate : undefined,
     vfUsage: ensureVfUsageStats(stored?.vfUsage),
     wallet: {
       ...walletFallback,
       ...(stored?.wallet || {}),
+      vcFreeBalance: Math.max(0, Number(stored?.wallet?.vcFreeBalance ?? walletFallback.vcFreeBalance ?? 0)),
+      vcGrantedBalance: Math.max(0, Number(stored?.wallet?.vcGrantedBalance ?? walletFallback.vcGrantedBalance ?? 0)),
+      vcPaidBalance: Math.max(0, Number(stored?.wallet?.vcPaidBalance ?? walletFallback.vcPaidBalance ?? 0)),
+      vcSpendableBalance: Math.max(0, Number(stored?.wallet?.vcSpendableBalance ?? walletFallback.vcSpendableBalance ?? 0)),
       spendableNowByEngine: {
-        DUNO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.DUNO ?? walletFallback.spendableNowByEngine.DUNO)),
         VECTOR: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.VECTOR ?? walletFallback.spendableNowByEngine.VECTOR)),
         PRIME: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.PRIME ?? walletFallback.spendableNowByEngine.PRIME)),
       },
+      vcMonthKey: typeof stored?.wallet?.vcMonthKey === 'string' ? stored.wallet.vcMonthKey : walletFallback.vcMonthKey,
     },
     limits: {
       maxCharsPerGeneration: Math.max(1, Number(stored?.limits?.maxCharsPerGeneration || INITIAL_STATS.limits?.maxCharsPerGeneration || 8000)),
       allowedEngines: normalizeAllowedEngines(stored?.limits?.allowedEngines || INITIAL_STATS.limits?.allowedEngines),
+      tokenPackDiscountPercent: Number.isFinite(stored?.limits?.tokenPackDiscountPercent)
+        ? Math.max(0, Number(stored.limits.tokenPackDiscountPercent))
+        : undefined,
+      vcTokenPackDiscountPercent: Number.isFinite(stored?.limits?.vcTokenPackDiscountPercent)
+        ? Math.max(0, Number(stored.limits.vcTokenPackDiscountPercent))
+        : undefined,
     },
     features: {
       earlyAccess: Boolean(stored?.features?.earlyAccess),
@@ -372,7 +385,6 @@ const mapEntitlementRatesToUsage = (
 ): UserStats['vfUsage']['rates'] => {
   const vfRates = (entitlements?.limits?.vfRates || {}) as Record<string, unknown>;
   return {
-    DUNO: Number.isFinite(vfRates.DUNO) ? Math.max(0, Number(vfRates.DUNO)) : fallback.DUNO,
     VECTOR: Number.isFinite(vfRates.VECTOR) ? Math.max(0, Number(vfRates.VECTOR)) : fallback.VECTOR,
     PRIME: Number.isFinite(vfRates.PRIME) ? Math.max(0, Number(vfRates.PRIME)) : fallback.PRIME,
   };
@@ -387,24 +399,23 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   const planName = normalizePlanNameForStats(entitlements.plan);
 
   const dailyUsage = {
-    DUNO: readCanonicalEngineBucket(dailyByEngine, 'DUNO'),
     VECTOR: readCanonicalEngineBucket(dailyByEngine, 'VECTOR'),
     PRIME: readCanonicalEngineBucket(dailyByEngine, 'PRIME'),
   };
   const monthlyUsage = {
-    DUNO: readCanonicalEngineBucket(monthlyByEngine, 'DUNO'),
     VECTOR: readCanonicalEngineBucket(monthlyByEngine, 'VECTOR'),
     PRIME: readCanonicalEngineBucket(monthlyByEngine, 'PRIME'),
   };
 
-  const dailyTotalChars = dailyUsage.DUNO.chars + dailyUsage.VECTOR.chars + dailyUsage.PRIME.chars;
-  const monthlyTotalChars = monthlyUsage.DUNO.chars + monthlyUsage.VECTOR.chars + monthlyUsage.PRIME.chars;
+  const dailyTotalChars = dailyUsage.VECTOR.chars + dailyUsage.PRIME.chars;
+  const monthlyTotalChars = monthlyUsage.VECTOR.chars + monthlyUsage.PRIME.chars;
 
   return ensureStatsUsageWindows({
     ...prev,
     generationsUsed: Math.max(0, Number(entitlements.daily?.generationUsed || 0)),
     isPremium: isPaidPlanName(planName),
     planName,
+    billingCountry: String(entitlements.billing?.billingCountry || prev.billingCountry || '').trim() || undefined,
     lastResetDate: entitlements.daily?.periodKey,
     vfUsage: {
       ...usage,
@@ -416,7 +427,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.daily?.vfUsed || 0)),
         byEngine: {
           ...usage.daily.byEngine,
-          DUNO: dailyUsage.DUNO,
           VECTOR: dailyUsage.VECTOR,
           PRIME: dailyUsage.PRIME,
         },
@@ -428,7 +438,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.monthly?.vfUsed || 0)),
         byEngine: {
           ...usage.monthly.byEngine,
-          DUNO: monthlyUsage.DUNO,
           VECTOR: monthlyUsage.VECTOR,
           PRIME: monthlyUsage.PRIME,
         },
@@ -439,16 +448,26 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       monthlyFreeLimit: Math.max(0, Number(wallet.monthlyFreeLimit || 0)),
       vffBalance: Math.max(0, Number(wallet.vffBalance || 0)),
       paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
+      vcFreeBalance: Math.max(0, Number(wallet.vcFreeBalance || 0)),
+      vcGrantedBalance: Math.max(0, Number(wallet.vcGrantedBalance || 0)),
+      vcPaidBalance: Math.max(0, Number(wallet.vcPaidBalance || 0)),
+      vcSpendableBalance: Math.max(0, Number(wallet.vcSpendableBalance || 0)),
       spendableNowByEngine: {
-        DUNO: Math.max(0, Number(wallet.spendableNowByEngine?.DUNO || 0)),
         VECTOR: Math.max(0, Number(wallet.spendableNowByEngine?.VECTOR || 0)),
         PRIME: Math.max(0, Number(wallet.spendableNowByEngine?.PRIME || 0)),
       },
       vffMonthKey: wallet.vffMonthKey,
+      vcMonthKey: wallet.vcMonthKey,
     },
     limits: {
       maxCharsPerGeneration: Math.max(1, Number(entitlements?.limits?.maxCharsPerGeneration || prev.limits?.maxCharsPerGeneration || 8000)),
       allowedEngines: normalizeAllowedEngines(entitlements?.limits?.allowedEngines || prev.limits?.allowedEngines),
+      tokenPackDiscountPercent: Number.isFinite(entitlements?.limits?.tokenPackDiscountPercent)
+        ? Math.max(0, Number(entitlements.limits.tokenPackDiscountPercent))
+        : prev.limits?.tokenPackDiscountPercent,
+      vcTokenPackDiscountPercent: Number.isFinite(entitlements?.limits?.vcTokenPackDiscountPercent)
+        ? Math.max(0, Number(entitlements.limits.vcTokenPackDiscountPercent))
+        : prev.limits?.vcTokenPackDiscountPercent,
     },
     features: {
       earlyAccess: Boolean(entitlements?.features?.earlyAccess),
@@ -623,7 +642,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [user, setUser] = useState<UserProfile>(BLANK_USER);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [clonedVoices, setClonedVoices] = useState<ClonedVoice[]>([]);
-  const [drafts, setDrafts] = useState<Draft[]>([]);
   const [characterLibrary, setCharacterLibrary] = useState<CharacterProfile[]>(DEFAULT_CHARACTERS);
   const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
   const [isSyncing] = useState(false);
@@ -1190,7 +1208,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setHistory([]);
       setClonedVoices([]);
       clearSessionClonedVoices();
-      setDrafts([]);
       setCharacterLibrary(DEFAULT_CHARACTERS);
     },
     clonedVoices,
@@ -1198,10 +1215,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       addSessionClonedVoice(voice);
       setClonedVoices((prev) => [voice, ...prev.filter((item) => item.id !== voice.id)]);
     },
-    drafts,
-    saveDraft: (name, text, settings) =>
-      setDrafts((prev) => [{ id: Date.now().toString(), name, text, settings, lastModified: Date.now() }, ...prev]),
-    deleteDraft: (id) => setDrafts((prev) => prev.filter((item) => item.id !== id)),
     showSubscriptionModal,
     setShowSubscriptionModal: (show) => setShowSubscriptionModal(show),
     recordTtsUsage: () => {
@@ -1232,7 +1245,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     characterLibrary,
     clonedVoices,
     deleteCharacter,
-    drafts,
     hasUnlimitedAccess,
     history,
     isAdmin,

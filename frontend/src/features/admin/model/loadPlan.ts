@@ -24,7 +24,6 @@ const ADMIN_MAIN_TAB_SECTIONS: Record<AdminMainTab, readonly AdminDataSection[]>
   unlock: ['adminUnlockStatus'],
   users: ['users'],
   messages: ['supportConversations', 'supportAiPolicy', 'adminNotices', 'adminUnlockStatus'],
-  readerLibrary: ['adminUnlockStatus'],
   pools: ['geminiPools'],
   ops: [],
 };

@@ -25,6 +25,21 @@ def _fake_admin_claims(token: str) -> dict[str, object]:
     }
 
 
+def _fake_user_claims(token: str) -> dict[str, object]:
+    raw = str(token or "").strip()
+    uid_raw, _, iat_raw = raw.partition(":")
+    uid = uid_raw or "regular_user"
+    try:
+        iat = int(iat_raw or "1710000000")
+    except Exception:
+        iat = 1710000000
+    return {
+        "uid": uid,
+        "admin": False,
+        "iat": iat,
+    }
+
+
 def _auth_headers(uid: str, iat: int) -> dict[str, str]:
     return {"Authorization": f"Bearer {uid}:{iat}"}
 
@@ -304,3 +319,84 @@ def test_tts_engine_switch_requires_unlock_and_allows_ops_mutate_actor(monkeypat
     )
     assert expired_unlock.status_code == 403
     assert "expired" in str((expired_unlock.json() or {}).get("detail") or "").lower()
+
+
+def test_tts_engine_activate_allows_authenticated_non_admin_without_unlock(monkeypatch) -> None:
+    _reset_unlock_state()
+    backend_app._INMEMORY_ADMIN_ROLES.clear()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", _fake_user_claims)
+    monkeypatch.setattr(backend_app, "_audit_append_event", lambda **kwargs: None)
+
+    guardrail_calls: list[tuple[str, str, bool]] = []
+
+    def _record_guardrail(uid: str, _char_count: int, **kwargs):
+        guardrail_calls.append((uid, str(kwargs.get("engine") or ""), bool(kwargs.get("bypass"))))
+        return None
+
+    probe_results = [
+        (False, "Runtime offline", "http://runtime.test/health"),
+        (True, "Runtime online", "http://runtime.test/health"),
+    ]
+
+    def _probe(_engine: str):
+        if probe_results:
+            return probe_results.pop(0)
+        return (True, "Runtime online", "http://runtime.test/health")
+
+    monkeypatch.setattr(backend_app, "_enforce_tts_plan_guardrails", _record_guardrail)
+    monkeypatch.setattr(backend_app, "_probe_engine_runtime_health", _probe)
+    monkeypatch.setattr(
+        backend_app,
+        "_run_tts_switch_with_retry",
+        lambda engine, gpu, retries=2, keep_others=True: f"activated:{engine}:{gpu}:{retries}:{keep_others}",
+    )
+    monkeypatch.setattr(backend_app, "_try_acquire_tts_runtime_switch_lock", lambda engine: (True, 0))
+    monkeypatch.setattr(backend_app, "_release_tts_runtime_switch_lock", lambda: None)
+
+    client = TestClient(backend_app.app)
+    headers = _auth_headers("regular_user_activation", 1710000500)
+    response = client.post(
+        "/tts/engines/activate",
+        headers=headers,
+        json={"engine": "PRIME"},
+    )
+    assert response.status_code == 200
+    payload = response.json() or {}
+    assert bool(payload.get("ok")) is True
+    assert str(payload.get("engine") or "") == "PRIME"
+    assert guardrail_calls == [("regular_user_activation", "PRIME", False)]
+
+
+def test_tts_engine_activate_returns_429_when_runtime_switch_lock_is_busy(monkeypatch) -> None:
+    _reset_unlock_state()
+    backend_app._INMEMORY_ADMIN_ROLES.clear()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", _fake_admin_claims)
+    monkeypatch.setattr(backend_app, "_audit_append_event", lambda **kwargs: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_probe_engine_runtime_health",
+        lambda _engine: (False, "Runtime offline", "http://runtime.test/health"),
+    )
+    monkeypatch.setattr(backend_app, "_try_acquire_tts_runtime_switch_lock", lambda engine: (False, 1500))
+
+    switch_calls: list[tuple[str, bool, int, bool]] = []
+
+    def _record_switch(engine: str, gpu: bool, retries: int = 2, keep_others: bool = True):
+        switch_calls.append((engine, bool(gpu), int(retries), bool(keep_others)))
+        return "unexpected"
+
+    monkeypatch.setattr(backend_app, "_run_tts_switch_with_retry", _record_switch)
+
+    client = TestClient(backend_app.app)
+    headers = _auth_headers("runtime_admin", 1710000600)
+    response = client.post(
+        "/tts/engines/activate",
+        headers=headers,
+        json={"engine": "PRIME"},
+    )
+    assert response.status_code == 429
+    assert str((response.headers or {}).get("retry-after") or "") == "2"
+    assert "already in progress" in str((response.json() or {}).get("detail") or "").lower()
+    assert switch_calls == []

@@ -52,6 +52,19 @@ const LEGACY_ALIASES: Record<string, string> = {
   worried: 'Anxious',
   panic: 'Anxious',
   shocked: 'Shocked',
+  gasp: 'Gasping',
+  gasping: 'Gasping',
+  laugh: 'Laughing',
+  laughter: 'Laughing',
+  soft: 'Soft Spoken',
+  gentle: 'Calm',
+  storytelling: 'Warm Storytelling',
+  dramatic: 'Cinematic Narration',
+  cinematic: 'Cinematic Narration',
+  romance: 'Romantic',
+  loving: 'Loving',
+  devotional: 'Devotional',
+  bhakti: 'Devotional',
 };
 
 const FALLBACK_TOKEN_ALIASES: Array<{ token: string; emotion: string }> = [

@@ -111,14 +111,14 @@ describe('studio queue model', () => {
           order: 0,
           label: 'Part 1',
           status: 'queued',
-          sourceText: 'DUNO engine text.',
+          sourceText: 'VECTOR engine text.',
           charCount: 18,
           settingsSnapshot: {
             voiceId: 'legacy_voice',
             speed: 1,
             pitch: 'Medium',
             language: 'Auto',
-            engine: 'DUNO',
+            engine: 'VECTOR',
             helperProvider: 'GEMINI',
           },
           createdAt: Date.now(),
@@ -147,7 +147,7 @@ describe('studio queue model', () => {
 
     const normalized = normalizeStoredStudioQueueState(rawState);
 
-    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('DUNO');
+    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('VECTOR');
     expect(normalized?.items[1]?.settingsSnapshot.engine).toBe('VECTOR');
   });
 });

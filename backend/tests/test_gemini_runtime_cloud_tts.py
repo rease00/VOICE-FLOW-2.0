@@ -126,6 +126,30 @@ def test_cloud_tts_resolves_selected_vertex_slot_credentials(tmp_path) -> None:
     assert resolved == slot_2.resolve()
 
 
+def test_cloud_tts_google_cloud_auth_mode_ignores_vertex_slot_credentials(monkeypatch, tmp_path) -> None:
+    adc_credentials = tmp_path / "adc.json"
+    vertex_slot = tmp_path / "slot-vertex.json"
+    adc_credentials.write_text("{}", encoding="utf-8")
+    vertex_slot.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("VF_TTS_TEXTTOSPEECH_AUTH_MODE", "google_cloud")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(adc_credentials))
+    runtime = _load_gemini_runtime_module()
+
+    resolved = runtime._resolve_cloud_tts_credentials_path(
+        {
+            "provider": runtime.SOURCE_POLICY_PROVIDER_VERTEX,
+            "selectedVertexSlotId": "slot_1",
+            "vertexServiceAccountRef": str(vertex_slot),
+            "vertexAccounts": [
+                {"memberId": "slot_1", "vertexServiceAccountRef": str(vertex_slot)},
+            ],
+        }
+    )
+
+    assert resolved == adc_credentials.resolve()
+
+
 def test_cloud_tts_client_cache_isolated_by_selected_slot(monkeypatch, tmp_path) -> None:
     runtime = _load_gemini_runtime_module()
     slot_1 = tmp_path / "slot-1.json"

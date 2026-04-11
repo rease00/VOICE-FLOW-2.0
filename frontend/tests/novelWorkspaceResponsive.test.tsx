@@ -101,7 +101,8 @@ describe('NovelWorkspaceV2 responsive layout', () => {
     expect(markup).toContain('novel-workspace-back');
     expect(markup).toContain('novel-workspace-forward');
     expect(markup).toContain('Browser cache autosave');
-    expect(markup).toContain('Target culture');
+    expect(markup).toContain('Adaptation');
+    expect(markup).toContain('Select a novel to view adaptation tools.');
     expect(markup).toContain('Novel name');
     expect(markup).toContain('Save');
     expect(markup).toContain('Source');

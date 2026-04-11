@@ -81,8 +81,9 @@ const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: s
 export type BillingPlanName = 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
 export type BillingPlanKey = 'launcher' | 'starter' | 'creator' | 'pro' | 'scale';
 export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
-export type BillingVcPackKey = 'standard';
-export type TtsEngineKey = 'DUNO' | 'VECTOR' | 'PRIME';
+export type VnTokenPackKey = 'vn_micro' | 'vn_standard' | 'vn_mega' | 'vn_ultra';
+export type BillingVcPackKey = 'starter' | 'standard' | 'growth' | 'pro' | 'scale';
+export type TtsEngineKey = 'VECTOR' | 'PRIME';
 
 export interface AccountBillingProfile {
   companyName?: string | null;
@@ -134,6 +135,7 @@ export interface AccountEntitlements {
     maxCharsPerGeneration: number;
     allowedEngines: TtsEngineKey[];
     tokenPackDiscountPercent?: number;
+    vcTokenPackDiscountPercent?: number;
   };
   features: {
     earlyAccess: boolean;
@@ -144,11 +146,13 @@ export interface AccountEntitlements {
     vffBalance: number;
     paidVfBalance: number;
     vcFreeBalance?: number;
+    vcGrantedBalance?: number;
     vcPaidBalance?: number;
     vcSpendableBalance?: number;
     vcMonthKey?: string;
     spendableNowByEngine: Record<TtsEngineKey, number>;
     vffMonthKey?: string;
+    vnBalance?: number;
   };
 }
 
@@ -167,6 +171,7 @@ export interface AccountBillingPlanSummary {
     discountPercent: number;
   };
   tokenPackDiscountPercent?: number;
+  vcTokenPackDiscountPercent?: number;
   launcherOfferConsumed?: boolean;
 }
 
@@ -267,8 +272,9 @@ export interface BillingCheckoutLaunch {
   checkoutOptions?: RazorpayCheckoutOptions | null;
   subscriptionOptions?: RazorpayCheckoutOptions | null;
   sessionId?: string;
-  packKey?: TokenPackKey;
+  packKey?: TokenPackKey | BillingVcPackKey;
   packVf?: number;
+  packVc?: number;
   standardAmountInr?: number;
   finalAmountInr?: number;
   discountPercent?: number;
@@ -362,9 +368,7 @@ export const bootstrapAccountProfile = async (baseUrl?: string): Promise<Account
       { requireAuth: true }
     )
   );
-  void primeLoginRoutingAfterAccountBootstrap({
-    baseUrl: toBaseUrl(baseUrl),
-  }).catch(() => undefined);
+  void primeLoginRoutingAfterAccountBootstrap({ baseUrl: toBaseUrl(baseUrl) }).catch(() => undefined);
   return payload.profile;
 };
 
@@ -437,7 +441,7 @@ export const createCheckoutSession = async (
 ): Promise<BillingCheckoutLaunch> => {
   const idempotencyKey = makeBillingIdempotencyKey('checkout', `plan:${plan}`, options?.couponCode || '');
   const payload = await requestJson<Record<string, any>>(
-    `${toBaseUrl(baseUrl)}/billing/checkout-session`,
+    '/billing/checkout-session',
     {
       method: 'POST',
       headers: {
@@ -451,7 +455,7 @@ export const createCheckoutSession = async (
         couponCode: options?.couponCode,
       }),
     },
-    { requireAuth: true }
+    { baseUrl: toBaseUrl(baseUrl), requireAuth: true }
   );
   return normalizeBillingCheckoutLaunch(payload, 'checkout');
 };
@@ -492,7 +496,7 @@ export const createTokenPackCheckoutSession = async (
 ): Promise<BillingCheckoutLaunch> => {
   const idempotencyKey = makeBillingIdempotencyKey('checkout', `token-pack:${pack}`);
   const payload = await requestJson<Record<string, any>>(
-    `${toBaseUrl(baseUrl)}/billing/token-pack/checkout-session`,
+    '/billing/token-pack/checkout-session',
     {
       method: 'POST',
       headers: {
@@ -505,7 +509,7 @@ export const createTokenPackCheckoutSession = async (
         cancelUrl: options?.cancelUrl,
       }),
     },
-    { requireAuth: true }
+    { baseUrl: toBaseUrl(baseUrl), requireAuth: true }
   );
   return normalizeBillingCheckoutLaunch(
     {
@@ -517,13 +521,13 @@ export const createTokenPackCheckoutSession = async (
 };
 
 export const startVcTokenPackCheckout = async (
-  pack: string,
+  pack: BillingVcPackKey,
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string }
 ): Promise<BillingCheckoutLaunch> => {
   const idempotencyKey = makeBillingIdempotencyKey('checkout', `vc-token-pack:${pack}`);
   const payload = await requestJson<Record<string, any>>(
-    `${toBaseUrl(baseUrl)}/billing/vc-token-pack/checkout-session`,
+    '/billing/vc-token-pack/checkout-session',
     {
       method: 'POST',
       headers: {
@@ -536,7 +540,7 @@ export const startVcTokenPackCheckout = async (
         cancelUrl: options?.cancelUrl,
       }),
     },
-    { requireAuth: true }
+    { baseUrl: toBaseUrl(baseUrl), requireAuth: true }
   );
   return normalizeBillingCheckoutLaunch(
     {
@@ -561,6 +565,37 @@ export const convertVfToVc = async (
     { requireAuth: true }
   ));
   return payload?.entitlements as AccountEntitlements;
+};
+
+export const startVnTokenPackCheckout = async (
+  pack: VnTokenPackKey,
+  baseUrl?: string,
+  options?: { successUrl?: string; cancelUrl?: string }
+): Promise<BillingCheckoutLaunch> => {
+  const idempotencyKey = makeBillingIdempotencyKey('checkout', `vn-token-pack:${pack}`);
+  const payload = await requestJson<Record<string, any>>(
+    '/billing/vn-token-pack/checkout-session',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({
+        pack,
+        successUrl: options?.successUrl,
+        cancelUrl: options?.cancelUrl,
+      }),
+    },
+    { baseUrl: toBaseUrl(baseUrl), requireAuth: true }
+  );
+  return normalizeBillingCheckoutLaunch(
+    {
+      ...payload,
+      pack,
+    },
+    'checkout'
+  );
 };
 
 export const redeemCoupon = async (code: string, baseUrl?: string): Promise<{ creditedVf: number; entitlements: AccountEntitlements }> => {
@@ -670,11 +705,12 @@ const normalizeBillingCheckoutLaunch = (
     : null;
   const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
   const packKey = payload?.packKey
-    ? (String(payload.packKey) as TokenPackKey)
+    ? (String(payload.packKey) as TokenPackKey | BillingVcPackKey)
     : payload?.pack
-      ? (String(payload.pack) as TokenPackKey)
+      ? (String(payload.pack) as TokenPackKey | BillingVcPackKey)
       : undefined;
   const packVf = Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined;
+  const packVc = Number.isFinite(payload?.packVc) ? Number(payload.packVc) : undefined;
   const standardAmountInr = Number.isFinite(payload?.standardAmountInr) ? Number(payload.standardAmountInr) : undefined;
   const finalAmountInr = Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined;
   const discountPercent = Number.isFinite(payload?.discountPercent) ? Number(payload.discountPercent) : undefined;
@@ -688,6 +724,7 @@ const normalizeBillingCheckoutLaunch = (
     ...(sessionId ? { sessionId } : {}),
     ...(packKey ? { packKey } : {}),
     ...(packVf !== undefined ? { packVf } : {}),
+    ...(packVc !== undefined ? { packVc } : {}),
     ...(standardAmountInr !== undefined ? { standardAmountInr } : {}),
     ...(finalAmountInr !== undefined ? { finalAmountInr } : {}),
     ...(discountPercent !== undefined ? { discountPercent } : {}),

@@ -7,7 +7,7 @@ import { AccountBillingSummary } from '../../services/accountService';
 import { getEngineDisplayName } from '../../services/engineDisplay';
 import { AccountTabKey } from './accountCenterTabs';
 
-export const ENGINE_ORDER: GenerationSettings['engine'][] = ['DUNO', 'VECTOR', 'PRIME'];
+export const ENGINE_ORDER: GenerationSettings['engine'][] = ['VECTOR', 'PRIME'];
 
 export const surfaceClass = (isDarkUi: boolean): string =>
   isDarkUi

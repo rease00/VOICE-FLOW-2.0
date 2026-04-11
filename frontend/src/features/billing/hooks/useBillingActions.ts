@@ -7,11 +7,12 @@ import {
   redeemCoupon,
   resumeBillingSubscription,
   startVcTokenPackCheckout as startVcTokenPackCheckoutSession,
+  startVnTokenPackCheckout as startVnTokenPackCheckoutSession,
   type BillingCheckoutLaunch,
   type BillingSubscriptionActionResult,
   type RazorpayCheckoutOptions,
 } from '../api/billingApi';
-import type { BillingPlanKey, BillingVcPackKey, TokenPackKey } from '../../../../services/accountService';
+import type { BillingPlanKey, BillingVcPackKey, TokenPackKey, VnTokenPackKey } from '../../../../services/accountService';
 
 interface UseBillingActionsArgs {
   baseUrl: string;
@@ -158,6 +159,13 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
     });
   }, [baseUrl, returnPath]);
 
+  const startVnTokenPackCheckout = useCallback(async (pack: VnTokenPackKey) => {
+    return startVnTokenPackCheckoutSession(pack, baseUrl, {
+      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'vc'),
+      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'vc'),
+    });
+  }, [baseUrl, returnPath]);
+
   const convertVfToVcTokens = useCallback(async (vfAmount: number) => {
     return convertVfToVc(vfAmount, baseUrl);
   }, [baseUrl]);
@@ -185,6 +193,7 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
     startPlanCheckout,
     startTokenPackCheckout,
     startVcTokenPackCheckout,
+    startVnTokenPackCheckout,
     convertVfToVc: convertVfToVcTokens,
     launchCheckout,
     cancelRecurringSubscription,

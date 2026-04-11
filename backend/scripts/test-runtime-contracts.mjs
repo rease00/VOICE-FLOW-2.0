@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { buildAuditHeaders } from './lib/audit-helpers.mjs';
 
 const ROOT = process.cwd();
 const REPORT_PATH = path.join(ROOT, 'artifacts', 'runtime_contract_conformance_report.json');
@@ -8,6 +9,10 @@ const MEDIA_BACKEND_URL = String(process.env.VF_MEDIA_BACKEND_URL || 'http://127
 const REQUEST_TIMEOUT_MS = Math.max(50, Number(process.env.VF_RUNTIME_CONTRACT_TIMEOUT_MS || 12000));
 const REQUEST_RETRIES = Math.max(0, Number(process.env.VF_RUNTIME_CONTRACT_RETRIES || 2));
 const RETRY_BACKOFF_MS = Math.max(10, Number(process.env.VF_RUNTIME_CONTRACT_BACKOFF_MS || 500));
+const { headers: AUDIT_HEADERS, auth: AUTH } = buildAuditHeaders(
+  { Accept: 'application/json' },
+  { scriptName: 'test:contracts', defaultDevUid: 'local_admin' }
+);
 
 const requiredTopLevel = [
   'engine',
@@ -37,7 +42,7 @@ const fetchWithTimeout = async (url, timeoutMs) => {
   try {
     const response = await fetch(url, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: AUDIT_HEADERS,
       signal: controller.signal,
     });
     const text = await response.text();
@@ -73,7 +78,7 @@ const probeReachabilityWithRetry = async (url, options = {}) => {
     try {
       const response = await fetch(url, {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        headers: AUDIT_HEADERS,
         signal: controller.signal,
       });
       try {
@@ -190,6 +195,12 @@ const main = async () => {
     startedAt,
     mediaBackendUrl: MEDIA_BACKEND_URL,
     policyVersion: 'runtime-contracts-v2',
+    auth: {
+      mode: AUTH.mode,
+      tokenPresent: Boolean(AUTH.tokenPresent),
+      allowDevUid: Boolean(AUTH.allowDevUid),
+      devUidApplied: Boolean(AUTH.devUidApplied),
+    },
     passed: false,
     checks: [],
     failures: [],

@@ -17,6 +17,8 @@ const BASE_CONNECT_SRC = [
   'https://www.google.com',
   'https://api.stripe.com',
   'https://*.sentry.io',
+  'https://cloudflareinsights.com',
+  'https://static.cloudflareinsights.com',
   'wss://firestore.googleapis.com',
   'wss://*.firebaseio.com',
 ];
@@ -82,13 +84,7 @@ const nextConfig = {
     }
 
     const privateRobotsValue = 'noindex, nofollow, noarchive, nosnippet, noimageindex';
-    const connectSrc = [...BASE_CONNECT_SRC, ...collectLoopbackConnectSources()];
     const securityHeaders = [
-      {
-        key: 'Content-Security-Policy',
-        value:
-          `default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://apis.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' blob: data: https:; media-src 'self' blob: data: https:; connect-src ${connectSrc.join(' ')}; worker-src 'self' blob:; frame-src 'self' https://accounts.google.com https://*.google.com https://*.firebaseapp.com; manifest-src 'self'`,
-      },
       { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains; preload' },
       { key: 'X-Frame-Options', value: 'DENY' },
       { key: 'X-Content-Type-Options', value: 'nosniff' },
@@ -107,10 +103,6 @@ const nextConfig = {
       },
       {
         source: '/app/:path*',
-        headers: privateRobotsHeaders,
-      },
-      {
-        source: '/reader/:path*',
         headers: privateRobotsHeaders,
       },
       {

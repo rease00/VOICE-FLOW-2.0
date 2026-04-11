@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import threading
 import time
 import uuid
@@ -25,6 +27,8 @@ def normalize_plan_key(plan_key: str) -> str:
     token = str(plan_key or "").strip().lower()
     if token in {"plus", "pro-plus", "pro_plus", "proplus", "scale"}:
         return "scale"
+    if token in {"launch", "launcher"}:
+        return "starter"
     if token in {"starter", "creator", "pro", "free"}:
         return token
     return "free"
@@ -204,6 +208,9 @@ return {used, reset_at}
     def _idem_key(self, uid: str, plan_key: str, fingerprint: str) -> str:
         return f"{self.key_prefix}:idem:{uid}:{normalize_plan_key(plan_key)}:{fingerprint}"
 
+    def _reservation_key(self, reservation_id: str) -> str:
+        return f"{self.key_prefix}:reservation:{str(reservation_id or '').strip()}"
+
     def _snapshot(self, *, limit: int, used: int, reset_at_ms: int) -> SuccessQuotaSnapshot:
         normalized_used = max(0, int(used))
         return SuccessQuotaSnapshot(
@@ -243,6 +250,36 @@ return {used, reset_at}
             snapshot=snapshot,
             error=error,
         )
+
+    def _reservation_ttl_seconds(self) -> int:
+        return max(2, int(math.ceil(float(self.window_ms) / 1000.0)) + int(self.idempotency_ttl_seconds) + 5)
+
+    def _decode_redis_reservation_state(self, raw_value: Any) -> dict[str, Any] | None:
+        payload = str(raw_value or "").strip()
+        if not payload:
+            return None
+        try:
+            decoded = json.loads(payload)
+        except Exception:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+
+    def _redis_snapshot(self, uid: str, plan_key: str, limit: int, now_ms: int) -> SuccessQuotaSnapshot:
+        if self._redis_client is None:
+            return self._reservation_snapshot_memory(uid, plan_key, limit, now_ms)
+        events_key = self._events_key(uid, plan_key)
+        try:
+            self._redis_client.zremrangebyscore(events_key, "-inf", now_ms - self.window_ms)
+            used = int(self._redis_client.zcard(events_key) or 0)
+            oldest = self._redis_client.zrange(events_key, 0, 0, withscores=True)
+            reset_at_ms = now_ms + self.window_ms
+            if oldest and len(oldest[0]) >= 2:
+                reset_at_ms = int(float(oldest[0][1])) + self.window_ms
+            return self._snapshot(limit=limit, used=used, reset_at_ms=reset_at_ms)
+        except Exception:
+            if self._redis_required:
+                raise
+        return self._reservation_snapshot_memory(uid, plan_key, limit, now_ms)
 
     def _prune_reservation_state_locked(self, now_ms: int) -> None:
         self._prune_idempotency_locked(now_ms)
@@ -398,11 +435,173 @@ return {used, reset_at}
         fingerprint = str(request_fingerprint or "").strip()
         now_ms = int(time.time() * 1000)
         limit = self.quota_for_plan(normalized_plan)
+        if self._redis_client is not None:
+            try:
+                events_key = self._events_key(normalized_uid, normalized_plan)
+                fingerprint_key = self._idem_key(normalized_uid, normalized_plan, fingerprint) if fingerprint else ""
+                self._redis_client.zremrangebyscore(events_key, "-inf", now_ms - self.window_ms)
+                if fingerprint_key:
+                    existing_reservation_id = str(self._redis_client.get(fingerprint_key) or "").strip()
+                    if existing_reservation_id:
+                        state = self._decode_redis_reservation_state(
+                            self._redis_client.get(self._reservation_key(existing_reservation_id))
+                        )
+                        if state:
+                            snapshot = self._redis_snapshot(normalized_uid, normalized_plan, limit, now_ms)
+                            status = str(state.get("status") or "").strip().lower()
+                            if status == "committed":
+                                return self._reservation_result(
+                                    allowed=True,
+                                    reserved=False,
+                                    committed=True,
+                                    released=False,
+                                    counted=False,
+                                    idempotent_reuse=True,
+                                    reservation_id=existing_reservation_id,
+                                    backend="redis",
+                                    redis_available=True,
+                                    snapshot=snapshot,
+                                )
+                            if status == "reserved":
+                                return self._reservation_result(
+                                    allowed=True,
+                                    reserved=False,
+                                    committed=False,
+                                    released=False,
+                                    counted=False,
+                                    idempotent_reuse=True,
+                                    reservation_id=existing_reservation_id,
+                                    backend="redis",
+                                    redis_available=True,
+                                    snapshot=snapshot,
+                                )
+                        self._redis_client.delete(fingerprint_key)
+                snapshot = self._redis_snapshot(normalized_uid, normalized_plan, limit, now_ms)
+                if int(snapshot.used) >= int(limit):
+                    return self._reservation_result(
+                        allowed=False,
+                        reserved=False,
+                        committed=False,
+                        released=False,
+                        counted=False,
+                        idempotent_reuse=False,
+                        reservation_id="",
+                        backend="redis",
+                        redis_available=True,
+                        snapshot=snapshot,
+                        error="quota_exhausted",
+                    )
+                reservation_id = f"{now_ms}:{uuid.uuid4().hex}"
+                state = {
+                    "uid": normalized_uid,
+                    "plan_key": normalized_plan,
+                    "created_at_ms": now_ms,
+                    "updated_at_ms": now_ms,
+                    "status": "reserved",
+                    "fingerprint_key": fingerprint_key,
+                    "member": reservation_id,
+                }
+                pipe = self._redis_client.pipeline()
+                pipe.zadd(events_key, {reservation_id: now_ms})
+                pipe.expire(events_key, max(2, int(math.ceil(float(self.window_ms) / 1000.0)) + 5))
+                pipe.set(
+                    self._reservation_key(reservation_id),
+                    json.dumps(state, separators=(",", ":"), sort_keys=True),
+                    ex=self._reservation_ttl_seconds(),
+                )
+                if fingerprint_key:
+                    pipe.set(fingerprint_key, reservation_id, ex=self.idempotency_ttl_seconds)
+                pipe.execute()
+                snapshot = self._redis_snapshot(normalized_uid, normalized_plan, limit, now_ms)
+                return self._reservation_result(
+                    allowed=True,
+                    reserved=True,
+                    committed=False,
+                    released=False,
+                    counted=True,
+                    idempotent_reuse=False,
+                    reservation_id=reservation_id,
+                    backend="redis",
+                    redis_available=True,
+                    snapshot=snapshot,
+                )
+            except Exception:
+                if self._redis_required:
+                    raise
         return self._memory_reserve(normalized_uid, normalized_plan, fingerprint, limit, now_ms)
 
     def commit_success_reservation(self, reservation: SuccessQuotaReservation) -> SuccessQuotaReservation:
         self._require_redis()
         now_ms = int(time.time() * 1000)
+        if self._redis_client is not None:
+            try:
+                reservation_id = str(reservation.reservation_id or "").strip()
+                if not reservation_id:
+                    return replace(reservation, allowed=False, committed=False, reserved=False, released=False, error="reservation_missing")
+                state = self._decode_redis_reservation_state(self._redis_client.get(self._reservation_key(reservation_id)))
+                if not state:
+                    return replace(reservation, allowed=False, committed=False, reserved=False, released=False, error="reservation_missing")
+                status = str(state.get("status") or "").strip().lower()
+                if status == "committed":
+                    snapshot = self._redis_snapshot(
+                        str(state.get("uid") or ""),
+                        str(state.get("plan_key") or ""),
+                        int(getattr(reservation.snapshot, "limit", 1) or 1),
+                        now_ms,
+                    )
+                    return replace(
+                        reservation,
+                        committed=True,
+                        reserved=False,
+                        released=False,
+                        counted=False,
+                        idempotent_reuse=True,
+                        backend="redis",
+                        redis_available=True,
+                        snapshot=snapshot,
+                    )
+                if status == "released":
+                    return replace(
+                        reservation,
+                        allowed=False,
+                        committed=False,
+                        reserved=False,
+                        released=True,
+                        counted=False,
+                        backend="redis",
+                        redis_available=True,
+                        error="reservation_released",
+                    )
+                state["status"] = "committed"
+                state["updated_at_ms"] = now_ms
+                pipe = self._redis_client.pipeline()
+                pipe.set(
+                    self._reservation_key(reservation_id),
+                    json.dumps(state, separators=(",", ":"), sort_keys=True),
+                    ex=self._reservation_ttl_seconds(),
+                )
+                fingerprint_key = str(state.get("fingerprint_key") or "").strip()
+                if fingerprint_key:
+                    pipe.set(fingerprint_key, reservation_id, ex=self.idempotency_ttl_seconds)
+                pipe.execute()
+                snapshot = self._redis_snapshot(
+                    str(state.get("uid") or ""),
+                    str(state.get("plan_key") or ""),
+                    int(getattr(reservation.snapshot, "limit", 1) or 1),
+                    now_ms,
+                )
+                return replace(
+                    reservation,
+                    committed=True,
+                    reserved=False,
+                    released=False,
+                    backend="redis",
+                    redis_available=True,
+                    snapshot=snapshot,
+                )
+            except Exception:
+                if self._redis_required:
+                    raise
         with self._lock:
             self._prune_reservation_state_locked(now_ms)
             state = self._memory_reservations.get(reservation.reservation_id)
@@ -426,6 +625,60 @@ return {used, reset_at}
     def release_success_reservation(self, reservation: SuccessQuotaReservation) -> SuccessQuotaReservation:
         self._require_redis()
         now_ms = int(time.time() * 1000)
+        if self._redis_client is not None:
+            try:
+                reservation_id = str(reservation.reservation_id or "").strip()
+                if not reservation_id:
+                    return replace(reservation, reserved=False, committed=False, released=False, counted=False, error="reservation_missing")
+                state = self._decode_redis_reservation_state(self._redis_client.get(self._reservation_key(reservation_id)))
+                if not state:
+                    return replace(reservation, reserved=False, committed=False, released=False, counted=False, error="reservation_missing")
+                status = str(state.get("status") or "").strip().lower()
+                if status == "committed":
+                    snapshot = self._redis_snapshot(
+                        str(state.get("uid") or ""),
+                        str(state.get("plan_key") or ""),
+                        int(getattr(reservation.snapshot, "limit", 1) or 1),
+                        now_ms,
+                    )
+                    return replace(
+                        reservation,
+                        reserved=False,
+                        committed=True,
+                        released=False,
+                        counted=False,
+                        backend="redis",
+                        redis_available=True,
+                        snapshot=snapshot,
+                    )
+                events_key = self._events_key(str(state.get("uid") or ""), str(state.get("plan_key") or ""))
+                member = str(state.get("member") or reservation_id).strip() or reservation_id
+                fingerprint_key = str(state.get("fingerprint_key") or "").strip()
+                pipe = self._redis_client.pipeline()
+                pipe.zrem(events_key, member)
+                if fingerprint_key:
+                    pipe.delete(fingerprint_key)
+                pipe.delete(self._reservation_key(reservation_id))
+                pipe.execute()
+                snapshot = self._redis_snapshot(
+                    str(state.get("uid") or ""),
+                    str(state.get("plan_key") or ""),
+                    int(getattr(reservation.snapshot, "limit", 1) or 1),
+                    now_ms,
+                )
+                return replace(
+                    reservation,
+                    reserved=False,
+                    committed=False,
+                    released=True,
+                    counted=False,
+                    backend="redis",
+                    redis_available=True,
+                    snapshot=snapshot,
+                )
+            except Exception:
+                if self._redis_required:
+                    raise
         with self._lock:
             self._prune_reservation_state_locked(now_ms)
             state = self._memory_reservations.get(reservation.reservation_id)

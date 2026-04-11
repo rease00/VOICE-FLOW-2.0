@@ -19,13 +19,13 @@ describe('marketing landing', () => {
     expect(html).toContain('id="multi-speaker"');
     expect(html).toContain('id="voice-cloning"');
     expect(html).toContain('id="ai-director"');
-    expect(html).toContain('id="reader-playback"');
+    expect(html).toContain('id="writing-playback"');
 
-    expect(html).toContain('Single-speaker system');
-    expect(html).toContain('Prime multi-speaker scenes');
-    expect(html).toContain('Voice Clone proof');
+    expect(html).toContain('Single voice');
+    expect(html).toContain('Prime scenes');
+    expect(html).toContain('Clone proof');
     expect(html).toContain('AI Director');
-    expect(html).toContain('Reader playback');
+    expect(html).toContain('Writing');
 
     expect(html).toContain('Open studio');
     expect(html).toContain('View pricing');
@@ -39,7 +39,7 @@ describe('marketing landing', () => {
     expect(html).toContain('/audio/vector-multi-demo/fr-city-tour.wav');
     expect(html).toContain('/audio/openvoice-demo/reference.wav');
     expect(html).toContain('/audio/openvoice-demo/rendered.wav');
-    expect(html).toContain('Voice Clone comparison');
+    expect(html).toContain('Clone compare');
     expect(html).toContain('data-audio-player="vf-marketing"');
     expect(html).toContain('data-testid="landing-ai-director-prompt"');
   });
@@ -61,7 +61,7 @@ describe('marketing landing', () => {
     expect(html).not.toContain('configured languages');
     expect(html).not.toContain('Open Studio');
     expect(html).not.toContain('Open Voices');
-    expect(html).not.toContain('Open Reader');
+    expect(html).not.toContain('Open Writing');
     expect(html).not.toContain('Cinematic Neon Landing');
     expect(html).not.toContain('landing-demo-card');
     expect(html).not.toContain('landing-theme-switcher');

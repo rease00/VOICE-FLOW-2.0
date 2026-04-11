@@ -345,4 +345,27 @@ describe('voice clone stress api', () => {
     expect(options).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
     expect(new Headers(init.headers).get('Idempotency-Key')).toBe('clone_req_123');
   });
+
+  it('does not replay clone POST submissions across base URLs when the first target fails', async () => {
+    const { cloneVoiceWithOpenVoice } = await import('../src/features/voice-cloning/api');
+    requestJsonMock.mockReset();
+    requestJsonMock.mockRejectedValueOnce(new MockHttpError(404, 'Not Found', 'Not Found'));
+
+    await expect(cloneVoiceWithOpenVoice({
+      referenceAudioBase64: 'ref',
+      referenceAudioName: 'ref.wav',
+      sourceAudioBase64: 'src',
+      sourceAudioName: 'src.wav',
+      requestId: 'clone_req_once',
+    } as any, {
+      baseUrl: 'http://127.0.0.1:7800',
+      timeoutMs: 12000,
+    })).rejects.toMatchObject({ status: 404 });
+
+    expect(requestJsonMock).toHaveBeenCalledTimes(1);
+    const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
+    expect(path).toBe('/voice-clone/render');
+    expect(options).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
+    expect(new Headers(init.headers).get('Idempotency-Key')).toBe('clone_req_once');
+  });
 });

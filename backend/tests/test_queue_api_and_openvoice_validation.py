@@ -12,9 +12,11 @@ from urllib.request import urlopen
 import pytest
 
 import app as backend_app
+from services import tts_v2_engine as tts_v2_engine_module
 from services.tts_v2_engine import TtsV2Engine, V2ValidationError
 from services.openvoice_modal import build_openvoice_artifact_signature, decode_openvoice_audio_base64
-from services.queue.redis_queue import TtsJobQueue
+from services.queue.redis_queue import TtsJobQueue, WeightedInMemoryQueue
+
 from workers.tts_worker import WorkerHealthState, _process_claimed_job, _restore_dequeued_job, _start_worker_health_server, run_worker
 
 
@@ -33,6 +35,10 @@ class _FakePipeline:
 
     def rpush(self, *args, **kwargs):
         self._ops.append(("rpush", args, kwargs))
+        return self
+
+    def lrem(self, *args, **kwargs):
+        self._ops.append(("lrem", args, kwargs))
         return self
 
     def expire(self, *args, **kwargs):
@@ -117,6 +123,38 @@ class _FakeRedis:
                 yield key
 
 
+class _FailingPipeline(_FakePipeline):
+    def execute(self):
+        raise RuntimeError("boom")
+
+
+class _DedupeRaceRedis(_FakeRedis):
+    def __init__(self, *, dedupe_key: str, existing_job_id: str, job_key: str, race_on_set: bool) -> None:
+        super().__init__()
+        self.dedupe_key = str(dedupe_key)
+        self.existing_job_id = str(existing_job_id)
+        self.job_key = str(job_key)
+        self.race_on_set = bool(race_on_set)
+        self.job_get_calls = 0
+
+    def get(self, key):  # noqa: ANN001
+        safe_key = str(key)
+        if safe_key == self.job_key:
+            self.job_get_calls += 1
+            if self.job_get_calls < 2:
+                return None
+        return super().get(key)
+
+    def set(self, key, value, ex=None, nx=False, xx=False):  # noqa: ANN001
+        safe_key = str(key)
+        if self.race_on_set and nx and safe_key == self.dedupe_key and safe_key not in self.strings:
+            self.strings[safe_key] = self.existing_job_id
+            if ex is not None:
+                self.expiries[safe_key] = int(ex)
+            return False
+        return super().set(key, value, ex=ex, nx=nx, xx=xx)
+
+
 class _FakeDurableQueue:
     def __init__(self) -> None:
         self.records: dict[str, dict[str, object]] = {}
@@ -175,6 +213,201 @@ class _FakeDurableQueue:
             }
         )
         return dict(record)
+
+
+def test_weighted_in_memory_queue_honors_lane_weights() -> None:
+    queue = WeightedInMemoryQueue({"pro": 3, "free": 1})
+
+    queue.push("pro", {"jobId": "pro_1"})
+    queue.push("pro", {"jobId": "pro_2"})
+    queue.push("pro", {"jobId": "pro_3"})
+    queue.push("free", {"jobId": "free_1"})
+
+    popped = [queue.pop(), queue.pop(), queue.pop(), queue.pop()]
+    assert [item.lane for item in popped if item is not None] == ["pro", "pro", "pro", "free"]
+    assert queue.pop() is None
+
+
+@pytest.mark.parametrize(
+    ("preexisting_dedupe", "race_on_set"),
+    [
+        (True, False),
+        (False, True),
+    ],
+    ids=["preexisting-key", "nx-race"],
+)
+def test_queue_submit_waits_for_visible_dedupe_record_and_does_not_duplicate(
+    monkeypatch,
+    preexisting_dedupe: bool,
+    race_on_set: bool,
+) -> None:
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:dedupe-race")
+    fake_redis = _DedupeRaceRedis(
+        dedupe_key=queue._dedupe_key("req_existing_123"),  # noqa: SLF001
+        existing_job_id="job_existing_123",
+        job_key=queue._job_key("job_existing_123"),  # noqa: SLF001
+        race_on_set=race_on_set,
+    )
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    existing_record = {
+        "jobId": "job_existing_123",
+        "requestId": "req_existing_123",
+        "lane": "pro",
+        "status": "queued",
+        "uid": "user_dedupe",
+        "text": "hello from the winning request",
+    }
+    fake_redis.strings[fake_redis.job_key] = queue._serialize_record(existing_record)  # noqa: SLF001
+    if preexisting_dedupe:
+        fake_redis.strings[fake_redis.dedupe_key] = "job_existing_123"  # noqa: SLF001
+
+    def _fail_persist(_record: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("duplicate submit should not persist a second record")
+
+    monkeypatch.setattr(queue, "_persist_redis_record", _fail_persist)
+
+    submitted = queue.submit(
+        lane="pro",
+        payload={
+            "jobId": "job_new_duplicate",
+            "requestId": "req_existing_123",
+            "uid": "user_dedupe",
+            "text": "hello from the duplicate request",
+        },
+    )
+
+    assert submitted["jobId"] == "job_existing_123"
+    assert submitted["requestId"] == "req_existing_123"
+    assert submitted["status"] == "queued"
+    assert fake_redis.job_get_calls >= 2
+    assert fake_redis.get(queue._job_key("job_new_duplicate")) is None  # noqa: SLF001
+
+
+def test_queue_submit_keeps_dedupe_ttl_at_or_beyond_result_window(monkeypatch) -> None:
+    monkeypatch.setenv("VF_TTS_QUEUE_DEDUPE_TTL_SEC", "1")
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:dedupe-ttl", result_ttl_ms=600_000)
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    submitted = queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_ttl_floor_123",
+            "requestId": "req_ttl_floor_123",
+            "uid": "user_ttl_floor",
+            "text": "ttl floor",
+        },
+    )
+
+    assert submitted["jobId"] == "job_ttl_floor_123"
+    dedupe_key = queue._dedupe_key("req_ttl_floor_123")  # noqa: SLF001
+    assert queue._dedupe_ttl_sec >= 600  # noqa: SLF001
+    assert fake_redis.expiries[dedupe_key] == queue._dedupe_ttl_sec
+
+
+def test_queue_submit_tracks_dedupe_hit_miss_and_expired_replay_metrics(monkeypatch) -> None:
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:dedupe-metrics", result_ttl_ms=600_000)
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    miss_request_id = "req_dedupe_miss_123"
+    first_submit = queue.submit(
+        lane="pro",
+        payload={
+            "jobId": "job_dedupe_miss_123",
+            "requestId": miss_request_id,
+            "uid": "user_dedupe_metrics",
+            "text": "dedupe miss",
+        },
+    )
+    assert first_submit["jobId"] == "job_dedupe_miss_123"
+    telemetry = queue.depth_snapshot()["telemetry"]["dedupe"]
+    assert telemetry["dedupe_miss"] == 1
+    assert telemetry["dedupe_hit"] == 0
+    assert telemetry["dedupe_expired_replay"] == 0
+
+    second_submit = queue.submit(
+        lane="pro",
+        payload={
+            "jobId": "job_dedupe_miss_retry_123",
+            "requestId": miss_request_id,
+            "uid": "user_dedupe_metrics",
+            "text": "dedupe miss",
+        },
+    )
+    assert second_submit["jobId"] == "job_dedupe_miss_123"
+    telemetry = queue.depth_snapshot()["telemetry"]["dedupe"]
+    assert telemetry["dedupe_miss"] == 1
+    assert telemetry["dedupe_hit"] == 1
+    assert telemetry["dedupe_expired_replay"] == 0
+
+    expired_request_id = "req_dedupe_expired_123"
+    expired_dedupe_key = queue._dedupe_key(expired_request_id)  # noqa: SLF001
+    fake_redis.strings[expired_dedupe_key] = "job_dedupe_expired_123"
+    monkeypatch.setattr(queue, "_wait_for_redis_job_record", lambda *_args, **_kwargs: None)
+
+    expired_submit = queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_dedupe_expired_retry_123",
+            "requestId": expired_request_id,
+            "uid": "user_dedupe_metrics",
+            "text": "dedupe expired replay",
+        },
+    )
+    assert expired_submit["jobId"] == "job_dedupe_expired_123"
+    telemetry = queue.depth_snapshot()["telemetry"]["dedupe"]
+    assert telemetry["dedupe_miss"] == 1
+    assert telemetry["dedupe_hit"] == 1
+    assert telemetry["dedupe_expired_replay"] == 1
+
+
+@pytest.mark.parametrize(
+    ("operation", "call_kwargs"),
+    [
+        ("requeue", {}),
+        ("release_requeue", {"requeue": True}),
+        ("release_terminal", {"requeue": False, "terminal_status": "failed"}),
+    ],
+    ids=["requeue", "release-requeue", "release-terminal"],
+)
+def test_queue_ready_list_mutation_is_atomic_when_record_update_fails(
+    monkeypatch,
+    operation: str,
+    call_kwargs: dict[str, object],
+) -> None:
+    queue = TtsJobQueue(redis_url="redis://example", key_prefix="vf:test:atomic")
+    fake_redis = _FakeRedis()
+    queue._redis = fake_redis  # type: ignore[attr-defined]
+
+    queue.submit(
+        lane="free",
+        payload={
+            "jobId": "job_atomic_123",
+            "requestId": "req_atomic_123",
+            "uid": "user_atomic",
+            "text": "atomic",
+        },
+    )
+    claimed = queue.claim("job_atomic_123", worker_id="worker-atomic")
+    assert claimed is not None
+
+    ready_key = queue._ready_key("free")  # noqa: SLF001
+    claim_key = queue._claim_key("job_atomic_123")  # noqa: SLF001
+    monkeypatch.setattr(fake_redis, "pipeline", lambda transaction=True: _FailingPipeline(fake_redis))
+
+    with pytest.raises(RuntimeError):
+        if operation == "requeue":
+            queue.requeue("job_atomic_123", worker_id="worker-atomic", payload=claimed)
+        elif operation == "release_requeue":
+            queue.release("job_atomic_123", worker_id="worker-atomic", **call_kwargs)
+        else:
+            queue.release("job_atomic_123", worker_id="worker-atomic", **call_kwargs)
+
+    assert fake_redis.llen(ready_key) == 0
+    assert fake_redis.get(claim_key) is not None
+    assert queue.get("job_atomic_123")["status"] == "running"
 
 
 def test_queue_submit_reserve_ack_and_release_round_trip() -> None:
@@ -272,6 +505,44 @@ def test_tts_v2_queue_submission_promotes_nested_audio_audit_ids() -> None:
         lane="free",
     )
     assert submitted["audioAuditIds"] == ["audit_nested_1", "audit_nested_2"]
+
+
+def test_tts_v2_queue_submission_sla_and_retry_caps(monkeypatch) -> None:
+    engine = backend_app._TTS_V2_ENGINE
+    monkeypatch.setitem(tts_v2_engine_module.VF_TTS_ENGINE_RETRY_LIMITS, "VECTOR", 2)
+    submitted = engine.build_queue_submission(
+        payload={
+            "request_id": "queue_req_limits_123456",
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "hello",
+        },
+        uid="queue_user",
+        plan_key="free",
+        lane="free",
+    )
+    assert submitted["queueSlotSlaMs"] == tts_v2_engine_module.VF_TTS_QUEUE_SLOT_SLA_MS
+    assert int(submitted["deadlineAtMs"]) - int(submitted["createdAtMs"]) == tts_v2_engine_module.VF_TTS_QUEUE_DEADLINE_MS
+    assert submitted["maxAttempts"] == 2
+    assert int(submitted["expiresAtMs"]) >= int(submitted["createdAtMs"]) + int(engine._result_ttl_ms)  # noqa: SLF001
+
+    monkeypatch.setitem(
+        tts_v2_engine_module.VF_TTS_ENGINE_RETRY_LIMITS,
+        "VECTOR",
+        int(tts_v2_engine_module.VF_TTS_QUEUE_MAX_ATTEMPTS) + 5,
+    )
+    capped = engine.build_queue_submission(
+        payload={
+            "request_id": "queue_req_limits_cap_123456",
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "hello again",
+        },
+        uid="queue_user",
+        plan_key="free",
+        lane="free",
+    )
+    assert capped["maxAttempts"] == tts_v2_engine_module.VF_TTS_QUEUE_MAX_ATTEMPTS
 
 
 def test_queue_renew_claim_updates_claimed_at_timestamp(monkeypatch) -> None:
@@ -918,7 +1189,7 @@ def test_queue_reserve_records_missing_job_anomaly_and_continues(caplog) -> None
     queue._redis = fake_redis  # type: ignore[attr-defined]
     caplog.set_level(logging.WARNING, logger="voiceflow.tts_queue")
 
-    fake_redis.rpush("vf:test:anomaly:ready:pro_plus", "job_missing_1")
+    fake_redis.rpush("vf:test:anomaly:ready:scale", "job_missing_1")
     queue.submit(
         lane="free",
         payload={
@@ -933,7 +1204,7 @@ def test_queue_reserve_records_missing_job_anomaly_and_continues(caplog) -> None
     assert claimed is not None
     assert claimed["jobId"] == "job_anomaly_ok"
 
-    marker_key = "vf:test:anomaly:reserve-anomaly:pro_plus:job_missing_1"
+    marker_key = "vf:test:anomaly:reserve-anomaly:scale:job_missing_1"
     marker = json.loads(str(fake_redis.get(marker_key) or "{}"))
     assert marker["jobId"] == "job_missing_1"
     assert marker["reason"] == "missing"

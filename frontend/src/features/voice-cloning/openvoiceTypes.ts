@@ -103,12 +103,29 @@ export interface OpenVoiceBenchmarkResponse {
   consumedVcUnits?: number;
   vcBilling?: {
     enabled?: boolean;
+    adminBypass?: boolean;
     reservedUnits?: number;
     consumedUnits?: number;
+    chargedInr?: number;
     durationSec?: number;
+    billableDurationSec?: number;
     textChars?: number;
-    charsPerUnit?: number;
+    rateInrPerMin?: number;
+    rateVcUnitsPerMin?: number;
     rule?: string;
+    breakdown?: {
+      vcFree?: number;
+      vcGranted?: number;
+      vcPaid?: number;
+    };
+    remaining?: {
+      vcFreeBalance?: number;
+      vcGrantedBalance?: number;
+      vcPaidBalance?: number;
+      vcSpendableBalance?: number;
+    };
+    idempotentReuse?: boolean;
+    stages?: Record<string, unknown>;
   };
   clonedVoice?: ClonedVoice;
 }

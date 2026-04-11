@@ -14,8 +14,10 @@ export interface EngineStatusItem {
 
 export interface TtsEngineStatusResponse {
   ok: boolean;
+  requestedEngine?: string;
   engines: Partial<Record<GenerationSettings['engine'], EngineStatusItem>>;
-  fetchedAt: string;
+  fetchedAt?: string;
+  generatedAtMs?: number;
 }
 
 export interface RuntimeVoiceItem {

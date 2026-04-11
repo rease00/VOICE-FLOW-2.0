@@ -12,8 +12,8 @@ const VUS = Math.max(1, Number.parseInt(String(__ENV.VF_LOAD_VUS || '50'), 10) |
 const DURATION = String(__ENV.VF_LOAD_DURATION || '30s');
 const JOB_POLL_MS = Math.max(100, Number.parseInt(String(__ENV.VF_LOAD_POLL_MS || '350'), 10) || 350);
 const JOB_TIMEOUT_MS = Math.max(1_000, Number.parseInt(String(__ENV.VF_LOAD_JOB_TIMEOUT_MS || '120000'), 10) || 120000);
-const SYNC_WAIT_MS = Math.max(0, Number.parseInt(String(__ENV.VF_LOAD_SYNC_WAIT_MS || '3000'), 10) || 3000);
 const SUMMARY_PATH = String(__ENV.VF_K6_SUMMARY_PATH || 'artifacts/load/k6-summary.json');
+const TTS_V2_SESSION_HEADER = 'x-vf-tts-session-key';
 
 const parseBool = (value, fallback = false) => {
   const token = String(value || '').trim().toLowerCase();
@@ -94,6 +94,13 @@ const pickEngine = () => {
   return Math.random() < ratio ? 'PRIME' : 'VECTOR';
 };
 
+const withSessionHeaders = (sessionKey) => ({
+  headers: {
+    ...headers,
+    [TTS_V2_SESSION_HEADER]: String(sessionKey || '').trim(),
+  },
+});
+
 const pickMode = () => {
   if (MODE === 'jobs' || MODE === 'sync') return MODE;
   return Math.random() < 0.5 ? 'jobs' : 'sync';
@@ -102,7 +109,7 @@ const pickMode = () => {
 const pollJob = (jobId) => {
   const started = Date.now();
   while (Date.now() - started < JOB_TIMEOUT_MS) {
-    const response = http.get(`${BASE_URL}/tts/jobs/${encodeURIComponent(jobId)}`, { headers });
+    const response = http.get(`${BASE_URL}/tts/v2/jobs/${encodeURIComponent(jobId)}?includeResult=1`, { headers });
     const body = parseJsonBody(response);
     if (response.status >= 500) {
       serverErrors.add(1);
@@ -124,8 +131,12 @@ const markTerminalFailure = (terminal) => {
   if (terminal !== 'completed') terminalFailures.add(1);
 };
 
-const runJobsPath = (engine, requestId) => {
-  const response = http.post(`${BASE_URL}/tts/jobs`, JSON.stringify(makePayload(engine, requestId)), { headers });
+const runJobsPath = (engine, requestId, sessionKey) => {
+  const response = http.post(
+    `${BASE_URL}/tts/v2/jobs`,
+    JSON.stringify(makePayload(engine, requestId)),
+    withSessionHeaders(sessionKey),
+  );
   const body = parseJsonBody(response);
   if (response.status >= 500) {
     serverErrors.add(1);
@@ -149,11 +160,11 @@ const runJobsPath = (engine, requestId) => {
   markTerminalFailure(terminal.terminal);
 };
 
-const runSyncPath = (engine, requestId) => {
+const runSyncPath = (engine, requestId, sessionKey) => {
   const response = http.post(
-    `${BASE_URL}/tts/synthesize?wait_ms=${encodeURIComponent(String(SYNC_WAIT_MS))}`,
+    `${BASE_URL}/tts/v2/jobs`,
     JSON.stringify(makePayload(engine, requestId)),
-    { headers },
+    withSessionHeaders(sessionKey),
   );
   const body = parseJsonBody(response);
 
@@ -163,7 +174,7 @@ const runSyncPath = (engine, requestId) => {
     terminalFailures.add(1);
     return;
   }
-  if (response.status === 200) {
+  if (response.status === 200 || response.status === 201) {
     completionRate.add(true);
     return;
   }
@@ -178,7 +189,24 @@ const runSyncPath = (engine, requestId) => {
   terminalFailures.add(1);
 };
 
-export default function () {
+export function setup() {
+  const response = http.post(`${BASE_URL}/tts/v2/sessions`, JSON.stringify({}), { headers });
+  const body = parseJsonBody(response);
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Failed to issue TTS v2 session key (status=${response.status}).`);
+  }
+  const sessionKey = String((body && body.sessionKey) || '').trim();
+  if (!sessionKey) {
+    throw new Error('TTS v2 session creation succeeded but sessionKey was empty.');
+  }
+  return { sessionKey };
+}
+
+export default function (setupData) {
+  const sessionKey = String(setupData?.sessionKey || '').trim();
+  if (!sessionKey) {
+    throw new Error('Missing TTS v2 session key in k6 setup data.');
+  }
   const engine = pickEngine();
   const selectedMode = pickMode();
   const requestId = `k6_${selectedMode}_${engine.toLowerCase()}_${__VU}_${__ITER}`;
@@ -186,10 +214,10 @@ export default function () {
     'mode is jobs or sync': (input) => input.mode === 'jobs' || input.mode === 'sync',
   });
   if (selectedMode === 'jobs') {
-    runJobsPath(engine, requestId);
+    runJobsPath(engine, requestId, sessionKey);
     return;
   }
-  runSyncPath(engine, requestId);
+  runSyncPath(engine, requestId, sessionKey);
 }
 
 export function handleSummary(data) {

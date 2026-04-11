@@ -10,10 +10,13 @@ interface StudioSmokeCredentials {
 const LOGIN_PATH_RE = /^\/app\/login(?:\/|$)/;
 const LOGIN_HEADING_RE = /Open Studio in three simple steps|Welcome back|Create your V FLOW AI account/i;
 const WORKSPACE_HANDOFF_HEADING_RE = /Workspace handoff/i;
+const WRITING_PATH_RE = /^\/app\/writing(?:\/|$)/;
 const LOGIN_UI_READY_TIMEOUT_MS = 12_000;
 const WORKSPACE_HANDOFF_TIMEOUT_MS = 12_000;
 const LOGIN_RECOVERY_WAIT_MS = 650;
 const LOGIN_HYDRATION_TIMEOUT_MS = 20_000;
+const AUTH_INPUT_TYPE_DELAY_MS = 18;
+const AUTH_INPUT_SETTLE_TIMEOUT_MS = 120;
 const parseEnvFile = (filePath: string): Record<string, string> => {
   if (!existsSync(filePath)) return {};
   const raw = readFileSync(filePath, 'utf8');
@@ -133,13 +136,29 @@ export const resolveStudioSmokeCredentials = (): StudioSmokeCredentials | null =
 };
 
 export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: StudioSmokeCredentials): Promise<void> => {
-  const requireReaderAuth = String(process.env.PLAYWRIGHT_REQUIRE_READER_AUTH || '1').trim() !== '0';
+  const requireWritingAuth = String(process.env.PLAYWRIGHT_REQUIRE_WRITING_AUTH || '1').trim() !== '0';
   const loginRetryAttempts = Math.max(2, Number.parseInt(String(process.env.PLAYWRIGHT_AUTH_LOGIN_RETRIES || '5'), 10) || 5);
   const loginEntryPath = '/app/login?vf-screen=login';
+  const selectAllShortcut = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
+  const navigateToLoginEntry = async (): Promise<void> => {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await page.goto(loginEntryPath, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+        return;
+      } catch (error) {
+        const message = String((error as Error)?.message || error || '');
+        const aborted = /ERR_ABORTED/i.test(message);
+        if (!aborted || attempt === 3) {
+          throw error;
+        }
+        await page.waitForTimeout(350 + (attempt * 200));
+      }
+    }
+  };
 
   const resetToLoginEntry = async (attempt: number): Promise<void> => {
     try {
-      await page.goto(loginEntryPath, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      await navigateToLoginEntry();
     } catch (error) {
       const message = String((error as Error)?.message || error || '');
       if (!/ERR_ABORTED/i.test(message)) {
@@ -170,23 +189,40 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
     }
   }).catch(() => undefined);
 
-  await page.goto(loginEntryPath, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await navigateToLoginEntry();
 
   if (isLoginPath(page.url())) {
     const fillLoginInput = async (
       input: ReturnType<Page['locator']>,
       value: string,
     ): Promise<void> => {
-      await input.fill(value);
-      const afterFill = String(await input.inputValue().catch(() => '')).trim();
-      if (afterFill === value) return;
+      const normalizedValue = String(value || '');
+      await input.click({ force: true });
+      await input.press(selectAllShortcut).catch(() => undefined);
+      await input.press('Delete').catch(() => undefined);
+      await input.press('Backspace').catch(() => undefined);
+      await input.pressSequentially(normalizedValue, { delay: AUTH_INPUT_TYPE_DELAY_MS });
+      await page.waitForTimeout(AUTH_INPUT_SETTLE_TIMEOUT_MS);
+      const afterType = String(await input.inputValue().catch(() => '')).trim();
+      if (afterType === normalizedValue) {
+        await expect(input).toHaveValue(normalizedValue, { timeout: 5_000 });
+        return;
+      }
       await input.evaluate((node, nextValue) => {
         if (!(node instanceof HTMLInputElement)) return;
         node.focus();
-        node.value = String(nextValue || '');
-        node.dispatchEvent(new Event('input', { bubbles: true }));
+        const descriptor = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(node),
+          'value',
+        );
+        descriptor?.set?.call(node, String(nextValue || ''));
+        node.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          data: String(nextValue || ''),
+          inputType: 'insertText',
+        }));
         node.dispatchEvent(new Event('change', { bubbles: true }));
-      }, value);
+      }, normalizedValue);
       await expect(input).toHaveValue(value, { timeout: 5_000 });
     };
 
@@ -226,9 +262,6 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
       if (await handoffHeading.isVisible().catch(() => false)) {
         await Promise.any([
           page.waitForURL((url) => !LOGIN_PATH_RE.test(url.pathname || ''), { timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
-          page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
-          page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
-          page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
           page.getByTestId('voices-workspace').waitFor({ state: 'visible', timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
           page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
           page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: WORKSPACE_HANDOFF_TIMEOUT_MS }),
@@ -307,6 +340,8 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
       const { emailInput, passwordInput, signInButton } = loginUi;
       await fillLoginInput(emailInput, credentials.email);
       await fillLoginInput(passwordInput, credentials.password);
+      await expect(emailInput).toHaveValue(credentials.email, { timeout: 3_000 });
+      await expect(passwordInput).toHaveValue(credentials.password, { timeout: 3_000 });
       await signInButton.click();
 
       await Promise.any([
@@ -333,9 +368,15 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
         .filter(Boolean)
         .join(' | ');
       if (authError) {
+        const transientAuthError = /cannot reach authentication service|cannot connect to backend service|network/i.test(authError.toLowerCase());
+        if (transientAuthError && attempt < loginRetryAttempts) {
+          await page.waitForTimeout(400 + attempt * 200);
+          await resetToLoginEntry(attempt);
+          continue;
+        }
         const retryableValidationError = /full email address|valid email|required/i.test(authError.toLowerCase());
         if (retryableValidationError && attempt < loginRetryAttempts) {
-          await page.waitForTimeout(400 + attempt * 150);
+          await resetToLoginEntry(attempt);
           continue;
         }
         throw new Error(`Smoke auth sign-in failed: ${authError}. Current URL: ${page.url()}`);
@@ -358,10 +399,10 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
     }
   }
 
-  const navigateToReader = async (): Promise<void> => {
+  const navigateToWriting = async (): Promise<void> => {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        await page.goto('/app/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+        await page.goto('/app/writing', { waitUntil: 'domcontentloaded', timeout: 120_000 });
         return;
       } catch (error) {
         const message = String((error as Error)?.message || error || '');
@@ -372,26 +413,73 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
     }
   };
 
-  await navigateToReader();
-  await Promise.any([
-    page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: 60_000 }),
-    page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: 60_000 }),
-    page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: 60_000 }),
-  ]).catch(async () => {
-    const currentUrl = page.url();
-    throw new Error(`Smoke auth could not load Reader workspace. Current URL: ${currentUrl}`);
-  });
+  await navigateToWriting();
+  const waitForWritingSurfaceState = async (timeoutMs: number): Promise<'ready' | 'error' | 'timeout'> => {
+    const resolveState = (
+      promise: Promise<unknown>,
+      state: 'ready' | 'error',
+    ): Promise<'ready' | 'error'> => promise.then(() => state);
 
-  const readerPath = new URL(page.url()).pathname || '';
-  if (!/^\/app\/reader(?:\/|$)/.test(readerPath)) {
-    throw new Error(`Smoke auth did not land on the canonical Reader route. Current URL: ${page.url()}`);
+    return Promise.any([
+      resolveState(page.getByRole('heading', { name: /Novel Workspace/i }).first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.getByTestId('novel-workspace').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.getByTestId('novel-editor-tabs').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.getByTestId('novel-library-tabs').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.getByRole('heading', { name: /Sign in to open Writing/i }).first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.getByRole('button', { name: /^Retry now$/i }).first().waitFor({ state: 'visible', timeout: timeoutMs }), 'error'),
+    ]).catch(() => 'timeout');
+  };
+
+  let writingSurfaceState = await waitForWritingSurfaceState(35_000);
+  if (writingSurfaceState === 'timeout') {
+    const loadingHeading = page.getByRole('heading', { name: /Loading workspace|Workspace handoff/i }).first();
+    const loadingVisible = await loadingHeading.isVisible().catch(() => false);
+    if (loadingVisible) {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 }).catch(() => undefined);
+      writingSurfaceState = await waitForWritingSurfaceState(25_000);
+    }
   }
 
-  const authGate = page.locator('.vf-reader-v2-auth-gate').first();
+  for (let retryAttempt = 0; retryAttempt < 2 && writingSurfaceState === 'error'; retryAttempt += 1) {
+    const retryWritingButton = page.getByRole('button', { name: /^Retry now$/i }).first();
+    if (await retryWritingButton.isVisible().catch(() => false)) {
+      await retryWritingButton.click({ force: true }).catch(() => undefined);
+      writingSurfaceState = await waitForWritingSurfaceState(20_000);
+      if (writingSurfaceState === 'ready') break;
+    }
+  }
+
+  if (writingSurfaceState !== 'ready') {
+    const retryUiButton = page.getByRole('button', { name: /^Retry UI$/i }).first();
+    if (await retryUiButton.isVisible().catch(() => false)) {
+      await retryUiButton.click({ force: true }).catch(() => undefined);
+      writingSurfaceState = await waitForWritingSurfaceState(20_000);
+    }
+  }
+
+  if (writingSurfaceState !== 'ready') {
+    const retryWritingButton = page.getByRole('button', { name: /^Retry now$/i }).first();
+    if (await retryWritingButton.isVisible().catch(() => false)) {
+      await retryWritingButton.click({ force: true }).catch(() => undefined);
+      writingSurfaceState = await waitForWritingSurfaceState(20_000);
+    }
+  }
+  if (writingSurfaceState !== 'ready') {
+    const currentUrl = page.url();
+    throw new Error(`Smoke auth could not load Writing workspace. Current URL: ${currentUrl}`);
+  }
+
+  const writingPath = new URL(page.url()).pathname || '';
+  if (!WRITING_PATH_RE.test(writingPath)) {
+    throw new Error(`Smoke auth did not land on the Writing workspace route. Current URL: ${page.url()}`);
+  }
+
+  const authGate = page.getByRole('heading', { name: /Sign in to open Writing/i }).first();
   const authGateVisible = await authGate.isVisible().catch(() => false);
-  if (authGateVisible && requireReaderAuth) {
+  if (authGateVisible && requireWritingAuth) {
     await authGate.waitFor({ state: 'hidden', timeout: 20_000 }).catch(async () => {
-      throw new Error(`Smoke auth resolved to Reader sign-in gate instead of authenticated workspace. Current URL: ${page.url()}`);
+      throw new Error(`Smoke auth resolved to the writing sign-in gate instead of authenticated workspace. Current URL: ${page.url()}`);
     });
   }
 };
+

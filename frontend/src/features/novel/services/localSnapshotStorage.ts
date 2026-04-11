@@ -47,21 +47,27 @@ const withStore = async <T>(
   return new Promise((resolve) => {
     const tx = db.transaction(NOVEL_SNAPSHOT_STORE, mode);
     const store = tx.objectStore(NOVEL_SNAPSHOT_STORE);
+    let resolvedValue: T | null = null;
+    let settled = false;
+    const finish = (value: T | null) => {
+      if (settled) return;
+      settled = true;
+      db.close();
+      resolve(value);
+    };
+    tx.oncomplete = () => {
+      finish(resolvedValue);
+    };
+    tx.onerror = () => {
+      finish(null);
+    };
     Promise.resolve(callback(store))
       .then((value) => {
-        tx.oncomplete = () => {
-          db.close();
-          resolve(value);
-        };
+        resolvedValue = value;
       })
       .catch(() => {
-        db.close();
-        resolve(null);
+        finish(null);
       });
-    tx.onerror = () => {
-      db.close();
-      resolve(null);
-    };
   });
 };
 

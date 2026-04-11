@@ -1,0 +1,63 @@
+name: Backend Quality Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  backend-quality:
+    name: Pytest and Contract Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524cb24312490c38cfd939cb4da5d2f1a73
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20'
+
+      - name: Install backend npm dependencies
+        run: npm install --prefix backend
+
+      - name: Install backend Python dependencies
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Backend pytest
+        run: npm --prefix backend run pytest
+
+      - name: Runtime contract tests
+        run: npm --prefix backend run test:contracts
+
+  backend-reliability:
+    name: Reliability Suite
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20'
+
+      - name: Install backend npm dependencies
+        run: npm install --prefix backend
+
+      - name: Reliability suite
+        run: npm --prefix backend run ci:reliability

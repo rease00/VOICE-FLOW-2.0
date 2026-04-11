@@ -1,5 +1,6 @@
-﻿import { GenerationSettings, NormalizedSynthesisRequest } from '../types';
-import { normalizeEmotionTag } from './emotionTagRules';
+import { ActiveTtsEngineKey, GenerationSettings, NormalizedSynthesisRequest } from '../types';
+
+type SynthesisEngine = GenerationSettings['engine'] | 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO';
 
 export const MAX_SYNTHESIS_WORDS = 5000;
 
@@ -9,7 +10,6 @@ const ENGINE_SPEED_BOUNDS: Record<
 > = {
   PRIME: { min: 0.7, max: 1.3, default: 1.0 },
   VECTOR: { min: 0.7, max: 1.3, default: 1.0 },
-  DUNO: { min: 0.7, max: 1.3, default: 1.0 },
 };
 
 const clampNumber = (value: number, min: number, max: number): number => {
@@ -41,7 +41,7 @@ export const countRequestWords = (text: string): number => {
     .filter(Boolean).length;
 };
 
-export const createSynthesisTraceId = (engine: GenerationSettings['engine']): string => {
+export const createSynthesisTraceId = (engine: SynthesisEngine): string => {
   const prefix = String(engine || 'TTS').toLowerCase();
   const ts = Date.now().toString(36);
   const rand = Math.floor(Math.random() * 0xffffff).toString(36).padStart(4, '0');
@@ -49,7 +49,7 @@ export const createSynthesisTraceId = (engine: GenerationSettings['engine']): st
 };
 
 export const normalizeSynthesisRequest = (input: {
-  engine: GenerationSettings['engine'];
+  engine: SynthesisEngine;
   text: string;
   voiceId: string;
   language?: string | undefined;
@@ -59,7 +59,7 @@ export const normalizeSynthesisRequest = (input: {
   traceId?: string | undefined;
   requestId?: string | undefined;
 }): NormalizedSynthesisRequest => {
-  const speedBounds = ENGINE_SPEED_BOUNDS[input.engine] || ENGINE_SPEED_BOUNDS.PRIME;
+  const speedBounds = ENGINE_SPEED_BOUNDS[input.engine === 'PRIME' ? 'PRIME' : 'VECTOR'] || ENGINE_SPEED_BOUNDS.PRIME;
   const text = String(input.text || '').replace(/\s+/g, ' ').trim();
   const voiceId = String(input.voiceId || '').trim();
   const detectedLanguage = input.language
@@ -71,7 +71,7 @@ export const normalizeSynthesisRequest = (input: {
     speedBounds.max
   );
   const rawEmotion = String(input.emotion || '').trim();
-  const emotion = normalizeEmotionTag(rawEmotion) || rawEmotion || undefined;
+  const emotion = rawEmotion || undefined;
   const style = String(input.style || '').trim() || undefined;
   const trace_id = String(input.traceId || '').trim() || undefined;
   const request_id = (
@@ -91,4 +91,5 @@ export const normalizeSynthesisRequest = (input: {
     request_id,
   };
 };
+
 

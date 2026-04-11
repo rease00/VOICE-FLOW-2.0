@@ -16,6 +16,20 @@ describe('createStudioObjectUrlRegistry', () => {
     expect(registry.getTrackedCount()).toBe(1);
   });
 
+  it('does not revoke when replacing a blob URL with itself', () => {
+    const revoked: string[] = [];
+    const registry = createStudioObjectUrlRegistry({
+      revokeObjectUrl: (url) => {
+        revoked.push(url);
+      },
+    });
+
+    registry.replace('blob:same-audio', 'blob:same-audio');
+
+    expect(revoked).toEqual([]);
+    expect(registry.getTrackedCount()).toBe(1);
+  });
+
   it('keeps only visible history and pinned URLs during reconciliation', () => {
     const revoked: string[] = [];
     const registry = createStudioObjectUrlRegistry({

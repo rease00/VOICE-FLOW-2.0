@@ -132,6 +132,7 @@ const headers = {
   ...authHeaders,
   'Content-Type': 'application/json',
 };
+const TTS_V2_SESSION_HEADER = 'x-vf-tts-session-key';
 
 const pickEngine = (index) => {
   const frac = (index % 100) / 100;
@@ -166,13 +167,72 @@ const parseBody = async (response) => {
   }
 };
 
+const toPositiveMs = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return parsed > 0 ? Math.round(parsed) : 0;
+};
+
+const parseRetryAfterMs = (response, body) => {
+  if (!response) return 0;
+  const detail = body && typeof body === 'object' && body.detail && typeof body.detail === 'object'
+    ? body.detail
+    : (body && typeof body === 'object' ? body : {});
+
+  const hintedMs = [
+    detail?.retryAfterMs,
+    detail?.retry_after_ms,
+    body?.retryAfterMs,
+    body?.retry_after_ms,
+  ]
+    .map((value) => toPositiveMs(value))
+    .find((value) => value > 0) || 0;
+  if (hintedMs > 0) return hintedMs;
+
+  const headerValue = String(response.headers.get('retry-after') || '').trim();
+  if (!headerValue) return 0;
+
+  const secondsValue = Number.parseFloat(headerValue);
+  if (Number.isFinite(secondsValue) && secondsValue > 0) {
+    return Math.max(250, Math.round(secondsValue * 1000));
+  }
+
+  const dateMs = Date.parse(headerValue);
+  if (Number.isFinite(dateMs) && dateMs > 0) {
+    const deltaMs = dateMs - Date.now();
+    return deltaMs > 0 ? Math.max(250, Math.round(deltaMs)) : 0;
+  }
+  return 0;
+};
+
+const issueTtsV2SessionKey = async () => {
+  const response = await requestWithTimeout(
+    `${baseUrl}/tts/v2/sessions`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({}),
+    },
+    Math.min(timeoutMs, 30_000)
+  );
+  const body = await parseBody(response);
+  if (!response.ok) {
+    const detail = typeof body === 'string' ? body : JSON.stringify(body || {});
+    throw new Error(`Failed to issue TTS v2 session key (${response.status}): ${detail}`);
+  }
+  const sessionKey = String(body?.sessionKey || '').trim();
+  if (!sessionKey) {
+    throw new Error('TTS v2 session creation succeeded but sessionKey was empty.');
+  }
+  return sessionKey;
+};
+
 const classifyFailure = (statusCode, payload) => classifyAuditFailure({ status: statusCode, payload });
 
 const runPreflight = async () => {
   const checks = [];
   const targets = [
     { name: 'health', url: `${baseUrl}/health` },
-    { name: 'enginesStatus', url: `${baseUrl}/tts/engines/status` },
     { name: 'queueMetrics', url: `${baseUrl}/admin/tts/queue/metrics` },
   ];
 
@@ -221,10 +281,14 @@ const pollJobUntilTerminal = async (jobId, deadlineMs) => {
   let attempts = 0;
   while (Date.now() < deadlineMs) {
     attempts += 1;
-    const response = await requestWithTimeout(`${baseUrl}/tts/jobs/${encodeURIComponent(jobId)}`, {
-      method: 'GET',
-      headers,
-    }, Math.min(timeoutMs, 30_000));
+    const response = await requestWithTimeout(
+      `${baseUrl}/tts/v2/jobs/${encodeURIComponent(jobId)}?includeResult=1`,
+      {
+        method: 'GET',
+        headers,
+      },
+      Math.min(timeoutMs, 30_000)
+    );
     const body = await parseBody(response);
     const jobStatus = terminalFromStatus(body?.status);
     if (!response.ok) {
@@ -295,17 +359,21 @@ const makePayload = (engine, requestId) => {
   };
 };
 
-const runJobsPath = async (engine, requestId) => {
+const runJobsPath = async (engine, requestId, sessionKey) => {
   const started = Date.now();
   const payload = makePayload(engine, requestId);
-  const response = await requestWithTimeout(`${baseUrl}/tts/jobs`, {
+  const response = await requestWithTimeout(`${baseUrl}/tts/v2/jobs`, {
     method: 'POST',
-    headers,
+    headers: {
+      ...headers,
+      [TTS_V2_SESSION_HEADER]: String(sessionKey || '').trim(),
+    },
     body: JSON.stringify(payload),
   });
   const body = await parseBody(response);
   const elapsedMs = Date.now() - started;
   if (!response.ok) {
+    const retryAfterMs = parseRetryAfterMs(response, body);
     return {
       ok: false,
       mode: 'jobs',
@@ -318,6 +386,7 @@ const runJobsPath = async (engine, requestId) => {
       errorCode: body?.detail?.errorCode || body?.errorCode || null,
       reason: body?.detail?.reason || body?.reason || 'submit_failed',
       failureClass: classifyFailure(response.status, body),
+      retryAfterMs,
       responseBody: body,
     };
   }
@@ -358,18 +427,22 @@ const runJobsPath = async (engine, requestId) => {
   };
 };
 
-const runSyncPath = async (engine, requestId) => {
+const runSyncPath = async (engine, requestId, sessionKey) => {
   const started = Date.now();
   const payload = makePayload(engine, requestId);
-  const response = await requestWithTimeout(`${baseUrl}/tts/synthesize?wait_ms=${encodeURIComponent(String(syncWaitMs))}`, {
+  const response = await requestWithTimeout(`${baseUrl}/tts/v2/jobs`, {
     method: 'POST',
-    headers,
+    headers: {
+      ...headers,
+      [TTS_V2_SESSION_HEADER]: String(sessionKey || '').trim(),
+    },
     body: JSON.stringify(payload),
   });
   const body = await parseBody(response);
   const elapsedMs = Date.now() - started;
 
-  if (response.status >= 500) {
+  if (!response.ok && response.status >= 500) {
+    const retryAfterMs = parseRetryAfterMs(response, body);
     return {
       ok: false,
       mode: 'sync',
@@ -382,11 +455,31 @@ const runSyncPath = async (engine, requestId) => {
       errorCode: body?.detail?.errorCode || body?.errorCode || null,
       reason: body?.detail?.reason || body?.reason || 'sync_5xx',
       failureClass: classifyFailure(response.status, body),
+      retryAfterMs,
       responseBody: body,
     };
   }
 
-  if (response.status === 200) {
+  if (!response.ok) {
+    const retryAfterMs = parseRetryAfterMs(response, body);
+    return {
+      ok: false,
+      mode: 'sync',
+      engine,
+      requestId,
+      statusCode: response.status,
+      elapsedMs,
+      accepted: false,
+      terminalStatus: 'failed',
+      errorCode: body?.detail?.errorCode || body?.errorCode || null,
+      reason: body?.detail?.reason || body?.reason || 'sync_submit_failed',
+      failureClass: classifyFailure(response.status, body),
+      retryAfterMs,
+      responseBody: body,
+    };
+  }
+
+  if (response.status === 200 || response.status === 201) {
     return {
       ok: true,
       mode: 'sync',
@@ -436,7 +529,7 @@ const runSyncPath = async (engine, requestId) => {
   };
 };
 
-const runOne = async (index) => {
+const runOne = async (index, sessionKey) => {
   const requestMode = pickModeForRequest(index);
   const engine = pickEngine(index);
   const requestId = `load_${requestMode}_${engine.toLowerCase()}_${Date.now().toString(36)}_${index}`;
@@ -444,8 +537,8 @@ const runOne = async (index) => {
   return withBoundedRetry(
     async () => {
       try {
-        if (requestMode === 'jobs') return await runJobsPath(engine, requestId);
-        return await runSyncPath(engine, requestId);
+        if (requestMode === 'jobs') return await runJobsPath(engine, requestId, sessionKey);
+        return await runSyncPath(engine, requestId, sessionKey);
       } catch (error) {
         return {
           ok: false,
@@ -466,6 +559,12 @@ const runOne = async (index) => {
       maxRetries: retryMax,
       baseDelayMs: retryBaseMs,
       shouldRetry: (result) => !result.ok && isTransientFailureClass(String(result.failureClass || '')),
+      getRetryDelayMs: (result, _attempt, fallbackMs) => {
+        const hintedMs = toPositiveMs(result?.retryAfterMs);
+        if (hintedMs <= 0) return fallbackMs;
+        const jitterMs = Math.min(800, Math.max(100, Math.round(hintedMs * 0.05)));
+        return Math.max(fallbackMs, hintedMs + jitterMs);
+      },
     }
   );
 };
@@ -564,7 +663,7 @@ const summarize = (results, startedAt, finishedAt, preflight, queueTelemetry = [
       syncWaitMs,
       textChars,
       engineSplit: {
-        gem: Number(gemRatio.toFixed(4)),
+        gem: Number(primeRatio.toFixed(4)),
         vector: Number((1 - primeRatio).toFixed(4)),
       },
       minCompletionRate,
@@ -649,6 +748,7 @@ const main = async () => {
     process.exitCode = 1;
     return;
   }
+  const sessionKey = await issueTtsV2SessionKey();
 
   const queueTelemetry = [];
   let queueSamplerActive = true;
@@ -701,7 +801,7 @@ const main = async () => {
       const currentIndex = nextIndex;
       nextIndex += 1;
       if (currentIndex >= requestsTotal) return;
-      const outcome = await runOne(currentIndex);
+      const outcome = await runOne(currentIndex, sessionKey);
       results.push(outcome);
     }
   });
