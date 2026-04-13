@@ -11,8 +11,8 @@ import {
 } from '../src/features/landing/components/deepfakeFooterConfig';
 
 describe('deepfake footer tool', () => {
-  it('uses the backend proxy contract and WAV-only upload policy', () => {
-    expect(WATERMARK_CHECK_PROXY_PATH).toBe('/api/backend/v2/extract-watermark');
+  it('uses the canonical Next.js watermark contract and WAV-only upload policy', () => {
+    expect(WATERMARK_CHECK_PROXY_PATH).toBe('/api/v1/voice-clone/watermark');
     expect(WATERMARK_CHECK_FORM_FIELD).toBe('file');
     expect(isSupportedWatermarkFile({ name: 'proof.wav', type: 'audio/wav' })).toBe(true);
     expect(isSupportedWatermarkFile({ name: 'proof.mp3', type: 'audio/mpeg' })).toBe(false);

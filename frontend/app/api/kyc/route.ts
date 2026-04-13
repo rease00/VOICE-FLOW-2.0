@@ -1,24 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
 import crypto from 'crypto';
-
-// ─── Admin SDK init ─────────────────────────────────────────────────────────
-
-function getAdminApp() {
-  const existing = getApps();
-  if (existing.length > 0) return existing[0]!;
-  return initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID ?? '',
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? '',
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-    }),
-  });
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
+import { NextRequest, NextResponse } from 'next/server';
+import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../../../src/server/firebaseAdmin';
 
 async function verifyToken(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -26,8 +8,7 @@ async function verifyToken(req: NextRequest) {
     throw new Error('Missing or invalid Authorization header');
   }
   const token = authHeader.slice(7);
-  const decoded = await getAuth(getAdminApp()).verifyIdToken(token);
-  return decoded;
+  return getFirebaseAdminAuth().verifyIdToken(token);
 }
 
 function sanitize(input: string): string {
@@ -37,7 +18,7 @@ function sanitize(input: string): string {
 function verifyVeriffSignature(
   payload: string,
   signature: string | null,
-  secret: string
+  secret: string,
 ): boolean {
   if (!signature) return false;
   const expected = crypto
@@ -46,11 +27,9 @@ function verifyVeriffSignature(
     .digest('hex');
   return crypto.timingSafeEqual(
     Buffer.from(signature, 'hex'),
-    Buffer.from(expected, 'hex')
+    Buffer.from(expected, 'hex'),
   );
 }
-
-// ─── POST ───────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   try {
@@ -61,17 +40,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing action' }, { status: 400 });
     }
 
-    // ── Veriff webhook callback (no user auth — uses HMAC) ──
     if (action === 'veriff-callback') {
       return handleVeriffWebhook(req, body);
     }
 
-    // ── All other actions require user auth ──
     const decoded = await verifyToken(req);
     const uid = decoded.uid;
-    const db = getFirestore(getAdminApp());
+    const db = getFirebaseAdminFirestore();
 
-    // ── Create KYC session ──
     if (action === 'create-session') {
       let session: { id: string; url: string; status: string };
 
@@ -96,7 +72,7 @@ export async function POST(req: NextRequest) {
           const errData = await veriffRes.json().catch(() => ({}));
           return NextResponse.json(
             { error: 'Veriff session creation failed', details: errData },
-            { status: 502 }
+            { status: 502 },
           );
         }
 
@@ -107,9 +83,8 @@ export async function POST(req: NextRequest) {
           status: 'pending',
         };
       } else {
-        // Dev mode — mock session
         session = {
-          id: 'dev-session-' + uid,
+          id: `dev-session-${uid}`,
           url: '',
           status: 'pending',
         };
@@ -117,13 +92,14 @@ export async function POST(req: NextRequest) {
 
       await db.doc(`users/${uid}`).set(
         { kycStatus: 'pending', kycSessionId: session.id },
-        { merge: true }
+        { merge: true },
       );
 
-      return NextResponse.json({ session: { id: session.id, url: session.url, status: 'pending' } });
+      return NextResponse.json({
+        session: { id: session.id, url: session.url, status: 'pending' },
+      });
     }
 
-    // ── Sign publisher agreement ──
     if (action === 'sign-agreement') {
       const version = typeof body.version === 'string' ? sanitize(body.version) : '';
       if (!version) {
@@ -135,14 +111,14 @@ export async function POST(req: NextRequest) {
         version,
         signedAt: new Date().toISOString(),
         ipAddress: req.headers.get('x-forwarded-for') || 'unknown',
-        signatureHash: uid + ':' + version + ':' + Date.now(),
+        signatureHash: `${uid}:${version}:${Date.now()}`,
       };
 
       const docRef = await db.collection('agreements').add(agreement);
 
       await db.doc(`users/${uid}`).set(
         { agreementSigned: true, agreementVersion: version },
-        { merge: true }
+        { merge: true },
       );
 
       return NextResponse.json({
@@ -150,7 +126,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ── Check status ──
     if (action === 'check-status') {
       const doc = await db.doc(`users/${uid}`).get();
       const data = doc.data();
@@ -167,13 +142,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ─── GET ────────────────────────────────────────────────────────────────────
-
 export async function GET(req: NextRequest) {
   try {
     const decoded = await verifyToken(req);
     const uid = decoded.uid;
-    const db = getFirestore(getAdminApp());
+    const db = getFirebaseAdminFirestore();
 
     const doc = await db.doc(`users/${uid}`).get();
     const data = doc.data();
@@ -189,11 +162,9 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ─── Veriff Webhook ─────────────────────────────────────────────────────────
-
 async function handleVeriffWebhook(
   req: NextRequest,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ): Promise<NextResponse> {
   const secret = process.env.VERIFF_API_SECRET;
   if (!secret) {
@@ -216,19 +187,12 @@ async function handleVeriffWebhook(
   }
 
   const uid = sanitize(verification.vendorData);
-  const db = getFirestore(getAdminApp());
-
-  // Veriff decision codes: 9001 = approved, 9102/9103/9104 = declined/resubmit/expired
-  let kycStatus: string;
-  if (verification.code === 9001) {
-    kycStatus = 'verified';
-  } else {
-    kycStatus = 'rejected';
-  }
+  const db = getFirebaseAdminFirestore();
+  const kycStatus = verification.code === 9001 ? 'verified' : 'rejected';
 
   await db.doc(`users/${uid}`).set(
     { kycStatus, kycVerifiedAt: new Date().toISOString() },
-    { merge: true }
+    { merge: true },
   );
 
   return NextResponse.json({ status: 'ok' });

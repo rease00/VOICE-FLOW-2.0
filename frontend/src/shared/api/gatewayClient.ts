@@ -793,23 +793,6 @@ export const separateStem = async (
   throw removedGatewayFeature('Stem separation');
 };
 
-export const muxDubbedVideo = async (
-  videoFile: File,
-  dubAudioFile: File,
-  options?: {
-    speechGain?: number;
-    backgroundGain?: number;
-    normalize?: boolean;
-    backgroundAudio?: File;
-    baseUrl?: string;
-  }
-): Promise<Blob> => {
-  void videoFile;
-  void dubAudioFile;
-  void options;
-  throw removedGatewayFeature('Video dubbing mux');
-};
-
 export const fetchTtsJobChunkAudio = async (
   jobId: string,
   chunkIndex: number,

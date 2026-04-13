@@ -14,7 +14,6 @@ type ToastFn = (msg: string, type?: 'success' | 'error' | 'info') => void;
 
 interface NovelEditorShellInnerProps {
   settings: GenerationSettings;
-  mediaBackendUrl: string;
   onToast: ToastFn;
   onSendToStudio?: ((text: string, title: string) => void) | undefined;
   onBack?: (() => void) | undefined;
@@ -22,7 +21,6 @@ interface NovelEditorShellInnerProps {
 
 const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
   settings,
-  mediaBackendUrl,
   onToast,
   onSendToStudio,
   onBack,
@@ -124,7 +122,7 @@ const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
             )}
           </div>
 
-          <ImportModal mediaBackendUrl={mediaBackendUrl} onToast={onToast} />
+          <ImportModal onToast={onToast} />
 
           <button
             onClick={() => setToolsOpen((v) => !v)}

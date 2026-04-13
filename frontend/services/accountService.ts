@@ -6,8 +6,13 @@ import { firebaseAuth } from './firebaseClient';
 import { primeLoginRoutingAfterAccountBootstrap } from './backendRoutingService';
 import { HistoryItem } from '../types';
 
+const ACCOUNT_BILLING_API_BASE = '/api/v1';
+
 const toBaseUrl = (input?: string): string => {
-  return resolveApiBaseUrl(input);
+  if (typeof input === 'string' && input.trim()) {
+    return resolveApiBaseUrl(input);
+  }
+  return ACCOUNT_BILLING_API_BASE;
 };
 
 const BILLING_IDEMPOTENCY_STORAGE_PREFIX = 'vf_billing_checkout_idempotency_v1';
@@ -52,6 +57,15 @@ const writePersistedBillingIdempotencyKey = (storageKey: string, value: string):
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.setItem(storageKey, value);
+  } catch {
+    // no-op
+  }
+};
+
+const clearPersistedBillingIdempotencyKey = (storageKey: string): void => {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(storageKey);
   } catch {
     // no-op
   }
@@ -170,9 +184,9 @@ export interface AccountBillingPlanSummary {
     recurringInr: number;
     discountPercent: number;
   };
-  tokenPackDiscountPercent?: number;
-  vcTokenPackDiscountPercent?: number;
-  launcherOfferConsumed?: boolean;
+  tokenPackDiscountPercent?: number | undefined;
+  vcTokenPackDiscountPercent?: number | undefined;
+  launcherOfferConsumed?: boolean | undefined;
 }
 
 export interface AccountInvoiceSummary {
@@ -195,54 +209,54 @@ export interface AccountInvoiceSummary {
 }
 
 export interface AccountBillingSummary {
-  generatedAt?: string;
+  generatedAt?: string | undefined;
   profile: {
     uid: string;
-    userId?: string | null;
-    displayName?: string | null;
-    email?: string | null;
-    billingProfile?: AccountBillingProfile | null;
-    status?: string | null;
-    createdAt?: string | null;
-    updatedAt?: string | null;
+    userId?: string | null | undefined;
+    displayName?: string | null | undefined;
+    email?: string | null | undefined;
+    billingProfile?: AccountBillingProfile | null | undefined;
+    status?: string | null | undefined;
+    createdAt?: string | null | undefined;
+    updatedAt?: string | null | undefined;
   };
   plan: AccountBillingPlanSummary;
   billing: {
-    provider?: string | null;
-    hasBillingManagement?: boolean;
-    stripeReady?: boolean;
-    hasPortalAccess?: boolean;
-    paymentGateway?: string | null;
-    stripeCustomerId?: string | null;
-    subscriptionId?: string | null;
-    customerId?: string | null;
-    billingCountry?: string | null;
-    currencyMode?: string | null;
+    provider?: string | null | undefined;
+    hasBillingManagement?: boolean | undefined;
+    stripeReady?: boolean | undefined;
+    hasPortalAccess?: boolean | undefined;
+    paymentGateway?: string | null | undefined;
+    stripeCustomerId?: string | null | undefined;
+    subscriptionId?: string | null | undefined;
+    customerId?: string | null | undefined;
+    billingCountry?: string | null | undefined;
+    currencyMode?: string | null | undefined;
   };
   subscription: {
-    id?: string | null;
+    id?: string | null | undefined;
     status: string;
     active: boolean;
     cancelAtPeriodEnd: boolean;
-    cancelAt?: string | null;
-    currentPeriodStart?: string | null;
-    currentPeriodEnd?: string | null;
-    nextBillingAt?: string | null;
-    startedAt?: string | null;
-    trialEnd?: string | null;
-    latestInvoiceId?: string | null;
+    cancelAt?: string | null | undefined;
+    currentPeriodStart?: string | null | undefined;
+    currentPeriodEnd?: string | null | undefined;
+    nextBillingAt?: string | null | undefined;
+    startedAt?: string | null | undefined;
+    trialEnd?: string | null | undefined;
+    latestInvoiceId?: string | null | undefined;
   };
   paymentMethod?: {
-    id?: string | null;
-    brand?: string | null;
-    last4?: string | null;
-    funding?: string | null;
-    expMonth?: number | null;
-    expYear?: number | null;
+    id?: string | null | undefined;
+    brand?: string | null | undefined;
+    last4?: string | null | undefined;
+    funding?: string | null | undefined;
+    expMonth?: number | null | undefined;
+    expYear?: number | null | undefined;
   } | null;
-    tokenPack?: {
-      discountPercent?: number;
-    } | null;
+  tokenPack?: {
+    discountPercent?: number | undefined;
+  } | null;
   invoices: AccountInvoiceSummary[];
   warnings: string[];
 }
@@ -268,16 +282,16 @@ export interface RazorpayCheckoutOptions {
 export interface BillingCheckoutLaunch {
   provider: string;
   kind: 'checkout' | 'subscription' | 'redirect';
-  redirectUrl?: string;
-  checkoutOptions?: RazorpayCheckoutOptions | null;
-  subscriptionOptions?: RazorpayCheckoutOptions | null;
-  sessionId?: string;
-  packKey?: TokenPackKey | BillingVcPackKey;
-  packVf?: number;
-  packVc?: number;
-  standardAmountInr?: number;
-  finalAmountInr?: number;
-  discountPercent?: number;
+  redirectUrl?: string | undefined;
+  checkoutOptions?: RazorpayCheckoutOptions | null | undefined;
+  subscriptionOptions?: RazorpayCheckoutOptions | null | undefined;
+  sessionId?: string | undefined;
+  packKey?: TokenPackKey | BillingVcPackKey | VnTokenPackKey | undefined;
+  packVf?: number | undefined;
+  packVc?: number | undefined;
+  standardAmountInr?: number | undefined;
+  finalAmountInr?: number | undefined;
+  discountPercent?: number | undefined;
 }
 
 export interface BillingSubscriptionActionResult {
@@ -299,12 +313,12 @@ export const ACCOUNT_DELETE_CONFIRM_PHRASE = 'DELETE_MY_ACCOUNT';
 export interface AccountUserProfile {
   uid: string;
   userId: string;
-  displayName?: string;
-  email?: string;
-  billingProfile?: AccountBillingProfile | null;
-  status?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  displayName?: string | undefined;
+  email?: string | undefined;
+  billingProfile?: AccountBillingProfile | null | undefined;
+  status?: string | undefined;
+  createdAt?: string | undefined;
+  updatedAt?: string | undefined;
 }
 
 export interface SupportConversation {
@@ -313,19 +327,19 @@ export interface SupportConversation {
   userId: string;
   status: 'open' | 'ai_answered' | 'needs_human' | 'resolved' | string;
   priority: 'green' | 'yellow' | 'red' | string;
-  lastMessageAt?: string;
-  assignedTo?: string;
-  updatedAt?: string;
+  lastMessageAt?: string | undefined;
+  assignedTo?: string | undefined;
+  updatedAt?: string | undefined;
 }
 
 export interface SupportMessage {
   messageId: string;
   conversationId: string;
   fromType: 'user' | 'ai' | 'agent' | string;
-  uid?: string;
-  userId?: string;
+  uid?: string | undefined;
+  userId?: string | undefined;
   text: string;
-  createdAt?: string;
+  createdAt?: string | undefined;
 }
 
 interface GenerationHistoryResponse {
@@ -555,15 +569,21 @@ export const convertVfToVc = async (
   vfAmount: number,
   baseUrl?: string
 ): Promise<AccountEntitlements> => {
+  const storageKey = resolveBillingIdempotencyStorageKey('wallet-convert', `vf-to-vc:${vfAmount}`);
+  const idempotencyKey = makeBillingIdempotencyKey('wallet-convert', `vf-to-vc:${vfAmount}`);
   const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/wallet/vc/convert`,
+      `${toBaseUrl(baseUrl)}/billing/wallet/vc/convert`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vfAmount }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({ vfAmount, requestId: idempotencyKey, idempotencyKey }),
     },
     { requireAuth: true }
   ));
+  clearPersistedBillingIdempotencyKey(storageKey);
   return payload?.entitlements as AccountEntitlements;
 };
 
@@ -600,7 +620,7 @@ export const startVnTokenPackCheckout = async (
 
 export const redeemCoupon = async (code: string, baseUrl?: string): Promise<{ creditedVf: number; entitlements: AccountEntitlements }> => {
   const payload = await readJsonOrThrow<{ creditedVf?: number; entitlements: AccountEntitlements }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/wallet/coupons/redeem`,
+      `${toBaseUrl(baseUrl)}/billing/coupons/redeem`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -641,7 +661,7 @@ export const postSupportMessage = async (
     aiReason?: string;
   }>(
     await authFetch(
-      `${toBaseUrl(baseUrl)}/support/messages`,
+      `${toBaseUrl(baseUrl)}/account/support/messages`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -659,7 +679,7 @@ export const fetchMySupportConversations = async (
 ): Promise<SupportConversation[]> => {
   const payload = await readJsonOrThrow<{ items?: SupportConversation[] }>(
     await authFetch(
-      `${toBaseUrl(baseUrl)}/support/conversations/me?limit=${encodeURIComponent(String(limit))}`,
+      `${toBaseUrl(baseUrl)}/account/support/conversations/me?limit=${encodeURIComponent(String(limit))}`,
       undefined,
       { requireAuth: true }
     )
@@ -673,7 +693,7 @@ export const markSupportConversationUnresolved = async (
 ): Promise<SupportConversation> => {
   const payload = await readJsonOrThrow<{ conversation: SupportConversation }>(
     await authFetch(
-      `${toBaseUrl(baseUrl)}/support/conversations/${encodeURIComponent(conversationId)}/still-unresolved`,
+      `${toBaseUrl(baseUrl)}/account/support/conversations/${encodeURIComponent(conversationId)}/still-unresolved`,
       { method: 'POST' },
       { requireAuth: true }
     )

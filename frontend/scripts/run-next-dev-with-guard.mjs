@@ -5,16 +5,16 @@ import { ensureLoopbackPortAvailable, resolveGuardPort } from './frontend-startu
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(scriptDir, '..');
-const nextBin = path.join(frontendRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
 const devArgs = process.argv.slice(2);
+const customServerScript = path.join(frontendRoot, 'scripts', 'custom-next-server.ts');
 
 const start = async () => {
   const port = resolveGuardPort(devArgs, 3000);
   await ensureLoopbackPortAvailable('next dev', port);
 
-  const child = spawn(process.execPath, [nextBin, 'dev', ...devArgs], {
+  const child = spawn(process.execPath, ['--experimental-strip-types', customServerScript, '--dev'], {
     cwd: frontendRoot,
-    env: process.env,
+    env: { ...process.env, PORT: String(port) },
     stdio: 'inherit',
   });
 
@@ -32,4 +32,3 @@ start().catch((error) => {
   console.error(detail);
   process.exit(1);
 });
-

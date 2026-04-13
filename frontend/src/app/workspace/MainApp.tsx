@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
@@ -25,9 +25,6 @@ import {
   StudioQueueItem,
   StudioQueueState,
   StudioSingleInflightGenerationLedger,
-  DubbingClip,
-  DubbingClipboard,
-  CpuDubbingProfile,
 } from '../../../types';
 import { USER_CONTEXT_CHARACTER_SYNC_WARNING_EVENT, useUser } from '../../../contexts/UserContext';
 import { refreshStudioSpeakerVoices } from '../../shared/voices/castAssignment';
@@ -49,7 +46,8 @@ import { TelemetrySparkline } from '../../../components/ui/TelemetrySparkline';
 import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WORKSPACE_NAV_SECTION_LABELS, WorkspaceTab as Tab } from '../../features/workspace/model/tabs';
 import { useBillingActions } from '../../features/billing/hooks/useBillingActions';
 import { cancelTtsJob, cancelTtsSession, createTtsJob, getTtsJob } from '../../shared/api/gatewayClient';
-import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../../shared/api/config';
+import { resolveApiBaseUrl } from '../../shared/api/config';
+import { API_ROUTE_FAMILIES } from '../../shared/api/routes';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../../shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../../shared/ui/useWorkspaceViewport';
 import { useManagedTabs } from '../../shared/ui/tabs';
@@ -75,7 +73,6 @@ import {
   SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT,
   applyTokenPackDiscount,
   appendRollingSample,
-  createDubbingClip,
   formatInr,
   formatMobileAvailableCreditsPercent,
   getStaticVoiceFallback,
@@ -90,7 +87,6 @@ import {
   resolveEngineToken,
   resolveInitialStudioDraftText,
   resolveTokenPackDiscountPercent,
-  resolveMediaBackendUrl,
   normalizePlanToken,
   PRIME_ACCESS_LOCK_MESSAGE,
   resolveSpeakerMappedVoiceId,
@@ -99,7 +95,6 @@ import {
   resolvePrimeAllowedEngines,
   resolveWorkspaceRoutePath,
   resolveWorkspaceTabFromPathname,
-  runDubbingEditorTool,
   shouldRefreshSelectedEngineTelemetry,
 } from './mainAppHelpers';
 import {
@@ -210,123 +205,6 @@ const loadStudioMixService = (() => {
     return cached;
   };
 })();
-const REMOVED_DUBBING_FEATURE_MESSAGE = 'Video dubbing services have been removed from this build.';
-const reportRemovedDubbingFeature = (feature: string) => {
-  console.warn(`[MainApp] ${feature} requested, but ${REMOVED_DUBBING_FEATURE_MESSAGE}`);
-};
-type RemovedDubbingTimelineUndoRedo = {
-  past: DubbingClip[][];
-  current: DubbingClip[];
-  future: DubbingClip[][];
-  changed: boolean;
-};
-type RemovedDubbingTimelineService = {
-  removeClip: (clips: DubbingClip[], clipId: string) => { clips: DubbingClip[]; removed: DubbingClip | null };
-  removeCompletedClips: (clips: DubbingClip[]) => DubbingClip[];
-  clearAllClips: () => DubbingClip[];
-  undoTimeline: (past: DubbingClip[][], current: DubbingClip[], future: DubbingClip[][]) => RemovedDubbingTimelineUndoRedo;
-  redoTimeline: (past: DubbingClip[][], current: DubbingClip[], future: DubbingClip[][]) => RemovedDubbingTimelineUndoRedo;
-  copyClip: (clips: DubbingClip[], clipId: string) => DubbingClipboard | null;
-  pasteClipAfterSelection: (
-    clips: DubbingClip[],
-    selectedClipId: string,
-    clipboard: DubbingClipboard | null
-  ) => { clips: DubbingClip[]; pastedId: string | null };
-  cutClip: (clips: DubbingClip[], clipId: string) => { clips: DubbingClip[]; removed: DubbingClip | null };
-  splitClipAtPlayhead: (
-    clips: DubbingClip[],
-    clipId: string,
-    playheadMs: number
-  ) => { clips: DubbingClip[]; splitIds: [string, string] | null };
-  trimClipWindow: (
-    clips: DubbingClip[],
-    clipId: string,
-    options: { trimInMs?: number; trimOutMs?: number }
-  ) => DubbingClip[];
-  moveClipLayer: (clips: DubbingClip[], clipId: string, layer: DubbingClip['layer']) => DubbingClip[];
-};
-type RemovedDubbingStemPack = {
-  fullMix: AudioBuffer;
-  speechStem: AudioBuffer;
-  backgroundStem: AudioBuffer;
-  speechStemBlob: Blob;
-  backgroundStemBlob: Blob;
-  duration: number;
-};
-type RemovedDubbingService = {
-  extractAndSeparateDubbingStems: (
-    file: File,
-    options?: { backendUrl?: string; preferBackendModel?: boolean; onStatus?: (message: string) => void }
-  ) => Promise<RemovedDubbingStemPack>;
-};
-const loadDubbingTimelineService = (() => {
-  let cached: Promise<RemovedDubbingTimelineService> | null = null;
-  return () => {
-    cached ??= Promise.resolve({
-      removeClip: (clips, clipId) => {
-        reportRemovedDubbingFeature('Timeline clip remove');
-        const index = clips.findIndex((clip) => clip.id === clipId);
-        if (index < 0) return { clips, removed: null };
-        return { clips: [...clips.slice(0, index), ...clips.slice(index + 1)], removed: clips[index] ?? null };
-      },
-      removeCompletedClips: (clips) => {
-        reportRemovedDubbingFeature('Timeline remove completed');
-        return clips.filter((clip) => clip.status !== 'completed');
-      },
-      clearAllClips: () => {
-        reportRemovedDubbingFeature('Timeline clear queue');
-        return [];
-      },
-      undoTimeline: (past, current, future) => {
-        reportRemovedDubbingFeature('Timeline undo');
-        return { past, current, future, changed: false };
-      },
-      redoTimeline: (past, current, future) => {
-        reportRemovedDubbingFeature('Timeline redo');
-        return { past, current, future, changed: false };
-      },
-      copyClip: (_clips, _clipId) => {
-        reportRemovedDubbingFeature('Timeline copy');
-        return null;
-      },
-      pasteClipAfterSelection: (clips, _selectedClipId, _clipboard) => {
-        reportRemovedDubbingFeature('Timeline paste');
-        return { clips, pastedId: null };
-      },
-      cutClip: (clips, clipId) => {
-        reportRemovedDubbingFeature('Timeline cut');
-        const index = clips.findIndex((clip) => clip.id === clipId);
-        if (index < 0) return { clips, removed: null };
-        return { clips: [...clips.slice(0, index), ...clips.slice(index + 1)], removed: clips[index] ?? null };
-      },
-      splitClipAtPlayhead: (clips, _clipId, _playheadMs) => {
-        reportRemovedDubbingFeature('Timeline split');
-        return { clips, splitIds: null };
-      },
-      trimClipWindow: (clips, _clipId, _options) => {
-        reportRemovedDubbingFeature('Timeline trim');
-        return clips;
-      },
-      moveClipLayer: (clips, _clipId, _layer) => {
-        reportRemovedDubbingFeature('Timeline layer move');
-        return clips;
-      },
-    });
-    return cached;
-  };
-})();
-
-const cloneDubbingTimelineSnapshot = (clips: DubbingClip[]): DubbingClip[] => clips.map((clip) => ({ ...clip }));
-const pushDubbingTimelineHistory = (
-  past: DubbingClip[][],
-  current: DubbingClip[],
-  maxEntries: number = 40
-): DubbingClip[][] => {
-  const next = [...past, cloneDubbingTimelineSnapshot(current)];
-  if (next.length <= maxEntries) return next;
-  return next.slice(next.length - maxEntries);
-};
-
 const loadAdminTabContent = () => import('../../features/admin/components/AdminTabContent');
 const loadNovelTabContent = () => import('../../features/novel/components/NovelTabContent');
 const loadVoiceCloningTabContent = () => import('../../features/voice-cloning/VoiceCloningTabContent');
@@ -339,19 +217,6 @@ const LazyStudioQueuePanel = lazy(async () => {
   const module = await import('../../../components/studio/StudioQueuePanel');
   return { default: module.StudioQueuePanel };
 });
-const loadDubbingService = (() => {
-  let cached: Promise<RemovedDubbingService> | null = null;
-  return () => {
-    cached ??= Promise.resolve({
-      extractAndSeparateDubbingStems: async (_file, options) => {
-        reportRemovedDubbingFeature('Stem extraction');
-        options?.onStatus?.('Video dubbing service removed from this build.');
-        throw new Error(REMOVED_DUBBING_FEATURE_MESSAGE);
-      },
-    });
-    return cached;
-  };
-})();
 const loadStudioQueueAudioService = (() => {
   let cached: Promise<typeof import('../../../services/studioQueueAudioService')> | null = null;
   return () => {
@@ -946,15 +811,6 @@ interface GenerationTimingSnapshot {
   coldStart?: boolean;
 }
 
-interface CachedDubbingStems {
-  key: string;
-  speechFile: File;
-  backgroundBuffer: AudioBuffer;
-  speechObjectUrl: string;
-  backgroundObjectUrl: string;
-  duration: number;
-}
-
 type AssistantApplyMode = 'replace' | 'append';
 
 interface AssistantRequestOptions {
@@ -980,22 +836,11 @@ interface BackendHealthState {
   severity: HealthSeverity;
 }
 
-type DubbingPhase = 'idle' | 'running' | 'error' | 'done';
-
-interface DubbingUiState {
-  phase: DubbingPhase;
-  progress: number;
-  stage: string;
-  error: string;
-  updatedAt: number;
-}
-
 const ENGINE_ORDER: ActiveTtsEngineKey[] = ['VECTOR', 'PRIME'];
 const FALLBACK_RUNTIME_URLS: Record<ActiveTtsEngineKey, string> = {
   PRIME: 'http://127.0.0.1:7810',
   VECTOR: 'http://127.0.0.1:7810',
 };
-const DEFAULT_MEDIA_BACKEND_URL = getDefaultApiBaseUrl();
 const SIMULATED_GENERATION_TICK_MS = 200;
 const EMPTY_RUNTIME_CATALOG: Record<ActiveTtsEngineKey, VoiceOption[]> = { PRIME: [], VECTOR: [] };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
@@ -1031,7 +876,6 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   perplexityApiKey: '',
   localLlmUrl: 'http://localhost:5000',
   geminiApiKey: '',
-  mediaBackendUrl: DEFAULT_MEDIA_BACKEND_URL,
   backendApiKey: '',
   voiceModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.PRIME,
@@ -1043,7 +887,6 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   autoEnhance: true,
   useModelSourceSeparation: true,
   preserveDubVoiceTone: false,
-  dubbingSourceLanguage: 'auto',
   multiSpeakerEnabled: true,
   speakerMapping: {},
   autoPlayGeneratedAudio: true,
@@ -1066,9 +909,6 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
   )
     ? rawMusicTrackId
     : DEFAULT_SETTINGS.musicTrackId;
-  const rawMediaBackendUrl = typeof value.mediaBackendUrl === 'string' ? value.mediaBackendUrl : '';
-  const mediaBackendSanitized = sanitizeConfiguredApiBaseUrl(rawMediaBackendUrl, DEFAULT_MEDIA_BACKEND_URL);
-
   const normalized: GenerationSettings = {
     ...DEFAULT_SETTINGS,
     ...value,
@@ -1103,9 +943,6 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     preserveDubVoiceTone: typeof value.preserveDubVoiceTone === 'boolean'
       ? value.preserveDubVoiceTone
       : DEFAULT_SETTINGS.preserveDubVoiceTone,
-    dubbingSourceLanguage: typeof value.dubbingSourceLanguage === 'string' && value.dubbingSourceLanguage.trim()
-      ? value.dubbingSourceLanguage.trim()
-      : DEFAULT_SETTINGS.dubbingSourceLanguage,
   uiMotionLevel:
     value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
       ? value.uiMotionLevel
@@ -1113,7 +950,6 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     multiSpeakerEnabled: typeof value.multiSpeakerEnabled === 'boolean'
       ? value.multiSpeakerEnabled
       : DEFAULT_SETTINGS.multiSpeakerEnabled,
-    mediaBackendUrl: mediaBackendSanitized.value,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
     voiceModel: typeof value.voiceModel === 'string' ? value.voiceModel : DEFAULT_SETTINGS.voiceModel,
     geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.PRIME),
@@ -1425,7 +1261,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = readStorageJson(STORAGE_KEYS.settings);
     return normalizeSettings(saved || DEFAULT_SETTINGS);
   });
-  const mediaBackendUrl = resolveMediaBackendUrl(settings);
+  const adminApiBaseUrl = resolveApiBaseUrl();
+  const studioApiBaseUrl = API_ROUTE_FAMILIES.studio;
   const deferredSettings = useDeferredValue(settings);
   const authenticatedUserId = String(user.uid || '').trim();
   const speakerVcReferenceOwnerKey = useMemo(() => {
@@ -1836,39 +1673,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [lastAssistantDraft, setLastAssistantDraft] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // --- Video Dubbing State ---
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [dubScript, setDubScript] = useState('');
-  const [dubbingClips, setDubbingClips] = useState<DubbingClip[]>([]);
-  const [selectedDubbingClipId, setSelectedDubbingClipId] = useState('');
-  const [dubbingClipboard, setDubbingClipboard] = useState<DubbingClipboard | null>(null);
-  const [dubbingHistoryPast, setDubbingHistoryPast] = useState<DubbingClip[][]>([]);
-  const [dubbingHistoryFuture, setDubbingHistoryFuture] = useState<DubbingClip[][]>([]);
-  const [dubbingCpuProfile, setDubbingCpuProfile] = useState<CpuDubbingProfile>('cpu_quality');
-  const [isDubbingAdvancedOpen, setIsDubbingAdvancedOpen] = useState(false);
-  const [dubbingPlayheadMs, setDubbingPlayheadMs] = useState(0);
-  const [dubAudioUrl, setDubAudioUrl] = useState<string | null>(null);
-  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
-  const [isPlayingDub, setIsPlayingDub] = useState(false);
-  const [isVideoPipelineGuideOpen, setIsVideoPipelineGuideOpen] = useState(false);
-  const [dubbingJobResultUrl, setDubbingJobResultUrl] = useState<string | null>(null);
-  const [dubbingReportUrl, setDubbingReportUrl] = useState<string | null>(null);
-  // Mixing
-  const [videoVolume, setVideoVolume] = useState(1.0);
-  const [dubVolume, setDubVolume] = useState(1.0);
-  const [renderedDubVideoUrl, setRenderedDubVideoUrl] = useState<string | null>(null);
-
-  // --- Real Media Backend State (Voice Transfer + Video Tools) ---
+  // --- Runtime Backend State ---
   const [backendHealth, setBackendHealth] = useState<BackendHealthState | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
-  const [dubbingUiState, setDubbingUiState] = useState<DubbingUiState>({
-      phase: 'idle',
-      progress: 0,
-      stage: 'Waiting for source file',
-      error: '',
-      updatedAt: Date.now(),
-  });
 
   // --- Character Management State ---
   const [charTab, setCharTab] = useState<'CAST' | 'GALLERY'>('CAST');
@@ -1926,112 +1733,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const dubAudioRef = useRef<HTMLAudioElement>(null);
-  const dubbingStemsRef = useRef<CachedDubbingStems | null>(null);
-  const activeDubbingJobIdRef = useRef<string>('');
-  const dubbingLiveAudioRef = useRef<HTMLAudioElement | null>(null);
-  const dubbingLiveChunkUrlsRef = useRef<string[]>([]);
-  const dubbingLiveQueueRef = useRef<string[]>([]);
-  const dubbingLiveSeenChunkKeysRef = useRef<Set<string>>(new Set());
-  const dubbingLiveChunkCursorRef = useRef<number>(0);
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const studioMainRef = useRef<HTMLDivElement>(null);
   const studioEditorShellRef = useRef<HTMLDivElement>(null);
   const creditsSurfaceRef = useRef<HTMLDivElement>(null);
   const creditsSurfaceTriggerRef = useRef<HTMLButtonElement>(null);
-  const selectedDubbingClip = useMemo(
-    () => dubbingClips.find((clip) => clip.id === selectedDubbingClipId) || null,
-    [dubbingClips, selectedDubbingClipId]
-  );
-
-  const mutateDubbingTimeline = useCallback(
-    (mutator: (current: DubbingClip[]) => DubbingClip[]) => {
-      setDubbingClips((current) => {
-        const next = mutator(current);
-        if (next === current) return current;
-        setDubbingHistoryPast((past) => pushDubbingTimelineHistory(past, current));
-        setDubbingHistoryFuture([]);
-        return next;
-      });
-    },
-    []
-  );
-
-  const syncSelectedClipPatch = useCallback(
-    (patch: Partial<DubbingClip>) => {
-      if (!selectedDubbingClipId) return;
-      setDubbingClips((current) =>
-        current.map((clip) => (clip.id === selectedDubbingClipId ? { ...clip, ...patch } : clip))
-      );
-    },
-    [selectedDubbingClipId]
-  );
-
-  const resolveClipDurationMs = useCallback(async (file: File): Promise<number> => {
-    if (typeof document === 'undefined') return 0;
-    return new Promise((resolve) => {
-      const probe = document.createElement('video');
-      const objectUrl = URL.createObjectURL(file);
-      const cleanup = () => {
-        try {
-          URL.revokeObjectURL(objectUrl);
-        } catch {}
-      };
-      probe.preload = 'metadata';
-      probe.onloadedmetadata = () => {
-        const durationSec = Number(probe.duration || 0);
-        cleanup();
-        resolve(Number.isFinite(durationSec) && durationSec > 0 ? Math.round(durationSec * 1000) : 0);
-      };
-      probe.onerror = () => {
-        cleanup();
-        resolve(0);
-      };
-      probe.src = objectUrl;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (dubbingClips.length <= 0) {
-      if (selectedDubbingClipId) setSelectedDubbingClipId('');
-      return;
-    }
-    const selectedExists = dubbingClips.some((clip) => clip.id === selectedDubbingClipId);
-    if (!selectedExists) {
-      setSelectedDubbingClipId(dubbingClips[0]?.id || '');
-    }
-  }, [dubbingClips, selectedDubbingClipId]);
-
-  useEffect(() => {
-    if (!selectedDubbingClip) {
-      setVideoFile(null);
-      setVideoUrl(null);
-      setDubScript('');
-      setDubAudioUrl(null);
-      return;
-    }
-    setVideoFile(selectedDubbingClip.file);
-    setVideoUrl(selectedDubbingClip.objectUrl);
-    setDubScript(selectedDubbingClip.script || '');
-    setDubbingPlayheadMs((current) =>
-      Math.max(selectedDubbingClip.trimInMs, Math.min(current, selectedDubbingClip.trimOutMs))
-    );
-    const selectedResultUrl = selectedDubbingClip.resultUrl ? String(selectedDubbingClip.resultUrl) : null;
-    setDubAudioUrl(selectedResultUrl);
-  }, [selectedDubbingClip]);
-
-  useEffect(() => {
-    if (!selectedDubbingClipId) return;
-    setDubbingClips((current) =>
-      current.map((clip) => {
-        if (clip.id !== selectedDubbingClipId) return clip;
-        if ((clip.script || '') === dubScript) return clip;
-        return { ...clip, script: dubScript };
-      })
-    );
-  }, [dubScript, selectedDubbingClipId]);
 
   // --- PREVIEW STATE ---
   const [previewState, setPreviewState] = useState<{ id: string, status: 'loading' | 'playing' } | null>(null);
@@ -2200,7 +1907,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ttsAccessProbeRef.current = signedOutProbe;
         return signedOutProbe;
       }
-      const backendUrl = mediaBackendUrl;
       if (!force && cached && now - cached.checkedAt < 15_000) {
         return cached;
       }
@@ -2223,7 +1929,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const pendingProbe = (async (): Promise<RuntimeAccessProbe> => {
         try {
-          const accountProfile = await fetchAccountProfile(backendUrl, { signal: controller.signal });
+          const accountProfile = await fetchAccountProfile(undefined, { signal: controller.signal });
           if (controller.signal.aborted || externalSignal?.aborted) {
             throw createAbortError();
           }
@@ -2285,7 +1991,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         }
       });
     },
-    [hasSessionIdentity, isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason, mediaBackendUrl, user.email, user.uid]
+    [hasSessionIdentity, isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason, user.email, user.uid]
   );
   const refreshTtsAccessState = useCallback(
     async (force: boolean = false, options?: { signal?: AbortSignal }): Promise<RuntimeAccessProbe> => {
@@ -2311,7 +2017,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const rediscoverBackendRouting = useCallback(
     async (_reason: string): Promise<boolean> => {
-      // Backend routing removed — Cloud TTS routes are local API routes
+      // Backend routing removed â€” Cloud TTS routes are local API routes
       return false;
     },
     []
@@ -2473,65 +2179,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncNotificationDeepLink as EventListener);
       return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncNotificationDeepLink as EventListener);
   }, []);
-  const patchDubbingUiState = useCallback((patch: Partial<DubbingUiState>) => {
-      setDubbingUiState((prev) => ({
-          ...prev,
-          ...patch,
-          progress: Math.max(0, Math.min(100, Number.isFinite(Number(patch.progress)) ? Number(patch.progress) : prev.progress)),
-          stage: typeof patch.stage === 'string' && patch.stage.trim() ? sanitizeUiText(patch.stage) : prev.stage,
-          error: typeof patch.error === 'string' ? sanitizeUiText(patch.error) : prev.error,
-          updatedAt: Date.now(),
-      }));
-  }, []);
-  const resetDubbingLivePlayback = useCallback(() => {
-      const player = dubbingLiveAudioRef.current;
-      if (player) {
-          try {
-              player.pause();
-              player.src = '';
-          } catch {}
-      }
-      for (const url of dubbingLiveChunkUrlsRef.current) {
-          try {
-              URL.revokeObjectURL(url);
-          } catch {}
-      }
-      dubbingLiveChunkUrlsRef.current = [];
-      dubbingLiveQueueRef.current = [];
-      dubbingLiveSeenChunkKeysRef.current = new Set();
-      dubbingLiveChunkCursorRef.current = 0;
-  }, []);
-  const pumpDubbingLivePlayback = useCallback(() => {
-      if (typeof Audio === 'undefined') return;
-      if (!dubbingLiveAudioRef.current) {
-          const player = new Audio();
-          player.preload = 'auto';
-          player.onended = () => {
-              const queue = dubbingLiveQueueRef.current;
-              const next = queue.shift();
-              if (!next) return;
-              player.src = next;
-              void player.play().catch(() => undefined);
-          };
-          dubbingLiveAudioRef.current = player;
-      }
-      const player = dubbingLiveAudioRef.current;
-      if (!player) return;
-      if (!player.paused) return;
-      const queue = dubbingLiveQueueRef.current;
-      const next = queue.shift();
-      if (!next) return;
-      player.src = next;
-      void player.play().catch(() => undefined);
-  }, []);
-  const enqueueDubbingLiveChunk = useCallback((blob: Blob) => {
-      if (!blob || blob.size <= 0) return;
-      const url = URL.createObjectURL(blob);
-      dubbingLiveChunkUrlsRef.current.push(url);
-      dubbingLiveQueueRef.current.push(url);
-      pumpDubbingLivePlayback();
-  }, [pumpDubbingLivePlayback]);
-  const billingActions = useBillingActions({ baseUrl: mediaBackendUrl, returnPath: APP_ROUTE_PATHS.billing });
+  const billingActions = useBillingActions({ baseUrl: '/api/v1', returnPath: APP_ROUTE_PATHS.billing });
   const isGemRuntimeEngine = useCallback(
     (engine: GenerationSettings['engine']) => engine === 'PRIME' || engine === 'VECTOR',
     []
@@ -2610,60 +2258,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       },
       [resolveVoiceAccessTier]
   );
-
-  const getVideoCacheKey = useCallback((file: File): string => {
-      return `${file.name}::${file.size}::${file.lastModified}`;
-  }, []);
-
-  const clearDubbingStemCache = useCallback(() => {
-      if (!dubbingStemsRef.current) return;
-      try {
-          URL.revokeObjectURL(dubbingStemsRef.current.speechObjectUrl);
-          URL.revokeObjectURL(dubbingStemsRef.current.backgroundObjectUrl);
-      } catch {
-          // ignore cleanup errors
-      } finally {
-          dubbingStemsRef.current = null;
-      }
-  }, []);
-
-  const ensureDubbingStemCache = useCallback(async (file: File): Promise<CachedDubbingStems> => {
-      const key = getVideoCacheKey(file);
-      const cached = dubbingStemsRef.current;
-      if (cached && cached.key === key) return cached;
-
-      clearDubbingStemCache();
-      const { extractAndSeparateDubbingStems } = await loadDubbingService();
-      const stems = await extractAndSeparateDubbingStems(file, {
-          backendUrl: mediaBackendUrl,
-          preferBackendModel: settings.useModelSourceSeparation !== false,
-          onStatus: (message) => {
-              setProcessingStage(sanitizeUiText(message));
-              patchDubbingUiState({
-                  phase: 'running',
-                  stage: message,
-              });
-          },
-      });
-      const safeBaseName = (file.name || 'video')
-          .replace(/\.[^/.]+$/, '')
-          .replace(/[^a-z0-9_\-]+/gi, '_')
-          .slice(0, 48) || 'video';
-      const speechFile = new File([stems.speechStemBlob], `${safeBaseName}_speech_stem.wav`, { type: 'audio/wav' });
-      const speechObjectUrl = URL.createObjectURL(stems.speechStemBlob);
-      const backgroundObjectUrl = URL.createObjectURL(stems.backgroundStemBlob);
-
-      const nextCache: CachedDubbingStems = {
-          key,
-          speechFile,
-          backgroundBuffer: stems.backgroundStem,
-          speechObjectUrl,
-          backgroundObjectUrl,
-          duration: stems.duration,
-      };
-      dubbingStemsRef.current = nextCache;
-      return nextCache;
-  }, [clearDubbingStemCache, getVideoCacheKey, mediaBackendUrl, patchDubbingUiState, settings.useModelSourceSeparation]);
 
   const resolveVoiceCountry = useCallback((voice: VoiceOption): string => {
       if (voice.country && voice.country.trim()) return voice.country.trim();
@@ -3032,13 +2626,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       [isStudioWorkspaceTab, resolveTextLanguageCode, text]
   );
 
-  const dubbingTextLanguageCode = useMemo(
-      () => resolveTextLanguageCode(dubScript),
-      [dubScript, resolveTextLanguageCode]
-  );
-
-  const activeScriptLanguageCode =
-      false ? dubbingTextLanguageCode : studioTextLanguageCode;
+  const activeScriptLanguageCode = studioTextLanguageCode;
 
   const studioParsedScript = useMemo(
       () => (isStudioWorkspaceTab ? parseMultiSpeakerScript(text) : EMPTY_PARSED_STUDIO_SCRIPT),
@@ -3265,61 +2853,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setStudioRailTab('cast');
   }, []);
 
-  const dubbingStatusAppearance = useMemo(() => {
-      const darkTheme = resolvedTheme === 'dark';
-      if (dubbingUiState.phase === 'running') {
-          return {
-              badge: 'Generating',
-              tone: darkTheme
-                ? 'border-indigo-400/45 bg-indigo-500/12 text-indigo-200'
-                : 'border-indigo-200 bg-indigo-50 text-indigo-700',
-              bar: darkTheme ? 'bg-indigo-400' : 'bg-indigo-500',
-              title: 'Generating dub track',
-              subtitle: dubbingUiState.stage || 'Processing backend async generation pipeline.',
-              progressPct: Math.max(14, Math.min(94, Number(dubbingUiState.progress || 0))),
-          };
-      }
-      if (dubbingUiState.phase === 'error') {
-          return {
-              badge: 'Retry',
-              tone: darkTheme
-                ? 'border-rose-400/45 bg-rose-500/12 text-rose-200'
-                : 'border-red-200 bg-red-50 text-red-700',
-              bar: darkTheme ? 'bg-rose-400' : 'bg-red-500',
-              title: 'Could not generate dub',
-              subtitle: 'Please retry after checking your source media.',
-              progressPct: 100,
-          };
-      }
-      if (dubbingUiState.phase === 'done') {
-          return {
-              badge: 'Ready',
-              tone: darkTheme
-                ? 'border-emerald-400/45 bg-emerald-500/12 text-emerald-200'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-700',
-              bar: darkTheme ? 'bg-emerald-400' : 'bg-emerald-500',
-              title: 'Dub track is ready',
-              subtitle: dubbingUiState.stage || 'Preview, export, or continue editing your script.',
-              progressPct: 100,
-          };
-      }
-      return {
-          badge: 'Idle',
-          tone: darkTheme
-            ? 'border-slate-600 bg-slate-900/80 text-slate-200'
-            : 'border-gray-200 bg-gray-50 text-gray-600',
-          bar: darkTheme ? 'bg-slate-400' : 'bg-gray-300',
-          title: 'Ready for async generation',
-          subtitle: 'Upload source clips, select language, and press AI Dub.',
-          progressPct: 0,
-      };
-  }, [dubbingUiState.phase, dubbingUiState.progress, dubbingUiState.stage, resolvedTheme]);
-
   const refreshEngineVoiceCatalog = useCallback(
       async (engine: GenerationSettings['engine'], _runtimeUrl?: string): Promise<VoiceOption[]> => {
           try {
               const { fetchEngineRuntimeVoices } = await loadTtsVoiceRegistryService();
-              const voices = await fetchEngineRuntimeVoices(engine, mediaBackendUrl, 7000);
+              const voices = await fetchEngineRuntimeVoices(engine, studioApiBaseUrl, 7000);
               const normalizedVoices = voices.map((voice) => withVoiceMeta(voice, engine));
               const staticVoices = getStaticVoicesForEngine(engine);
               const mergedVoices = mergeVoiceCatalogs(normalizedVoices, staticVoices);
@@ -3331,7 +2869,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               return staticVoices;
           }
       },
-      [getStaticVoicesForEngine, mediaBackendUrl, mergeVoiceCatalogs, withVoiceMeta]
+      [getStaticVoicesForEngine, mergeVoiceCatalogs, studioApiBaseUrl, withVoiceMeta]
   );
 
   useEffect(() => {
@@ -3364,7 +2902,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const inFlight = (async () => {
       try {
         const { fetchTtsEngineStatus } = await loadMediaBackendService();
-        const runtimePayload = await fetchTtsEngineStatus(mediaBackendUrl, {
+        const runtimePayload = await fetchTtsEngineStatus(studioApiBaseUrl, {
           engine: 'all',
           forceRefresh: Boolean(options?.broadcast),
         });
@@ -3463,8 +3001,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [
     engineSwitchInProgress,
     managedActiveEngine,
-    mediaBackendUrl,
     settings.engine,
+    studioApiBaseUrl,
     toUserFriendlySystemMessage,
   ]);
 
@@ -3608,7 +3146,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           let switchResult;
           try {
               const { switchTtsEngineRuntime } = await loadMediaBackendService();
-              switchResult = await switchTtsEngineRuntime(mediaBackendUrl, engine);
+              switchResult = await switchTtsEngineRuntime(studioApiBaseUrl, engine);
           } catch (switchError: any) {
               const detail = String(switchError?.message || switchError || '').toLowerCase();
               if (
@@ -3625,7 +3163,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('networkerror') ||
                   detail.includes('econnrefused')
               ) {
-                  throw new Error(`Media backend is unreachable at ${mediaBackendUrl}. Check backend health and retry.`);
+                  throw new Error(`Studio control plane is unreachable at ${studioApiBaseUrl}. Check service health and retry.`);
               }
               throw new Error(switchError?.message || `Failed to switch ${engineLabel} runtime.`);
           }
@@ -3733,7 +3271,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setIsCheckingBackend(true);
       try {
           const { checkMediaBackendHealth } = await loadMediaBackendService();
-          const health = await checkMediaBackendHealth(mediaBackendUrl, { forceRefresh: Boolean(options?.forceRefresh) });
+          const health = await checkMediaBackendHealth(studioApiBaseUrl, { forceRefresh: Boolean(options?.forceRefresh) });
           const ffmpegMissing = !health.ffmpeg?.available;
           const whisperError = Boolean(health.whisper?.error);
           const hasSubsystemError = ffmpegMissing || whisperError;
@@ -4217,7 +3755,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           cancelled = true;
           startupProbeController.abort();
       };
-  }, [hasSessionIdentity, mapTtsAccessBlockReason, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
+  }, [hasSessionIdentity, mapTtsAccessBlockReason, refreshTtsAccessState, user.uid, user.userId, user.email]);
 
   useEffect(() => {
       if (!isStudioWorkspaceTab) return undefined;
@@ -4680,20 +4218,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [showSettings]);
 
   useEffect(() => {
-      return () => {
-          if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
-          if (dubbingJobResultUrl) URL.revokeObjectURL(dubbingJobResultUrl);
-          if (dubbingReportUrl) URL.revokeObjectURL(dubbingReportUrl);
-          resetDubbingLivePlayback();
-          if (dubbingStemsRef.current) {
-              URL.revokeObjectURL(dubbingStemsRef.current.speechObjectUrl);
-              URL.revokeObjectURL(dubbingStemsRef.current.backgroundObjectUrl);
-              dubbingStemsRef.current = null;
-          }
-      };
-  }, [renderedDubVideoUrl, dubbingJobResultUrl, dubbingReportUrl, resetDubbingLivePlayback]);
-
-  useEffect(() => {
       if (typeof document === 'undefined') return undefined;
       return applyThemeModeToDocument(document, uiTheme, resolvedTheme);
   }, [uiTheme, resolvedTheme]);
@@ -4852,7 +4376,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const cancelInflightTtsJobs = useCallback(() => {
       const jobIds = new Set<string>();
-      void cancelTtsSession({ baseUrl: mediaBackendUrl }).catch(() => undefined);
+      void cancelTtsSession({ baseUrl: studioApiBaseUrl }).catch(() => undefined);
       const activeGatewayJobId = String(activeGatewayJobIdRef.current || '').trim();
       if (activeGatewayJobId) {
           jobIds.add(activeGatewayJobId);
@@ -4867,9 +4391,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
       }
       for (const jobId of jobIds) {
-          void cancelTtsJob(jobId, { baseUrl: mediaBackendUrl }).catch(() => undefined);
+          void cancelTtsJob(jobId, { baseUrl: studioApiBaseUrl }).catch(() => undefined);
       }
-  }, [mediaBackendUrl]);
+  }, [studioApiBaseUrl]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -4900,10 +4424,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, []);
 
   const deferredAnalysisText = useDeferredValue(
-    isStudioWorkspaceTab ? text : (false ? dubScript : '')
+    isStudioWorkspaceTab ? text : ''
   );
 
-  // Auto-detect language and speakers in text (Studio Mode AND Dubbing Mode)
+  // Auto-detect language and speakers in text for the Studio editor.
   useEffect(() => {
     const textToAnalyze = deferredAnalysisText;
     if (!textToAnalyze.trim()) {
@@ -4942,97 +4466,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       clearTimeout(timeoutId);
     };
   }, [activeTab, deferredAnalysisText, settings.language, syncCast]);
-
-  // Video Playback Sync
-  useEffect(() => {
-    const video = videoRef.current;
-    const audio = dubAudioRef.current;
-    
-    if (video && audio) {
-        const handlePlay = () => {
-            if (video.readyState >= 2 && audio.readyState >= 2) {
-                 video.play().catch(e => console.error("Video play fail", e));
-                 audio.play().catch(e => console.error("Audio play fail", e));
-                 setIsPlayingDub(true);
-            }
-        };
-        const handlePause = () => {
-            video.pause();
-            audio.pause();
-            setIsPlayingDub(false);
-        };
-        const handleSeek = () => {
-            const drift = Math.abs(audio.currentTime - video.currentTime);
-            if (drift > 0.1) {
-                audio.currentTime = video.currentTime;
-            }
-        };
-        const handleEnded = () => {
-            setIsPlayingDub(false);
-            video.currentTime = 0;
-            audio.currentTime = 0;
-            video.pause();
-            audio.pause();
-        };
-
-        video.addEventListener('play', handlePlay);
-        video.addEventListener('pause', handlePause);
-        video.addEventListener('seeking', handleSeek);
-        video.addEventListener('ended', handleEnded);
-        audio.addEventListener('ended', handleEnded);
-
-        return () => {
-            video.removeEventListener('play', handlePlay);
-            video.removeEventListener('pause', handlePause);
-            video.removeEventListener('seeking', handleSeek);
-            video.removeEventListener('ended', handleEnded);
-            audio.removeEventListener('ended', handleEnded);
-        };
-    }
-  }, [dubAudioUrl, videoUrl]);
-
-  useEffect(() => {
-      if (videoRef.current) {
-          applySafeMediaVolume(videoRef.current, videoVolume, {
-              fallback: 1,
-              context: 'studio_video',
-              onError: (error, info) => {
-                  void reportFrontendSignal({
-                      message: 'studio.media_volume_assignment_failed',
-                      component: 'MainApp',
-                      severity: 'warning',
-                      metadata: {
-                          channel: 'video',
-                          attemptedVolume: info.attemptedVolume,
-                          appliedFallback: info.appliedFallback,
-                          context: info.context,
-                          error: error instanceof Error ? error.message : String(error || 'unknown'),
-                      },
-                  });
-              },
-          });
-      }
-      if (dubAudioRef.current) {
-          applySafeMediaVolume(dubAudioRef.current, dubVolume, {
-              fallback: 1,
-              context: 'studio_dub',
-              onError: (error, info) => {
-                  void reportFrontendSignal({
-                      message: 'studio.media_volume_assignment_failed',
-                      component: 'MainApp',
-                      severity: 'warning',
-                      metadata: {
-                          channel: 'dub',
-                          attemptedVolume: info.attemptedVolume,
-                          appliedFallback: info.appliedFallback,
-                          context: info.context,
-                          error: error instanceof Error ? error.message : String(error || 'unknown'),
-                      },
-                  });
-              },
-          });
-      }
-  }, [videoVolume, dubVolume]);
 
   // --- Logic Functions ---
 
@@ -5413,7 +4846,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (currentJobId) {
                       const { pollTtsGatewayJobForAudio } = await loadTtsGatewayJobService();
                       const queuedResult = await pollTtsGatewayJobForAudio({
-                          baseUrl: resolveMediaBackendUrl(runSettings),
+                          baseUrl: studioApiBaseUrl,
                           jobId: currentJobId,
                           runtimeLabel: getEngineDisplayName(normalizedQueueEngine as GenerationSettings['engine']),
                           engine: normalizedQueueEngine as GenerationSettings['engine'],
@@ -5451,7 +4884,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (staleJobId) {
                       try {
                           const { cancelTtsJob } = await import('../../shared/api/gatewayClient');
-                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(runSettings) });
+                          await cancelTtsJob(staleJobId, { baseUrl: studioApiBaseUrl });
                       } catch {
                           // Best-effort cancellation before retrying the same request id.
                       }
@@ -5955,12 +5388,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           generationAbortController.current?.abort();
           generationAbortController.current = null;
           setProcessingStage(sanitizeUiText('Cancelling generation...'));
-          const activeDubJobId = String(activeDubbingJobIdRef.current || '').trim();
-          if (activeDubJobId) {
-              void loadMediaBackendService()
-                .then(({ cancelDubbingJob }) => cancelDubbingJob(mediaBackendUrl, activeDubJobId))
-                .catch(() => undefined);
-          }
       } else {
           stopSimulation();
       }
@@ -5969,7 +5396,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       activeGatewayRequestIdRef.current = '';
       activeGatewayJobIdRef.current = '';
       clearSingleInflightGenerationLedger();
-      activeDubbingJobIdRef.current = '';
       cancelInflightTtsJobs();
       updateStudioQueueState((prev) => {
           if (!prev) return prev;
@@ -6158,7 +5584,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       const normalizedRunEngine = resolveEngineToken(runSettings.engine);
                       const { pollTtsGatewayJobForAudio } = await loadTtsGatewayJobService();
                       const queuedResult = await pollTtsGatewayJobForAudio({
-                          baseUrl: resolveMediaBackendUrl(runSettings),
+                          baseUrl: studioApiBaseUrl,
                           jobId: currentJobId,
                           runtimeLabel: getEngineDisplayName(normalizedRunEngine as GenerationSettings['engine']),
                           engine: normalizedRunEngine as GenerationSettings['engine'],
@@ -6204,7 +5630,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (staleJobId) {
                       try {
                           const { cancelTtsJob } = await import('../../shared/api/gatewayClient');
-                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(buildStudioGenerationSettings(settings)) });
+                          await cancelTtsJob(staleJobId, { baseUrl: studioApiBaseUrl });
                       } catch {
                           // Best-effort cancellation before retrying the same request id.
                       }
@@ -6468,11 +5894,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const resolveVoicePreviewUrl = useCallback((voice?: VoiceOption): string => {
       const raw = String(voice?.previewUrl || '').trim();
       if (!raw) return '';
-      if (/^(?:https?:|blob:|data:)/i.test(raw)) return raw;
-      const base = String(mediaBackendUrl || '').trim().replace(/\/+$/, '');
-      if (!base) return raw;
-      return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
-  }, [mediaBackendUrl]);
+      return raw;
+  }, []);
 
   const resolveClonedVoicePlaybackUrl = useCallback((voice?: VoiceOption): string => {
       if (!voice) return '';
@@ -6653,683 +6076,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await playVoiceSample(char.voiceId, char.name, engine);
   };
 
-  // --- Video Dubbing Functions ---
 
-  const releaseClipArtifacts = useCallback((clip: DubbingClip | null | undefined) => {
-      if (!clip) return;
-      try { if (clip.objectUrl) URL.revokeObjectURL(clip.objectUrl); } catch {}
-      try { if (clip.resultUrl) URL.revokeObjectURL(String(clip.resultUrl)); } catch {}
-      try { if (clip.reportUrl) URL.revokeObjectURL(String(clip.reportUrl)); } catch {}
-  }, []);
 
-  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files || []).filter((file) => Boolean(file));
-      if (files.length <= 0) return;
-      clearDubbingStemCache();
-      const nextClips: DubbingClip[] = [];
-      for (const file of files) {
-          const objectUrl = URL.createObjectURL(file);
-          const durationMs = await resolveClipDurationMs(file);
-          nextClips.push(createDubbingClip(file, objectUrl, durationMs));
-      }
-      mutateDubbingTimeline((current) => [...current, ...nextClips]);
-      const firstAdded = nextClips[0];
-      if (firstAdded) {
-          setSelectedDubbingClipId(firstAdded.id);
-          patchDubbingUiState({
-              phase: 'idle',
-              progress: 0,
-              stage: `Loaded ${nextClips.length} source clip${nextClips.length === 1 ? '' : 's'}`,
-              error: '',
-          });
-      }
-      e.target.value = '';
-  };
-
-  const handleRetryClip = useCallback((clipId: string) => {
-      setDubbingClips((current) =>
-          current.map((clip) =>
-              clip.id === clipId
-                  ? { ...clip, status: 'idle', error: '', jobId: '', resultUrl: null, reportUrl: null }
-                  : clip
-          )
-      );
-  }, []);
-
-  const handleRemoveClipFromQueue = useCallback(
-      async (clipId: string, options?: { skipHistory?: boolean }) => {
-          const clip = dubbingClips.find((item) => item.id === clipId) || null;
-          if (!clip) return;
-          const { removeClip } = await loadDubbingTimelineService();
-          const jobId = String(clip.jobId || '').trim();
-          if (jobId) {
-              try {
-                  const { cancelDubbingJob } = await loadMediaBackendService();
-                  await cancelDubbingJob(mediaBackendUrl, jobId);
-              } catch {
-                  // best effort cancel
-              }
-          }
-          releaseClipArtifacts(clip);
-          if (options?.skipHistory) {
-              setDubbingClips((current) => removeClip(current, clipId).clips);
-          } else {
-              mutateDubbingTimeline((current) => removeClip(current, clipId).clips);
-          }
-      },
-      [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]
-  );
-
-  const handleRemoveSelectedClip = useCallback(async () => {
-      if (!selectedDubbingClipId) return;
-      await handleRemoveClipFromQueue(selectedDubbingClipId);
-  }, [handleRemoveClipFromQueue, selectedDubbingClipId]);
-
-  const handleRemoveCompletedQueue = useCallback(async () => {
-      const completed = dubbingClips.filter((clip) => clip.status === 'completed');
-      const { removeCompletedClips } = await loadDubbingTimelineService();
-      completed.forEach((clip) => releaseClipArtifacts(clip));
-      mutateDubbingTimeline((current) => removeCompletedClips(current));
-  }, [dubbingClips, mutateDubbingTimeline, releaseClipArtifacts]);
-
-  const handleClearDubbingQueue = useCallback(async () => {
-      const { clearAllClips } = await loadDubbingTimelineService();
-      for (const clip of dubbingClips) {
-          const jobId = String(clip.jobId || '').trim();
-          if (jobId) {
-              try {
-                  const { cancelDubbingJob } = await loadMediaBackendService();
-                  await cancelDubbingJob(mediaBackendUrl, jobId);
-              } catch {}
-          }
-          releaseClipArtifacts(clip);
-      }
-      mutateDubbingTimeline(() => clearAllClips());
-      setSelectedDubbingClipId('');
-      patchDubbingUiState({
-          phase: 'idle',
-          progress: 0,
-          stage: 'Queue cleared',
-          error: '',
-      });
-  }, [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]);
-
-  const handleTimelineUndo = useCallback(async () => {
-      const { undoTimeline } = await loadDubbingTimelineService();
-      setDubbingHistoryPast((past) => {
-          const undone = undoTimeline(past, dubbingClips, dubbingHistoryFuture);
-          if (undone.changed) {
-              setDubbingClips(undone.current);
-              setDubbingHistoryFuture(undone.future);
-          }
-          return undone.past;
-      });
-  }, [dubbingClips, dubbingHistoryFuture]);
-
-  const handleTimelineRedo = useCallback(async () => {
-      const { redoTimeline } = await loadDubbingTimelineService();
-      setDubbingHistoryFuture((future) => {
-          const redone = redoTimeline(dubbingHistoryPast, dubbingClips, future);
-          if (redone.changed) {
-              setDubbingClips(redone.current);
-              setDubbingHistoryPast(redone.past);
-          }
-          return redone.future;
-      });
-  }, [dubbingClips, dubbingHistoryPast]);
-
-  const handleDubbingTimelineTool = useCallback(async (tool: 'cut' | 'copy' | 'paste' | 'split' | 'trim_in' | 'trim_out' | 'layer' | 'remove') => {
-      if (!selectedDubbingClipId) {
-          showToast('Select a clip first.', 'info');
-          return;
-      }
-      const timelineService = await loadDubbingTimelineService();
-      if (tool === 'copy') {
-          const copied = timelineService.copyClip(dubbingClips, selectedDubbingClipId);
-          if (!copied) {
-              showToast('Unable to copy selected clip.', 'error');
-              return;
-          }
-          setDubbingClipboard(copied);
-          showToast('Clip copied.', 'success');
-          return;
-      }
-      if (tool === 'paste') {
-          let pastedAny = false;
-          mutateDubbingTimeline((current) => {
-              const pasted = timelineService.pasteClipAfterSelection(current, selectedDubbingClipId, dubbingClipboard);
-              pastedAny = Boolean(pasted.pastedId);
-              if (pasted.pastedId) setSelectedDubbingClipId(String(pasted.pastedId));
-              return pasted.clips;
-          });
-          showToast(pastedAny ? 'Clip pasted.' : 'Clipboard is empty.', pastedAny ? 'success' : 'info');
-          return;
-      }
-      if (tool === 'cut') {
-          mutateDubbingTimeline((current) => timelineService.cutClip(current, selectedDubbingClipId).clips);
-          showToast('Clip cut from timeline.', 'success');
-          return;
-      }
-      if (tool === 'split') {
-          let didSplit = false;
-          mutateDubbingTimeline((current) => {
-              const split = timelineService.splitClipAtPlayhead(current, selectedDubbingClipId, dubbingPlayheadMs);
-              didSplit = Boolean(split.splitIds);
-              if (split.splitIds?.[1]) setSelectedDubbingClipId(String(split.splitIds[1]));
-              return split.clips;
-          });
-          showToast(
-              didSplit ? 'Clip split at playhead.' : 'Move playhead inside clip window to split.',
-              didSplit ? 'success' : 'info'
-          );
-          return;
-      }
-      if (tool === 'trim_in') {
-          mutateDubbingTimeline((current) =>
-              timelineService.trimClipWindow(current, selectedDubbingClipId, { trimInMs: Math.max(0, dubbingPlayheadMs) })
-          );
-          showToast('Trim-in updated.', 'success');
-          return;
-      }
-      if (tool === 'trim_out') {
-          mutateDubbingTimeline((current) =>
-              timelineService.trimClipWindow(current, selectedDubbingClipId, { trimOutMs: Math.max(0, dubbingPlayheadMs) })
-          );
-          showToast('Trim-out updated.', 'success');
-          return;
-      }
-      if (tool === 'layer') {
-          const target = dubbingClips.find((clip) => clip.id === selectedDubbingClipId);
-          const nextLayer: DubbingClip['layer'] = target?.layer === 'V2' ? 'V1' : 'V2';
-          mutateDubbingTimeline((current) => timelineService.moveClipLayer(current, selectedDubbingClipId, nextLayer));
-          showToast(`Moved clip to Layer ${nextLayer}.`, 'success');
-          return;
-      }
-      void handleRemoveSelectedClip();
-      showToast('Clip removed.', 'success');
-  }, [
-      dubbingClips,
-      dubbingClipboard,
-      dubbingPlayheadMs,
-      handleRemoveSelectedClip,
-      mutateDubbingTimeline,
-      selectedDubbingClipId,
-      showToast,
-  ]);
-
-  const handleTranslateVideo = async (mode: 'transcribe' | 'translate' = 'transcribe') => {
-      if (!videoFile) return showToast("Upload a video first", "info");
-      setIsProcessingVideo(true);
-      patchDubbingUiState({
-          phase: 'running',
-          progress: 8,
-          stage: 'Extracting dialogue stems...',
-          error: '',
-      });
-      try {
-          setProcessingStage(sanitizeUiText('Extracting audio and separating dialogue/bed...'));
-          const stemCache = await ensureDubbingStemCache(videoFile);
-          patchDubbingUiState({
-              phase: 'running',
-              progress: 24,
-              stage: 'Transcribing source audio...',
-              error: '',
-          });
-
-          const task = mode === 'translate' && targetLang === 'English' ? 'translate' : 'transcribe';
-          const { transcribeVideoWithBackend } = await loadMediaBackendService();
-          const backendResult = await transcribeVideoWithBackend(mediaBackendUrl, stemCache.speechFile, {
-              language: settings.dubbingSourceLanguage || 'auto',
-              task,
-              captureEmotions: true,
-              speakerLabel: 'Speaker 1',
-          });
-
-          let nextScript = backendResult.script;
-          if (mode === 'translate' && targetLang !== 'English') {
-              setProcessingStage(sanitizeUiText(`Translating script to ${targetLang}...`));
-              patchDubbingUiState({
-                  phase: 'running',
-                  progress: 62,
-                  stage: `Translating to ${targetLang}...`,
-                  error: '',
-              });
-              const { translateText } = await loadGeminiService();
-              nextScript = await translateText(backendResult.script, targetLang, settings);
-          }
-
-          setDubScript(nextScript);
-          const discoveredSpeakers: string[] = Array.from(new Set((backendResult.segments || []).map((seg: { speaker?: string }) => String(seg.speaker || '').trim()).filter(Boolean)));
-          if (discoveredSpeakers.length > 0) {
-              setDetectedSpeakers(discoveredSpeakers);
-              syncCast(discoveredSpeakers as string[]);
-          }
-          const lineCount = Array.isArray(backendResult.segments) ? backendResult.segments.length : 0;
-          const emotionState = backendResult.emotionCapture?.enabled ? 'emotion captured' : 'emotion fallback';
-          showToast(
-              mode === 'translate'
-                  ? `Dubbing script ready (${lineCount} segments, ${emotionState}).`
-                  : `Transcription complete (${lineCount} segments, ${emotionState}).`,
-              "success"
-          );
-          patchDubbingUiState({
-              phase: 'done',
-              progress: 100,
-              stage: mode === 'translate' ? `Script translated to ${targetLang}` : 'Transcription complete',
-              error: '',
-          });
-      } catch (e: any) {
-          try {
-              const lang = mode === 'translate' ? targetLang : 'Original';
-              const { translateVideoContent } = await loadGeminiService();
-              const fallback = await translateVideoContent(videoFile, lang, settings);
-              setDubScript(fallback);
-              showToast('Used fallback transcription path.', 'info');
-              patchDubbingUiState({
-                  phase: 'done',
-                  progress: 100,
-                  stage: 'Fallback transcription complete',
-                  error: '',
-              });
-          } catch (fallbackError: any) {
-              const message = fallbackError?.message || e?.message || 'Video processing failed.';
-              patchDubbingUiState({
-                  phase: 'error',
-                  progress: 100,
-                  stage: 'Transcription failed',
-                  error: message,
-              });
-              showToast(fallbackError?.message || e?.message || 'Video processing failed.', 'error');
-          }
-      } finally {
-          setIsProcessingVideo(false);
-      }
-  };
-
-  const handleDubbingEditorTool = (mode: 'clean' | 'speakerize' | 'dedupe' | 'compact') => {
-      const nextValue = runDubbingEditorTool(dubScript, mode);
-      if (!nextValue) {
-          showToast('Editor tool produced empty output. Script unchanged.', 'info');
-          return;
-      }
-      setDubScript(nextValue);
-      const labels: Record<typeof mode, string> = {
-          clean: 'Cleaned script spacing and punctuation.',
-          speakerize: 'Applied "[Speaker Name]:" tags to dialogue lines.',
-          dedupe: 'Removed duplicate consecutive lines.',
-          compact: 'Compacted script to non-empty lines.',
-      };
-      showToast(labels[mode], 'success');
-  };
-
-  const handleGenerateDub = async () => {
-      if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
-      const activeEngineForDubbing = managedActiveEngine || settings.engine;
-      if (isWalletBlocked && !canRunVectorWithoutWallet) {
-          showToast(`Insufficient ${getEngineDisplayName(activeEngineForDubbing)} VF balance. Open Billing to top up or upgrade.`, 'error');
-          openBillingCenter();
-          return;
-      }
-
-      if (generationAbortController.current) generationAbortController.current.abort();
-      const controller = new AbortController();
-      generationAbortController.current = controller;
-      activeDubbingJobIdRef.current = '';
-      if (dubbingJobResultUrl) {
-          URL.revokeObjectURL(dubbingJobResultUrl);
-          setDubbingJobResultUrl(null);
-      }
-      if (dubbingReportUrl) {
-          URL.revokeObjectURL(dubbingReportUrl);
-          setDubbingReportUrl(null);
-      }
-      if (renderedDubVideoUrl) {
-          URL.revokeObjectURL(renderedDubVideoUrl);
-          setRenderedDubVideoUrl(null);
-      }
-      if (dubAudioUrl) {
-          URL.revokeObjectURL(dubAudioUrl);
-          setDubAudioUrl(null);
-      }
-
-      const phaseLabels: Record<string, string> = {
-          acoustic_isolation: 'Phase 1/6: Acoustic isolation',
-          speaker_segmentation: 'Phase 2/6: Speaker segmentation',
-          translation: 'Phase 3/6: Segment translation',
-          tts: 'Phase 4/6: PRIME TTS',
-          voice_transfer: 'Phase 5/6: Voice transfer',
-          video_lipsync: 'Phase 6/6: Video lip-sync',
-          preflight: 'Preflight checks',
-          queued: 'Queued',
-      };
-      const {
-        transcribeVideoWithBackend,
-        createDubbingJobV2,
-        getDubbingJob,
-        downloadDubbingChunk,
-        downloadDubbingResult,
-        downloadDubbingReport,
-      } = await loadMediaBackendService();
-
-      resetDubbingLivePlayback();
-      const generationNotificationKey = `async-job:${activeEngineForDubbing}`;
-      startSimulation(26, 'Submitting backend async job...', 'live');
-      patchDubbingUiState({
-          phase: 'running',
-          progress: 6,
-          stage: 'Queue started (CPU sequential mode)',
-          error: '',
-      });
-      emit('generation.started', {
-          title: 'Generation Started',
-          message: 'Generation started for async queue workflow.',
-          entityKey: generationNotificationKey,
-          dedupeKey: `generation-started-async:${activeEngineForDubbing}`,
-          channel: 'inbox',
-      });
-
-      const queue = dubbingClips.filter((clip) => clip.status !== 'completed');
-      if (queue.length <= 0) {
-          patchDubbingUiState({
-              phase: 'done',
-              progress: 100,
-              stage: 'All clips already completed',
-              error: '',
-          });
-          stopSimulation();
-          generationAbortController.current = null;
-          return;
-      }
-
-      try {
-          const targetLanguageHint =
-              targetLang === 'Hinglish'
-                  ? 'hi'
-                  : (String(targetLang || settings.language || 'auto').toLowerCase() || 'auto');
-          let completedCount = 0;
-          for (let index = 0; index < queue.length; index += 1) {
-              if (controller.signal.aborted) break;
-              const clip = queue[index];
-              if (!clip) continue;
-              try {
-                  setSelectedDubbingClipId(clip.id);
-                  setDubbingClips((current) =>
-                      current.map((item) => (item.id === clip.id ? { ...item, status: 'running', error: '' } : item))
-                  );
-                  patchDubbingUiState({
-                      phase: 'running',
-                      progress: Math.max(8, Math.round((index / Math.max(1, queue.length)) * 92)),
-                      stage: `Processing clip ${index + 1}/${queue.length}: ${clip.file.name}`,
-                      error: '',
-                  });
-
-                  let resolvedScript = String(clip.script || '').trim();
-                  if (!resolvedScript) {
-                      setDubbingClips((current) =>
-                          current.map((item) => (item.id === clip.id ? { ...item, status: 'transcribing', error: '' } : item))
-                      );
-                      const transcribeResult = await transcribeVideoWithBackend(mediaBackendUrl, clip.file, {
-                          language: settings.dubbingSourceLanguage || 'auto',
-                          task: 'transcribe',
-                          captureEmotions: true,
-                          speakerLabel: 'Speaker 1',
-                      });
-                      resolvedScript = String(transcribeResult.script || '').trim();
-                      setDubbingClips((current) =>
-                          current.map((item) =>
-                              item.id === clip.id ? { ...item, script: resolvedScript, status: 'queued', error: '' } : item
-                          )
-                      );
-                      if (selectedDubbingClipId === clip.id) setDubScript(resolvedScript);
-                  }
-                  if (!resolvedScript) {
-                      throw new Error(`Clip ${clip.file.name} has empty script after transcription.`);
-                  }
-
-                  const advancedPayload: Record<string, unknown> = {
-                      processing_profile: dubbingCpuProfile,
-                      tts_route: 'gem_only',
-                      engine_policy: 'auto_reliable',
-                      multispeaker_policy: 'hybrid_auto',
-                      voice_binding_policy: 'stable_fallback',
-                      qos_policy: 'adaptive_hq_first',
-                      hardware_policy: 'gpu_preferred',
-                      timeout_policy: 'adaptive',
-                      source_language_mode: 'auto_per_segment',
-                      language_coverage_profile: 'core12',
-                      live_play_mode: 'progressive_audio',
-                      live_chunk_target_ms: 3000,
-                      live_include_chunk_audio: false,
-                      max_speaker_count: 8,
-                      segment_failure_policy: 'hard_fail',
-                      clone_scope: 'job_only',
-                      transcript_override: resolvedScript,
-                      clip_window: { start_ms: Math.max(0, clip.trimInMs), end_ms: Math.max(clip.trimInMs + 240, clip.trimOutMs) },
-                      voice_map: settings.speakerMapping || {},
-                      preserve_voice_tone: Boolean(settings.preserveDubVoiceTone),
-                  };
-                  advancedPayload.voice_model = settings.voiceModel;
-
-                  const created = await createDubbingJobV2(mediaBackendUrl, clip.file, {
-                      targetLanguage: targetLanguageHint,
-                      mode: 'strict_full',
-                      output: 'audio+video',
-                      advanced: advancedPayload,
-                  });
-                  const jobId = String(created.job_id || '').trim();
-                  if (!jobId) throw new Error('Backend did not return an async job id.');
-                  activeDubbingJobIdRef.current = jobId;
-                  setDubbingClips((current) =>
-                      current.map((item) => (item.id === clip.id ? { ...item, status: 'running', jobId, error: '' } : item))
-                  );
-                  dubbingLiveChunkCursorRef.current = 0;
-                  dubbingLiveSeenChunkKeysRef.current = new Set();
-
-                  while (!controller.signal.aborted) {
-                      const statusPayload = await getDubbingJob(mediaBackendUrl, jobId, {
-                          includeChunks: true,
-                          chunkCursor: Math.max(0, Math.floor(Number(dubbingLiveChunkCursorRef.current || 0))),
-                          chunkLimit: 4,
-                          includeChunkAudio: false,
-                      });
-                      const job = statusPayload?.job || {};
-                      const jobStatus = String(job.status || '').toLowerCase();
-                      const stageKey = String(job.stage || '').trim();
-                      const progressPct = Math.max(0, Math.min(100, Number(job.progress || 0)));
-                      const stageLabel = phaseLabels[stageKey] || (stageKey ? stageKey.replace(/_/g, ' ') : 'Running backend pipeline');
-                      const chunks = Array.isArray((job as any).chunks) ? (job as any).chunks : [];
-                      const speakerStats = ((job as any).speakerStats && typeof (job as any).speakerStats === 'object')
-                          ? (job as any).speakerStats as Record<string, unknown>
-                          : {};
-                      const qosState = ((job as any).qosState && typeof (job as any).qosState === 'object')
-                          ? (job as any).qosState as Record<string, unknown>
-                          : {};
-                      const detectedSpeakers = Number(speakerStats.detectedSpeakers || 0);
-                      const selectedProfile = String(qosState.selectedProfile || '').trim();
-
-                      for (const chunk of chunks) {
-                          if (!chunk || typeof chunk !== 'object') continue;
-                          const chunkIndex = Number((chunk as any).index);
-                          if (!Number.isFinite(chunkIndex) || chunkIndex < 0) continue;
-                          const safeIndex = Math.round(chunkIndex);
-                          const chunkKey = `${jobId}:${safeIndex}`;
-                          if (dubbingLiveSeenChunkKeysRef.current.has(chunkKey)) continue;
-
-                          try {
-                              const chunkBlob = await downloadDubbingChunk(mediaBackendUrl, jobId, safeIndex);
-                              if (chunkBlob.size > 0) {
-                                  enqueueDubbingLiveChunk(chunkBlob);
-                                  dubbingLiveSeenChunkKeysRef.current.add(chunkKey);
-                              }
-                          } catch {
-                              const inlineBase64 = String((chunk as any).audioBase64 || '').trim();
-                              if (!inlineBase64) continue;
-                              try {
-                                  const binary = atob(inlineBase64);
-                                  const bytes = new Uint8Array(binary.length);
-                                  for (let i = 0; i < binary.length; i += 1) {
-                                      bytes[i] = binary.charCodeAt(i);
-                                  }
-                                  const blob = new Blob([bytes], { type: String((chunk as any).contentType || 'audio/wav') });
-                                  enqueueDubbingLiveChunk(blob);
-                                  dubbingLiveSeenChunkKeysRef.current.add(chunkKey);
-                              } catch {
-                                  // ignore malformed inline chunk payload
-                              }
-                          }
-                      }
-
-                      const responseChunkCursorNext = Number((job as any).chunkCursorNext || ((job as any).live || {}).chunkCursorNext || 0);
-                      if (Number.isFinite(responseChunkCursorNext) && responseChunkCursorNext >= 0) {
-                          dubbingLiveChunkCursorRef.current = Math.max(dubbingLiveChunkCursorRef.current, Math.round(responseChunkCursorNext));
-                      } else if (chunks.length > 0) {
-                          const maxChunkIndex = chunks.reduce((max: number, item: any) => {
-                              const idx = Number(item?.index);
-                              if (!Number.isFinite(idx)) return max;
-                              return Math.max(max, Math.round(idx));
-                          }, -1);
-                          if (maxChunkIndex >= 0) {
-                              dubbingLiveChunkCursorRef.current = Math.max(dubbingLiveChunkCursorRef.current, maxChunkIndex + 1);
-                          }
-                      }
-
-                      if (jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'cancelling') {
-                          const safeProgress = Math.max(10, Math.min(97, progressPct || 10));
-                          setLiveProgress(safeProgress, stageLabel);
-                          const speakerToken = detectedSpeakers > 0 ? `spk:${detectedSpeakers}` : 'spk:-';
-                          const qosToken = selectedProfile ? `qos:${selectedProfile}` : 'qos:auto';
-                          patchDubbingUiState({
-                              phase: 'running',
-                              progress: safeProgress,
-                              stage: joinUiFragments([`${stageLabel} (${index + 1}/${queue.length})`, speakerToken, qosToken]),
-                              error: '',
-                          });
-                      }
-
-                      if (jobStatus === 'completed') {
-                          const [resultBlob, reportBlob] = await Promise.all([
-                              downloadDubbingResult(mediaBackendUrl, jobId),
-                              downloadDubbingReport(mediaBackendUrl, jobId).catch(() => null),
-                          ]);
-                          const resultUrl = URL.createObjectURL(resultBlob);
-                          const reportUrl = reportBlob ? URL.createObjectURL(reportBlob) : null;
-                          setDubbingClips((current) =>
-                              current.map((item) =>
-                                  item.id === clip.id
-                                      ? { ...item, status: 'completed', jobId, resultUrl, reportUrl, error: '' }
-                                      : item
-                              )
-                          );
-                          setDubbingJobResultUrl(resultUrl);
-                          setDubbingReportUrl(reportUrl);
-                          const outputFiles = job.outputFiles as Record<string, any> | undefined;
-                          const hasVideoOutput =
-                              String(resultBlob.type || '').toLowerCase().includes('video') || Boolean(outputFiles?.video?.path);
-                          if (hasVideoOutput) {
-                              setRenderedDubVideoUrl(resultUrl);
-                          } else {
-                              setDubAudioUrl(resultUrl);
-                          }
-                          completedCount += 1;
-                          break;
-                      }
-
-                      if (jobStatus === 'failed') {
-                          throw new Error(String(job.error || job.errorCode || 'Dubbing job failed.'));
-                      }
-                      if (jobStatus === 'cancelled') {
-                          throw new DOMException('Dubbing cancelled', 'AbortError');
-                      }
-
-                      await new Promise((resolve) => setTimeout(resolve, 1600));
-                  }
-              } catch (clipError: any) {
-                  if (clipError?.name === 'AbortError') {
-                      throw clipError;
-                  }
-                  const clipErrorMessage = formatFrontendError(clipError, {
-                      fallback: 'Clip async generation failed.',
-                      context: 'generation',
-                      isAdmin: hasAdminConsoleAccess,
-                  }).publicMessage;
-                  setDubbingClips((current) =>
-                      current.map((item) =>
-                          item.id === clip.id
-                              ? { ...item, status: 'failed', error: clipErrorMessage || 'Clip async generation failed' }
-                              : item
-                      )
-                  );
-                  continue;
-              }
-          }
-          generationFailureBurstRef.current = 0;
-          patchDubbingUiState({
-              phase: completedCount > 0 ? 'done' : 'idle',
-              progress: completedCount > 0 ? 100 : 0,
-              stage: completedCount > 0
-                  ? `AI Dub completed for ${completedCount}/${queue.length} clips`
-                  : 'AI Dub queue finished',
-              error: '',
-          });
-          showToast(`AI Dub completed for ${completedCount}/${queue.length} clips.`, completedCount > 0 ? 'success' : 'info');
-      } catch (e: any) {
-          if (e?.name === 'AbortError') {
-              patchDubbingUiState({
-                  phase: 'idle',
-                  progress: 0,
-                  stage: 'Dubbing cancelled',
-                  error: '',
-              });
-              showToast('Dubbing cancelled.', 'info');
-          } else {
-              syncRuntimeBlockedStateFromError(activeEngineForDubbing, e);
-              generationFailureBurstRef.current += 1;
-              const dubbingFailureMessage = formatFrontendError(e, {
-                  fallback: 'Generation failed. Check backend health and retry.',
-                  context: 'generation',
-                  isAdmin: hasAdminConsoleAccess,
-              }).publicMessage;
-              emit('generation.failed', {
-                  title: 'Generation Failure',
-                  message: dubbingFailureMessage,
-                  entityKey: generationNotificationKey,
-                  dedupeKey: `generation-failed-async:${activeEngineForDubbing}`,
-                  action: {
-                      label: 'Open Settings',
-                      onClick: () => setShowSettings(true),
-                  },
-              });
-              patchDubbingUiState({
-                  phase: 'error',
-                  progress: 100,
-                  stage: 'Dubbing failed',
-                  error: dubbingFailureMessage || 'Unknown async job error',
-              });
-              showToast(dubbingFailureMessage || 'Dubbing failed.', 'error');
-          }
-      } finally {
-          activeDubbingJobIdRef.current = '';
-          resetDubbingLivePlayback();
-          stopSimulation();
-          generationAbortController.current = null;
-      }
-  };
-
-  const toggleDubPlayback = () => {
-      const video = videoRef.current;
-      const audio = dubAudioRef.current;
-      if (!video) return;
-
-      if (isPlayingDub) {
-          video.pause();
-          if (audio) audio.pause();
-          setIsPlayingDub(false);
-      } else {
-          video.play();
-          if (audio) audio.play();
-          setIsPlayingDub(true);
-      }
-  };
 
   const isGuestSession =
     !user.email ||
@@ -7357,8 +6105,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- PROOFREADER ---
   const handleProofread = async (mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow') => {
       if (!requireSignedInForAiTool(mode === 'grammar' ? 'Grammar' : mode === 'novel' ? 'Audio Novel' : 'Flow')) return;
-      const currentText = false ? dubScript : text;
-      const setFn = false ? setDubScript : setText;
+      const currentText = text;
+      const setFn = setText;
       
       if (!currentText || !currentText.trim()) return showToast("Enter text to proofread", "info");
       
@@ -7443,7 +6191,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       try {
           const settled = await Promise.allSettled(
               files.map(async (file) => {
-                  const extracted = await extractNovelTextFromFile(mediaBackendUrl, file, 'auto');
+                  const extracted = await extractNovelTextFromFile(file, 'auto');
                   return { file, extracted };
               })
           );
@@ -7495,7 +6243,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } finally {
           setIsStudioImporting(false);
       }
-  }, [mediaBackendUrl, showToast, toUserFriendlySystemMessage]);
+  }, [showToast, toUserFriendlySystemMessage]);
 
   const handleCustomMusicTrackInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
       const selectedFile = event.target.files?.[0] || null;
@@ -7555,9 +6303,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   
   const handleTranslate = async () => {
       if (!requireSignedInForAiTool('Translate')) return;
-      const isDubbing = false;
-      const currentText = isDubbing ? dubScript : text;
-      const setFn = isDubbing ? setDubScript : setText;
+      const currentText = text;
+      const setFn = setText;
       
       if(!currentText) return showToast("Enter text first", "info");
       
@@ -7613,7 +6360,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setChatHistory((prev) => [...prev, { role: 'user', text: historyText }]);
       setIsChatLoading(true);
 
-      const context = false ? dubScript : text;
+      const context = text;
 
       try {
           const { generateTextContent } = await loadGeminiService();
@@ -7654,7 +6401,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       settings,
       showToast,
       text,
-      dubScript,
   ]);
 
   const assistantQuickActions = useMemo<AssistantQuickAction[]>(() => ([
@@ -8787,7 +7533,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       })}
                                   </div>
                               </div>
-                              <div className="mt-1.5 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
+                              <div className="mt-1.5 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} Â· {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
                           </div>
 
                           <div>
@@ -9070,7 +7816,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         <Coins size={14} className="text-amber-500" />
                         <span>
                           {hasUnlimitedAccess
-                            ? '✨ Unlimited'
+                            ? 'âœ¨ Unlimited'
                             : `${currentEngineSpendable.toLocaleString()} VF`}
                         </span>
                       </button>
@@ -10300,7 +9046,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       isOpen={isVoiceCloneModalOpen}
                       onClose={closeVoiceCloneModal}
                       onCloneCreated={handleVoiceCloneCreated}
-                      backendBaseUrl={mediaBackendUrl}
                       sourceVoiceId={voiceCloneTarget.voiceId}
                       sourceVoiceLabel={voiceCloneTarget.sourceVoiceLabel}
                       sourceVoiceEngine={voiceCloneTarget.sourceVoiceEngine || settings.engine}
@@ -10451,7 +9196,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading writing workspace...</SectionCard>}>
                       <NovelTabContent
                         settings={settings}
-                        mediaBackendUrl={mediaBackendUrl}
                         onToast={showToast}
                         onSendToStudio={(content: string) => {
                           if (!content.trim()) return;
@@ -10472,7 +9216,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading voice cloning workspace...</SectionCard>}>
                       <VoiceCloningTabContent
-                        backendBaseUrl={mediaBackendUrl}
                         selectedEngine={settings.engine}
                         voiceLibraryVoices={getEngineVoiceCatalog(settings.engine)}
                         voicePreviewState={previewState}
@@ -10491,7 +9234,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading admin controls...</SectionCard>}>
                       <AdminTabContent
-                        mediaBackendUrl={mediaBackendUrl}
+                        adminApiBaseUrl={adminApiBaseUrl}
                         onToast={showToast}
                         onRefreshEntitlements={refreshEntitlements}
                         initialOpsTab={initialAdminOpsTab}
@@ -10703,7 +9446,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {/* Resource Monitor */}
       {ENABLE_RESOURCE_MONITOR ? (
         <ResourceMonitor
-          isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading}
+          isWorking={isGenerating || isAiWriting || isChatLoading}
           hidden={shouldHideAssistantInWorkspace}
         />
       ) : null}
@@ -10714,4 +9457,5 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     </div>
   );
 };
+
 

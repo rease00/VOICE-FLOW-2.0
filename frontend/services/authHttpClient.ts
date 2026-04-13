@@ -399,7 +399,7 @@ export const authFetch = async (
     if (isLikelyNetworkFetchFailure(error)) {
       const target = resolveRequestTarget(input);
       throw new Error(
-        `Cannot reach backend at ${target}. Verify backend URL in Settings and ensure backend/CORS are available.`
+        `Cannot reach service endpoint at ${target}. Verify your app configuration and ensure the target runtime is available.`
       );
     }
     throw error instanceof Error ? error : new Error(String(error || 'Request failed.'));

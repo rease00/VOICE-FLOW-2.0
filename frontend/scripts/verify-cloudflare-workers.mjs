@@ -34,7 +34,7 @@ const resolveBrowserApiBase = (...values) => {
     const token = trim(value);
     if (token) return token.replace(/\/+$/, '');
   }
-  return '/api/backend';
+  return '/api/v1';
 };
 
 const main = () => {
@@ -43,15 +43,12 @@ const main = () => {
     process.env.VITE_API_BASE_URL
   );
 
-  if (browserApiBase !== '/api/backend') {
+  if (browserApiBase !== '/api/v1') {
     throw new Error(
-      `Browser API base must remain '/api/backend' so the Next proxy stays the single browser entrypoint. Found: ${browserApiBase}`
+      `Browser API base must remain '/api/v1' so the Next.js control plane stays the single browser entrypoint. Found: ${browserApiBase}`
     );
   }
-
-  const backendOrigin = normalizeRemoteHttpsUrl(process.env.VF_MEDIA_BACKEND_URL, 'VF_MEDIA_BACKEND_URL');
   console.log(`[cloudflare:workers] browser API base verified: ${browserApiBase}`);
-  console.log(`[cloudflare:workers] backend origin verified: ${backendOrigin}`);
 
   if (truthy(process.env.CF_PAGES)) {
     console.log('[cloudflare:workers] note: CF_PAGES is set, but this app now deploys through Cloudflare Workers.');

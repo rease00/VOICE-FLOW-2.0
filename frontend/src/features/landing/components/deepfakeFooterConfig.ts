@@ -1,4 +1,6 @@
-export const WATERMARK_CHECK_PROXY_PATH = '/api/backend/v2/extract-watermark';
+import { API_ROUTES } from '../../../shared/api/routes';
+
+export const WATERMARK_CHECK_PROXY_PATH = API_ROUTES.voiceClone.watermark;
 export const WATERMARK_CHECK_FORM_FIELD = 'file';
 export const WATERMARK_FILE_ACCEPT = '.wav,audio/wav,audio/x-wav,audio/wave';
 

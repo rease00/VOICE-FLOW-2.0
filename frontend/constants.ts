@@ -44,36 +44,6 @@ export const VOICES: VoiceOption[] = [
 ];
 
 // ============================================================================
-// OPENAI COMPATIBLE VOICES
-// Standard voices often supported by local OpenAI-compatible backends
-// ============================================================================
-export const OPENAI_VOICES: VoiceOption[] = [
-  { id: 'alloy', name: 'Alloy', gender: 'Unknown', accent: 'Neutral', geminiVoiceName: 'alloy' },
-  { id: 'echo', name: 'Echo', gender: 'Male', accent: 'Neutral', geminiVoiceName: 'echo' },
-  { id: 'fable', name: 'Fable', gender: 'Unknown', accent: 'British', geminiVoiceName: 'fable' },
-  { id: 'onyx', name: 'Onyx', gender: 'Male', accent: 'Deep', geminiVoiceName: 'onyx' },
-  { id: 'nova', name: 'Nova', gender: 'Female', accent: 'Energetic', geminiVoiceName: 'nova' },
-  { id: 'shimmer', name: 'Shimmer', gender: 'Female', accent: 'Clear', geminiVoiceName: 'shimmer' }
-];
-
-// ============================================================================
-// F5-TTS PRESETS
-// Base voices for the F5 model
-// ============================================================================
-export const F5_VOICES: VoiceOption[] = [
-  { id: 'f5_base_m', name: 'F5 Male (Base)', gender: 'Male', accent: 'Neutral', geminiVoiceName: 'f5_male' },
-  { id: 'f5_base_f', name: 'F5 Female (Base)', gender: 'Female', accent: 'Neutral', geminiVoiceName: 'f5_female' },
-];
-
-export const KOKORO_VOICES: VoiceOption[] = [
-  { id: 'hf_alpha', name: 'Kokoro Alpha', gender: 'Female', accent: 'Neutral English', geminiVoiceName: 'hf_alpha', source: 'kokoro' },
-  { id: 'hf_beta', name: 'Kokoro Beta', gender: 'Male', accent: 'Neutral English', geminiVoiceName: 'hf_beta', source: 'kokoro' },
-  { id: 'hm_alpha', name: 'Kokoro Hindi Alpha', gender: 'Female', accent: 'Indian English', geminiVoiceName: 'hm_alpha', country: 'India', source: 'kokoro' },
-  { id: 'hm_beta', name: 'Kokoro Hindi Beta', gender: 'Male', accent: 'Indian English', geminiVoiceName: 'hm_beta', country: 'India', source: 'kokoro' },
-];
-
-
-// ============================================================================
 // LANGUAGES - 80+ Languages with native names and RTL support
 // ============================================================================
 

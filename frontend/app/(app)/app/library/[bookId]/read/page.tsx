@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import type { Book } from '@/features/library/model/types';
+import { readRememberedLibraryBook } from '@/features/library/services/bookDiscoveryService';
+import { API_ROUTES } from '@/shared/api/routes';
 
 const ReaderView = dynamic(
   () =>
@@ -27,25 +29,39 @@ const ReaderView = dynamic(
 export default function ReadPage() {
   const params = useParams();
   const router = useRouter();
-  const bookId = params.bookId as string;
+  const searchParams = useSearchParams();
+  const bookId = decodeURIComponent(String(params.bookId || ''));
+  const bookSource = searchParams.get('source');
   const [book, setBook] = useState<Book | null>(null);
 
   useEffect(() => {
     const load = async () => {
+      const rememberedBook = readRememberedLibraryBook(bookId);
+      if (rememberedBook) {
+        setBook(rememberedBook);
+        return;
+      }
+
       try {
-        const res = await fetch(
-          `https://gutendex.com/books/${encodeURIComponent(bookId)}`,
-          { signal: AbortSignal.timeout(10000) },
-        );
+        const url = new URL(API_ROUTES.library.book(bookId), window.location.origin);
+        if (bookSource) {
+          url.searchParams.set('source', bookSource);
+        }
+
+        const res = await fetch(url.toString(), {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(15000),
+        });
         if (!res.ok) throw new Error('Not found');
-        const data = await res.json();
-        setBook(data as Book);
+        const data = (await res.json()) as { book?: Book };
+        if (!data.book) throw new Error('Not found');
+        setBook(data.book);
       } catch {
         router.replace('/app/library');
       }
     };
     load();
-  }, [bookId, router]);
+  }, [bookId, bookSource, router]);
 
   if (!book) {
     return (

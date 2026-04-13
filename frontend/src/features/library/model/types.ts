@@ -67,7 +67,7 @@ export interface PlaybackState {
   chunkDuration?: number;
 }
 
-export type TtsEngine = 'gemini-native' | 'neural2';
+export type TtsEngine = 'cloud';
 export type SpeakerMode = 'single' | 'multi';
 
 export interface SpeakerConfig {
@@ -129,11 +129,16 @@ export interface CacheConfig {
 }
 
 export interface ReaderChapter {
+  id?: string;
   index: number;
   title: string;
   start: number;
   end: number;
   text: string;
+  audioKey?: string;
+  syncKey?: string;
+  audioHash?: string;
+  generatedAt?: string;
 }
 
 export interface ChapterComment {

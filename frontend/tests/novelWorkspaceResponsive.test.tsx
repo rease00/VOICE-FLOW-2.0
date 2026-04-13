@@ -32,7 +32,6 @@ const settings: GenerationSettings = {
 const renderWorkspace = () => renderToStaticMarkup(
   <NovelWorkspaceV2
     settings={settings}
-    mediaBackendUrl="http://127.0.0.1:7800"
     onToast={vi.fn()}
     onSendToStudio={vi.fn()}
   />

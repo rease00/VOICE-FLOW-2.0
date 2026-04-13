@@ -18,9 +18,8 @@ import { APP_ROUTE_PATHS } from '../../src/app/navigation';
 import { useBillingActions } from '../../src/features/billing/hooks/useBillingActions';
 import { useNotifications } from '../../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../src/shared/notifications/deepLink';
-import { resolveApiBaseUrl } from '../../src/shared/api/config';
+import { readStorageString, writeStorageString } from '../../src/shared/storage/localStore';
 import { STORAGE_KEYS } from '../../src/shared/storage/keys';
-import { readStorageJson, readStorageString, writeStorageString } from '../../src/shared/storage/localStore';
 import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } from '../../src/shared/theme/brandThemes';
 import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../../src/shared/theme/themeDom';
 import { useManagedTabs } from '../../src/shared/ui/tabs';
@@ -121,10 +120,7 @@ const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }>
   },
 };
 
-const readSettingsBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
+const ACCOUNT_BILLING_API_BASE = '/api/v1';
 
 const readSavedUiTheme = (): ThemeChoice => {
   const token = String(readStorageString(STORAGE_KEYS.uiTheme) || '').trim().toLowerCase();
@@ -404,7 +400,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   } = useUser();
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const { emit, prefs, setPrefs } = useNotifications();
-  const baseUrl = useMemo(() => readSettingsBackendUrl(), []);
+  const baseUrl = useMemo(() => ACCOUNT_BILLING_API_BASE, []);
   const billingActions = useBillingActions({ baseUrl, returnPath: APP_ROUTE_PATHS.billing });
 
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>('system');
@@ -549,9 +545,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
     const [refreshResult, profileResult, entitlementsResult, billingResult] = await Promise.allSettled([
       refreshEntitlementsRef.current(),
-      fetchAccountProfile(baseUrl),
-      fetchAccountEntitlements(baseUrl),
-      fetchAccountBillingSummary(baseUrl),
+      fetchAccountProfile(),
+      fetchAccountEntitlements(),
+      fetchAccountBillingSummary(),
     ]);
 
     let hadSuccess = refreshResult.status === 'fulfilled';
@@ -603,7 +599,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     setSupportLoadError('');
     setIsLoadingSupport(true);
     try {
-      const rows = await fetchMySupportConversations(baseUrl, 40);
+      const rows = await fetchMySupportConversations(undefined, 40);
       setSupportConversations(rows);
       setSupportLoadState('ready');
       markTabLoaded('support');
@@ -824,7 +820,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     if (!text) return;
     setIsSendingSupport(true);
     try {
-      await postSupportMessage({ text }, baseUrl);
+      await postSupportMessage({ text });
       setSupportText('');
       await loadSupportData(false, { force: true });
       setActiveTab('support');
@@ -846,7 +842,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
   const handleMarkUnresolved = useCallback(async (conversationId: string) => {
     try {
-      await markSupportConversationUnresolved(conversationId, baseUrl);
+      await markSupportConversationUnresolved(conversationId);
       setHighlightedConversationId(conversationId);
       await loadSupportData(false, { force: true });
       emit('support.conversation.unresolved', {
@@ -908,7 +904,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     setBillingProfileSaveError('');
     setIsOpeningBillingPortal(true);
     try {
-      const session = await createBillingPortalSession(baseUrl, { returnUrl: window.location.href });
+      const session = await createBillingPortalSession(undefined, { returnUrl: window.location.href });
       window.location.href = session.url;
     } catch (error) {
       emit('custom.message', {
@@ -940,8 +936,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         {
           ...(accountProfile?.displayName?.trim() ? { displayName: accountProfile.displayName.trim() } : user.name?.trim() ? { displayName: user.name.trim() } : {}),
           billingProfile: toBillingProfilePayload(draft),
-        },
-        baseUrl
+        }
       );
       if (billingProfileSaveSequenceRef.current !== saveSequence) return;
       const nextDraft = normalizeBillingProfileDraft(

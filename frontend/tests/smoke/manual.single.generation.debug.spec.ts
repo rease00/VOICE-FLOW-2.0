@@ -11,13 +11,13 @@ test('manual single generation debug', async ({ page }) => {
 
   page.on('request', (request) => {
     const url = String(request.url() || '');
-    if (/\/tts\//i.test(url) || /\/api\/backend\//i.test(url)) {
+    if (/\/tts\//i.test(url) || /\/api\/v1\//i.test(url)) {
       requestLog.push({ method: request.method(), url });
     }
   });
   page.on('response', (response) => {
     const url = String(response.url() || '');
-    if (/\/tts\//i.test(url) || /\/api\/backend\//i.test(url)) {
+    if (/\/tts\//i.test(url) || /\/api\/v1\//i.test(url)) {
       responseLog.push({ status: response.status(), url });
     }
   });

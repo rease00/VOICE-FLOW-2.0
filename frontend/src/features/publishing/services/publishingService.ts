@@ -8,6 +8,7 @@ import type {
   PublisherAgreement,
 } from '../model/types';
 import { firebaseAuth } from '../../../../services/firebaseClient';
+import { API_ROUTES } from '../../../shared/api/routes';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -30,13 +31,41 @@ async function authFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+const unwrapBookPayload = async (request: Promise<PublishedBook | { book?: PublishedBook | null }>): Promise<PublishedBook> => {
+  const payload = await request;
+  if (payload && typeof payload === 'object' && 'book' in payload && payload.book) {
+    return payload.book;
+  }
+  return payload as PublishedBook;
+};
+
+const unwrapBooksPayload = async (
+  request: Promise<PublishedBook[] | { books?: PublishedBook[] | null }>
+): Promise<PublishedBook[]> => {
+  const payload = await request;
+  if (payload && typeof payload === 'object' && 'books' in payload) {
+    return Array.isArray(payload.books) ? payload.books : [];
+  }
+  return Array.isArray(payload) ? payload : [];
+};
+
+const unwrapChaptersPayload = async (
+  request: Promise<PublishedChapter[] | { chapters?: PublishedChapter[] | null }>
+): Promise<PublishedChapter[]> => {
+  const payload = await request;
+  if (payload && typeof payload === 'object' && 'chapters' in payload) {
+    return Array.isArray(payload.chapters) ? payload.chapters : [];
+  }
+  return Array.isArray(payload) ? payload : [];
+};
+
 // ─── KYC & Agreement ───────────────────────────────────────────────────────
 
 export async function getPublishingStatus(): Promise<{
   kycStatus: KycStatus;
   agreementSigned: boolean;
 }> {
-  return authFetchJson('/api/kyc');
+  return authFetchJson(API_ROUTES.account.kyc);
 }
 
 export async function startKycSession(): Promise<{
@@ -44,14 +73,14 @@ export async function startKycSession(): Promise<{
   url: string;
   status: string;
 }> {
-  return authFetchJson('/api/kyc', {
+  return authFetchJson(API_ROUTES.account.kyc, {
     method: 'POST',
     body: JSON.stringify({ action: 'create-session' }),
   });
 }
 
 export async function signAgreement(version: string): Promise<PublisherAgreement> {
-  return authFetchJson('/api/kyc', {
+  return authFetchJson(API_ROUTES.account.kyc, {
     method: 'POST',
     body: JSON.stringify({ action: 'sign-agreement', version }),
   });
@@ -105,28 +134,28 @@ export function checkEligibility(
 // ─── Book CRUD ──────────────────────────────────────────────────────────────
 
 export async function publishBook(payload: PublishBookPayload): Promise<PublishedBook> {
-  return authFetchJson('/api/books', {
+  return unwrapBookPayload(authFetchJson(API_ROUTES.publishing.books, {
     method: 'POST',
     body: JSON.stringify(payload),
-  });
+  }));
 }
 
 export async function updatePublishedBook(
   bookId: string,
   payload: UpdatePublishedBookPayload,
 ): Promise<PublishedBook> {
-  return authFetchJson('/api/books', {
+  return unwrapBookPayload(authFetchJson(API_ROUTES.publishing.books, {
     method: 'PATCH',
     body: JSON.stringify({ bookId, ...payload }),
-  });
+  }));
 }
 
 export async function getMyPublishedBooks(): Promise<PublishedBook[]> {
-  return authFetchJson('/api/books');
+  return unwrapBooksPayload(authFetchJson(API_ROUTES.publishing.books));
 }
 
 export async function getPublishedBookChapters(
   bookId: string,
 ): Promise<PublishedChapter[]> {
-  return authFetchJson(`/api/books?bookId=${encodeURIComponent(bookId)}&chapters=true`);
+  return unwrapChaptersPayload(authFetchJson(API_ROUTES.publishing.bookChapters(bookId)));
 }

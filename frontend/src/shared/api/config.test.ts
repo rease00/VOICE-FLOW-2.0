@@ -26,19 +26,19 @@ afterEach(() => {
 });
 
 describe('api config', () => {
-  it('uses the proxy backend by default when the app is running remotely', () => {
+  it('uses the canonical v1 API by default when the app is running remotely', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
-    expect(getDefaultApiBaseUrl()).toBe('/api/backend');
+    expect(getDefaultApiBaseUrl()).toBe('/api/v1');
   });
 
   it('heals stale localhost overrides on hosted deployments', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
-    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/backend');
-    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'http://127.0.0.1:7800').value).toBe('/api/backend');
+    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/v1');
+    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'http://127.0.0.1:7800').value).toBe('/api/v1');
   });
 
   it('keeps explicit local backend overrides during local development', () => {
@@ -55,18 +55,18 @@ describe('api config', () => {
     expect(getDefaultApiBaseUrl()).toBe('http://127.0.0.1:7800');
   });
 
-  it('forces hosted browser sessions back onto the internal proxy for remote backends', () => {
+  it('forces hosted browser sessions back onto the canonical v1 surface for remote backends', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
-    expect(resolveApiBaseUrl('https://api.voiceflow.example')).toBe('/api/backend');
+    expect(resolveApiBaseUrl('https://api.voiceflow.example')).toBe('/api/v1');
   });
 
   it('heals stale localhost overrides to the configured remote backend when one is set', () => {
     vi.stubEnv('VITE_API_BASE_URL', 'https://api.voiceflow.example');
     setWindowLocation('https://voiceflow-demo.pages.dev');
 
-    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/backend');
-    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'https://api.voiceflow.example').value).toBe('/api/backend');
+    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/v1');
+    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'https://api.voiceflow.example').value).toBe('/api/v1');
   });
 });

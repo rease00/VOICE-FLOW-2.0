@@ -12,6 +12,9 @@ describe('login navigation helpers', () => {
     expect(resolveSafeInternalNextPath('/billing?resumeCheckout=1', null)).toBe('/billing?resumeCheckout=1');
     expect(resolveSafeInternalNextPath('/billing?billing=success', null)).toBe('/billing?billing=success');
     expect(resolveSafeInternalNextPath('/app/billing?billing=success', null)).toBe('/app/billing?billing=success');
+    expect(resolveSafeInternalNextPath('/app/library?source=reader', null)).toBe('/app/library?source=reader');
+    expect(resolveSafeInternalNextPath('/app/library/1342/read?chapter=7', null)).toBe('/app/library/1342/read?chapter=7');
+    expect(resolveSafeInternalNextPath('/app/reader?vf-reader-item=1342', null)).toBe('/app/reader?vf-reader-item=1342');
     expect(resolveSafeInternalNextPath('/app/login', null)).toBeNull();
     expect(resolveSafeInternalNextPath('https://evil.example/phish', APP_ROUTE_PATHS.main)).toBe(APP_ROUTE_PATHS.main);
   });

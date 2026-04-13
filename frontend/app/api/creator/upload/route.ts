@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { r2Client, R2_BUCKET_NAME } from '../../../../src/lib/r2';
+import { isR2Configured, r2Client, R2_BUCKET_NAME, warnIfR2NotConfigured } from '../../../../src/lib/r2';
 import crypto from 'crypto';
 
 // ============================================================================
@@ -245,6 +245,14 @@ export async function POST(req: NextRequest) {
     // ========================================================================
     const secureFilename = generateSecureFilename(safeExtension);
     const objectKey = `novels/${normalizedAuthorId}/${secureFilename}`;
+
+    if (!isR2Configured) {
+      warnIfR2NotConfigured('Creator upload storage');
+      return NextResponse.json(
+        { error: 'Storage unavailable: R2 is not configured.', code: 'STORAGE_UNAVAILABLE' },
+        { status: 503 }
+      );
+    }
 
     try {
       const uploadCommand = new PutObjectCommand({

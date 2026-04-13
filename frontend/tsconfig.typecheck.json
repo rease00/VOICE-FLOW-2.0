@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src",
+    "app",
+    "components",
+    "contexts",
+    "services",
+    "types.ts",
+    "constants.ts",
+    "audio.dom.d.ts",
+    "next-env.d.ts",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next/dev/**/*"
+  ]
+}

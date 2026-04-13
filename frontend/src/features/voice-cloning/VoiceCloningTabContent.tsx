@@ -1595,7 +1595,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   );
   const stressBackendLabel = useMemo(() => {
     const directBaseUrl = String(backendBaseUrl || '').trim();
-    return directBaseUrl || 'Default API proxy (/api/backend)';
+    return directBaseUrl || 'Default Next.js API (/api/v1)';
   }, [backendBaseUrl]);
   const stressStatusToken = String(stressStatus?.status || '').trim().toLowerCase();
   const isStressRunning = isVoiceCloneStressActiveStatus(stressStatusToken);

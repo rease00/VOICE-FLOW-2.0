@@ -15,9 +15,7 @@ vi.mock('../services/authHttpClient.js', () => ({
 
 import { autoFormatScript } from '../services/geminiService';
 
-const settings = {
-  mediaBackendUrl: 'http://backend.test',
-} as unknown as GenerationSettings;
+const settings = {} as GenerationSettings;
 
 beforeEach(() => {
   authFetchMock.mockReset();

@@ -18,12 +18,12 @@ describe('account delete contract', () => {
   it('uses the backend confirmation phrase and sends it in the request body', async () => {
     authFetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-    await deleteAccount('http://127.0.0.1:7800');
+    await deleteAccount();
 
     expect(ACCOUNT_DELETE_CONFIRM_PHRASE).toBe('DELETE_MY_ACCOUNT');
     expect(authFetchMock).toHaveBeenCalledTimes(1);
     expect(authFetchMock).toHaveBeenCalledWith(
-      '/api/backend/account/delete',
+      '/api/v1/account/delete',
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

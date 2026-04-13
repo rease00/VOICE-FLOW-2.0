@@ -9,7 +9,7 @@ test('manual voice clone status debug', async ({ page }) => {
   const responseLog: Array<{ status: number; url: string; body: string }> = [];
   page.on('response', async (response) => {
     const url = String(response.url() || '');
-    if (!/\/api\/backend\/voice-clone\/status/i.test(url)) return;
+    if (!/\/api\/v1\/voice-clone\/status/i.test(url)) return;
     responseLog.push({
       status: response.status(),
       url,
@@ -19,7 +19,7 @@ test('manual voice clone status debug', async ({ page }) => {
 
   await ensureStudioSmokeAuthenticated(page, credentials);
   const statusResponsePromise = page.waitForResponse(
-    (response) => /\/api\/backend\/voice-clone\/status/i.test(String(response.url() || '')),
+    (response) => /\/api\/v1\/voice-clone\/status/i.test(String(response.url() || '')),
     { timeout: 120_000 }
   );
   await page.goto('/app/voices', { waitUntil: 'domcontentloaded', timeout: 120_000 });

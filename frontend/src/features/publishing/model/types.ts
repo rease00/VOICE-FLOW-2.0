@@ -85,9 +85,15 @@ export interface PublishedChapter {
   driveFileId: string;
   /** R2 cache key for published chapter text */
   r2CacheKey?: string | undefined;
+  /** Optional raw chapter text cached alongside publishing metadata */
+  text?: string | undefined;
   characterCount: number;
   price: number;
   isFree: boolean;
+  audioKey?: string | undefined;
+  syncKey?: string | undefined;
+  audioHash?: string | undefined;
+  generatedAt?: string | undefined;
   createdAt: string;
   updatedAt: string;
 }

@@ -20,10 +20,15 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     const writingWorkspace = page.getByTestId('novel-workspace').first();
     const writingHeading = page.getByRole('heading', { name: /Novel Workspace/i }).first();
     const writingAuthGate = page.getByRole('heading', { name: /Sign in to open Writing/i }).first();
+    const loginShell = page.locator('[data-testid="auth-shell"]').first();
+    const loginHeading = page.getByRole('heading', { name: /Welcome back|Create your V FLOW AI account/i }).first();
     await Promise.any([
       writingWorkspace.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       writingHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       writingAuthGate.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      loginShell.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      loginHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      page.waitForURL(/\/app\/login(?:\/|$|\?)/, { timeout: ROUTE_TIMEOUT_MS }),
     ]);
   } finally {
     await browser.close();

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GenerationSettings } from '../types';
 
 const authFetchMock = vi.hoisted(() => vi.fn());
+const createTtsJobMock = vi.hoisted(() => vi.fn());
 const decodeAudioDataMock = vi.hoisted(() => vi.fn());
 const fetchMock = vi.hoisted(() => vi.fn());
 const googleGenAIConstructorMock = vi.hoisted(() => vi.fn(() => ({
@@ -19,9 +20,13 @@ vi.mock('../services/authHttpClient', () => ({
   authFetch: (...args: unknown[]) => authFetchMock(...args),
 }));
 
-vi.mock('../services/kokoroBrowserRuntime.ts', () => ({
-  kokoroBrowserRuntime: {},
-  shouldUseBrowserKokoroExecution: () => false,
+vi.mock('../src/shared/api/gatewayClient', () => ({
+  createTtsJob: (...args: unknown[]) => createTtsJobMock(...args),
+  extractAudioFromVideo: vi.fn(),
+}));
+
+vi.mock('../services/ttsGatewayJobService', () => ({
+  pollTtsGatewayJobForAudio: vi.fn(),
 }));
 
 const baseSettings: GenerationSettings = {
@@ -100,6 +105,19 @@ describe('generateSpeech public engine routing', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     decodeAudioDataMock.mockResolvedValue(createTestAudioBuffer());
+    createTtsJobMock.mockResolvedValue({
+      id: 'job-1',
+      jobId: 'job-1',
+      status: 'completed',
+      traceId: 'trace-1',
+      result: {
+        audioBase64: Buffer.from(new Uint8Array(256)).toString('base64'),
+        headers: {
+          'content-type': 'audio/wav',
+          'x-vf-post-tts-profile': 'prime',
+        },
+      },
+    });
     authFetchMock.mockResolvedValue(new Response(JSON.stringify({
       audioBase64: Buffer.from(new Uint8Array(128)).toString('base64'),
     }), {
@@ -115,7 +133,7 @@ describe('generateSpeech public engine routing', () => {
   it.each([
     ['PRIME', 'PRIME'],
     ['VECTOR', 'VECTOR'],
-  ] as const)('routes %s through the Next.js TTS synthesize endpoint', async (engine, expectedEngine) => {
+  ] as const)('routes %s through the gateway job flow', async (engine, expectedEngine) => {
     const { generateSpeech } = await import('../services/geminiService');
 
     const result = await generateSpeech(
@@ -134,15 +152,14 @@ describe('generateSpeech public engine routing', () => {
     );
 
     expect(result.sampleRate).toBe(24000);
-    const synthesizeCalls = fetchMock.mock.calls.filter(([url]) => String(url) === '/api/tts/synthesize');
-    expect(synthesizeCalls).toHaveLength(1);
-    const synthesizeBody = JSON.parse(String((synthesizeCalls[0]?.[1] as RequestInit | undefined)?.body || '{}'));
-    expect(synthesizeBody).toEqual(expect.objectContaining({
+    expect(createTtsJobMock).toHaveBeenCalledTimes(1);
+    const [payload, options] = createTtsJobMock.mock.calls[0] as [Record<string, unknown>, Record<string, unknown>];
+    expect(payload).toEqual(expect.objectContaining({
       text: 'Studio launch validation for shared queue routing.',
       engine: expectedEngine,
-      multiSpeaker: false,
     }));
-    expect(String(synthesizeBody.voice || '').toLowerCase()).toBe('fenrir');
+    expect(String(payload.voice_id || payload.voiceName || '').toLowerCase()).toBe('fenrir');
+    expect(options).toEqual(expect.objectContaining({ baseUrl: expect.any(String) }));
     expect(decodeAudioDataMock).toHaveBeenCalledTimes(1);
     expect(googleGenAIConstructorMock).not.toHaveBeenCalled();
   });
@@ -183,13 +200,12 @@ describe('generateSpeech public engine routing', () => {
     );
 
     expect(result.sampleRate).toBe(24000);
-    const routeCalls = fetchMock.mock.calls.filter(([url]) => String(url) === '/api/tts/synthesize');
-    expect(routeCalls).toHaveLength(2);
-    const routeBodies = routeCalls.map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body || '{}')));
-    expect(routeBodies).toEqual(expect.arrayContaining([
-      expect.objectContaining({ engine: 'PRIME', multiSpeaker: false }),
-      expect.objectContaining({ engine: 'PRIME', multiSpeaker: false }),
-    ]));
+    expect(createTtsJobMock).toHaveBeenCalledTimes(2);
+    createTtsJobMock.mock.calls.forEach(([payload]) => {
+      expect(payload).toEqual(expect.objectContaining({
+        engine: 'PRIME',
+      }));
+    });
     expect(authFetchMock).toHaveBeenCalledTimes(1);
     expect(authFetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/voice-clone/openvoice'),

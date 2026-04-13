@@ -113,6 +113,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({
                 alt={book.title}
                 fill
                 sizes="(max-width: 768px) 192px, 280px"
+                unoptimized
                 className="h-full w-full object-cover"
                 loading="lazy"
               />

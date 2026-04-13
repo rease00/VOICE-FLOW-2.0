@@ -1,7 +1,8 @@
-import type { GutendexResponse, Book, LanguageCode, Author } from '../model/types';
+import type { GutendexResponse, Book, LanguageCode } from '../model/types';
+import { API_ROUTES } from '../../../shared/api/routes';
 
-const GUTENDEX_BASE_URL = 'https://gutendex.com/books';
-const OPENLIB_BASE_URL = 'https://openlibrary.org/search.json';
+const BOOK_API_ROUTE = API_ROUTES.library.books;
+const SELECTED_BOOK_STORAGE_PREFIX = 'vf-library-selected-book:';
 
 interface FetchOptions {
   sort?: string;
@@ -10,138 +11,77 @@ interface FetchOptions {
   languages?: LanguageCode;
 }
 
-const fetchGutendexBooks = async (options: FetchOptions): Promise<Book[]> => {
+const buildDiscoveryParams = (options: FetchOptions): URLSearchParams => {
   const params = new URLSearchParams();
-  if (options.sort) params.append('sort', options.sort);
-  if (options.search) params.append('search', options.search);
-  if (options.topic && options.topic !== 'all') params.append('topic', options.topic);
+  params.set('discover', '1');
+  if (options.sort) params.set('sort', options.sort);
+  if (options.search) params.set('search', options.search);
+  if (options.topic && options.topic !== 'all') params.set('topic', options.topic);
   if (options.languages && options.languages !== 'all') {
-    params.append('languages', options.languages);
+    params.set('languages', options.languages);
   }
+  return params;
+};
+
+const getSelectedBookStorageKey = (bookId: string | number): string => (
+  `${SELECTED_BOOK_STORAGE_PREFIX}${String(bookId)}`
+);
+
+export const rememberSelectedLibraryBook = (book: Book): void => {
+  if (typeof window === 'undefined') return;
 
   try {
-    const url = `${GUTENDEX_BASE_URL}?${params.toString()}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error('Failed to fetch from Gutendex');
-    const data = await response.json();
-
-    return (data.results ?? []).map((b: Record<string, unknown>) => ({
-      ...b,
-      source: 'gutenberg' as const,
-    }));
-  } catch (e) {
-    console.warn('Gutendex fetch failed', e);
-    return [];
+    window.localStorage.setItem(getSelectedBookStorageKey(book.id), JSON.stringify(book));
+  } catch {
+    // LocalStorage access is best-effort only.
   }
 };
 
-const fetchOpenLibraryBooks = async (options: FetchOptions): Promise<Book[]> => {
-  const params = new URLSearchParams();
-  const langMap: Record<string, string> = { en: 'eng' };
-  const olLang = options.languages ? langMap[options.languages] : null;
-
-  const queryParts: string[] = [];
-
-  if (options.search) {
-    queryParts.push(options.search);
-  } else if (options.topic && options.topic !== 'all') {
-    queryParts.push(`subject:${options.topic}`);
-  } else {
-    queryParts.push('language:eng');
-  }
-
-  if (olLang) {
-    params.append('language', olLang);
-  }
-
-  if (queryParts.length === 0) {
-    queryParts.push('classic');
-  }
-
-  params.append('q', queryParts.join(' '));
-  params.append('sort', 'editions');
-  params.append(
-    'fields',
-    'key,title,author_name,cover_i,ia,subject,first_publish_year,language,editions_count',
-  );
-  params.append('limit', '20');
+export const readRememberedLibraryBook = (
+  bookId: string | number,
+): Book | null => {
+  if (typeof window === 'undefined') return null;
 
   try {
-    const url = `${OPENLIB_BASE_URL}?${params.toString()}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error('Failed to fetch from Open Library');
-    const data = await response.json();
+    const raw = window.localStorage.getItem(getSelectedBookStorageKey(bookId));
+    if (!raw) return null;
 
-    return (data.docs ?? [])
-      .filter(
-        (doc: Record<string, unknown>) =>
-          doc.cover_i && Array.isArray(doc.ia) && (doc.ia as string[]).length > 0,
-      )
-      .map((doc: Record<string, unknown>) => {
-        const authorNames = (doc.author_name ?? []) as string[];
-        const authors: Author[] = authorNames.slice(0, 3).map((name: string) => ({
-          name,
-          birth_year: null,
-          death_year: null,
-        }));
+    const parsed = JSON.parse(raw) as Book | null;
+    if (!parsed || String(parsed.id) !== String(bookId)) {
+      return null;
+    }
 
-        const formats: Record<string, string> = {};
-        const media_type = 'Text';
-
-        if (doc.cover_i) {
-          formats['image/jpeg'] = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
-        }
-
-        const iaId = (doc.ia as string[])[0];
-        formats['text/html'] = `https://archive.org/embed/${iaId}`;
-        formats['application/epub+zip'] = `https://archive.org/download/${iaId}/${iaId}.epub`;
-
-        return {
-          id: doc.key as string,
-          title: doc.title as string,
-          authors: authors.length
-            ? authors
-            : [{ name: 'Unknown', birth_year: null, death_year: null }],
-          translators: [],
-          subjects: ((doc.subject ?? []) as string[]).slice(0, 5),
-          bookshelves: [],
-          languages: (doc.language ?? []) as string[],
-          copyright: false,
-          media_type,
-          formats,
-          download_count: (doc.editions_count as number) || 0,
-          source: 'openlibrary' as const,
-        };
-      });
-  } catch (e) {
-    console.warn('OpenLibrary fetch failed', e);
-    return [];
+    return parsed;
+  } catch {
+    return null;
   }
+};
+
+export const buildLibraryReadHref = (
+  book: Pick<Book, 'id' | 'source'>,
+): string => {
+  const params = new URLSearchParams();
+  if (book.source) {
+    params.set('source', book.source);
+  }
+
+  const query = params.toString();
+  const safeBookId = encodeURIComponent(String(book.id));
+  return `/app/library/${safeBookId}/read${query ? `?${query}` : ''}`;
 };
 
 export const fetchBooks = async (
   options: FetchOptions = {},
 ): Promise<GutendexResponse> => {
   try {
-    const [gutendexBooks, olBooks] = await Promise.all([
-      fetchGutendexBooks(options),
-      fetchOpenLibraryBooks(options),
-    ]);
+    const query = buildDiscoveryParams(options).toString();
+    const response = await fetch(`${BOOK_API_ROUTE}?${query}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error('Failed to fetch books');
 
-    const combinedResults: Book[] = [];
-    const maxLength = Math.max(gutendexBooks.length, olBooks.length);
-
-    for (let i = 0; i < maxLength; i++) {
-      if (i < gutendexBooks.length) combinedResults.push(gutendexBooks[i]!);
-      if (i < olBooks.length) combinedResults.push(olBooks[i]!);
-    }
-
-    return {
-      count: combinedResults.length,
-      next: null,
-      previous: null,
-      results: combinedResults,
-    };
+    return (await response.json()) as GutendexResponse;
   } catch (error) {
     console.error('Error fetching books:', error);
     return { count: 0, next: null, previous: null, results: [] };
@@ -186,8 +126,18 @@ export const resolveBookTextLink = async (book: Book): Promise<string | null> =>
 
   if (book.source === 'openlibrary') {
     try {
-      const url = `${GUTENDEX_BASE_URL}?search=${encodeURIComponent(book.title)}`;
-      const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const searchOptions: FetchOptions = {
+        search: book.title,
+      };
+      if (book.languages.includes('en')) {
+        searchOptions.languages = 'en';
+      }
+
+      const params = buildDiscoveryParams(searchOptions);
+      const response = await fetch(`${BOOK_API_ROUTE}?${params.toString()}`, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(15000),
+      });
       if (!response.ok) return null;
 
       const data = (await response.json()) as GutendexResponse;
@@ -198,6 +148,7 @@ export const resolveBookTextLink = async (book: Book): Promise<string | null> =>
           book: candidate,
           score: scoreTitleMatch(book.title, candidate.title),
         }))
+        .filter((candidate) => candidate.book.source === 'gutenberg')
         .sort((a, b) => b.score - a.score);
 
       for (const item of ranked) {

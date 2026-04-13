@@ -1,32 +1,53 @@
 import { VOICES, EMOTIONS } from '../../../constants';
-import type { DubbingClip, GenerationSettings, VoiceOption } from '../../../types';
-import { getEngineDisplayName } from '../../../services/engineDisplay';
+import type { GenerationSettings, VoiceOption } from '../../../types';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../../shared/api/config';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { readStorageString } from '../../shared/storage/localStore';
 import { WorkspaceTab as Tab } from '../../features/workspace/model/tabs';
 import type { TokenPackKey } from '../../../services/accountService';
 
-export const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
-export const STUDIO_SPEECH_GAIN_MIN = 0.05;
-export const STUDIO_SPEECH_GAIN_MAX = 1.5;
-const STUDIO_MUSIC_GAIN_DEFAULT = 0.3;
-const STUDIO_MUSIC_GAIN_MIN = 0;
-const STUDIO_MUSIC_GAIN_MAX = 1;
+export {
+  STUDIO_MUSIC_GAIN_DEFAULT,
+  STUDIO_MUSIC_GAIN_MAX,
+  STUDIO_MUSIC_GAIN_MIN,
+  STUDIO_SPEECH_GAIN_DEFAULT,
+  STUDIO_SPEECH_GAIN_MAX,
+  STUDIO_SPEECH_GAIN_MIN,
+  resolveStudioMusicGain,
+  resolveStudioSpeechGain,
+} from '../../shared/studio/studioGain';
 
-const clampFiniteNumber = (value: unknown, min: number, max: number, fallback: number): number => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.min(max, Math.max(min, numeric));
-};
+export {
+  PRIME_ACCESS_LOCK_MESSAGE,
+  applyTokenPackDiscount,
+  formatMobileAvailableCreditsPercent,
+  getEngineSelectorCopy,
+  isPrimeAccessUnlocked,
+  normalizeAllowedEngines,
+  normalizeEngineToken,
+  normalizePlanToken,
+  resolveEngineToken,
+  resolvePrimeAllowedEngines,
+  resolveTokenPackDiscountPercent,
+} from '../../shared/workspace/mainAppHelpers';
 
-export const resolveStudioSpeechGain = (value: unknown): number => (
-  clampFiniteNumber(value, STUDIO_SPEECH_GAIN_MIN, STUDIO_SPEECH_GAIN_MAX, STUDIO_SPEECH_GAIN_DEFAULT)
-);
+export type { EngineSelectorCopy } from '../../shared/workspace/mainAppHelpers';
 
-export const resolveStudioMusicGain = (value: unknown): number => (
-  clampFiniteNumber(value, STUDIO_MUSIC_GAIN_MIN, STUDIO_MUSIC_GAIN_MAX, STUDIO_MUSIC_GAIN_DEFAULT)
-);
+export interface DubbingClip {
+  id: string;
+  file: File;
+  objectUrl: string;
+  durationMs: number;
+  trimInMs: number;
+  trimOutMs: number;
+  layer: string;
+  script: string;
+  status: string;
+  jobId: string;
+  resultUrl: string | null;
+  reportUrl: string | null;
+  error: string;
+}
 
 export const SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT = 8;
 
@@ -458,7 +479,7 @@ export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): Vo
   VOICES.map((voice) => ({ ...voice, engine }))
 );
 
-export const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'mediaBackendUrl'>): string => (
+export const resolveMediaBackendUrl = (settings: { mediaBackendUrl?: string | undefined }): string => (
   sanitizeConfiguredApiBaseUrl(settings.mediaBackendUrl, getDefaultApiBaseUrl()).value
 );
 
@@ -486,7 +507,7 @@ export const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number
 };
 
 export const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
-  [Tab.WRITING]: 'Write, browse, publish, and manage your novels',
+  [Tab.WRITING]: 'Chapter-by-chapter writing with import, memory, and adaptation tools',
   [Tab.STUDIO]: 'Write, direct, and preview your next scene',
   [Tab.VOICE_CLONING]: 'Manage voices, cloning, and cast-ready voice assets',
   [Tab.HISTORY]: 'Rendered previews, exports, and runs history',
@@ -505,7 +526,6 @@ export type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'schedule
 
 const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
   { prefix: '/app/writing', tab: Tab.WRITING },
-  { prefix: '/app/novel', tab: Tab.WRITING },
   { prefix: '/app/studio', tab: Tab.STUDIO },
   { prefix: '/app/voices', tab: Tab.VOICE_CLONING },
   { prefix: '/app/runs', tab: Tab.HISTORY },
@@ -584,8 +604,6 @@ export const resolveWorkspaceTabFromUrl = (): Tab | null => {
 export const resolveWorkspaceTabFromStorage = (): Tab | null => {
   const persisted = String(readStorageString(STORAGE_KEYS.workspaceActiveTab) || '').trim().toUpperCase();
   if (persisted === 'NOVEL') return Tab.WRITING;
-  if (persisted === 'WRITING') return Tab.WRITING;
-  if (persisted === 'LIBRARY') return Tab.WRITING;
   return Object.values(Tab).includes(persisted as Tab) ? (persisted as Tab) : null;
 };
 
@@ -606,135 +624,6 @@ export const resolveAdminOpsTabFromUrl = (): AdminOpsTab => {
     ? (token as AdminOpsTab)
     : 'usage';
 };
-
-export const normalizePlanToken = (planName: unknown): 'free' | 'launcher' | 'starter' | 'creator' | 'pro' | 'scale' => {
-  const token = String(planName || '').trim().toLowerCase();
-  if (token === 'launch' || token === 'launcher') return 'launcher';
-  if (token === 'starter') return 'starter';
-  if (token === 'creator') return 'creator';
-  if (token === 'pro') return 'pro';
-  if (token === 'scale' || token === 'plus' || token === 'pro_plus' || token === 'pro-plus') return 'scale';
-  return 'free';
-};
-
-export const resolveTokenPackDiscountPercent = (
-  planToken: ReturnType<typeof normalizePlanToken>,
-  entitlementDiscount: number
-): number => {
-  if (Number.isFinite(entitlementDiscount) && entitlementDiscount > 0) {
-    return Math.max(0, Math.round(entitlementDiscount));
-  }
-  if (planToken === 'launcher') return 0;
-  if (planToken === 'starter') return 5;
-  if (planToken === 'creator') return 5;
-  if (planToken === 'pro') return 10;
-  if (planToken === 'scale') return 15;
-  return 0;
-};
-
-export const applyTokenPackDiscount = (baseAmountInr: number, discountPercent: number): number =>
-  Math.max(1, Math.round(Math.max(0, Number(baseAmountInr || 0)) * (1 - (Math.max(0, Number(discountPercent || 0)) / 100))));
-
-export const formatMobileAvailableCreditsPercent = (input: {
-  hasUnlimitedAccess: boolean;
-  monthlyFreeRemaining: number;
-  monthlyFreeLimit: number;
-  paidVfBalance?: number;
-}): string => {
-  if (input.hasUnlimitedAccess) return '100%';
-  const freeRemaining = Math.max(0, Number(input.monthlyFreeRemaining || 0));
-  const freeLimit = Math.max(0, Number(input.monthlyFreeLimit || 0));
-  const paidBalance = Math.max(0, Number(input.paidVfBalance || 0));
-  const available = Math.max(0, freeRemaining + paidBalance);
-  const totalCapacity = Math.max(available, freeLimit + paidBalance);
-  if (totalCapacity <= 0) return '0%';
-  const percent = Math.max(0, Math.min(100, Math.round((available / totalCapacity) * 100)));
-  return `${percent}%`;
-};
-
-const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['VECTOR', 'PRIME']);
-const LEGACY_ENGINE_TOKEN_MAP: Record<string, GenerationSettings['engine']> = {
-  BASIC: 'VECTOR',
-  GEMINI: 'PRIME',
-  GEMINI_RUNTIME: 'PRIME',
-  GEMINI_PRO: 'PRIME',
-  GEMINI_V2: 'PRIME',
-};
-
-const normalizeEngineTokenKey = (value: unknown): string => (
-  String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-);
-
-export const resolveEngineToken = (value: unknown): string => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const canonical = normalizeEngineTokenKey(raw);
-  const legacy = LEGACY_ENGINE_TOKEN_MAP[canonical];
-  if (legacy) return legacy;
-  return CANONICAL_ENGINE_TOKENS.has(canonical as GenerationSettings['engine'])
-    ? canonical
-    : raw;
-};
-
-export const normalizeEngineToken = (
-  value: unknown,
-  fallback: GenerationSettings['engine'] = 'PRIME'
-): GenerationSettings['engine'] => {
-  const token = resolveEngineToken(value);
-  if (token === 'VECTOR' || token === 'PRIME') return token;
-  return fallback;
-};
-
-export const normalizeAllowedEngines = (value: unknown): GenerationSettings['engine'][] => {
-  if (!Array.isArray(value)) return [];
-  const out = new Set<GenerationSettings['engine']>();
-  value.forEach((item) => {
-    const normalized = resolveEngineToken(item);
-    if (normalized === 'VECTOR' || normalized === 'PRIME') {
-      out.add(normalized);
-    }
-  });
-  return Array.from(out);
-};
-
-export const PRIME_ACCESS_LOCK_MESSAGE = 'Prime is available on paid subscriptions or with paid token balance.';
-
-export const isPrimeAccessUnlocked = (input: {
-  hasUnlimitedAccess?: boolean;
-  isPaidBillingPlan?: boolean;
-  paidVfBalance?: number;
-}): boolean => (
-  Boolean(input.hasUnlimitedAccess) ||
-  Boolean(input.isPaidBillingPlan) ||
-  Math.max(0, Number(input.paidVfBalance || 0)) > 0
-);
-
-export const resolvePrimeAllowedEngines = (input: {
-  hasUnlimitedAccess?: boolean;
-  isPaidBillingPlan?: boolean;
-  paidVfBalance?: number;
-}): GenerationSettings['engine'][] => (
-  isPrimeAccessUnlocked(input) ? ['VECTOR', 'PRIME'] : ['VECTOR']
-);
-
-export interface EngineSelectorCopy {
-  title: string;
-  description: string;
-}
-
-export const getEngineSelectorCopy = (engine: GenerationSettings['engine']): EngineSelectorCopy =>
-  ({
-    title: getEngineDisplayName(engine),
-    description: engine === 'VECTOR'
-      ? 'Balanced quality with reliable performance.'
-      : engine === 'PRIME'
-        ? 'Premium synthesis for natural, polished output.'
-        : 'Voice engine',
-  } as EngineSelectorCopy);
 
 const cleanDubbingLine = (line: string): string => (
   String(line || '')

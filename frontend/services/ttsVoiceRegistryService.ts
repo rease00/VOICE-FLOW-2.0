@@ -165,11 +165,13 @@ const toVoiceOption = (
 
 export const fetchEngineRuntimeVoices = async (
   engine: GenerationSettings['engine'],
-  _runtimeUrl: string,
+  runtimeUrl: string,
   _timeoutMs: number = 7000
 ): Promise<VoiceOption[]> => {
   const canonicalEngine = normalizeActiveEngine(engine);
-  const payload = await fetchTtsEngineVoices(canonicalEngine);
+  const payload = runtimeUrl
+    ? await fetchTtsEngineVoices(canonicalEngine, runtimeUrl)
+    : await fetchTtsEngineVoices(canonicalEngine);
   const voices = Array.isArray(payload?.voices) ? payload.voices : [];
   return voices.map((voice, index: number) => toVoiceOption(canonicalEngine, voice, index));
 };

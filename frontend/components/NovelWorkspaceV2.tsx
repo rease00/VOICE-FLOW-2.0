@@ -75,7 +75,6 @@ type ToastKind = 'success' | 'error' | 'info';
 
 interface NovelWorkspaceV2Props {
   settings: GenerationSettings;
-  mediaBackendUrl: string;
   onSendToStudio: (text: string) => void;
   onToast: (message: string, type?: ToastKind) => void;
 }
@@ -370,7 +369,7 @@ const buildMemoryInstruction = (ledger: ProjectMemoryLedger): string => {
 type NovelCreateMode = 'novel' | 'chapter';
 type MobileToolsTab = 'adaptation' | 'memory' | 'settings' | 'publish';
 
-export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, mediaBackendUrl, onToast, onSendToStudio }) => {
+export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, onToast, onSendToStudio }) => {
   const { width, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
   const layoutMode = isPhone ? 'phone' : isTablet ? 'tablet' : 'desktop';
   const isTightPhone = isPhone && width < 460;
@@ -1415,13 +1414,13 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
 
       setIsImportSplitting(true);
       for (const file of importFiles) {
-        const extracted = await extractNovelTextFromFile(mediaBackendUrl, file, 'auto');
+        const extracted = await extractNovelTextFromFile(file, 'auto');
         if (!primaryDiagnostics) primaryDiagnostics = extracted.diagnostics;
         collectedWarnings.push(
           ...extracted.diagnostics.warnings.map((warning) => `${file.name}: ${warning}`)
         );
         collectedRawText.push(`\n\n===== ${file.name} =====\n${extracted.rawText}`);
-        const split = await splitImportedTextToChapters(mediaBackendUrl, extracted.rawText, 'auto');
+        const split = await splitImportedTextToChapters(extracted.rawText, 'auto');
         collectedWarnings.push(
           ...split.warnings.map((warning) => `${file.name}: ${warning}`)
         );

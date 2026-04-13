@@ -91,25 +91,19 @@ describe('voice clone stress api', () => {
     expect(options).toMatchObject({ baseUrl: 'https://backend.example', requireAuth: true });
   });
 
-  it('retries voice clone cancel across proxy and direct backend even without idempotency key', async () => {
+  it('does not retry voice clone cancel across alternate base URLs', async () => {
     const { cancelVoiceCloneJob } = await import('../src/features/voice-cloning/api');
-    requestJsonMock
-      .mockRejectedValueOnce({ status: 404, detail: 'Not Found' })
-      .mockResolvedValueOnce({ ok: true, jobId: 'vc_job_2', status: 'cancelled' });
+    requestJsonMock.mockRejectedValueOnce({ status: 404, detail: 'Not Found' });
 
-    const response = await cancelVoiceCloneJob('vc_job_2', {
+    await expect(cancelVoiceCloneJob('vc_job_2', {
       baseUrl: 'http://127.0.0.1:7800',
       timeoutMs: 12000,
-    });
+    })).rejects.toMatchObject({ status: 404 });
 
-    expect(response).toMatchObject({ ok: true, jobId: 'vc_job_2', status: 'cancelled' });
-    expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    expect(requestJsonMock).toHaveBeenCalledTimes(1);
     const firstCall = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
-    const secondCall = requestJsonMock.mock.calls[1] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
     expect(firstCall[0]).toBe('/voice-clone/jobs/vc_job_2/cancel');
-    expect(secondCall[0]).toBe('/voice-clone/jobs/vc_job_2/cancel');
-    expect(firstCall[2]).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
-    expect(secondCall[2]).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
+    expect(firstCall[2]).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
   });
 
   it('posts cancel request to admin stress cancel endpoint', async () => {
@@ -323,7 +317,7 @@ describe('voice clone stress api', () => {
     }
   });
 
-  it('uses the app proxy and adds idempotency headers for local clone submissions', async () => {
+  it('uses the provided base URL and adds idempotency headers for local clone submissions', async () => {
     const { cloneVoiceWithOpenVoice } = await import('../src/features/voice-cloning/api');
     requestJsonMock.mockResolvedValueOnce({ ok: true, status: 'completed' });
 
@@ -342,11 +336,11 @@ describe('voice clone stress api', () => {
     expect(requestJsonMock).toHaveBeenCalledTimes(1);
     const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
     expect(path).toBe('/voice-clone/render');
-    expect(options).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
+    expect(options).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
     expect(new Headers(init.headers).get('Idempotency-Key')).toBe('clone_req_123');
   });
 
-  it('does not replay clone POST submissions across base URLs when the first target fails', async () => {
+  it('does not replay clone POST submissions across alternate base URLs', async () => {
     const { cloneVoiceWithOpenVoice } = await import('../src/features/voice-cloning/api');
     requestJsonMock.mockReset();
     requestJsonMock.mockRejectedValueOnce(new MockHttpError(404, 'Not Found', 'Not Found'));
@@ -365,7 +359,7 @@ describe('voice clone stress api', () => {
     expect(requestJsonMock).toHaveBeenCalledTimes(1);
     const [path, init, options] = requestJsonMock.mock.calls[0] as [string, RequestInit, { baseUrl: string; timeoutMs: number; requireAuth: boolean }];
     expect(path).toBe('/voice-clone/render');
-    expect(options).toMatchObject({ baseUrl: '/api/backend', timeoutMs: 12000, requireAuth: true });
+    expect(options).toMatchObject({ baseUrl: 'http://127.0.0.1:7800', timeoutMs: 12000, requireAuth: true });
     expect(new Headers(init.headers).get('Idempotency-Key')).toBe('clone_req_once');
   });
 });

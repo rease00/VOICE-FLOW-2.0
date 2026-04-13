@@ -11,7 +11,7 @@ export type EditableImportChapter = NovelImportChapterPreview & {
 
 type ToastFn = (msg: string, type?: 'success' | 'error' | 'info') => void;
 
-export const useImportFlow = (mediaBackendUrl: string, onToast: ToastFn) => {
+export const useImportFlow = (onToast: ToastFn) => {
   const { selectedProjectId, setChaptersByProjectId, chapters } = useNovelEditor();
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -65,7 +65,7 @@ export const useImportFlow = (mediaBackendUrl: string, onToast: ToastFn) => {
       let lastDiagnostics: NovelImportExtractDiagnostics | null = null;
 
       for (const file of importFiles) {
-        const result = await extractNovelTextFromFile(mediaBackendUrl, file);
+        const result = await extractNovelTextFromFile(file);
         allRawParts.push(result.rawText);
         lastDiagnostics = result.diagnostics;
         if (result.diagnostics.warnings.length > 0) {
@@ -78,7 +78,7 @@ export const useImportFlow = (mediaBackendUrl: string, onToast: ToastFn) => {
       setIsExtracting(false);
       setIsSplitting(true);
 
-      const { chapters: previews, warnings } = await splitImportedTextToChapters(mediaBackendUrl, combinedRaw);
+      const { chapters: previews, warnings } = await splitImportedTextToChapters(combinedRaw);
       setSplitWarnings(warnings);
 
       const editable: EditableImportChapter[] = previews.map((ch) => ({
@@ -95,7 +95,7 @@ export const useImportFlow = (mediaBackendUrl: string, onToast: ToastFn) => {
       setIsExtracting(false);
       setIsSplitting(false);
     }
-  }, [importFiles, mediaBackendUrl, onToast]);
+  }, [importFiles, onToast]);
 
   const updateEditableChapter = useCallback(
     (id: string, patch: Partial<Pick<EditableImportChapter, 'title' | 'selected' | 'titleEdited'>>) => {

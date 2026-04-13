@@ -4,6 +4,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { useUser } from '../../../../contexts/UserContext';
 import type { PublisherAgreement, AgreementTerms, AgreementSection } from '../model/types';
 import { FileText, CheckCircle2, ScrollText, Loader2 } from 'lucide-react';
+import { API_ROUTES } from '../../../shared/api/routes';
 
 interface PublisherAgreementViewProps {
   onSigned?: (agreement: PublisherAgreement) => void;
@@ -76,7 +77,7 @@ export function PublisherAgreementView({ onSigned }: PublisherAgreementViewProps
       const token = await firebaseAuth.currentUser?.getIdToken();
       if (!token) throw new Error('Not authenticated');
 
-      const res = await fetch('/api/kyc', {
+      const res = await fetch(API_ROUTES.account.kyc, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

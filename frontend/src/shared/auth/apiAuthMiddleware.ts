@@ -8,21 +8,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
-
-function getAdminApp() {
-  const existing = getApps();
-  if (existing.length > 0) return existing[0]!;
-  return initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID ?? '',
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? '',
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-    }),
-  });
-}
+import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../../server/firebaseAdmin';
 
 /* ─── Token verification ─── */
 
@@ -43,7 +29,7 @@ export async function requireAuth(request: Request): Promise<AuthResult | AuthEr
   }
   const token = authHeader.slice(7);
   try {
-    const decoded = await getAuth(getAdminApp()).verifyIdToken(token);
+    const decoded = await getFirebaseAdminAuth().verifyIdToken(token);
     return { uid: decoded.uid };
   } catch {
     return { error: NextResponse.json({ error: 'Invalid or expired token' }, { status: 401 }) };
@@ -53,7 +39,7 @@ export async function requireAuth(request: Request): Promise<AuthResult | AuthEr
 /* ─── KYC requirement ─── */
 
 export async function requireKyc(uid: string): Promise<NextResponse | null> {
-  const db = getFirestore(getAdminApp());
+  const db = getFirebaseAdminFirestore();
   const userDoc = await db.collection('users').doc(uid).get();
   const data = userDoc.data();
   if (data?.kycStatus !== 'verified') {

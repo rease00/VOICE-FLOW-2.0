@@ -1,12 +1,11 @@
-import { authFetch } from './authHttpClient';
 import { requestJson } from '../src/shared/api/httpClient';
 import { activateTtsEngine } from '../src/shared/api/gatewayClient';
 import { resolveApiBaseUrl, resolveApiUrl } from '../src/shared/api/config';
+import { API_ROUTE_FAMILIES } from '../src/shared/api/routes';
 
-const REMOVED_MEDIA_BACKEND_MESSAGE = 'This media backend workflow is not available in the Next.js app build.';
-
-const removedMediaBackendFeature = (feature: string): Error =>
-  new Error(`${feature} is not available. ${REMOVED_MEDIA_BACKEND_MESSAGE}`);
+const resolveStudioApiBaseUrl = (baseUrl?: string): string => (
+  resolveApiBaseUrl(baseUrl || API_ROUTE_FAMILIES.studio)
+);
 
 export const fetchTtsEngineStatus = async (
   baseUrl?: string,
@@ -20,7 +19,7 @@ export const fetchTtsEngineStatus = async (
   return requestJson<{ engines: Record<string, unknown> }>(
     `/tts/engines/status?${params.toString()}`,
     undefined,
-    { baseUrl: resolveApiBaseUrl(baseUrl) }
+    { baseUrl: resolveStudioApiBaseUrl(baseUrl) }
   );
 };
 
@@ -28,7 +27,7 @@ export const switchTtsEngineRuntime = async (
   baseUrl: string | undefined,
   engine: 'PRIME' | 'VECTOR'
 ): Promise<{ state: string; detail: string; healthUrl?: string }> => {
-  const response = await activateTtsEngine(engine, { baseUrl: resolveApiBaseUrl(baseUrl) });
+  const response = await activateTtsEngine(engine, { baseUrl: resolveStudioApiBaseUrl(baseUrl) });
   return {
     state: String(response?.state || 'starting').trim() || 'starting',
     detail: String(response?.detail || 'Runtime starting in background.').trim() || 'Runtime starting in background.',
@@ -44,7 +43,7 @@ export const checkMediaBackendHealth = async (
   ffmpeg?: { available: boolean };
   whisper?: { loaded: boolean; error: string | null; supportedLanguages: string[] };
 }> => {
-  const response = await fetch(resolveApiUrl('/health', baseUrl), {
+  const response = await fetch(resolveApiUrl('/health', resolveStudioApiBaseUrl(baseUrl)), {
     method: 'GET',
     cache: 'no-store',
     headers: { 'ngrok-skip-browser-warning': 'true' },
@@ -69,68 +68,4 @@ export const checkMediaBackendHealth = async (
         : [],
     },
   };
-};
-
-export const cancelDubbingJob = async (baseUrl: string | undefined, jobId: string): Promise<void> => {
-  const safeBaseUrl = resolveApiBaseUrl(baseUrl);
-  const safeJobId = String(jobId || '').trim();
-  if (!safeJobId) return;
-  const response = await authFetch(
-    `${safeBaseUrl}/dubbing/jobs/${encodeURIComponent(safeJobId)}/cancel`,
-    { method: 'POST' },
-    { requireAuth: true }
-  );
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`Failed to cancel dubbing job (${response.status}).`);
-  }
-};
-
-export const transcribeVideoWithBackend = async (
-  _baseUrl?: string,
-  _file?: Blob | File,
-  _options?: Record<string, unknown>
-): Promise<{
-  script: string;
-  segments?: Array<{ speaker?: string }>;
-  emotionCapture?: { enabled?: boolean };
-}> => {
-  throw removedMediaBackendFeature('Transcription');
-};
-
-export const createDubbingJobV2 = async (
-  _baseUrl?: string,
-  _file?: Blob | File,
-  _options?: Record<string, unknown>
-): Promise<{ job_id?: string }> => {
-  throw removedMediaBackendFeature('Video dubbing');
-};
-
-export const getDubbingJob = async (
-  _baseUrl?: string,
-  _jobId?: string,
-  _options?: Record<string, unknown>
-): Promise<{ job?: Record<string, unknown> }> => {
-  throw removedMediaBackendFeature('Video dubbing');
-};
-
-export const downloadDubbingChunk = async (
-  _baseUrl?: string,
-  _jobId?: string,
-  _chunkIndex?: number
-): Promise<Blob> => {
-  throw removedMediaBackendFeature('Video dubbing');
-};
-
-export const downloadDubbingResult = async (
-  _baseUrl?: string,
-  _jobId?: string
-): Promise<Blob> => {
-  throw removedMediaBackendFeature('Video dubbing');
-};
-
-export const downloadDubbingReport = async (
-  _baseUrl?: string,
-  _jobId?: string
-): Promise<Blob> => {
-  throw removedMediaBackendFeature('Video dubbing');
 };

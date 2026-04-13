@@ -1,9 +1,10 @@
 import { NovelImportChapterPreview, NovelImportExtractDiagnostics, NovelImportPageStat } from '../types';
 import { authFetch } from './authHttpClient';
-import { resolveApiBaseUrl } from '../src/shared/api/config';
+import { resolveApiUrl } from '../src/shared/api/config';
+import { API_ROUTES } from '../src/shared/api/routes';
 
-const toBaseUrl = (input?: string): string => {
-  return resolveApiBaseUrl(input);
+const resolveCanonicalImportUrl = (path: string, baseUrl?: string): string => {
+  return String(baseUrl || '').trim() ? resolveApiUrl(path, baseUrl) : path;
 };
 
 const parseBackendError = async (response: Response): Promise<string> => {
@@ -39,16 +40,16 @@ export interface NovelImportExtractResponse {
 }
 
 export const extractNovelTextFromFile = async (
-  backendBaseUrl: string,
   file: File,
-  languageHint = 'auto'
+  languageHint = 'auto',
+  baseUrl?: string,
 ): Promise<NovelImportExtractResponse> => {
   const form = new FormData();
   form.append('file', file);
   form.append('format_hint', detectFormatHint(file));
   form.append('language_hint', languageHint || 'auto');
 
-  const response = await authFetch(`${toBaseUrl(backendBaseUrl)}/novel/import/extract`, {
+  const response = await authFetch(resolveCanonicalImportUrl(API_ROUTES.publishing.importExtract, baseUrl), {
     method: 'POST',
     body: form,
   });
@@ -87,11 +88,11 @@ export const extractNovelTextFromFile = async (
 };
 
 export const splitImportedTextToChapters = async (
-  backendBaseUrl: string,
   rawText: string,
-  strategy: 'auto' | 'heading_first' | 'length_fallback' = 'auto'
+  strategy: 'auto' | 'heading_first' | 'length_fallback' = 'auto',
+  baseUrl?: string,
 ): Promise<{ chapters: NovelImportChapterPreview[]; warnings: string[] }> => {
-  const response = await authFetch(`${toBaseUrl(backendBaseUrl)}/novel/import/split`, {
+  const response = await authFetch(resolveCanonicalImportUrl(API_ROUTES.publishing.importSplit, baseUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rawText, strategy }),

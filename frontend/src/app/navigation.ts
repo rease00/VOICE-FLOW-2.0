@@ -5,6 +5,8 @@ export const APP_ROUTE_PATHS = {
   studio: '/app/studio',
   writing: '/app/writing',
   novel: '/app/novel',
+  library: '/app/library',
+  reader: '/app/reader',
   voices: '/app/voices',
   runs: '/app/runs',
   admin: '/app/admin',
@@ -28,6 +30,8 @@ const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.studio,
   APP_ROUTE_PATHS.writing,
   APP_ROUTE_PATHS.novel,
+  APP_ROUTE_PATHS.library,
+  APP_ROUTE_PATHS.reader,
   APP_ROUTE_PATHS.voices,
   APP_ROUTE_PATHS.runs,
   APP_ROUTE_PATHS.admin,
@@ -37,6 +41,11 @@ const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.profile,
   APP_ROUTE_PATHS.userIdSetup,
 ]);
+
+const INTERNAL_NEXT_PATH_PATTERNS = [
+  /^\/app\/library\/[^/?#]+\/read$/i,
+  /^\/app\/reader\/.+$/i,
+];
 
 const INTERNAL_NEXT_ORIGIN = 'https://voiceflow.internal';
 
@@ -52,7 +61,9 @@ const parseInternalNextPath = (candidate?: string | null): string | null => {
     const url = new URL(raw, INTERNAL_NEXT_ORIGIN);
     if (url.origin !== INTERNAL_NEXT_ORIGIN) return null;
     const pathname = normalizeInternalPathname(url.pathname);
-    if (!INTERNAL_NEXT_ALLOWLIST.has(pathname)) return null;
+    const allowlisted = INTERNAL_NEXT_ALLOWLIST.has(pathname)
+      || INTERNAL_NEXT_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
+    if (!allowlisted) return null;
     return `${pathname}${url.search}${url.hash}`;
   } catch {
     return null;
@@ -102,6 +113,8 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.studio:
     case APP_ROUTE_PATHS.writing:
     case APP_ROUTE_PATHS.novel:
+    case APP_ROUTE_PATHS.library:
+    case APP_ROUTE_PATHS.reader:
     case APP_ROUTE_PATHS.voices:
     case APP_ROUTE_PATHS.runs:
     case APP_ROUTE_PATHS.billing:
@@ -109,6 +122,8 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.main:
       return AppScreen.MAIN;
     default:
+      if (safePath.startsWith(`${APP_ROUTE_PATHS.library}/`)) return AppScreen.MAIN;
+      if (safePath.startsWith(`${APP_ROUTE_PATHS.reader}/`)) return AppScreen.MAIN;
       return null;
   }
 };

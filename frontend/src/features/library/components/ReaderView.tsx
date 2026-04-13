@@ -42,6 +42,7 @@ import {
   getChapterComments,
   saveLastPlayed,
 } from '../services/readerDataService';
+import { API_ROUTES } from '../../../shared/api/routes';
 
 interface ReaderViewProps {
   book: Book;
@@ -274,7 +275,7 @@ export function ReaderView({
   });
 
   const [ttsSettings, setTtsSettings] = useState<TtsSettings>({
-    engine: 'gemini-native',
+    engine: 'cloud',
     voice: 'Kore',
     speed: 1.0,
     pitch: 0,
@@ -326,6 +327,9 @@ export function ReaderView({
   const activeChapter = chapters[selectedChapterIndex];
   const readerText = activeChapter?.text || rawContent;
   const visibleReaderText = translationEnabled && translatedText ? translatedText : readerText;
+  const previewLink = getBookDownloadLink(book, 'html');
+  const hasDirectTextSource = Boolean(getBookDownloadLink(book, 'txt'));
+  const canOpenArchivePreview = book.source === 'openlibrary' && !hasDirectTextSource && Boolean(previewLink);
   const selectedTranslationLanguage = useMemo(
     () =>
       TRANSLATION_LANGUAGE_OPTIONS.find((language) => language.code === targetLanguage) ||
@@ -500,7 +504,7 @@ export function ReaderView({
     }
 
     return all;
-  }, [formattedReaderParagraphs, paragraphTokens, paragraphTokenCounts]);
+  }, [formattedReaderParagraphs, paragraphTokens]);
 
   const flatSentenceRanges = useMemo(() => sentenceTokenRanges.flat(), [sentenceTokenRanges]);
 
@@ -595,7 +599,7 @@ export function ReaderView({
       setTranslationError(null);
 
       try {
-        const response = await fetch('/api/translate', {
+        const response = await fetch(API_ROUTES.studio.translateModernize, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
@@ -677,7 +681,7 @@ export function ReaderView({
     const controller = new AbortController();
 
     // Prefetch the next chapter translation so page turns feel instant.
-    fetch('/api/translate', {
+    fetch(API_ROUTES.studio.translateModernize, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -721,6 +725,66 @@ export function ReaderView({
       setError(null);
 
       try {
+        if (book.source === 'published') {
+          const response = await fetch(API_ROUTES.library.bookChapters(book.id), {
+            cache: 'no-store',
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!response.ok) {
+            throw new Error(`Published chapter request failed (${response.status})`);
+          }
+
+          const payload = await response.json() as {
+            chapters?: Array<{
+              id: string;
+              index: number;
+              title: string;
+              text?: string;
+              characterCount?: number;
+              audioKey?: string;
+              syncKey?: string;
+              audioHash?: string;
+              generatedAt?: string;
+            }>;
+          };
+          const chaptersFromApi = Array.isArray(payload.chapters) ? payload.chapters : [];
+          const mappedChapters: ReaderChapter[] = [];
+          let offset = 0;
+          for (const chapter of chaptersFromApi) {
+            const text = String(chapter.text || '').trim();
+            const start = offset;
+            const end = offset + text.length;
+            mappedChapters.push({
+              id: String(chapter.id || ''),
+              index: Number(chapter.index || mappedChapters.length),
+              title: String(chapter.title || `Chapter ${mappedChapters.length + 1}`),
+              start,
+              end,
+              text,
+              ...(chapter.audioKey ? { audioKey: String(chapter.audioKey) } : {}),
+              ...(chapter.syncKey ? { syncKey: String(chapter.syncKey) } : {}),
+              ...(chapter.audioHash ? { audioHash: String(chapter.audioHash) } : {}),
+              ...(chapter.generatedAt ? { generatedAt: String(chapter.generatedAt) } : {}),
+            });
+            offset = end + 2;
+          }
+
+          if (!mappedChapters.length) {
+            throw new Error('Published book has no readable chapters yet.');
+          }
+
+          if (!cancelled) {
+            setRawContent(mappedChapters.map((chapter) => chapter.text).join('\n\n'));
+            setChapters(mappedChapters);
+            const safeInitial = Math.min(
+              Math.max(0, initialChapterIndex),
+              Math.max(0, mappedChapters.length - 1)
+            );
+            setSelectedChapterIndex(safeInitial);
+          }
+          return;
+        }
+
         // Offline-first: try IndexedDB cache
         let text: string | null = null;
         try {
@@ -741,7 +805,7 @@ export function ReaderView({
             );
           }
 
-          const proxyUrl = `/api/book?url=${encodeURIComponent(textLink)}`;
+          const proxyUrl = `${API_ROUTES.library.books}?url=${encodeURIComponent(textLink)}`;
           const response = await fetch(proxyUrl);
           if (!response.ok) {
             throw new Error(`Book content request failed (${response.status})`);
@@ -1624,6 +1688,16 @@ export function ReaderView({
               <div className={`max-w-xl rounded-xl border p-6 text-center ${palette.card}`}>
                 <p className="text-sm font-semibold text-rose-600">Unable to load content</p>
                 <p className={`mt-2 text-xs ${palette.muted}`}>{error}</p>
+                {canOpenArchivePreview && previewLink && (
+                  <a
+                    href={previewLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`mt-4 inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium ${palette.primaryButton}`}
+                  >
+                    Open Internet Archive Preview
+                  </a>
+                )}
               </div>
             </div>
           ) : (
@@ -1863,12 +1937,16 @@ export function ReaderView({
               {!dockCollapsed ? (
               <div className="min-w-0 lg:flex-1">
                 <MiniPlayer
+                  bookId={String(book.id)}
+                  chapterId={activeChapter?.id}
+                  publishedMode={book.source === 'published'}
                   playbackState={playbackState}
                   ttsSettings={effectiveTtsSettings}
+                  sourceText={readerText}
                   bookText={visibleReaderText}
+                  translationTargetLanguage={translationEnabled ? targetLanguage : undefined}
                   onStateChange={setPlaybackState}
                   isCompact
-                  theme={settings.background}
                 />
               </div>
               ) : (

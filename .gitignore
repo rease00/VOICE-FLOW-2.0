@@ -33,14 +33,14 @@ __pycache__/
 # Generated artifacts (keep only placeholders tracked)
 artifacts/**
 !artifacts/.gitkeep
-backend/artifacts/**
-!backend/artifacts/.gitkeep
 output/
-backend/output/
 frontend/playwright-report/
 frontend/.next*
 frontend/.open-next/
 frontend/tsconfig.tsbuildinfo
+frontend/tmp_pages_legacy_dist/
+tmp_dir/playwright/
+.serena/
 test-results/
 pytest-of-*/
 .pytest_cache/
@@ -55,7 +55,6 @@ tsc-errors.txt
 API.txt
 FIREBASE.txt
 frontend/tests/smoke/fixtures/studio-admin-credentials.json
-backend/config/gemini_api_pools.json
 *firebase-adminsdk*.json
 voiceflow-*-firebase-adminsdk*.json
 voiceflow-*-service-account*.json
@@ -64,11 +63,6 @@ voiceflow-*-service-account*.json
 *.p12
 *.pfx
 *.jks
-
-# Local NLLB model assets (too large for standard repo push)
-backend/video_dubbing/models/nllb_ct2/model.bin
-backend/video_dubbing/models/nllb_ct2/sentencepiece.bpe.model
-backend/video_dubbing/models/nllb_ct2/tokenizer.json
 
 # Local media scratch files
 ✨Soul Land EP 260 [MULTI SUB].mp4

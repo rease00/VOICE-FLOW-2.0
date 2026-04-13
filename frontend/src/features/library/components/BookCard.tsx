@@ -43,6 +43,7 @@ export const BookCard: React.FC<BookCardProps> = ({
           alt={book.title}
           fill
           sizes="(max-width: 640px) 45vw, (max-width: 1024px) 28vw, 20vw"
+          unoptimized
           className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
           loading="lazy"
         />

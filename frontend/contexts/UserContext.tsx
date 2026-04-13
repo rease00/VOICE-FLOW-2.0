@@ -9,6 +9,7 @@ import {
   GoogleAuthProvider,
   RecaptchaVerifier,
   createUserWithEmailAndPassword,
+  onIdTokenChanged,
   onAuthStateChanged,
   sendEmailVerification,
   sendPasswordResetEmail,
@@ -61,7 +62,6 @@ import {
 import { fetchAdminActor } from '../services/adminService';
 import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { clearDriveTokenCache, warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
-import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { readEnvBoolean, readEnvValue } from '../src/shared/runtime/env';
 import { shouldBootstrapAccountDataForPath } from '../src/app/navigation';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
@@ -73,6 +73,7 @@ import {
   getSessionClonedVoices,
   setSessionClonedVoices,
 } from '../services/clonedVoiceSessionStore';
+import { clearFirebaseSession, syncFirebaseSession } from '../services/authSessionService';
 
 interface ExtendedUserContextType extends Omit<UserContextType, 'deleteAccount'> {
   syncCast: (cast: string[] | CharacterProfile[]) => void;
@@ -177,10 +178,7 @@ const BLANK_USER: UserProfile = {
   adminActor: null,
 };
 
-const readSettingsBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
+const CANONICAL_API_BASE = '/api/v1';
 
 const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
 const DEFAULT_DEV_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/app/login';
@@ -649,6 +647,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
   const charactersUnsubscribeRef = useRef<(() => void) | null>(null);
   const hasHydratedStatsRef = useRef(false);
+  const lastSessionTokenRef = useRef('');
   const shouldBootstrapAccountData = useMemo(
     () => shouldBootstrapAccountDataForPath(pathname),
     [pathname]
@@ -689,7 +688,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     try {
-      const entitlements = await fetchAccountEntitlements(readSettingsBackendUrl());
+      const entitlements = await fetchAccountEntitlements();
       setStats((prev) => mapEntitlementsToStats(entitlements, prev));
     } catch {
       // Keep the current stats if backend is not reachable.
@@ -704,7 +703,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     try {
-      const actor = await fetchAdminActor(readSettingsBackendUrl());
+      const actor = await fetchAdminActor(CANONICAL_API_BASE);
       const actorPayload = {
         uid: String(actor.uid || '').trim() || currentUid,
         role: String(actor.role || 'super_admin'),
@@ -740,7 +739,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     try {
-      const rows = await fetchGenerationHistory(readSettingsBackendUrl(), limit);
+      const rows = await fetchGenerationHistory(undefined, limit);
       const normalized = Array.isArray(rows)
         ? rows.map((item) => normalizeHistoryItem(item)).sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
         : [];
@@ -752,7 +751,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const clearHistoryRemote = async () => {
     try {
-      await clearGenerationHistory(readSettingsBackendUrl());
+      await clearGenerationHistory();
     } catch {
       // Keep client behavior deterministic even when backend clear fails.
     } finally {
@@ -854,6 +853,33 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (charactersUnsubscribeRef.current) charactersUnsubscribeRef.current();
     };
   }, [refreshAdminActor, refreshEntitlements]);
+
+  useEffect(() => {
+    const unsubscribe = onIdTokenChanged(firebaseAuth, async (firebaseUser) => {
+      try {
+        if (!firebaseUser) {
+          lastSessionTokenRef.current = '';
+          await clearFirebaseSession();
+          return;
+        }
+
+        const idToken = await firebaseUser.getIdToken();
+        if (!idToken || lastSessionTokenRef.current === idToken) {
+          return;
+        }
+
+        await syncFirebaseSession(idToken);
+        lastSessionTokenRef.current = idToken;
+      } catch (error) {
+        lastSessionTokenRef.current = '';
+        console.warn('[UserContext] session sync failed', error);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const safeUid = String(user.uid || '').trim();
@@ -1092,6 +1118,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       charactersUnsubscribeRef.current();
       charactersUnsubscribeRef.current = null;
     }
+    await clearFirebaseSession().catch(() => undefined);
+    lastSessionTokenRef.current = '';
     if (firebaseAuth.currentUser) {
       await signOut(firebaseAuth).catch(() => undefined);
     }
@@ -1203,7 +1231,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await clearHistoryRemote();
     },
     deleteAccount: async () => {
-      await deleteAccountRequest(readSettingsBackendUrl(), ACCOUNT_DELETE_CONFIRM_PHRASE);
+      await deleteAccountRequest(undefined, ACCOUNT_DELETE_CONFIRM_PHRASE);
       await signOutUser();
       setHistory([]);
       setClonedVoices([]);

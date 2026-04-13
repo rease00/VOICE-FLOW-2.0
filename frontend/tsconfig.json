@@ -48,11 +48,13 @@
     "services",
     "types.ts",
     "constants.ts",
+    "audio.dom.d.ts",
     "next-env.d.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".next/dev/**/*"
   ]
 }

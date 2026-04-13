@@ -18,7 +18,7 @@
     "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "verify:single-frontend": "node scripts/verify-single-frontend.mjs",
     "clean:frontend-artifacts": "node scripts/clean-frontend-artifacts.mjs",
-    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "typecheck": "next typegen && tsc --noEmit --project tsconfig.typecheck.json",
     "maintainability:check": "node scripts/check-module-size.mjs",
     "lint": "eslint . --ext .ts,.tsx",
     "test:ci": "vitest run",
@@ -30,21 +30,14 @@
     "headers:verify": "node scripts/verify-headers.mjs",
     "bundle:report": "node scripts/bundle-report.mjs",
     "bundle:budget": "node scripts/bundle-budget.mjs",
-    "perf:lighthouse": "node scripts/perf-lighthouse.mjs",
-    "services:up": "npm --prefix ../backend run services:up",
-    "services:up:gpu": "npm --prefix ../backend run services:up:gpu",
-    "services:bootstrap": "npm --prefix ../backend run services:bootstrap",
-    "services:bootstrap:gpu": "npm --prefix ../backend run services:bootstrap:gpu",
-    "services:check": "npm --prefix ../backend run services:check",
-    "services:doctor": "npm --prefix ../backend run services:doctor",
-    "services:restart": "npm --prefix ../backend run services:restart",
-    "services:down": "npm --prefix ../backend run services:down"
+    "perf:lighthouse": "node scripts/perf-lighthouse.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1024.0",
     "@aws-sdk/s3-request-presigner": "^3.1024.0",
     "@google-cloud/text-to-speech": "^6.4.0",
     "@google/genai": "^1.30.0",
+    "@types/ws": "^8.18.1",
     "eslint-config-next": "^16.2.1",
     "firebase": "^11.3.1",
     "firebase-admin": "^13.8.0",
@@ -53,7 +46,8 @@
     "lucide-react": "^0.554.0",
     "next": "^16.2.1",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@opennextjs/cloudflare": "^1.17.3",

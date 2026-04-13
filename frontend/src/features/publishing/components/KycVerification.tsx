@@ -11,6 +11,7 @@ import {
   Loader2,
   ExternalLink,
 } from 'lucide-react';
+import { API_ROUTES } from '../../../shared/api/routes';
 
 interface KycVerificationProps {
   onStatusChange?: (status: KycStatus) => void;
@@ -31,7 +32,7 @@ export function KycVerification({ onStatusChange }: KycVerificationProps) {
       const token = await firebaseAuth.currentUser?.getIdToken();
       if (!token) throw new Error('Not authenticated');
 
-      const res = await fetch('/api/kyc', {
+      const res = await fetch(API_ROUTES.account.kyc, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -65,7 +66,7 @@ export function KycVerification({ onStatusChange }: KycVerificationProps) {
       const token = await firebaseAuth.currentUser?.getIdToken();
       if (!token) throw new Error('Not authenticated');
 
-      const res = await fetch('/api/kyc', {
+      const res = await fetch(API_ROUTES.account.kyc, {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(10000),
       });

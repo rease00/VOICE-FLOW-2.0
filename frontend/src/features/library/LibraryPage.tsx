@@ -5,7 +5,12 @@ import { Search, X, Loader2, Heart, Play } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { BookCard } from './components/BookCard';
 import { BookDetail } from './components/BookDetail';
-import { fetchBooks, getBookCover } from './services/bookDiscoveryService';
+import {
+  buildLibraryReadHref,
+  fetchBooks,
+  getBookCover,
+  rememberSelectedLibraryBook,
+} from './services/bookDiscoveryService';
 import type { Book, LanguageCode } from './model/types';
 
 const AILibrarian = dynamic(
@@ -128,7 +133,8 @@ export function LibraryPage() {
     try {
       localStorage.setItem('vf-library-last-played', JSON.stringify(book));
     } catch { /* ignore */ }
-    window.location.href = `/app/library/${book.id}/read`;
+    rememberSelectedLibraryBook(book);
+    window.location.assign(buildLibraryReadHref(book));
   }, []);
 
   const favBooks = books.filter((b) => favorites.has(b.id));

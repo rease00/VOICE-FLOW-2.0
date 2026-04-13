@@ -1,8 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { Play, Pause, Download, RefreshCw, SkipBack, SkipForward, Volume2, Loader2 } from 'lucide-react';
+import { Play, Pause, Download, RefreshCw, SkipBack, SkipForward, Volume2, Loader2, Check, AlertCircle } from 'lucide-react';
 import { Visualizer } from './Visualizer';
 import { shouldAutoplayFirstLiveChunk } from './audioPlayerAutoplay';
 import { resolveSequentialLiveChunkIndexes } from './audioPlayerLiveHelpers';
+import { firebaseAuth } from '../services/firebaseClient';
+import {
+  connectDriveIdentity,
+  getDriveProviderToken,
+  reconsentDriveScopes,
+} from '../services/driveAuthService';
 
 export interface LiveAudioChunk {
   jobId: string;
@@ -22,6 +28,14 @@ interface AudioPlayerProps {
 }
 
 const TRANSPORT_SKIP_SECONDS = 5;
+
+const GoogleDriveIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5">
+    <path fill="#0F9D58" d="M8.2 3.5h7.4l6.1 10.6h-7.4z" />
+    <path fill="#FFC107" d="M2.1 14.1 8.2 3.5l3.7 6.4-6.1 10.6z" />
+    <path fill="#4285F4" d="M8.2 20.5h12.2l-3.7-6.4H4.5z" />
+  </svg>
+);
 
 const base64ToBlobUrl = (audioBase64?: string, contentType?: string): string | null => {
   const safe = String(audioBase64 || '').trim();
@@ -52,6 +66,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [activeUrl, setActiveUrl] = useState<string | null>(audioUrl);
   const [volume, setVolume] = useState(1);
   const [liveIndex, setLiveIndex] = useState<number>(-1);
+  const [isSavingToDrive, setIsSavingToDrive] = useState(false);
+  const [driveNotice, setDriveNotice] = useState('');
+  const [driveNoticeTone, setDriveNoticeTone] = useState<'success' | 'error'>('success');
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const liveQueueRef = useRef<Map<number, string>>(new Map());
@@ -186,6 +203,66 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   );
 
   const canRender = useMemo(() => Boolean(activeUrl), [activeUrl]);
+  const canExportFinalAudio = useMemo(() => Boolean(audioUrl), [audioUrl]);
+
+  const handleSaveToDrive = useCallback(async () => {
+    if (!audioUrl || isSavingToDrive) return;
+    setIsSavingToDrive(true);
+    setDriveNotice('');
+    setDriveNoticeTone('success');
+    try {
+      const user = firebaseAuth.currentUser;
+      if (!user) {
+        throw new Error('Sign in with Google first.');
+      }
+
+      let driveTokenResult = await getDriveProviderToken();
+      if (!driveTokenResult.ok) {
+        if (driveTokenResult.status === 'needs_consent') {
+          await reconsentDriveScopes();
+        } else {
+          await connectDriveIdentity();
+        }
+        driveTokenResult = await getDriveProviderToken();
+      }
+
+      if (!driveTokenResult.ok || !driveTokenResult.token) {
+        throw new Error(driveTokenResult.message || 'Google Drive authorization failed.');
+      }
+
+      const audioResponse = await fetch(audioUrl, { cache: 'no-store' });
+      if (!audioResponse.ok) {
+        throw new Error('Unable to read the generated audio file.');
+      }
+      const audioBlob = await audioResponse.blob();
+      const extension = audioBlob.type.includes('mpeg') ? 'mp3' : 'audio';
+      const formData = new FormData();
+      formData.set('googleAccessToken', driveTokenResult.token);
+      formData.set('fileName', `voiceflow_${Date.now()}.${extension}`);
+      formData.set('file', new File([audioBlob], `voiceflow_${Date.now()}.${extension}`, { type: audioBlob.type || 'audio/mpeg' }));
+
+      const idToken = await user.getIdToken();
+      const exportResponse = await fetch('/api/tts/studio/export/drive', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: formData,
+      });
+      const exportPayload = await exportResponse.json().catch(() => null) as { fileName?: string; error?: string } | null;
+      if (!exportResponse.ok) {
+        throw new Error(exportPayload?.error || 'Drive export failed.');
+      }
+
+      setDriveNotice(exportPayload?.fileName ? `Saved to Drive as ${exportPayload.fileName}` : 'Saved to Google Drive');
+      setDriveNoticeTone('success');
+    } catch (error) {
+      setDriveNotice(error instanceof Error ? error.message : 'Drive export failed.');
+      setDriveNoticeTone('error');
+    } finally {
+      setIsSavingToDrive(false);
+    }
+  }, [audioUrl, isSavingToDrive]);
 
   return (
     <div className="w-full rounded-3xl bg-slate-900/60 border border-slate-800 p-4 sm:p-5">
@@ -284,11 +361,22 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           {activeUrl ? (
             <a
               href={activeUrl}
-              download={`voiceflow_${Date.now()}.wav`}
+              download={`voiceflow_${Date.now()}.mp3`}
               className="px-3 py-2 rounded-lg border border-slate-800 text-slate-100 hover:border-amber-400 text-xs font-semibold"
             >
               <Download size={14} className="inline mr-1" /> Save
             </a>
+          ) : null}
+          {canExportFinalAudio ? (
+            <button
+              onClick={() => { void handleSaveToDrive(); }}
+              disabled={isSavingToDrive}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-800 px-3 py-2 text-xs font-semibold text-slate-100 hover:border-emerald-400 disabled:opacity-60"
+              title="Save to Google Drive"
+            >
+              {isSavingToDrive ? <Loader2 size={14} className="animate-spin" /> : <GoogleDriveIcon />}
+              Drive
+            </button>
           ) : null}
           <button
             onClick={onReset}
@@ -299,6 +387,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           </button>
         </div>
       </div>
+      {driveNotice ? (
+        <div className={`mt-3 flex items-center gap-1.5 text-[11px] ${driveNoticeTone === 'success' ? 'text-slate-300' : 'text-rose-300'}`}>
+          {driveNoticeTone === 'success'
+            ? <Check size={12} className="text-emerald-400" />
+            : <AlertCircle size={12} className="text-rose-400" />}
+          <span>{driveNotice}</span>
+        </div>
+      ) : null}
     </div>
   );
 };

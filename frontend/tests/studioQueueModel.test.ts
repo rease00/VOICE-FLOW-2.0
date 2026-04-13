@@ -70,7 +70,7 @@ describe('studio queue model', () => {
             speed: 1,
             pitch: 'Medium',
             language: 'Auto',
-            engine: 'GOOD',
+            engine: 'VECTOR',
             helperProvider: 'GEMINI',
           },
           createdAt: Date.now(),
@@ -84,7 +84,7 @@ describe('studio queue model', () => {
 
     expect(normalized).not.toBeNull();
     expect(normalized?.items[0]?.audioCacheKey).toBe('');
-    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('PRIME');
+    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('VECTOR');
     expect(normalized?.masterOrder).toBe('1');
     expect(normalized?.masterStatus).toBe('idle');
   });

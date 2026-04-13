@@ -3,10 +3,8 @@ import React from 'react';
 import { X, FileText, AlertCircle, ChevronRight, Loader2 } from 'lucide-react';
 import { UploadDropzone } from '../../../../components/ui/UploadDropzone';
 import { useImportFlow, type EditableImportChapter } from '../hooks/useImportFlow';
-import type { GenerationSettings } from '../../../../types';
 
 interface ImportModalProps {
-  mediaBackendUrl: string;
   onToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
   triggerRef?: React.RefObject<HTMLButtonElement>;
 }
@@ -46,7 +44,7 @@ const ChapterPreviewCard: React.FC<{
   </div>
 );
 
-export const ImportModal: React.FC<ImportModalProps> = ({ mediaBackendUrl, onToast }) => {
+export const ImportModal: React.FC<ImportModalProps> = ({ onToast }) => {
   const {
     isImportModalOpen,
     importFiles,
@@ -66,7 +64,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ mediaBackendUrl, onToa
     toggleSelectAll,
     applyImport,
     setImportStep,
-  } = useImportFlow(mediaBackendUrl, onToast);
+  } = useImportFlow(onToast);
 
   if (!isImportModalOpen) {
     return (

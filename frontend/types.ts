@@ -99,20 +99,18 @@ export interface GenerationSettings {
   engine: TtsEngineKey;
 
   // Assistant provider
-  helperProvider: 'GEMINI' | 'PERPLEXITY' | 'LOCAL';
+  helperProvider: 'GEMINI' | 'PERPLEXITY' | 'LOCAL' | 'OAI';
   assistantProviderControlsEnabled?: boolean | undefined;
   perplexityApiKey?: string | undefined;
+  oaiApiKey?: string | undefined;
   localLlmUrl?: string | undefined;
   geminiApiKey?: string | undefined;
   preferUserGeminiKey?: boolean | undefined;
 
-  // Local backend / runtime wiring
-  mediaBackendUrl?: string | undefined;
+  // Runtime wiring
   backendApiKey?: string | undefined;
   voiceModel?: string | undefined;
   geminiTtsServiceUrl?: string | undefined;
-  kokoroTtsServiceUrl?: string | undefined;
-  kokoroStandbyIdleMs?: number | undefined;
   runtimeProvider?: string | undefined;
 
   // Studio controls
@@ -122,7 +120,6 @@ export interface GenerationSettings {
   autoEnhance?: boolean | undefined;
   useModelSourceSeparation?: boolean | undefined;
   preserveDubVoiceTone?: boolean | undefined;
-  dubbingSourceLanguage?: string | undefined;
   multiSpeakerEnabled?: boolean | undefined;
   speakerMapping?: Record<string, string> | undefined;
 
@@ -134,28 +131,6 @@ export interface GenerationSettings {
 export type ScriptBlockType = 'dialogue' | 'sfx' | 'direction';
 export type StudioEditorMode = 'blocks' | 'raw';
 export type WorkspaceLayoutMode = 'phone' | 'tablet' | 'desktop';
-export type CpuDubbingProfile = 'cpu_quality' | 'cpu_speed' | 'gpu';
-
-export interface DubbingClip {
-  id: string;
-  file: File;
-  objectUrl: string;
-  durationMs: number;
-  trimInMs: number;
-  trimOutMs: number;
-  layer: 'V1' | 'V2';
-  script: string;
-  status: 'idle' | 'transcribing' | 'queued' | 'running' | 'completed' | 'failed';
-  jobId: string;
-  resultUrl: string | null;
-  reportUrl: string | null;
-  error: string;
-}
-
-export interface DubbingClipboard {
-  clip: DubbingClip;
-  timestamp: number;
-}
 
 export interface ScriptBlockEmotionMeta {
   primaryEmotion: string;

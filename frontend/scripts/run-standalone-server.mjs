@@ -8,10 +8,13 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '..');
 const configuredDistDir = String(process.env.NEXT_DIST_DIR || '').trim();
 const distDir = configuredDistDir || '.next';
-const serverPath = path.join(rootDir, distDir, 'standalone', 'server.js');
+const buildIdPath = path.join(rootDir, distDir, 'BUILD_ID');
+const customServerScript = path.join(rootDir, 'scripts', 'custom-next-server.ts');
+const standaloneServerScript = path.join(rootDir, distDir, 'standalone', 'server.js');
+const forceCustomServer = process.env.NEXT_FORCE_CUSTOM_SERVER === '1';
 
-if (!fs.existsSync(serverPath)) {
-  console.error(`[standalone-runtime] Missing ${distDir}/standalone/server.js. Run \`npm run build\` first.`);
+if (!fs.existsSync(buildIdPath)) {
+  console.error(`[standalone-runtime] Missing ${distDir}/BUILD_ID. Run \`npm run build\` first.`);
   process.exit(1);
 }
 
@@ -19,9 +22,19 @@ const startup = async () => {
   const port = resolveGuardPort([], 3000);
   await ensureLoopbackPortAvailable('standalone runtime', port);
 
-  const child = spawn(process.execPath, [serverPath], {
+  const entrypoint = !forceCustomServer && fs.existsSync(standaloneServerScript)
+    ? {
+        command: process.execPath,
+        args: [standaloneServerScript],
+      }
+    : {
+        command: process.execPath,
+        args: ['--experimental-strip-types', customServerScript],
+      };
+
+  const child = spawn(entrypoint.command, entrypoint.args, {
     cwd: rootDir,
-    env: process.env,
+    env: { ...process.env, PORT: String(port) },
     stdio: 'inherit',
   });
 

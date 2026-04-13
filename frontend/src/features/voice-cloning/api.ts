@@ -15,7 +15,7 @@ import type {
   VoiceCloneStressSummary,
 } from './openvoiceTypes';
 
-const DEFAULT_VOICE_CLONE_PROXY_BASE_URL = '/api/backend';
+const DEFAULT_VOICE_CLONE_BASE_URL = '/api/v1';
 
 export type VoiceCloneRenderRequest = Omit<VoiceCloneBenchmarkRequest, 'mode' | 'runKind'> & {
   mode?: 'vc';
@@ -271,62 +271,6 @@ const stripV1Suffix = (value: string): string => {
   return token.replace(/\/v1$/i, '');
 };
 
-const isLocalAbsoluteVoiceCloneBaseUrl = (value: string): boolean => {
-  const token = String(value || '').trim();
-  if (!/^https?:\/\//i.test(token)) return false;
-  try {
-    const parsed = new URL(token);
-    const hostname = String(parsed.hostname || '').trim().toLowerCase();
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-  } catch {
-    return false;
-  }
-};
-
-const isVoiceCloneRetryableError = (error: unknown): boolean => {
-  const status =
-    typeof error === 'object' && error !== null && 'status' in error
-      ? Number((error as { status?: unknown }).status)
-      : 0;
-  if (status === 404) {
-    return true;
-  }
-
-  const message = String((error as { message?: unknown })?.message || error || '').trim().toLowerCase();
-  if (!message) return false;
-  return [
-    'failed to fetch',
-    'fetch failed',
-    'networkerror',
-    'network error',
-    'load failed',
-    'econnrefused',
-    'err_connection_refused',
-  ].some((token) => message.includes(token));
-};
-
-const buildVoiceCloneRequestBaseUrls = (baseUrl?: string): string[] => {
-  const directBaseUrl = String(baseUrl || '').trim();
-  const attempts: string[] = [];
-  const pushAttempt = (candidate: string) => {
-    const normalized = String(candidate || '').trim();
-    if (!normalized) return;
-    if (attempts.includes(normalized)) return;
-    attempts.push(normalized);
-  };
-  const shouldPreferProxy = isLocalAbsoluteVoiceCloneBaseUrl(directBaseUrl);
-  if (shouldPreferProxy) {
-    pushAttempt(DEFAULT_VOICE_CLONE_PROXY_BASE_URL);
-  }
-  if (directBaseUrl) {
-    pushAttempt(directBaseUrl);
-  }
-  if (directBaseUrl !== DEFAULT_VOICE_CLONE_PROXY_BASE_URL) {
-    pushAttempt(DEFAULT_VOICE_CLONE_PROXY_BASE_URL);
-  }
-  return attempts;
-};
-
 const extractVoiceCloneIdempotencyKey = (init?: RequestInit): string => {
   const body = init?.body;
   if (typeof body !== 'string' || !body.trim()) {
@@ -365,33 +309,16 @@ const requestVoiceCloneJson = async <T>(
   init?: RequestInit,
   options?: { baseUrl?: string; timeoutMs?: number; requireAuth?: boolean; signal?: AbortSignal }
 ): Promise<T> => {
-  const baseUrls = buildVoiceCloneRequestBaseUrls(options?.baseUrl);
   const idempotencyKey = extractVoiceCloneIdempotencyKey(init);
   const baseInit = withIdempotencyHeader(init, idempotencyKey);
-  const requestMethod = String(init?.method || 'GET').trim().toUpperCase();
-  const isCancelRoute = /\/cancel$/i.test(String(path || '').trim());
-  const canRetryAcrossBaseUrls = requestMethod !== 'POST' || isCancelRoute;
-  let lastError: unknown = null;
-
-  for (const [index, baseUrl] of baseUrls.entries()) {
-    try {
-      const requestInit = options?.signal
-        ? { ...baseInit, signal: options.signal }
-        : baseInit;
-      return await requestJson<T>(path, requestInit, {
-        requireAuth: true,
-        baseUrl,
-        ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
-      });
-    } catch (error) {
-      lastError = error;
-      if (index >= baseUrls.length - 1 || !isVoiceCloneRetryableError(error) || !canRetryAcrossBaseUrls) {
-        throw error;
-      }
-    }
-  }
-
-  throw (lastError instanceof Error ? lastError : new Error('Voice clone request failed.'));
+  const requestInit = options?.signal
+    ? { ...baseInit, signal: options.signal }
+    : baseInit;
+  return await requestJson<T>(path, requestInit, {
+    requireAuth: true,
+    baseUrl: String(options?.baseUrl || DEFAULT_VOICE_CLONE_BASE_URL).trim() || DEFAULT_VOICE_CLONE_BASE_URL,
+    ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+  });
 };
 
 const buildStressRequestAttempts = (
@@ -422,7 +349,7 @@ const buildStressRequestAttempts = (
     } else {
       attempts.push({ path: `/v1${path}`, options });
       if (requestMethod !== 'POST') {
-        // Last-resort: try the default API base (proxy/env default) when a custom backend URL misses admin routes.
+      // Last-resort: try the default API base when a custom backend URL misses admin routes.
         attempts.push({ path, options: timeoutOnlyOptions });
         attempts.push({ path: `/v1${path}`, options: timeoutOnlyOptions });
       }

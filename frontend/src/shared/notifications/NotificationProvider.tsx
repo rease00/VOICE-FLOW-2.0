@@ -3,7 +3,6 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { usePathname } from 'next/navigation';
 import { STORAGE_KEYS } from '../storage/keys';
 import { readStorageJson, removeStorageKey, writeStorageJson } from '../storage/localStore';
-import { resolveApiBaseUrl } from '../api/config';
 import { hasAdminConsoleAccess } from '../auth/adminAccess';
 import { shouldBootstrapAccountDataForPath } from '../../app/navigation';
 import { sanitizeUiText } from '../ui/terminology';
@@ -113,11 +112,6 @@ export const resolveNotificationPollDelayMs = (
 
   const exponent = Math.max(0, errorCount - 1);
   return Math.min(NOTIFICATION_POLL_ERROR_MAX_MS, Math.round(NOTIFICATION_POLL_ERROR_BASE_MS * (2 ** exponent)));
-};
-
-const readSettingsBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
 };
 
 const scheduleWhenBrowserIdle = (callback: () => void, timeoutMs = NOTIFICATION_BOOTSTRAP_DELAY_MS): (() => void) => {
@@ -516,7 +510,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     }
     persistedSyncInFlightRef.current = true;
     try {
-      const rows = await fetchAccountNotifications(readSettingsBackendUrl(), { limit: 150 });
+      const rows = await fetchAccountNotifications(undefined, { limit: 150 });
       const normalized = rows
         .map((row) => coercePersistedNotification(row, Date.now()))
         .filter((row): row is AppNotification => Boolean(row))
@@ -541,7 +535,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
   const syncPreferences = useCallback(async () => {
     if (!hasSessionIdentity || !shouldSyncRemoteNotifications) return;
     try {
-      const remote = await fetchNotificationPreferences(readSettingsBackendUrl());
+      const remote = await fetchNotificationPreferences();
       setPrefsState((prev) => coerceNotificationPrefs({ ...prev, ...remote }));
     } catch {}
   }, [hasSessionIdentity, shouldSyncRemoteNotifications]);
@@ -736,7 +730,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       const next = notificationsRef.current.map((item) => item.id === id ? { ...item, readAt: item.readAt || nowMs } : item);
       notificationsRef.current = next;
       setNotifications(next);
-      void markAccountNotificationRead(id, readSettingsBackendUrl()).catch(() => undefined);
+      void markAccountNotificationRead(id).catch(() => undefined);
       return;
     }
     commitToastNotifications(markRead(toastNotificationsRef.current, id));
@@ -748,7 +742,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       const next = notificationsRef.current.map((item) => ({ ...item, readAt: item.readAt || nowMs }));
       notificationsRef.current = next;
       setNotifications(next);
-      void markAllAccountNotificationsRead(readSettingsBackendUrl()).catch(() => undefined);
+      void markAllAccountNotificationsRead().catch(() => undefined);
     }
     commitToastNotifications(markAllRead(toastNotificationsRef.current));
   }, [commitToastNotifications]);
@@ -759,7 +753,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     const next = notificationsRef.current.filter((item) => !idSet.has(item.id));
     notificationsRef.current = next;
     setNotifications(next);
-    ids.forEach((id) => { void dismissAccountNotification(id, readSettingsBackendUrl()).catch(() => undefined); });
+    ids.forEach((id) => { void dismissAccountNotification(id).catch(() => undefined); });
   }, []);
 
   const clearNonCriticalItems = useCallback(() => {
@@ -781,7 +775,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     if (notificationsRef.current.length > 0) {
       notificationsRef.current = [];
       setNotifications([]);
-      void dismissAllAccountNotifications(readSettingsBackendUrl()).catch(() => undefined);
+      void dismissAllAccountNotifications().catch(() => undefined);
     }
     commitToastNotifications([]);
   }, [commitToastNotifications]);
@@ -811,7 +805,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       return next;
     });
     if (patch && hasSessionIdentity) {
-      void patchNotificationPreferences(patch, readSettingsBackendUrl()).then((remote) => {
+      void patchNotificationPreferences(patch).then((remote) => {
         setPrefsState((prev) => coerceNotificationPrefs({ ...prev, ...remote }));
       }).catch(() => undefined);
     }

@@ -12,11 +12,13 @@ const DEFAULT_ALLOWED_PATH_PREFIXES = [
   '/health',
   '/routing',
   '/runtime',
+  '/support',
   '/tts',
   '/v1',
   '/v2',
   '/voice-clone',
   '/voice-lab',
+  '/wallet',
 ];
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const HOP_BY_HOP_HEADERS = new Set([
@@ -281,6 +283,14 @@ const toUpstreamFailureMessage = (target: URL, error: unknown): string => {
   return `${base} ${reason}`;
 };
 
+const applyLegacyProxyHeaders = (headers: Headers, pathname: string): Headers => {
+  headers.set('x-vf-legacy-proxy', 'true');
+  headers.set('x-vf-legacy-proxy-mode', 'compatibility-shim');
+  headers.set('x-vf-canonical-api-base', '/api/v1');
+  headers.set('x-vf-legacy-path', String(pathname || '/'));
+  return headers;
+};
+
 export const proxyBackendRequest = async (
   request: NextRequest,
   pathSegments: string[] = []
@@ -294,13 +304,22 @@ export const proxyBackendRequest = async (
     || String(request.headers.get('cookie') || '').trim()
   );
   if (!pathMatchesPrefix(normalizedPath, allowedPathPrefixes)) {
-    return new Response('Backend path is not allowed by proxy policy.', { status: 403 });
+    return new Response('Backend path is not allowed by proxy policy.', {
+      status: 403,
+      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
+    });
   }
   if (UNSAFE_METHODS.has(method) && !pathMatchesPrefix(normalizedPath, unsafeMethodPrefixes)) {
-    return new Response('Backend method is not allowed by proxy policy.', { status: 405 });
+    return new Response('Backend method is not allowed by proxy policy.', {
+      status: 405,
+      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
+    });
   }
   if (UNSAFE_METHODS.has(method) && !hasAuthContext) {
-    return new Response('Backend proxy requires authentication for write methods.', { status: 401 });
+    return new Response('Backend proxy requires authentication for write methods.', {
+      status: 401,
+      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
+    });
   }
 
   const hasBody = !['GET', 'HEAD'].includes(method) && request.body !== null;
@@ -334,6 +353,7 @@ export const proxyBackendRequest = async (
       if (candidate.region && candidate.region !== 'default') {
         responseHeaders.set('x-v-flow-ai-backend-region', candidate.region);
       }
+      applyLegacyProxyHeaders(responseHeaders, normalizedPath);
       return new Response(upstream.body, {
         status: upstream.status,
         statusText: upstream.statusText,
@@ -357,7 +377,10 @@ export const proxyBackendRequest = async (
     }),
     {
       status: 502,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
+      headers: applyLegacyProxyHeaders(
+        new Headers({ 'content-type': 'application/json; charset=utf-8' }),
+        normalizedPath,
+      ),
     }
   );
 };

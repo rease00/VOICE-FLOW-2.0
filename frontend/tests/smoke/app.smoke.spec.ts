@@ -177,15 +177,18 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/app/onboarding',
     title: 'onboarding',
     expect: async (page) => {
-      await expect(page.getByRole('button', { name: /Create Account/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page).toHaveURL(/\/app\/login(?:\?.*next=%2Fapp%2Fonboarding.*)?$/);
+      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
     path: '/app/profile',
     title: 'profile',
     expect: async (page) => {
-      await waitForAnyVisible(page, ['Account Center', 'Restoring workspace...']);
-      await expect(page.getByText(/Back to workspace/i)).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page).toHaveURL(/\/app\/login(?:\?.*next=%2Fapp%2Fprofile.*)?$/);
+      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {

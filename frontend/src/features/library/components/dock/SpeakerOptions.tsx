@@ -36,7 +36,7 @@ interface SpeakerOptionsProps {
 }
 
 const DEFAULT_SETTINGS: TtsSettings = {
-  engine: 'gemini-native',
+  engine: 'cloud',
   voice: 'Kore',
   speed: 1.0,
   pitch: 0,

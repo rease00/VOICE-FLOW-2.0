@@ -5,15 +5,9 @@ import { useUser } from '../contexts/UserContext';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
 import { BILLING_PLAN_ROWS } from '../src/features/billing/catalog';
 import { APP_ROUTE_PATHS } from '../src/app/navigation';
-import { resolveApiBaseUrl } from '../src/shared/api/config';
-import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageJson } from '../src/shared/storage/localStore';
 import type { BillingPlanKey } from '../services/accountService';
 
-const resolveBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
+const ACCOUNT_BILLING_API_BASE = '/api/v1';
 
 interface PlanCardConfig {
   id: BillingPlanKey;
@@ -56,7 +50,7 @@ const resolveCurrentPlanCard = (planName: string): PlanCardConfig['id'] | null =
 
 export const SubscriptionModal: React.FC = () => {
   const { showSubscriptionModal, setShowSubscriptionModal, stats, refreshEntitlements } = useUser();
-  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath: APP_ROUTE_PATHS.billing });
+  const billingActions = useBillingActions({ baseUrl: ACCOUNT_BILLING_API_BASE, returnPath: APP_ROUTE_PATHS.billing });
   const [isLoading, setIsLoading] = useState<BillingPlanKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshingUsage, setIsRefreshingUsage] = useState(false);

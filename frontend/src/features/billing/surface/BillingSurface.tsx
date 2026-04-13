@@ -8,9 +8,6 @@ import { BrandLogo } from '../../../../components/BrandLogo';
 import { firebaseAuth } from '../../../../services/firebaseClient';
 import { useBillingActions } from '../hooks/useBillingActions';
 import { BILLING_PLAN_ROWS, BILLING_TOKEN_PACK_ROWS, BILLING_VC_PACK_ROWS, BILLING_VN_PACK_ROWS, type BillingVcPackCatalogKey } from '../catalog';
-import { resolveApiBaseUrl } from '../../../shared/api/config';
-import { STORAGE_KEYS } from '../../../shared/storage/keys';
-import { readStorageJson } from '../../../shared/storage/localStore';
 import { useManagedTabs } from '../../../shared/ui/tabs';
 import { LegalLinks } from '../../legal/LegalLinks';
 import { resolveLoginPath, resolveSafeInternalNextPath, type AuthRouteMode } from '../../../app/navigation';
@@ -138,10 +135,7 @@ const tabIdToToken = (tab: BillingSurfaceTab): string => {
   return 'vc-packs';
 };
 
-const resolveBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
+const ACCOUNT_BILLING_API_BASE = '/api/v1';
 
 const FALLBACK_TOKEN_PACK: { key: TokenPackKey; label: string; vf: number; priceInr: number; benefitPercent?: number } = {
   key: 'standard',
@@ -241,7 +235,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   const visibleTabs = ['plans', 'token', 'vc', 'vn'] as const;
   const selectedTabItems = visibleTabs.map((id) => ({ id }));
 
-  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath });
+  const billingActions = useBillingActions({ baseUrl: ACCOUNT_BILLING_API_BASE, returnPath });
 
   const [activeTab, setActiveTab] = useState<BillingSurfaceTab>('plans');
   const [selectedPack, setSelectedPack] = useState<TokenPackKey>(defaultTokenPackKey);

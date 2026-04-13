@@ -41,7 +41,7 @@ const buildVoiceCloneBackendAudioUrlCandidates = (
 
   const candidates = new Set<string>();
   candidates.add(resolveApiUrl(raw, backendBaseUrl));
-  candidates.add(resolveApiUrl(raw, '/api/backend'));
+  candidates.add(resolveApiUrl(raw, '/api/v1'));
   return Array.from(candidates);
 };
 

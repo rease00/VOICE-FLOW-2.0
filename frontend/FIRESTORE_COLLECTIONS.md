@@ -44,6 +44,9 @@
 - `price`: number (VN, 0 = free)
 - `charCount`: number
 
+### `domainJobs/{jobId}`
+- Canonical async job collection for active domains such as `audioNovel`, `voiceClone`, and future media tasks.
+
 ## Financial Collections
 
 ### `transactions/{txId}`

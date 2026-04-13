@@ -4,16 +4,8 @@ const activateTtsEngineMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/shared/api/gatewayClient', () => ({
   activateTtsEngine: (...args: unknown[]) => activateTtsEngineMock(...args),
-  cancelDubbingJob: vi.fn(),
-  createDubbingJobV2: vi.fn(),
-  downloadDubbingChunk: vi.fn(),
-  downloadDubbingReport: vi.fn(),
-  downloadDubbingResult: vi.fn(),
   extractAudioFromVideo: vi.fn(),
   fetchTtsEngineCapabilities: vi.fn(),
-  getDubbingJob: vi.fn(),
-  getDubbingJobWithOptions: vi.fn(),
-  muxDubbedVideo: vi.fn(),
   separateStem: vi.fn(),
   tailRuntimeLogs: vi.fn(),
   transcribeVideo: vi.fn(),

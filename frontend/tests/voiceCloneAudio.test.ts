@@ -42,7 +42,7 @@ describe('voice clone audio helpers', () => {
     expect(encoded).toBe('AQIDBA==');
   });
 
-  it('resolves backend artifact urls through the backend proxy before fetching audio', async () => {
+  it('resolves artifact urls through the canonical Next.js proxy before fetching audio', async () => {
     const { resolveVoiceClonePlayableAudioUrlWithFallback } = await import('../src/features/voice-cloning/audio');
     const bytes = new Uint8Array([9, 10, 11, 12]);
     authFetchMock.mockResolvedValueOnce({
@@ -55,7 +55,7 @@ describe('voice clone audio helpers', () => {
     }, 'audio/wav');
 
     expect(authFetchMock).toHaveBeenCalledTimes(1);
-    expect(authFetchMock.mock.calls[0]?.[0]).toBe('/api/backend/voice-lab/voice-clone/artifacts/abc.wav?sig=123');
+    expect(authFetchMock.mock.calls[0]?.[0]).toBe('/api/v1/voice-lab/voice-clone/artifacts/abc.wav?sig=123');
     expect(url).toBe('data:audio/wav;base64,CQoLDA==');
   });
 

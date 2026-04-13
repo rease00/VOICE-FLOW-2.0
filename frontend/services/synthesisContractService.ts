@@ -1,8 +1,6 @@
-import { ActiveTtsEngineKey, GenerationSettings, NormalizedSynthesisRequest } from '../types';
+import { GenerationSettings, NormalizedSynthesisRequest } from '../types';
 
-type SynthesisEngine = GenerationSettings['engine'] | 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO';
-
-export const MAX_SYNTHESIS_WORDS = 5000;
+type SynthesisEngine = 'VECTOR' | 'PRIME';
 
 const ENGINE_SPEED_BOUNDS: Record<
   GenerationSettings['engine'],
@@ -26,19 +24,12 @@ const normalizeLanguageCode = (value: string): string => {
   return base;
 };
 
-export const inferLanguageFromText = (text: string): string => {
+const inferLanguageFromText = (text: string): string => {
   const sample = String(text || '');
   if (!sample.trim()) return 'en';
   if (/[\u0900-\u097F]/.test(sample)) return 'hi';
   if (/\b(kya|kyu|kaise|main|tum|aap|hai|hain|tha|thi|mera|meri|nahi)\b/i.test(sample)) return 'hi';
   return 'en';
-};
-
-export const countRequestWords = (text: string): number => {
-  return String(text || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
 };
 
 export const createSynthesisTraceId = (engine: SynthesisEngine): string => {

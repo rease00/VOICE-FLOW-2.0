@@ -76,6 +76,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const requestIdRef = useRef('');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -84,6 +85,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     if (!isOpen) return;
     previouslyFocusedElementRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    requestIdRef.current = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `modal_clone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setReferenceFile(null);
     setIsSubmitting(false);
     setSubmitError('');
@@ -251,9 +255,11 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       ]);
 
       const { sourceAudioBase64, sourceAudioName, durationSec } = await resolveSourceSamplePayload();
-      const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `modal_clone_${Date.now()}`;
+      const requestId = String(requestIdRef.current || '').trim() || (
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `modal_clone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      );
       const response = await renderVoiceClone(
         {
           durationSec,

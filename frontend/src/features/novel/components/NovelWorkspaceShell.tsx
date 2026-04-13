@@ -12,14 +12,12 @@ type ToastFn = (msg: string, type?: 'success' | 'error' | 'info') => void;
 
 interface NovelWorkspaceShellProps {
   settings: GenerationSettings;
-  mediaBackendUrl: string;
   onToast: ToastFn;
   onSendToStudio?: ((content: string) => void) | undefined;
 }
 
 const ShellInner: React.FC<NovelWorkspaceShellProps> = ({
   settings,
-  mediaBackendUrl,
   onToast,
   onSendToStudio,
 }) => {
@@ -46,7 +44,6 @@ const ShellInner: React.FC<NovelWorkspaceShellProps> = ({
     return (
       <NovelEditorShell
         settings={settings}
-        mediaBackendUrl={mediaBackendUrl}
         onToast={onToast}
         onSendToStudio={onSendToStudio ? (text, title) => onSendToStudio(text) : undefined}
         onBack={() => setView('projects')}

@@ -139,6 +139,32 @@ describe('billing checkout idempotency headers', () => {
     expect(session.url).toBe('https://billing.example.test/manage');
   });
 
+  it('reuses a stable Idempotency-Key for wallet VF to VC conversion retries', async () => {
+    authFetchMock.mockResolvedValue({ ok: true });
+    readJsonOrThrowMock
+      .mockResolvedValueOnce({ entitlements: { uid: 'uid-1', plan: 'Free' } })
+      .mockResolvedValueOnce({ entitlements: { uid: 'uid-1', plan: 'Free' } });
+
+    const { convertVfToVc } = await import('../services/accountService');
+
+    await convertVfToVc(250, 'https://backend.example.test');
+    await convertVfToVc(250, 'https://backend.example.test');
+
+    expect(authFetchMock).toHaveBeenCalledTimes(2);
+    const firstInit = authFetchMock.mock.calls[0]?.[1] as RequestInit;
+    const secondInit = authFetchMock.mock.calls[1]?.[1] as RequestInit;
+    const firstHeaders = new Headers(firstInit?.headers);
+    const secondHeaders = new Headers(secondInit?.headers);
+    const firstBody = JSON.parse(String(firstInit.body || '{}')) as Record<string, unknown>;
+    const secondBody = JSON.parse(String(secondInit.body || '{}')) as Record<string, unknown>;
+
+    expect(firstHeaders.get('Idempotency-Key')).toBeTruthy();
+    expect(firstHeaders.get('Idempotency-Key')).toBe(secondHeaders.get('Idempotency-Key'));
+    expect(String(firstBody.idempotencyKey || '')).toBe(String(secondBody.idempotencyKey || ''));
+    expect(String(firstBody.requestId || '')).toBe(String(secondBody.requestId || ''));
+    expect(firstBody.vfAmount).toBe(250);
+  });
+
   it('primes backend routing after bootstrapping an account profile', async () => {
     authFetchMock.mockResolvedValueOnce({ ok: true });
     readJsonOrThrowMock.mockResolvedValueOnce({
@@ -150,15 +176,20 @@ describe('billing checkout idempotency headers', () => {
     primeLoginRoutingAfterAccountBootstrapMock.mockResolvedValue({
       applied: true,
       reason: 'switched',
-      baseUrl: 'https://backend.example.test',
+      baseUrl: '/api/v1',
     });
 
     const { bootstrapAccountProfile } = await import('../services/accountService');
-    const profile = await bootstrapAccountProfile('https://backend.example.test');
+    const profile = await bootstrapAccountProfile();
 
     expect(profile.userId).toBe('user-1');
+    expect(authFetchMock).toHaveBeenCalledWith(
+      '/api/v1/account/profile/bootstrap',
+      { method: 'POST' },
+      { requireAuth: true }
+    );
     expect(primeLoginRoutingAfterAccountBootstrapMock).toHaveBeenCalledWith({
-      baseUrl: 'https://backend.example.test',
+      baseUrl: '/api/v1',
     });
   });
 });

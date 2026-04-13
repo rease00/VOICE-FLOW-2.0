@@ -71,6 +71,13 @@ describe('screenRouting', () => {
     expect(resolveSafeInternalNextPath('/app/writing?from=notify#top')).toBe('/app/writing?from=notify#top');
   });
 
+  it('treats library and legacy reader routes as main app routes', () => {
+    expect(resolveAppScreenFromPathname('/app/library')).toBe(AppScreen.MAIN);
+    expect(resolveAppScreenFromPathname('/app/library/1342/read')).toBe(AppScreen.MAIN);
+    expect(resolveAppScreenFromPathname('/app/reader')).toBe(AppScreen.MAIN);
+    expect(resolveAppScreenFromPathname('/app/reader/novel/1342')).toBe(AppScreen.MAIN);
+  });
+
   it('lets admin-authenticated sessions bypass login screens', () => {
     expect(resolveSessionScreen({
       authReady: true,

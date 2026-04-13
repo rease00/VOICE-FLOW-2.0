@@ -1,19 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-
-function getAdminApp() {
-  const existing = getApps();
-  if (existing.length > 0) return existing[0]!;
-  return initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID ?? '',
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? '',
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-    }),
-  });
-}
+import { FieldValue } from 'firebase-admin/firestore';
+import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../../../../../src/server/firebaseAdmin';
 
 async function verifyRequest(req: NextRequest): Promise<{ uid: string }> {
   const authHeader = req.headers.get('authorization');
@@ -21,7 +8,7 @@ async function verifyRequest(req: NextRequest): Promise<{ uid: string }> {
     throw new Error('Missing authorization');
   }
   const token = authHeader.slice(7);
-  const decoded = await getAuth(getAdminApp()).verifyIdToken(token);
+  const decoded = await getFirebaseAdminAuth().verifyIdToken(token);
   return { uid: decoded.uid };
 }
 
@@ -31,12 +18,12 @@ function sanitize(input: string): string {
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ bookId: string }> }
+  context: RouteContext<'/api/books/[bookId]/chapters'>
 ) {
   try {
     const { uid } = await verifyRequest(req);
-    const { bookId } = await params;
-    const db = getFirestore(getAdminApp());
+    const { bookId } = await context.params;
+    const db = getFirebaseAdminFirestore();
 
     const snap = await db
       .collection('publishedChapters')
@@ -70,12 +57,12 @@ export async function GET(
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ bookId: string }> }
+  context: RouteContext<'/api/books/[bookId]/chapters'>
 ) {
   try {
     const { uid } = await verifyRequest(req);
-    const { bookId } = await params;
-    const db = getFirestore(getAdminApp());
+    const { bookId } = await context.params;
+    const db = getFirebaseAdminFirestore();
     const body = await req.json();
 
     const chapterId = sanitize(body.chapterId || '');

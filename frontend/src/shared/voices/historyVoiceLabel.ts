@@ -1,4 +1,4 @@
-import { F5_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
+import { VOICES } from '../../../constants';
 
 const UNKNOWN_VOICE_LABEL = 'Unknown voice';
 const LEGACY_HISTORY_VOICE_LABELS = new Set(['ai voice']);
@@ -19,7 +19,7 @@ const getMappedVoiceLabel = (value: unknown): string | null => {
 
 const HISTORY_VOICE_LABELS = (() => {
   const out = new Map<string, string>();
-  const voiceCatalog = [...VOICES, ...OPENAI_VOICES, ...F5_VOICES];
+  const voiceCatalog = [...VOICES];
   for (const voice of voiceCatalog) {
     const label = String(voice.name || '').trim();
     if (!label) continue;
