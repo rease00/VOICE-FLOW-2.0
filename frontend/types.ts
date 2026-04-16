@@ -438,6 +438,13 @@ export interface HistoryItem {
   requestId?: string | undefined;
   traceId?: string | undefined;
   status?: 'completed' | 'failed' | 'cancelled' | string | undefined;
+  complianceMetadata?: {
+    kycVerified?: boolean;
+    invisibleWatermarkApplied?: boolean;
+    visibleWatermarksApplied?: boolean;
+    audioScrubbedForLiability?: boolean;
+    timestamp?: number;
+  };
 }
 
 export interface AuthActionResult {
