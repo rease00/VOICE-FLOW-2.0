@@ -3437,6 +3437,74 @@ if (mappedId) {
     const targetVoiceName = defaultGeminiVoice;
     const speakerHint = String(runtimeSettings.runtimeSpeakerHint || '').trim();
 
+    const normalizedRequest = normalizeSynthesisRequest({
+      engine: runtimeEngine,
+      text: processedText,
+      voiceId: targetVoiceName,
+      language: lang,
+      speed: settings.speed,
+      emotion: settings.emotion,
+      style: settings.style,
+      traceId,
+      requestId: requestIdBase,
+    });
+
+    if (runtimeUrl.includes('/api/v1/studio/tts/stream') || runtimeUrl.includes('/api/v1/studio/tts/synthesize')) {
+      const urlObj = new URL(runtimeUrl);
+      const isStream = urlObj.pathname.endsWith('/stream');
+      
+      try {
+        const bodyContent = JSON.stringify({
+          ...normalizedRequest,
+          mode: useGeminiBuiltInMultiSpeaker ? 'multi_speaker' : 'single_speaker',
+          speaker: speakerHint || undefined,
+          stream: isStream,
+          requestId: normalizedRequest.request_id,
+          traceId: normalizedRequest.trace_id,
+        });
+
+        const reqPath = urlObj.pathname + urlObj.search;
+
+        const nativeResponse = await authFetch(
+          reqPath,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: bodyContent,
+          },
+          { requireAuth: true }
+        );
+
+        if (!nativeResponse.ok) {
+           throw new Error('Native routing failed.');
+        }
+
+        let audioBytes = null;
+        const contentType = String(nativeResponse.headers.get('content-type') || '');
+        if (contentType.includes('text/event-stream')) {
+          const text = await nativeResponse.text();
+          let combinedBase64 = '';
+          const regex = /"audioBase64":"([^"]+)"/g;
+          let match;
+          while ((match = regex.exec(text)) !== null) {
+            combinedBase64 += match[1];
+          }
+          if (combinedBase64) {
+            audioBytes = Buffer.from(combinedBase64, 'base64').buffer;
+          }
+        } else {
+          audioBytes = await nativeResponse.arrayBuffer();
+        }
+        
+        if (audioBytes && audioBytes.byteLength > 100) {
+           const finalAudioBuffer = await ctx.decodeAudioData(audioBytes);
+           return await maybeApplyOpenVoiceClone(finalAudioBuffer, processedText);
+        }
+      } catch (err) {
+         console.warn('Native studio routing failed, falling back...', err);
+      }
+    }
+
     try {
       const normalizedRequest = normalizeSynthesisRequest({
         engine: runtimeEngine,
