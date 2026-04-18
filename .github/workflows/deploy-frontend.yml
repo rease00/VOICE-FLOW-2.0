@@ -105,8 +105,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
-          command: |
-            ${{ steps.target.outputs.env == 'production' && 'deploy' || format('versions upload --tag {0}', steps.target.outputs.name) }}
+          command: deploy
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
