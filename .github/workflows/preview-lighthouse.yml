@@ -1,10 +1,12 @@
 name: Preview Lighthouse
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "frontend/**"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number for preview URL"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,7 +22,7 @@ jobs:
       - name: Wait for preview deploy
         id: wait
         run: |
-          URL="https://pr-${{ github.event.pull_request.number }}.v-flow-ai-preview.workers.dev"
+          URL="https://pr-${{ github.event.inputs.pr_number }}.v-flow-ai-preview.workers.dev"
           for i in 1 2 3 4 5 6 7 8 9 10; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL/" || echo "000")
             echo "attempt $i: HTTP $code"

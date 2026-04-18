@@ -8,11 +8,6 @@ on:
       - "shared/**"
       - "infra/cloudflare/**"
       - ".github/workflows/deploy-frontend.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "frontend/**"
-      - "shared/**"
   workflow_dispatch:
     inputs:
       environment:
