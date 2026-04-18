@@ -75,7 +75,7 @@ jobs:
         run: npm run test:ci
 
       - name: Build (OpenNext for Workers)
-        run: npm run build:cloudflare
+        run: npm run build:deploy
         env:
           NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
           NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
