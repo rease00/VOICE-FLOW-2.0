@@ -3,9 +3,7 @@ import { describe, expect, it } from 'vitest';
 describe('voice clone stem separation request builder', () => {
   it('defaults the compressed upload cap above a common 10 minute mp3 size', async () => {
     const previousNext = process.env.NEXT_PUBLIC_VOICE_CLONE_MAX_AUDIO_BYTES;
-    const previousVite = process.env.VITE_VOICE_CLONE_MAX_AUDIO_BYTES;
     process.env.NEXT_PUBLIC_VOICE_CLONE_MAX_AUDIO_BYTES = '';
-    process.env.VITE_VOICE_CLONE_MAX_AUDIO_BYTES = '';
 
     try {
       const { getVoiceCloneStemExtractionMaxBytes, getOpenVoiceStemExtractionMaxBytes } = await import('../src/features/voice-cloning/stemSeparation');
@@ -16,11 +14,6 @@ describe('voice clone stem separation request builder', () => {
         delete process.env.NEXT_PUBLIC_VOICE_CLONE_MAX_AUDIO_BYTES;
       } else {
         process.env.NEXT_PUBLIC_VOICE_CLONE_MAX_AUDIO_BYTES = previousNext;
-      }
-      if (typeof previousVite === 'undefined') {
-        delete process.env.VITE_VOICE_CLONE_MAX_AUDIO_BYTES;
-      } else {
-        process.env.VITE_VOICE_CLONE_MAX_AUDIO_BYTES = previousVite;
       }
     }
   });

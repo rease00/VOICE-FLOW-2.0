@@ -4,14 +4,16 @@ import { describe, expect, it } from 'vitest';
 import { PublicBillingPage } from '../src/features/billing/PublicBillingPage';
 
 describe('billing landing', () => {
-  it('keeps the unified billing surface public and delays auth until checkout', () => {
+  it('keeps pricing public but fully locked behind a coming soon state', () => {
     const html = renderToStaticMarkup(<PublicBillingPage />);
 
     expect(html).toContain('data-billing-mode="public"');
-    expect(html).toContain('Billing, credits, and checkout');
-    expect(html).toContain('Choose the plan that fits your workflow');
-    expect(html).toContain('Browse pricing first. Sign up or log in only when you are ready to start secure checkout.');
-    expect(html).toContain('Checkout');
+    expect(html).toContain('data-billing-state="coming-soon"');
+    expect(html).toContain('Pricing is coming soon.');
+    expect(html).toContain('Plans are blurred until launch.');
+    expect(html).toContain('New account creation is temporarily paused while we finish launch checks.');
+    expect(html).toContain('Sign in');
+    expect(html).toContain('Back to landing');
     expect(html).not.toContain('Sign in to open billing');
   });
 });

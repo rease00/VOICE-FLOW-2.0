@@ -22,6 +22,7 @@ describe('deepfake footer tool', () => {
     const html = renderToStaticMarkup(<DeepfakeFooterTool />);
 
     expect(html).toContain('Voice authenticity check');
+    expect(html).toContain('id="voice-authenticity-check"');
     expect(html).toContain('16-bit PCM WAV');
     expect(html).toContain('does not identify a speaker');
     expect(html).toContain(`accept="${WATERMARK_FILE_ACCEPT}"`);

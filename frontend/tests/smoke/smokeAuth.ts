@@ -7,10 +7,16 @@ interface StudioSmokeCredentials {
   password: string;
 }
 
+interface EnsureStudioSmokeAuthenticatedOptions {
+  preloadWritingSurface?: boolean;
+}
+
 const LOGIN_PATH_RE = /^\/app\/login(?:\/|$)/;
 const LOGIN_HEADING_RE = /Open Studio in three simple steps|Welcome back|Create your V FLOW AI account/i;
 const WORKSPACE_HANDOFF_HEADING_RE = /Workspace handoff/i;
+const APP_HANDOFF_PATH_RE = /^\/app(?:\/|$)/;
 const WRITING_PATH_RE = /^\/app\/writing(?:\/|$)/;
+const STUDIO_PATH_RE = /^\/app\/studio(?:\/|$)/;
 const LOGIN_UI_READY_TIMEOUT_MS = 12_000;
 const WORKSPACE_HANDOFF_TIMEOUT_MS = 12_000;
 const LOGIN_RECOVERY_WAIT_MS = 650;
@@ -135,15 +141,31 @@ export const resolveStudioSmokeCredentials = (): StudioSmokeCredentials | null =
   return readStudioSmokeCredentialsFixture(fixturePath);
 };
 
-export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: StudioSmokeCredentials): Promise<void> => {
+export const ensureStudioSmokeAuthenticated = async (
+  page: Page,
+  credentials: StudioSmokeCredentials,
+  options: EnsureStudioSmokeAuthenticatedOptions = {},
+): Promise<void> => {
+  const preloadWritingSurface = options.preloadWritingSurface !== false;
   const requireWritingAuth = String(process.env.PLAYWRIGHT_REQUIRE_WRITING_AUTH || '1').trim() !== '0';
   const loginRetryAttempts = Math.max(2, Number.parseInt(String(process.env.PLAYWRIGHT_AUTH_LOGIN_RETRIES || '5'), 10) || 5);
   const loginEntryPath = '/app/login?vf-screen=login';
   const selectAllShortcut = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
+  const resolveAppUrl = (pathname: string): string => {
+    try {
+      const current = new URL(page.url());
+      if (current.protocol.startsWith('http')) {
+        return new URL(pathname, current.origin).toString();
+      }
+    } catch {
+      // Fall back to Playwright baseURL-relative navigation.
+    }
+    return pathname;
+  };
   const navigateToLoginEntry = async (): Promise<void> => {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        await page.goto(loginEntryPath, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+        await page.goto(resolveAppUrl(loginEntryPath), { waitUntil: 'domcontentloaded', timeout: 120_000 });
         return;
       } catch (error) {
         const message = String((error as Error)?.message || error || '');
@@ -402,7 +424,7 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
   const navigateToWriting = async (): Promise<void> => {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        await page.goto('/app/writing', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+        await page.goto(resolveAppUrl('/app/writing'), { waitUntil: 'domcontentloaded', timeout: 120_000 });
         return;
       } catch (error) {
         const message = String((error as Error)?.message || error || '');
@@ -413,6 +435,93 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
     }
   };
 
+  const navigateToStudio = async (): Promise<void> => {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await page.goto(resolveAppUrl('/app/studio'), { waitUntil: 'domcontentloaded', timeout: 120_000 });
+        return;
+      } catch (error) {
+        const message = String((error as Error)?.message || error || '');
+        const aborted = /ERR_ABORTED/i.test(message);
+        if (!aborted || attempt === 3) throw error;
+        await page.waitForTimeout(350 + (attempt * 150));
+      }
+    }
+  };
+
+  const waitForWorkspaceHandoffToSettle = async (): Promise<void> => {
+    const currentPath = (() => {
+      try {
+        return new URL(page.url()).pathname || '';
+      } catch {
+        return '';
+      }
+    })();
+    if (!APP_HANDOFF_PATH_RE.test(currentPath) || LOGIN_PATH_RE.test(currentPath)) {
+      return;
+    }
+
+    const handoffHeading = page.getByRole('heading', { name: /Loading workspace|Workspace handoff/i }).first();
+    await Promise.any([
+      handoffHeading.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => undefined),
+      page.waitForURL((url) => {
+        const pathname = url.pathname || '';
+        return !APP_HANDOFF_PATH_RE.test(pathname) || WRITING_PATH_RE.test(pathname) || STUDIO_PATH_RE.test(pathname);
+      }, { timeout: 35_000 }),
+      page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: 35_000 }),
+      page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: 35_000 }),
+      page.getByTestId('novel-workspace').first().waitFor({ state: 'visible', timeout: 35_000 }),
+      page.getByTestId('novel-editor-tabs').first().waitFor({ state: 'visible', timeout: 35_000 }),
+    ]).catch(() => undefined);
+
+    const settledPath = (() => {
+      try {
+        return new URL(page.url()).pathname || '';
+      } catch {
+        return '';
+      }
+    })();
+    if (APP_HANDOFF_PATH_RE.test(settledPath) && !LOGIN_PATH_RE.test(settledPath)) {
+      await Promise.any([
+        page.waitForURL((url) => {
+          const pathname = url.pathname || '';
+          return !APP_HANDOFF_PATH_RE.test(pathname) || WRITING_PATH_RE.test(pathname) || STUDIO_PATH_RE.test(pathname);
+        }, { timeout: 30_000 }),
+        page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: 30_000 }),
+        page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: 30_000 }),
+        page.getByTestId('novel-workspace').first().waitFor({ state: 'visible', timeout: 30_000 }),
+        page.getByTestId('novel-editor-tabs').first().waitFor({ state: 'visible', timeout: 30_000 }),
+      ]).catch(() => undefined);
+    }
+  };
+
+  const ensureStudioRouteAuthenticated = async (): Promise<void> => {
+    await waitForWorkspaceHandoffToSettle();
+    await navigateToStudio();
+
+    if (isLoginPath(page.url())) {
+      throw new Error(`Smoke auth did not persist to the Studio route. Current URL: ${page.url()}`);
+    }
+
+    await Promise.any([
+      page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: 35_000 }),
+      page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: 35_000 }),
+      page.getByRole('button', { name: /^Generate Audio$/i }).first().waitFor({ state: 'visible', timeout: 35_000 }),
+    ]).catch(async () => {
+      const pathname = new URL(page.url()).pathname || '';
+      if (isLoginPath(page.url()) || !STUDIO_PATH_RE.test(pathname)) {
+        throw new Error(`Smoke auth did not reach the Studio workspace after sign-in. Current URL: ${page.url()}`);
+      }
+      throw new Error(`Smoke auth reached /app/studio but the workspace UI did not appear. Current URL: ${page.url()}`);
+    });
+  };
+
+  if (!preloadWritingSurface) {
+    await ensureStudioRouteAuthenticated();
+    return;
+  }
+
+  await ensureStudioRouteAuthenticated();
   await navigateToWriting();
   const waitForWritingSurfaceState = async (timeoutMs: number): Promise<'ready' | 'error' | 'timeout'> => {
     const resolveState = (
@@ -425,6 +534,9 @@ export const ensureStudioSmokeAuthenticated = async (page: Page, credentials: St
       resolveState(page.getByTestId('novel-workspace').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
       resolveState(page.getByTestId('novel-editor-tabs').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
       resolveState(page.getByTestId('novel-library-tabs').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
+      resolveState(page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
       resolveState(page.getByRole('heading', { name: /Sign in to open Writing/i }).first().waitFor({ state: 'visible', timeout: timeoutMs }), 'ready'),
       resolveState(page.getByRole('button', { name: /^Retry now$/i }).first().waitFor({ state: 'visible', timeout: timeoutMs }), 'error'),
     ]).catch(() => 'timeout');

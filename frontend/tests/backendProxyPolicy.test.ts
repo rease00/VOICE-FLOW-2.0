@@ -1,6 +1,12 @@
 import type { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const verifyFirebaseRequestMock = vi.hoisted(() => vi.fn(async () => ({ uid: 'user-1' })));
+
+vi.mock('../src/server/auth/requestAuth', () => ({
+  verifyFirebaseRequest: (...args: unknown[]) => verifyFirebaseRequestMock(...args),
+}));
+
 import { proxyBackendRequest } from '../app/api/backend/proxy';
 
 interface EnvSnapshot {
@@ -8,6 +14,7 @@ interface EnvSnapshot {
   VF_MEDIA_BACKEND_ORIGINS_JSON?: string;
   VF_BACKEND_PROXY_ALLOWLIST?: string;
   VF_BACKEND_PROXY_MUTATION_ALLOWLIST?: string;
+  NODE_ENV?: string;
 }
 
 const createRequest = (input: {
@@ -33,6 +40,7 @@ describe('backend proxy header policy', () => {
       VF_MEDIA_BACKEND_ORIGINS_JSON: process.env.VF_MEDIA_BACKEND_ORIGINS_JSON,
       VF_BACKEND_PROXY_ALLOWLIST: process.env.VF_BACKEND_PROXY_ALLOWLIST,
       VF_BACKEND_PROXY_MUTATION_ALLOWLIST: process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST,
+      NODE_ENV: process.env.NODE_ENV,
     };
     process.env.VF_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
     delete process.env.VF_MEDIA_BACKEND_ORIGINS_JSON;
@@ -49,7 +57,11 @@ describe('backend proxy header policy', () => {
     else process.env.VF_BACKEND_PROXY_ALLOWLIST = envSnapshot.VF_BACKEND_PROXY_ALLOWLIST;
     if (envSnapshot.VF_BACKEND_PROXY_MUTATION_ALLOWLIST === undefined) delete process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
     else process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST = envSnapshot.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
+    if (envSnapshot.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = envSnapshot.NODE_ENV;
     vi.unstubAllGlobals();
+    verifyFirebaseRequestMock.mockResolvedValue({ uid: 'user-1' });
+    vi.clearAllMocks();
   });
 
   it('forwards only allowlisted headers and strips spoofed transport headers', async () => {
@@ -98,6 +110,7 @@ describe('backend proxy header policy', () => {
   it('does not treat x-dev-uid as authenticated context for unsafe methods', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    verifyFirebaseRequestMock.mockRejectedValueOnce(new Error('Missing authorization'));
 
     const response = await proxyBackendRequest(
       createRequest({
@@ -137,6 +150,55 @@ describe('backend proxy header policy', () => {
     expect(String(target)).toBe('http://127.0.0.1:7800/routing/regions?source=studio');
   });
 
+  it('allows authenticated AI generation writes through the proxy allowlist', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ text: '{"ok":true}' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'POST',
+        url: 'https://v-flow-ai.local/api/backend/ai/generate-text',
+        headers: {
+          authorization: 'Bearer token',
+          'content-type': 'application/json',
+        },
+      }),
+      ['ai', 'generate-text']
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(target)).toBe('http://127.0.0.1:7800/ai/generate-text');
+  });
+
+  it('rejects unsafe writes when bearer or cookie headers are present but Firebase verification fails', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    verifyFirebaseRequestMock.mockRejectedValueOnce(new Error('Invalid session cookie'));
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'POST',
+        url: 'https://v-flow-ai.local/api/backend/admin/voice-clone/provider',
+        headers: {
+          authorization: 'Bearer invalid-token',
+          cookie: '__session=bad-cookie',
+          'content-type': 'application/json',
+        },
+      }),
+      ['admin', 'voice-clone', 'provider']
+    );
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns a structured 502 response when the upstream backend fetch throws', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
@@ -157,6 +219,51 @@ describe('backend proxy header policy', () => {
       detail: expect.stringContaining('/voice-clone/openvoice/separate'),
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed in production when no compatibility backend is configured', async () => {
+    delete process.env.VF_MEDIA_BACKEND_URL;
+    delete process.env.VF_MEDIA_BACKEND_ORIGINS_JSON;
+    process.env.NODE_ENV = 'production';
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'GET',
+        url: 'https://v-flow-ai.local/api/backend/tts/v2/jobs',
+      }),
+      ['tts', 'v2', 'jobs']
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      detail: expect.stringContaining('require VF_MEDIA_BACKEND_URL'),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects loopback compatibility backend origins in production', async () => {
+    process.env.VF_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
+    process.env.NODE_ENV = 'production';
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'GET',
+        url: 'https://v-flow-ai.local/api/backend/routing/regions',
+      }),
+      ['routing', 'regions']
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      detail: expect.stringContaining('cannot use localhost or loopback origins'),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('chooses the healthiest configured regional origin for safe requests', async () => {

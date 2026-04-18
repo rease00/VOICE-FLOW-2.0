@@ -76,8 +76,8 @@ describe('voice cloning stress helpers', () => {
       )
     ).toBe('gemini-runtime');
 
-    expect(getStressRuntimeDeviceLabel(null, 'VOICE_CLONE_L4_VC')).toBe('Modal VC (configured target)');
-    expect(getStressRuntimeDeviceLabel(null, 'OPENVOICE_L4_VC')).toBe('Modal VC (configured target)');
+    expect(getStressRuntimeDeviceLabel(null, 'VOICE_CLONE_L4_VC')).toBe('Seed VC (configured target)');
+    expect(getStressRuntimeDeviceLabel(null, 'OPENVOICE_L4_VC')).toBe('Seed VC (configured target)');
   });
 
   it('auto-derives stress RPM values from concurrency', () => {

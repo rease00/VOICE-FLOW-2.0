@@ -38,7 +38,7 @@ describe('studio engine runtime routes', () => {
           healthUrl: expect.stringContaining('/api/v1/studio/tts/engines/status'),
         }),
         PRIME: expect.objectContaining({
-          runtimeUrl: expect.stringContaining('/api/v1/studio/tts/synthesize'),
+          runtimeUrl: expect.stringContaining('/api/v1/studio/tts/stream'),
         }),
       }),
     });

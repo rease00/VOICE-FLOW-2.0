@@ -13,6 +13,15 @@ describe('proxy CSP', () => {
     expect(csp).toContain('http://localhost:7800');
   });
 
+  it('treats 0.0.0.0 loopback requests as local development traffic', () => {
+    const response = proxy(new NextRequest('http://0.0.0.0:3000/app/library'));
+    const csp = String(response.headers.get('Content-Security-Policy') || '');
+
+    expect(csp).toContain("'unsafe-eval'");
+    expect(csp).toContain('ws://localhost:*');
+    expect(csp).toContain('http://0.0.0.0:7800');
+  });
+
   it('keeps hosted origins on the stricter policy', () => {
     const response = proxy(new NextRequest('https://voiceflow.example/app/library'));
     const csp = String(response.headers.get('Content-Security-Policy') || '');

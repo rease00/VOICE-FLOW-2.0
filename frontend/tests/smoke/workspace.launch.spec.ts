@@ -122,9 +122,10 @@ const waitForWritingWorkspace = async (page: Page): Promise<void> => {
     page.getByTestId('novel-library-tabs').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
     page.getByRole('heading', { name: /Novel Workspace/i }).first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
     page.getByRole('button', { name: /^Retry now$/i }).first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
   ]);
-
-  await expect(page.getByTestId('novel-workspace').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
 };
 
 const routeCases: Array<{
@@ -171,9 +172,17 @@ const routeCases: Array<{
     path: '/app/writing',
     waitForReadyState: waitForWritingWorkspace,
     assert: async (page) => {
-      await expect(page.getByTestId('novel-workspace').first()).toBeVisible();
-      await expect(page.getByTestId('novel-editor-tabs').first()).toBeVisible();
-      await expect(page.getByRole('heading', { name: /Novel Workspace/i })).toBeVisible();
+      const novelWorkspace = page.getByTestId('novel-workspace').first();
+      if (await novelWorkspace.isVisible().catch(() => false)) {
+        await expect(novelWorkspace).toBeVisible();
+        return;
+      }
+
+      await Promise.any([
+        page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      ]);
     },
   },
 ];

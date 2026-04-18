@@ -50,10 +50,14 @@ const desktopMobileProjects = [
   { name: 'chromium-mobile', use: { ...devices['Pixel 5'] } },
 ];
 
-const launchTestMatch = [/workspace\.launch\.spec\.ts$/, /app\.backdrop\.spec\.ts$/];
+const launchTestMatch = [/library\.spec\.ts$/, /workspace\.launch\.spec\.ts$/, /app\.backdrop\.spec\.ts$/, /studio-reader\.routes\.spec\.ts$/];
 const fullTestMatch = [
+  /library\.spec\.ts$/,
+  /text-extraction-demo\.spec\.ts$/,
   /app\.smoke\.spec\.ts$/,
   /app\.backdrop\.spec\.ts$/,
+  /manual\.casual\.demo-pack\.spec\.ts$/,
+  /studio-reader\.routes\.spec\.ts$/,
   /prime\.access\.spec\.tsx?$/,
   /studio\.director-chip\.spec\.ts$/,
   /toolbar\.one-line\.devices\.spec\.ts$/,
@@ -98,10 +102,6 @@ export default defineConfig({
       ...process.env,
       NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST:
         process.env.NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST
-        || process.env.PLAYWRIGHT_ADMIN_EMAIL
-        || '',
-      VITE_ADMIN_EMAIL_ALLOWLIST:
-        process.env.VITE_ADMIN_EMAIL_ALLOWLIST
         || process.env.PLAYWRIGHT_ADMIN_EMAIL
         || '',
       HOSTNAME: 'localhost',

@@ -126,6 +126,29 @@ describe('billingCheckoutIntent', () => {
     });
   });
 
+  it('supports VN pack intents', () => {
+    const createdAt = 2_750_000;
+    const intent = createBillingCheckoutIntent(
+      {
+        kind: 'vn-token-pack',
+        selection: { vnPackKey: 'vn_mega' },
+        authMode: 'login',
+        resumePath: '/billing?tab=vn-packs',
+        createdAt,
+      },
+      createdAt
+    );
+
+    expect(intent).toEqual({
+      kind: 'vn-token-pack',
+      selection: { vnPackKey: 'vn_mega' },
+      authMode: 'login',
+      resumePath: '/billing?tab=vn-packs',
+      createdAt,
+      expiresAt: createdAt + BILLING_CHECKOUT_INTENT_TTL_MS,
+    });
+  });
+
   it('rejects invalid VC pack keys', () => {
     const intent = createBillingCheckoutIntent({
       kind: 'vc-token-pack',

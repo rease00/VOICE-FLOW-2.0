@@ -31,36 +31,43 @@ afterEach(() => {
 });
 
 describe('workspace tab navigation model', () => {
-  it('keeps the create tabs in the studio, voices, writing order', () => {
+  it('keeps the create tabs in the studio, voices, readers order', () => {
     const tabs = buildWorkspaceTabs(false);
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
       WorkspaceTab.VOICE_CLONING,
-      WorkspaceTab.WRITING,
+      WorkspaceTab.LIBRARY,
       WorkspaceTab.HISTORY,
       WorkspaceTab.BILLING,
     ]);
-    expect(tabs.some((item) => item.id === WorkspaceTab.WRITING && item.label === 'Writing')).toBe(true);
+    expect(tabs.some((item) => item.id === WorkspaceTab.LIBRARY && item.label === 'Readers')).toBe(true);
   });
 
-  it('maps the writing tab to the canonical writing route', () => {
+  it('maps the library tab to the canonical library route', () => {
     const result = buildWorkspaceTabNavigationHref(
       'https://v-flow-ai.local/app/voices?billing=success#top',
-      WorkspaceTab.WRITING
+      WorkspaceTab.LIBRARY
     );
 
-    expect(result.tab).toBe(WorkspaceTab.WRITING);
-    expect(result.href).toBe('/app/writing?billing=success#top');
+    expect(result.tab).toBe(WorkspaceTab.LIBRARY);
+    expect(result.href).toBe('/app/library?billing=success#top');
     expect(result.changed).toBe(true);
   });
 
-  it('hydrates the writing tab from pathname', () => {
-    expect(resolveWorkspaceTabFromPathname('/app/writing')).toBe(WorkspaceTab.WRITING);
-    expect(resolveWorkspaceTabFromPathname('/app/writing/chapter-1')).toBe(WorkspaceTab.WRITING);
+  it('hydrates the library tab from pathname', () => {
+    expect(resolveWorkspaceTabFromPathname('/app/library')).toBe(WorkspaceTab.LIBRARY);
+    expect(resolveWorkspaceTabFromPathname('/app/library/chapter-1')).toBe(WorkspaceTab.LIBRARY);
+    expect(resolveWorkspaceTabFromPathname('/app/writing')).toBe(WorkspaceTab.LIBRARY);
+    expect(resolveWorkspaceTabFromPathname('/app/writing/chapter-1')).toBe(WorkspaceTab.LIBRARY);
   });
 
-  it('upgrades legacy novel storage to the writing tab', () => {
+  it('upgrades legacy novel/writing storage to the library tab', () => {
     localStorage.setItem(STORAGE_KEYS.workspaceActiveTab, 'NOVEL');
-    expect(resolveWorkspaceTabFromStorage()).toBe(WorkspaceTab.WRITING);
+    expect(resolveWorkspaceTabFromStorage()).toBe(WorkspaceTab.LIBRARY);
+  });
+
+  it('upgrades legacy WRITING storage to the library tab', () => {
+    localStorage.setItem(STORAGE_KEYS.workspaceActiveTab, 'WRITING');
+    expect(resolveWorkspaceTabFromStorage()).toBe(WorkspaceTab.LIBRARY);
   });
 });

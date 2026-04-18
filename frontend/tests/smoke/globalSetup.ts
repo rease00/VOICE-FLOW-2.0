@@ -25,6 +25,9 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     await Promise.any([
       writingWorkspace.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       writingHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       writingAuthGate.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       loginShell.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       loginHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),

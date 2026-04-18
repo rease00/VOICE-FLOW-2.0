@@ -91,6 +91,9 @@ describe('issueTtsV2SessionKey', () => {
     ];
     expect(firstPath).toBe('/tts/v2/sessions');
     expect(firstOptions).toEqual({ baseUrl, requireAuth: true });
+    const firstHeaders = new Headers(firstInit.headers || {});
+    expect(firstHeaders.get('Content-Type')).toBe('application/json');
+    expect(firstHeaders.get('Idempotency-Key')).toMatch(/^vf:tts:session:/);
     expect(JSON.parse(String(firstInit.body || '{}'))).toEqual({
       regionHint: 'asia',
       regionSource: 'login_auto_nearest',
@@ -98,6 +101,8 @@ describe('issueTtsV2SessionKey', () => {
     });
 
     const [, secondInit] = requestJsonMock.mock.calls[1] as [string, RequestInit];
+    const secondHeaders = new Headers(secondInit.headers || {});
+    expect(secondHeaders.get('Idempotency-Key')).toMatch(/^vf:tts:session:/);
     expect(JSON.parse(String(secondInit.body || '{}'))).toEqual({
       probeAllSlotRegions: true,
     });
@@ -444,6 +449,7 @@ describe('issueTtsV2SessionKey', () => {
     ];
     expect(cancelPath).toBe('/tts/v2/sessions/session-key-cancel/cancel');
     expect(cancelInit.method).toBe('POST');
+    expect(new Headers(cancelInit.headers || {}).get('Idempotency-Key')).toMatch(/^vf:tts:session-cancel:/);
     expect(cancelOptions).toEqual({ baseUrl, requireAuth: true });
   });
 });

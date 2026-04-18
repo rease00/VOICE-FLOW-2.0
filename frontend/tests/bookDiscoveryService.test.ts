@@ -14,6 +14,10 @@ describe('bookDiscoveryService', () => {
         count: 1,
         next: null,
         previous: null,
+        meta: {
+          publishedBooksAvailable: false,
+          degradedSources: ['publishedBooks'],
+        },
         results: [
           {
             id: 84,

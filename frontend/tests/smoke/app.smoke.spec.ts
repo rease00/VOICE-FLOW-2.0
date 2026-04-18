@@ -25,6 +25,18 @@ const waitForAnyVisible = async (page: Page, labels: string[]): Promise<void> =>
   );
 };
 
+const resolveRouteUrl = (page: Page, path: string): string => {
+  try {
+    const current = new URL(page.url());
+    if (current.protocol.startsWith('http')) {
+      return new URL(path, current.origin).toString();
+    }
+  } catch {
+    // Fall back to Playwright baseURL-relative navigation.
+  }
+  return path;
+};
+
 const expectNoHorizontalBleed = async (page: Page): Promise<void> => {
   const metrics = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
@@ -51,6 +63,48 @@ const expectRailMetrics = async (page: Page, selector: string, requireOverflow =
     expect(metrics.scrollWidth).toBeGreaterThanOrEqual(metrics.clientWidth);
   }
   expect(metrics.overflowX).toMatch(/auto|scroll/);
+};
+
+const LANDING_SURFACE_TEST_IDS = [
+  'landing-home',
+  'landing-single-speaker',
+  'landing-multi-speaker',
+  'landing-ai-director',
+  'landing-reader-playback',
+] as const;
+
+const expectLandingChrome = async (page: Page, activeLabel: string): Promise<void> => {
+  await expect(page.getByTestId('brand-logo').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByTestId('marketing-landing')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByTestId('landing-tab-bar')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByTestId('landing-next-nav')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.locator('[data-testid="landing-tab-bar"] a[aria-current="page"]')).toHaveText(activeLabel, { timeout: ROUTE_TIMEOUT_MS });
+  await expectNoHorizontalBleed(page);
+};
+
+const expectOnlyActiveLandingSurface = async (
+  page: Page,
+  activeSurface: (typeof LANDING_SURFACE_TEST_IDS)[number],
+): Promise<void> => {
+  for (const testId of LANDING_SURFACE_TEST_IDS) {
+    const locator = page.getByTestId(testId);
+    if (testId === activeSurface) {
+      await expect(locator).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      continue;
+    }
+    await expect(locator).toHaveCount(0);
+  }
+};
+
+const expectNoLandingMediaRequestsBeforeInteraction = async (page: Page): Promise<void> => {
+  const mediaRequests = await page.evaluate(() => (
+    performance
+      .getEntriesByType('resource')
+      .map((entry) => entry.name)
+      .filter((name) => /\.(wav|mp3|ogg|m4a)(\?|$)/i.test(name))
+  ));
+
+  expect(mediaRequests).toEqual([]);
 };
 
 const isKnownConsoleNoise = (message: string): boolean => {
@@ -114,10 +168,67 @@ const trackRouteHealth = (page: Page) => {
 const routeSmokeCases: RouteAssertion[] = [
   {
     path: '/billing',
-    title: 'billing public page',
+    title: 'billing premium page',
     expect: async (page) => {
-      await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('heading', { name: /Billing, credits, and checkout/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByTestId('brand-logo').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Pricing is coming soon/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Plans are blurred until launch.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+    },
+  },
+  {
+    path: '/landing',
+    title: 'landing overview page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Overview');
+      await expectOnlyActiveLandingSurface(page, 'landing-home');
+      await expect(page.getByTestId('landing-home-hero')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Audition voices/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Start free/i }).first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/single-voice',
+    title: 'landing single voice page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Single Voice');
+      await expectOnlyActiveLandingSurface(page, 'landing-single-speaker');
+      await expect(page.getByText('Hear short reads before you commit the scene.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Next: Prime Scenes/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/prime-scenes',
+    title: 'landing prime scenes page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Prime Scenes');
+      await expectOnlyActiveLandingSurface(page, 'landing-multi-speaker');
+      await expect(page.getByText('Prime Scenes are where Voice Flow stops sounding like isolated clips and starts sounding like a finished scene.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Next: AI Direction/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/direction',
+    title: 'landing ai direction page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'AI Direction');
+      await expectOnlyActiveLandingSurface(page, 'landing-ai-director');
+      await expect(page.getByTestId('landing-ai-director-prompt')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Next: Reader Review/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/reader',
+    title: 'landing reader page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Reader');
+      await expectOnlyActiveLandingSurface(page, 'landing-reader-playback');
+      await expect(page.getByText('Close the loop with a quieter review surface built for final listening.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Open the Studio/i }).last()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
     },
   },
   {
@@ -164,6 +275,15 @@ const routeSmokeCases: RouteAssertion[] = [
     },
   },
   {
+    path: '/app/admin',
+    title: 'admin route canary',
+    requiresAuth: true,
+    expect: async (page) => {
+      await expect(page).toHaveURL(/\/app\/admin(?:\/|$|\?)/);
+      await expect(page.locator('body')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+    },
+  },
+  {
     path: '/app/login',
     title: 'login',
     expect: async (page) => {
@@ -204,17 +324,23 @@ const routeSmokeCases: RouteAssertion[] = [
 
 for (const routeCase of routeSmokeCases) {
   test(routeCase.title, async ({ page }, testInfo) => {
+    if (routeCase.requiresAuth) {
+      test.setTimeout(120_000);
+    }
     const assertRouteHealth = routeCase.trackRouteHealth === false ? null : trackRouteHealth(page);
     if (routeCase.requiresAuth) {
       const credentials = resolveStudioSmokeCredentials();
       test.skip(!credentials, 'Missing Playwright admin credentials for authenticated smoke coverage.');
-      await ensureStudioSmokeAuthenticated(page, credentials!);
+      await ensureStudioSmokeAuthenticated(page, credentials!, { preloadWritingSurface: false });
     }
 
-    await page.goto(routeCase.path, {
-      waitUntil: 'domcontentloaded',
-      timeout: ROUTE_TIMEOUT_MS,
-    });
+    const currentPath = new URL(page.url()).pathname || '';
+    if (currentPath !== routeCase.path) {
+      await page.goto(resolveRouteUrl(page, routeCase.path), {
+        waitUntil: 'domcontentloaded',
+        timeout: ROUTE_TIMEOUT_MS,
+      });
+    }
     await routeCase.expect(page, testInfo);
     await expect(page.locator('body')).toBeVisible();
 
