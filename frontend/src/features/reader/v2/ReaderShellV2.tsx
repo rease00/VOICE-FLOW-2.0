@@ -1,26 +1,107 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Button } from "@/ui/Button";
 import { Card } from "@/ui/Card";
-import { GlassPanel } from "@/ui/GlassPanel";
-import { fadeIn, spring } from "@/ui/motion";
+import { fadeIn } from "@/ui/motion";
+import { FileText, Globe, BookOpen, Upload } from "lucide-react";
+import { TextCanvas } from "./TextCanvas";
+import { PlayerDock } from "./PlayerDock";
+import { useStudioGenerate } from "../../studio/hooks/useStudioGenerate";
+import { VOICES } from "../../../../constants";
+import type { GenerationSettings } from "../../../../types";
 
-/**
- * Reader v2 shell — premium player + import vault gate (paid-only).
- * Gated by `feature_flags/ui_v2.surfaces.reader`.
- *
- * Pieces (TODO):
- *   - <TextCanvas /> — paginated reader with chapter rail
- *   - <PlayerDock /> — fixed-bottom player (this stub)
- *   - <NowPlaying /> — full-screen "Spotify-style" view
- *   - <NotesPanel /> — side annotations
- *   - <AmbianceMixer /> — background ambience layering
- *   - <ImportVault /> — paid-tier import library w/ 90-day frozen retention
- */
+const DEMO_TEXT = `Welcome to the VoiceFlow Reader.
+
+This is a demonstration of paragraph-level AI narration. Each paragraph can be read aloud by any of our 30 premium Gemini voices.
+
+Tap any paragraph to jump to it. The active paragraph is highlighted with an aurora ring so you always know where you are.
+
+Use the controls below to adjust font size, playback speed, and volume. You can also skip forward or backward between paragraphs using the transport buttons.
+
+Import your own books, articles, and scripts to listen on the go. Supported formats include plain text, Markdown, and EPUB files.`;
+
 export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
-  const [playing, setPlaying] = useState(false);
+  const [content, setContent] = useState(DEMO_TEXT);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [fontSize, setFontSize] = useState(18);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [synthesizing, setSynthesizing] = useState(false);
+
+  const { synthesize } = useStudioGenerate();
+
+  const paragraphs = content
+    .split(/\n\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  /* ── paragraph playback ────────────────────── */
+  const handleParagraphClick = useCallback(
+    async (index: number) => {
+      setActiveIndex(index);
+      const para = paragraphs[index];
+      if (!para) return;
+
+      setSynthesizing(true);
+      const voice = VOICES[0];
+      if (!voice) return;
+      const settings: GenerationSettings = {
+        voiceId: voice.id,
+        speed: 1,
+        pitch: 'Medium',
+        language: voice.accent,
+        engine: 'PRIME',
+        helperProvider: 'GEMINI',
+      };
+
+      try {
+        const result = await synthesize(para, settings, 'speech', undefined);
+        if (result instanceof Blob) {
+          setAudioUrl(URL.createObjectURL(result));
+        } else if (result instanceof ArrayBuffer) {
+          setAudioUrl(URL.createObjectURL(new Blob([result], { type: "audio/mp3" })));
+        } else if (typeof result === "object" && result !== null && "audioUrl" in result) {
+          setAudioUrl((result as { audioUrl: string }).audioUrl);
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        setSynthesizing(false);
+      }
+    },
+    [paragraphs, synthesize],
+  );
+
+  /* ── skip forward/back ─────────────────────── */
+  const handleSkipForward = useCallback(() => {
+    const next = Math.min(activeIndex + 1, paragraphs.length - 1);
+    handleParagraphClick(next);
+  }, [activeIndex, paragraphs.length, handleParagraphClick]);
+
+  const handleSkipBack = useCallback(() => {
+    const prev = Math.max(activeIndex - 1, 0);
+    handleParagraphClick(prev);
+  }, [activeIndex, handleParagraphClick]);
+
+  /* ── file import ───────────────────────────── */
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleFileImport = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setContent(reader.result);
+          setActiveIndex(-1);
+          setAudioUrl(null);
+        }
+      };
+      reader.readAsText(file);
+    },
+    [],
+  );
 
   return (
     <motion.main
@@ -37,9 +118,23 @@ export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
           </p>
         </div>
         {paid ? (
-          <Button variant="secondary" size="md">
-            Import library
-          </Button>
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.epub"
+              onChange={handleFileImport}
+              className="hidden"
+            />
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Upload className="mr-1.5 h-4 w-4" />
+              Import
+            </Button>
+          </>
         ) : (
           <Button variant="aurora" size="md">
             Upgrade to import
@@ -47,13 +142,40 @@ export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
         )}
       </header>
 
-      <Card elevation={1} className="min-h-[420px]">
-        <article className="prose prose-invert max-w-none text-[var(--vf-color-text)]">
-          <p className="text-[var(--vf-color-text-muted)]">
-            Text canvas placeholder — Phase 6.3
-          </p>
-        </article>
-      </Card>
+      <TextCanvas
+        content={content}
+        activeIndex={activeIndex}
+        fontSize={fontSize}
+        onFontSizeChange={setFontSize}
+        onParagraphClick={handleParagraphClick}
+      />
+
+      {paid && (
+        <div className="grid grid-cols-3 gap-3">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex flex-col items-center gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-center text-[var(--vf-color-text-muted)] transition hover:border-white/10 hover:bg-white/5"
+          >
+            <FileText className="h-5 w-5" />
+            <span className="text-xs font-medium">File</span>
+          </button>
+          <button
+            type="button"
+            className="flex flex-col items-center gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-center text-[var(--vf-color-text-muted)] transition hover:border-white/10 hover:bg-white/5"
+          >
+            <BookOpen className="h-5 w-5" />
+            <span className="text-xs font-medium">EPUB</span>
+          </button>
+          <button
+            type="button"
+            className="flex flex-col items-center gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-center text-[var(--vf-color-text-muted)] transition hover:border-white/10 hover:bg-white/5"
+          >
+            <Globe className="h-5 w-5" />
+            <span className="text-xs font-medium">URL</span>
+          </button>
+        </div>
+      )}
 
       {!paid && (
         <Card elevation={2} glow className="text-center">
@@ -73,46 +195,12 @@ export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
         </Card>
       )}
 
-      <GlassPanel
-        intensity={3}
-        anchor="bottom"
-        role="region"
-        aria-label="Player dock"
-        className="fixed inset-x-4 bottom-4 z-[var(--z-dock)] mx-auto max-w-[928px] px-4 py-3"
-      >
-        <div className="flex items-center gap-3">
-          <motion.button
-            type="button"
-            aria-label={playing ? "Pause" : "Play"}
-            onClick={() => setPlaying((p) => !p)}
-            whileTap={{ scale: 0.94 }}
-            transition={spring.press}
-            className="aurora-bg flex h-12 w-12 items-center justify-center rounded-full text-white shadow-[0_8px_20px_rgba(124,92,255,0.45)]"
-          >
-            {playing ? (
-              <span className="block h-3 w-3 border-x-[3px] border-current" />
-            ) : (
-              <span className="ml-0.5 block h-0 w-0 border-y-[6px] border-l-[10px] border-y-transparent border-l-current" />
-            )}
-          </motion.button>
-          <div className="flex flex-1 flex-col">
-            <span className="text-sm font-medium text-[var(--vf-color-text)]">
-              Untitled chapter
-            </span>
-            <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[color-mix(in_oklab,currentColor_12%,transparent)]">
-              <motion.div
-                className="h-full aurora-bg"
-                initial={{ width: "0%" }}
-                animate={{ width: playing ? "32%" : "0%" }}
-                transition={spring.layout}
-              />
-            </div>
-          </div>
-          <span className="text-xs tabular-nums text-[var(--vf-color-text-muted)]">
-            00:00
-          </span>
-        </div>
-      </GlassPanel>
+      <PlayerDock
+        audioUrl={audioUrl}
+        synthesizing={synthesizing}
+        onSkipForward={handleSkipForward}
+        onSkipBack={handleSkipBack}
+      />
     </motion.main>
   );
 }
