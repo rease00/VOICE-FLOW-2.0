@@ -5,6 +5,7 @@ import type { AudioNovelSpeakerRun } from './contracts.ts';
 
 const CLIENT_POOL_SIZE = 10;
 const SILENCE = Buffer.alloc(480);
+const AUDIO_NOVEL_BIDI_PROMPT = 'Read the following in a clean, natural audiobook style with steady pacing.';
 
 type AudioNovelEncoding = 'LINEAR16' | 'MP3';
 
@@ -121,3 +122,69 @@ export const synthesizeAudioNovelRun = async (
 };
 
 export const getAudioNovelSilenceBuffer = (): Buffer => SILENCE;
+
+export const streamAudioNovelBidi = async (
+  runs: AudioNovelSpeakerRun[],
+  onChunk: (buffer: Buffer) => void,
+): Promise<{ responseChunkCount: number; totalBytes: number }> => {
+  const safeRuns = runs.filter((run) => run.mergedText.trim().length > 0);
+  if (safeRuns.length === 0) {
+    throw new Error('No runs available for bidi streaming.');
+  }
+
+  const voice = safeRuns[0]?.voice || 'Kore';
+  const client = await getClient();
+  const stream = client.streamingSynthesize();
+
+  let responseChunkCount = 0;
+  let totalBytes = 0;
+
+  const completion = new Promise<void>((resolve, reject) => {
+    stream.on('data', (response) => {
+      const audioContent = response?.audioContent;
+      const buffer = Buffer.isBuffer(audioContent)
+        ? audioContent
+        : Buffer.from(audioContent || []);
+      if (buffer.length <= 0) return;
+      responseChunkCount += 1;
+      totalBytes += buffer.length;
+      onChunk(buffer);
+    });
+    stream.on('error', reject);
+    stream.on('end', resolve);
+  });
+
+  stream.write({
+    streamingConfig: {
+      voice: {
+        languageCode: 'en-IN',
+        name: voice,
+        modelName: 'gemini-2.5-flash-tts',
+      },
+      streamingAudioConfig: {
+        audioEncoding: 'PCM',
+        sampleRateHertz: 24_000,
+      },
+    },
+  });
+
+  for (let index = 0; index < safeRuns.length; index += 1) {
+    const run = safeRuns[index];
+    if (!run) continue;
+    stream.write({
+      input: {
+        text: run.mergedText,
+        prompt: index === 0 ? AUDIO_NOVEL_BIDI_PROMPT : undefined,
+      },
+    });
+  }
+  stream.end();
+
+  await completion;
+
+  if (totalBytes <= 0) {
+    throw new Error('Bidi streaming returned no audio.');
+  }
+
+  return { responseChunkCount, totalBytes };
+};

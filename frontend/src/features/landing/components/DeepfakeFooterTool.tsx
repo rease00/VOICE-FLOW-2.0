@@ -64,7 +64,7 @@ export const DeepfakeFooterTool: React.FC = () => {
     };
 
     return (
-        <div className="mt-12 rounded-3xl border border-indigo-500/20 bg-slate-950/40 p-6 backdrop-blur-md lg:p-8">
+        <div id="voice-authenticity-check" className="mt-12 scroll-mt-24 rounded-3xl border border-indigo-500/20 bg-slate-950/40 p-6 backdrop-blur-md lg:p-8">
             <div className="flex flex-col items-start justify-between gap-6 lg:flex-row lg:items-center">
                 <div className="max-w-md">
                     <h3 className="flex items-center gap-2 text-lg font-bold text-white">

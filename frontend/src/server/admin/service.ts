@@ -7,7 +7,7 @@ import { proxyBackendRequest } from '../../../app/api/backend/proxy';
 import { ACCOUNT_DELETE_CONFIRM_PHRASE } from '../../../services/accountService';
 import { handleVoiceCloneRoute } from '../voiceClone/service';
 import { getAccountEntitlements, deleteUserAccount } from '../account/service';
-import { verifyFirebaseRequest } from '../auth/requestAuth';
+import { verifyFirebaseRequest } from '../auth/requestAuth.ts';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../firebaseAdmin';
 import { getReplatformRuntimeSummary } from '../replatform/runtime';
 import { readEnvBoolean, readEnvValue } from '../../shared/runtime/env';
@@ -440,7 +440,6 @@ const getUserEntitlements = async (uid: string, userData: AnyRecord | null): Pro
 const isDevUidHeaderEnabled = (): boolean => Boolean(readEnvBoolean(
   process.env.VF_DEV_UID_HEADER_ENABLED,
   process.env.NEXT_PUBLIC_ENABLE_DEV_UID_HEADER,
-  process.env.VITE_ENABLE_DEV_UID_HEADER,
 ));
 
 const buildDefaultAdminActor = (uid: string, userData: AnyRecord | null, source = 'native_admin_default'): AnyRecord => ({

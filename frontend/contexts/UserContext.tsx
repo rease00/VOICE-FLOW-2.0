@@ -9,6 +9,8 @@ import {
   GoogleAuthProvider,
   RecaptchaVerifier,
   createUserWithEmailAndPassword,
+  deleteUser,
+  getAdditionalUserInfo,
   onIdTokenChanged,
   onAuthStateChanged,
   sendEmailVerification,
@@ -24,10 +26,10 @@ import {
   deleteDoc,
   doc,
   getDoc,
-  onSnapshot,
+  getDocs,
   setDoc,
   writeBatch,
-} from 'firebase/firestore';
+} from 'firebase/firestore/lite';
 import {
   CharacterProfile,
   ClonedVoice,
@@ -45,11 +47,11 @@ import {
   facebookProvider,
   firebaseConfigIssue,
   firebaseAuth,
-  firestoreDb,
   googleProvider,
   isAdminIdentity,
   isFirebaseConfigured,
 } from '../services/firebaseClient';
+import { firestoreDb } from '../services/firebaseFirestoreClient';
 import { resolveAdminProvisioningHint } from '../src/shared/auth/adminProvisioning';
 import {
   AccountEntitlements,
@@ -64,6 +66,7 @@ import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { clearDriveTokenCache, warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { readEnvBoolean, readEnvValue } from '../src/shared/runtime/env';
 import { shouldBootstrapAccountDataForPath } from '../src/app/navigation';
+import { SIGNUP_DISABLED_API_MESSAGE, isSignupTemporarilyDisabled } from '../src/shared/auth/signupLock';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
@@ -74,10 +77,12 @@ import {
   setSessionClonedVoices,
 } from '../services/clonedVoiceSessionStore';
 import { clearFirebaseSession, syncFirebaseSession } from '../services/authSessionService';
+import { authFetch } from '../services/authHttpClient';
 
 interface ExtendedUserContextType extends Omit<UserContextType, 'deleteAccount'> {
   syncCast: (cast: string[] | CharacterProfile[]) => void;
   isSyncing: boolean;
+  sessionCookieReady: boolean;
   refreshEntitlements: () => Promise<void>;
   deleteAccount: () => Promise<void>;
 }
@@ -184,10 +189,7 @@ const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check y
 const DEFAULT_DEV_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/app/login';
 
 const resolveEmailVerificationContinueUrl = (): string => {
-  const configured = readEnvValue(
-    process.env.NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL,
-    process.env.VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL
-  );
+  const configured = readEnvValue(process.env.NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL);
   if (configured) return configured;
   const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
   if (isProductionRuntime) return '';
@@ -220,6 +222,11 @@ export const buildUnverifiedEmailSignInResult = (message: string = unverifiedEma
   error: message,
   requiresEmailVerification: true,
   canResendVerification: true,
+});
+
+const buildSignupDisabledResult = () => ({
+  ok: false,
+  error: SIGNUP_DISABLED_API_MESSAGE,
 });
 
 const isContinueUrlVerificationError = (error: any): boolean => {
@@ -495,10 +502,7 @@ const hasFirestoreAdminRole = (data: Record<string, unknown> | null | undefined)
 };
 
 export const shouldAllowFirestoreAdminRoleFallback = (): boolean => {
-  const configured = readEnvBoolean(
-    process.env.NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE,
-    process.env.VITE_ALLOW_FIRESTORE_ADMIN_ROLE
-  );
+  const configured = readEnvBoolean(process.env.NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE);
   if (configured !== undefined) return configured;
   const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
   return !isProductionRuntime;
@@ -547,7 +551,7 @@ export const mapFirebaseUserToProfile = async (firebaseUserOverride?: typeof fir
 
 const resolveFirebaseConfigIssue = (): string =>
   String(firebaseConfigIssue || '').trim() ||
-  'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart the frontend server.';
+  'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart the frontend server.';
 
 const requireFirebaseConfigForAuth = (): string | null => {
   if (isFirebaseConfigured) return null;
@@ -613,6 +617,14 @@ const mapFirebaseAuthError = (error: any, context: 'signin' | 'signup' = 'signin
     : 'Sign-in failed. Please check your details and try again.';
 };
 
+const mapSessionSyncFailureMessage = (error: unknown): string => {
+  const detail = String((error as { message?: unknown } | null)?.message || '').trim().toLowerCase();
+  if (detail.includes('status 401')) {
+    return 'Signed in, but the secure app session could not be started. Please try again in a few seconds.';
+  }
+  return 'Signed in, but the app could not finish starting your secure session. Please try again.';
+};
+
 const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
   const textPreview = String((item as any).textPreview || item.text || '').trim();
   const voiceId = String((item as any).voiceId || (item as any).voice_id || '').trim();
@@ -636,6 +648,7 @@ const MAX_IN_MEMORY_HISTORY_ITEMS = 30;
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const pathname = usePathname();
   const [authReady, setAuthReady] = useState(false);
+  const [sessionCookieReady, setSessionCookieReady] = useState(false);
   const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
   const [user, setUser] = useState<UserProfile>(BLANK_USER);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -759,39 +772,36 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const bootstrapCharacterSync = (uid: string) => {
+  const bootstrapCharacterSync = async (uid: string) => {
     if (charactersUnsubscribeRef.current) {
       charactersUnsubscribeRef.current();
       charactersUnsubscribeRef.current = null;
     }
     const charactersRef = collection(firestoreDb, 'users', uid, 'characters');
-    charactersUnsubscribeRef.current = onSnapshot(
-      charactersRef,
-      async (snapshot) => {
-        if (snapshot.empty) {
-          const localCharacters = readStorageJson<CharacterProfile[]>(STORAGE_KEYS.characterLibrary);
-          if (Array.isArray(localCharacters) && localCharacters.length > 0) {
-            const batch = writeBatch(firestoreDb);
-            localCharacters.forEach((character) => {
-              const id = character.id || crypto.randomUUID();
-              batch.set(doc(firestoreDb, 'users', uid, 'characters', id), { ...character, id });
-            });
-            await batch.commit();
-            removeStorageKey(STORAGE_KEYS.characterLibrary);
-            return;
-          }
-          setCharacterLibrary(DEFAULT_CHARACTERS);
+    try {
+      const snapshot = await getDocs(charactersRef);
+      if (snapshot.empty) {
+        const localCharacters = readStorageJson<CharacterProfile[]>(STORAGE_KEYS.characterLibrary);
+        if (Array.isArray(localCharacters) && localCharacters.length > 0) {
+          const batch = writeBatch(firestoreDb);
+          localCharacters.forEach((character) => {
+            const id = character.id || crypto.randomUUID();
+            batch.set(doc(firestoreDb, 'users', uid, 'characters', id), { ...character, id });
+          });
+          await batch.commit();
+          removeStorageKey(STORAGE_KEYS.characterLibrary);
           return;
         }
-        const next = snapshot.docs
-          .map((entry) => entry.data() as CharacterProfile)
-          .filter((item) => item && item.name && item.voiceId);
-        setCharacterLibrary(next.length > 0 ? next : DEFAULT_CHARACTERS);
-      },
-      () => {
         setCharacterLibrary(DEFAULT_CHARACTERS);
+        return;
       }
-    );
+      const next = snapshot.docs
+        .map((entry) => entry.data() as CharacterProfile)
+        .filter((item) => item && item.name && item.voiceId);
+      setCharacterLibrary(next.length > 0 ? next : DEFAULT_CHARACTERS);
+    } catch {
+      setCharacterLibrary(DEFAULT_CHARACTERS);
+    }
   };
 
   useEffect(() => {
@@ -808,6 +818,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
       try {
         if (!firebaseUser) {
+          setSessionCookieReady(false);
           if (charactersUnsubscribeRef.current) {
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
@@ -828,6 +839,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
           }
+          setSessionCookieReady(false);
           await signOut(firebaseAuth).catch(() => undefined);
           clearDriveTokenCache();
           removeStorageKey(STORAGE_KEYS.settings);
@@ -839,7 +851,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         const profile = await mapFirebaseUserToProfile(firebaseUser);
         setUser(profile);
-        bootstrapCharacterSync(firebaseUser.uid);
+        void bootstrapCharacterSync(firebaseUser.uid);
       } finally {
         markAuthReady();
       }
@@ -858,6 +870,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const unsubscribe = onIdTokenChanged(firebaseAuth, async (firebaseUser) => {
       try {
         if (!firebaseUser) {
+          setSessionCookieReady(false);
           lastSessionTokenRef.current = '';
           await clearFirebaseSession();
           return;
@@ -865,12 +878,15 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         const idToken = await firebaseUser.getIdToken();
         if (!idToken || lastSessionTokenRef.current === idToken) {
+          setSessionCookieReady(Boolean(idToken));
           return;
         }
 
         await syncFirebaseSession(idToken);
         lastSessionTokenRef.current = idToken;
+        setSessionCookieReady(true);
       } catch (error) {
+        setSessionCookieReady(false);
         lastSessionTokenRef.current = '';
         console.warn('[UserContext] session sync failed', error);
       }
@@ -890,16 +906,47 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     if (!shouldBootstrapAccountData) return;
+    if (!user.isAdmin) {
+      if (user.adminActor) {
+        setUser((prev) => ({ ...prev, adminActor: null }));
+      }
+      return;
+    }
     void refreshAdminActor();
   // user.adminActor intentionally excluded to avoid a fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshAdminActor, shouldBootstrapAccountData, user.uid]);
+  }, [refreshAdminActor, shouldBootstrapAccountData, user.isAdmin, user.uid]);
 
   useEffect(() => {
     const safeUid = String(user.uid || '').trim();
     if (!safeUid || !shouldBootstrapAccountData) return;
     void Promise.allSettled([refreshEntitlements(), loadHistory()]);
   }, [loadHistory, refreshEntitlements, shouldBootstrapAccountData, user.uid]);
+
+  const finalizeFirebaseSignIn = useCallback(async (
+    firebaseUser: { getIdToken: (forceRefresh?: boolean) => Promise<string> }
+  ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      setSessionCookieReady(false);
+      const idToken = await firebaseUser.getIdToken();
+      if (!idToken) {
+        throw new Error('Missing Firebase ID token.');
+      }
+      await syncFirebaseSession(idToken);
+      lastSessionTokenRef.current = idToken;
+      setSessionCookieReady(true);
+      return { ok: true };
+    } catch (error) {
+      setSessionCookieReady(false);
+      lastSessionTokenRef.current = '';
+      await clearFirebaseSession().catch(() => undefined);
+      await signOut(firebaseAuth).catch(() => undefined);
+      return {
+        ok: false,
+        error: mapSessionSyncFailureMessage(error),
+      };
+    }
+  }, []);
 
   const signInWithEmail = useCallback<UserContextType['signInWithEmail']>(async (email, password) => {
     const rawEmail = String(email || '').trim();
@@ -923,6 +970,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         await signOut(firebaseAuth).catch(() => undefined);
         return buildUnverifiedEmailSignInResult();
       }
+      const sessionResult = await finalizeFirebaseSignIn(credential.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
+      }
       return { ok: true };
     } catch (error: any) {
       const errorCode = String(error?.code || '').trim().toLowerCase();
@@ -933,9 +984,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         ...(provisioningHint ? { provisioningHint } : {}),
       };
     }
-  }, []);
+  }, [finalizeFirebaseSignIn]);
 
   const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName) => {
+    if (isSignupTemporarilyDisabled()) {
+      return buildSignupDisabledResult();
+    }
+
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
@@ -1044,6 +1099,12 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     try {
       const result = await signInWithPopup(firebaseAuth, googleProvider);
+      const providerUserInfo = getAdditionalUserInfo(result);
+      if (providerUserInfo?.isNewUser && isSignupTemporarilyDisabled()) {
+        await deleteUser(result.user).catch(() => undefined);
+        await signOut(firebaseAuth).catch(() => undefined);
+        return buildSignupDisabledResult();
+      }
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (requiresEmailVerificationForUser(result.user)) {
         await waitForAuthUserReload(result.user);
@@ -1055,6 +1116,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: unverifiedEmailAuthMessage,
           requiresEmailVerification: true,
         };
+      }
+      const sessionResult = await finalizeFirebaseSignIn(result.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
       }
       warmDriveTokenFromGoogleSignIn(credential);
       return { ok: true };
@@ -1070,7 +1135,17 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     try {
-      await signInWithPopup(firebaseAuth, facebookProvider);
+      const result = await signInWithPopup(firebaseAuth, facebookProvider);
+      const providerUserInfo = getAdditionalUserInfo(result);
+      if (providerUserInfo?.isNewUser && isSignupTemporarilyDisabled()) {
+        await deleteUser(result.user).catch(() => undefined);
+        await signOut(firebaseAuth).catch(() => undefined);
+        return buildSignupDisabledResult();
+      }
+      const sessionResult = await finalizeFirebaseSignIn(result.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1105,8 +1180,12 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (!confirmationRef.current) {
         return { ok: false, error: 'No phone verification session found.' };
       }
-      await confirmationRef.current.confirm(code);
+      const credential = await confirmationRef.current.confirm(code);
       confirmationRef.current = null;
+      const sessionResult = await finalizeFirebaseSignIn(credential.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1118,6 +1197,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       charactersUnsubscribeRef.current();
       charactersUnsubscribeRef.current = null;
     }
+    setSessionCookieReady(false);
     await clearFirebaseSession().catch(() => undefined);
     lastSessionTokenRef.current = '';
     if (firebaseAuth.currentUser) {
@@ -1125,6 +1205,16 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     clearDriveTokenCache();
     removeStorageKey(STORAGE_KEYS.settings);
+    removeStorageKey(STORAGE_KEYS.stats);
+    removeStorageKey(STORAGE_KEYS.studioSidebarMode);
+    removeStorageKey(STORAGE_KEYS.studioEditorMode);
+    removeStorageKey(STORAGE_KEYS.studioDraftText);
+    removeStorageKey(STORAGE_KEYS.studioDraftHistory);
+    removeStorageKey(STORAGE_KEYS.workspaceActiveTab);
+    removeStorageKey(STORAGE_KEYS.studioRailTab);
+    removeStorageKey(STORAGE_KEYS.studioQueue);
+    removeStorageKey(STORAGE_KEYS.studioSingleInflightGeneration);
+    removeStorageKey(STORAGE_KEYS.studioSpeakerVcReferences);
     setUser(BLANK_USER);
     setCharacterLibrary(DEFAULT_CHARACTERS);
     setStats(INITIAL_STATS);
@@ -1199,6 +1289,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const contextValue = useMemo<ExtendedUserContextType>(() => ({
     user,
     authReady,
+    sessionCookieReady,
     updateUser: (partial) => setUser((prev) => ({ ...prev, ...partial })),
     stats,
     updateStats: (partial) =>
@@ -1219,14 +1310,32 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       ),
     history,
     loadHistory,
-    addToHistory: (item) => setHistory((prev) => {
+    addToHistory: (item) => {
       const normalizedItem = normalizeHistoryItem(item);
-      const normalizedId = String(normalizedItem.id || '');
-      const withoutDuplicate = normalizedId
-        ? prev.filter((entry) => String(entry.id || '') !== normalizedId)
-        : prev;
-      return [normalizedItem, ...withoutDuplicate].slice(0, MAX_IN_MEMORY_HISTORY_ITEMS);
-    }),
+      setHistory((prev) => {
+        const normalizedId = String(normalizedItem.id || '');
+        const withoutDuplicate = normalizedId
+          ? prev.filter((entry) => String(entry.id || '') !== normalizedId)
+          : prev;
+        return [normalizedItem, ...withoutDuplicate].slice(0, MAX_IN_MEMORY_HISTORY_ITEMS);
+      });
+      // Persist generation to the backend to fix the tech debt!
+      const persistHistory = async () => {
+        try {
+          await authFetch('/api/v1/account/generation-history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item: normalizedItem }),
+          }, { requireAuth: true });
+        } catch (err) {
+          console.warn('Failed to persist history item', err);
+        }
+      };
+      // Fire and forget
+      if (normalizedItem.audioUrl) {
+        persistHistory();
+      }
+    },
     clearHistory: async () => {
       await clearHistoryRemote();
     },
@@ -1279,6 +1388,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isAuthenticated,
     isSyncing,
     authReady,
+    sessionCookieReady,
     refreshAdminActor,
     refreshEntitlements,
     signInWithEmail,

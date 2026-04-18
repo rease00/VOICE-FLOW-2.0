@@ -89,6 +89,13 @@ export interface VertexTranslationInput {
   targetLanguage: string;
 }
 
+export interface VertexGenerateTextInput {
+  systemPrompt: string;
+  userPrompt: string;
+  jsonMode?: boolean;
+  temperature?: number;
+}
+
 export const buildReaderModernizePrompt = (input: VertexTranslationInput): string => {
   return [
     `Rewrite the text inside <text> tags into contemporary ${input.targetLanguage} for a fast, low-latency audiobook narration flow.`,
@@ -152,6 +159,70 @@ export const translateTextWithVertex = async (
         throw new Error('Vertex AI returned empty translated text.');
       }
       return translated;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw new Error(
+    `All Vertex AI credentials failed. Last error: ${lastError?.message || 'unknown'}`,
+  );
+};
+
+export const generateTextWithVertex = async (
+  input: VertexGenerateTextInput,
+): Promise<string> => {
+  const systemPrompt = sanitizeText(input.systemPrompt);
+  const userPrompt = sanitizeText(input.userPrompt);
+  const jsonMode = Boolean(input.jsonMode);
+  const temperature = Number.isFinite(Number(input.temperature))
+    ? Math.max(0, Math.min(1, Number(input.temperature)))
+    : 0.2;
+
+  if (!userPrompt) {
+    throw new Error('userPrompt is required.');
+  }
+
+  let lastError: Error | null = null;
+  for (const credentials of resolveVertexServiceAccountPool()) {
+    try {
+      const client = await getAuthClient(credentials);
+      const response = await client.request<{
+        candidates?: Array<{
+          content?: {
+            parts?: Array<{ text?: string }>;
+          };
+        }>;
+      }>({
+        url: buildVertexGenerateContentUrl(credentials),
+        method: 'POST',
+        data: {
+          ...(systemPrompt
+            ? {
+                systemInstruction: {
+                  role: 'system',
+                  parts: [{ text: systemPrompt }],
+                },
+              }
+            : {}),
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: userPrompt }],
+            },
+          ],
+          generationConfig: {
+            temperature,
+            ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+          },
+        },
+      });
+
+      const generated = extractCandidateText(response.data);
+      if (!generated) {
+        throw new Error('Vertex AI returned empty generated text.');
+      }
+      return generated;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }

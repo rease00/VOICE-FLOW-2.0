@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FastForward, Loader2, Pause, Play, Rewind, SkipBack, SkipForward, Timer } from 'lucide-react';
 
-import type { PlaybackState, TtsSettings } from '../../model/types';
+import type { PlaybackState, ReaderScriptPlaybackSource, TtsSettings } from '../../model/types';
 import type {
   AudioNovelChapterAudioResponse,
   AudioNovelLiveClientMessage,
@@ -14,12 +14,14 @@ import { API_ROUTES } from '../../../../shared/api/routes';
 interface MiniPlayerProps {
   bookId: string | number;
   chapterId?: string | undefined;
+  bookSource?: string | undefined;
   publishedMode?: boolean;
   playbackState: PlaybackState;
   onStateChange: (state: PlaybackState) => void;
   ttsSettings: TtsSettings;
   sourceText?: string;
   bookText?: string;
+  scriptSource?: ReaderScriptPlaybackSource;
   translationTargetLanguage?: string | undefined;
   isCompact?: boolean;
   theme?: string;
@@ -31,15 +33,37 @@ const createWebSocketUrl = (path: string): string => {
   return `${protocol}//${window.location.host}${path}`;
 };
 
+const READER_GUEST_SESSION_KEY = 'vf:reader-guest-session';
+
+const getReaderGuestSessionId = (): string => {
+  if (typeof window === 'undefined') return '';
+
+  try {
+    const existing = window.localStorage.getItem(READER_GUEST_SESSION_KEY);
+    if (existing) {
+      return existing;
+    }
+    const created = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `guest-${crypto.randomUUID()}`
+      : `guest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage.setItem(READER_GUEST_SESSION_KEY, created);
+    return created;
+  } catch {
+    return `guest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+};
+
 export function MiniPlayer({
   bookId,
   chapterId,
+  bookSource,
   publishedMode = false,
   playbackState,
   onStateChange,
   ttsSettings,
   sourceText,
   bookText,
+  scriptSource = 'raw',
   translationTargetLanguage,
   isCompact = false,
 }: MiniPlayerProps) {
@@ -47,6 +71,9 @@ export function MiniPlayer({
   const [fetching, setFetching] = useState(false);
   const [sleepMinutes, setSleepMinutes] = useState<number | null>(null);
   const [sleepRemaining, setSleepRemaining] = useState<number>(0);
+  const [liveTransport, setLiveTransport] = useState<'bidi' | 'run' | null>(null);
+  const [playbackNotice, setPlaybackNotice] = useState('');
+  const [playbackError, setPlaybackError] = useState('');
 
   const sleepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const playbackStateRef = useRef(playbackState);
@@ -55,10 +82,15 @@ export function MiniPlayer({
   const audioContextRef = useRef<AudioContext | null>(null);
   const nextAudioTimeRef = useRef(0);
   const liveCompleteTimerRef = useRef<number | null>(null);
+  const liveStartTimeoutRef = useRef<number | null>(null);
   const publishedAudioRef = useRef<AudioNovelChapterAudioResponse | null>(null);
   const publishedAudioPromiseRef = useRef<Promise<AudioNovelChapterAudioResponse | null> | null>(null);
+  const liveTransportRef = useRef<'bidi' | 'run' | null>(null);
+  const liveStreamStartedRef = useRef(false);
+  const liveSocketClosingRef = useRef(false);
 
   playbackStateRef.current = playbackState;
+  liveTransportRef.current = liveTransport;
 
   const narrationText = useMemo(() => String(sourceText || bookText || '').trim(), [bookText, sourceText]);
   const transportMode = publishedMode && chapterId ? 'published' : 'live';
@@ -78,10 +110,44 @@ export function MiniPlayer({
     publishedAudioPromiseRef.current = null;
   }, []);
 
+  const describePublishedTransport = useCallback((meta?: AudioNovelChapterAudioResponse | null): string => {
+    if (!meta?.generated) {
+      return 'Chapter audio will start live if no cached file is available.';
+    }
+    return meta.cacheStatus === 'hit'
+      ? 'Cached chapter audio is playing from a signed URL.'
+      : 'Fresh chapter audio is ready and has been stored for reuse.';
+  }, []);
+
+  const describeLiveTransport = useCallback((transport: 'bidi' | 'run' | null): string => {
+    if (transport === 'bidi') {
+      return 'Live Gemini Flash bidi streaming is active.';
+    }
+    if (transport === 'run') {
+      return 'Live run streaming fallback is active.';
+    }
+    return 'Preparing live Gemini Flash playback.';
+  }, []);
+
+  const formatPlaybackError = useCallback((message: string, code?: string) => {
+    if (String(code || '').trim().toUpperCase() === 'TTS_RPM_LIMIT') {
+      return 'TTS is limited to 10 requests per minute per user. Try again in a few seconds.';
+    }
+    const normalized = String(message || '').trim();
+    return normalized || 'Playback could not start right now.';
+  }, []);
+
   const stopLivePlayback = useCallback(() => {
+    liveSocketClosingRef.current = true;
+    liveStreamStartedRef.current = false;
+    setFetching(false);
     if (liveCompleteTimerRef.current) {
       window.clearTimeout(liveCompleteTimerRef.current);
       liveCompleteTimerRef.current = null;
+    }
+    if (liveStartTimeoutRef.current) {
+      window.clearTimeout(liveStartTimeoutRef.current);
+      liveStartTimeoutRef.current = null;
     }
     wsRef.current?.close();
     wsRef.current = null;
@@ -101,6 +167,9 @@ export function MiniPlayer({
       audio.src = '';
     }
     setProgress(0);
+    setLiveTransport(null);
+    setPlaybackNotice('');
+    setPlaybackError('');
     onStateChange({
       ...playbackStateRef.current,
       currentChunkIndex: 0,
@@ -171,6 +240,9 @@ export function MiniPlayer({
       if (!payload?.generated || !payload.audioUrl) {
         throw new Error('Published chapter audio is not generated yet.');
       }
+      setLiveTransport(null);
+      setPlaybackError('');
+      setPlaybackNotice(describePublishedTransport(payload));
 
       const audio = ensurePublishedAudioElement();
       if (audio.src !== payload.audioUrl) {
@@ -190,6 +262,7 @@ export function MiniPlayer({
         });
       };
       audio.onerror = () => {
+        setPlaybackError('Cached chapter audio could not be played.');
         onStateChange({ ...playbackStateRef.current, isPlaying: false });
       };
 
@@ -203,7 +276,7 @@ export function MiniPlayer({
     } finally {
       setFetching(false);
     }
-  }, [chapterId, ensurePublishedAudioElement, loadPublishedAudio, onStateChange, updateFromPublishedAudio]);
+  }, [chapterId, describePublishedTransport, ensurePublishedAudioElement, loadPublishedAudio, onStateChange, updateFromPublishedAudio]);
 
   const decodeLivePcmChunk = useCallback((raw: ArrayBuffer) => {
     if (!audioContextRef.current) return;
@@ -231,6 +304,11 @@ export function MiniPlayer({
     if (!narrationText) return;
     stopLivePlayback();
     setFetching(true);
+    setPlaybackError('');
+    setPlaybackNotice('Connecting to live Gemini Flash playback...');
+    setLiveTransport(null);
+    liveStreamStartedRef.current = false;
+    liveSocketClosingRef.current = false;
 
     const audioContext = new AudioContext({ sampleRate: 24000 });
     audioContextRef.current = audioContext;
@@ -239,6 +317,13 @@ export function MiniPlayer({
     const socket = new WebSocket(createWebSocketUrl(API_ROUTES.library.audioNovelWebSocket));
     socket.binaryType = 'arraybuffer';
     wsRef.current = socket;
+    liveStartTimeoutRef.current = window.setTimeout(() => {
+      if (liveStreamStartedRef.current) return;
+      setPlaybackNotice('');
+      setPlaybackError('Live playback took too long to start. Please retry.');
+      onStateChange({ ...playbackStateRef.current, isPlaying: false });
+      stopLivePlayback();
+    }, 8_000);
 
     socket.onopen = () => {
       const message: AudioNovelLiveClientMessage = {
@@ -246,6 +331,8 @@ export function MiniPlayer({
         text: narrationText,
         ...(publishedMode && chapterId ? { chapterId } : {}),
         ...(bookId ? { bookId: String(bookId) } : {}),
+        ...(bookSource ? { bookSource } : {}),
+        guestSessionId: getReaderGuestSessionId(),
       };
       socket.send(JSON.stringify(message));
     };
@@ -259,11 +346,21 @@ export function MiniPlayer({
       const message = JSON.parse(event.data) as AudioNovelLiveServerMessage;
       if ('error' in message) {
         setFetching(false);
+        setPlaybackError(formatPlaybackError(message.error, message.code));
         onStateChange({ ...playbackStateRef.current, isPlaying: false });
         return;
       }
       if ('status' in message && message.status === 'start') {
+        if (liveStartTimeoutRef.current) {
+          window.clearTimeout(liveStartTimeoutRef.current);
+          liveStartTimeoutRef.current = null;
+        }
+        liveStreamStartedRef.current = true;
+        const transport = message.transport ?? 'run';
         setFetching(false);
+        setLiveTransport(transport);
+        setPlaybackError('');
+        setPlaybackNotice(describeLiveTransport(transport));
         onStateChange({
           ...playbackStateRef.current,
           isPlaying: true,
@@ -273,7 +370,20 @@ export function MiniPlayer({
         });
         return;
       }
+      if ('status' in message && message.status === 'buffering') {
+        setPlaybackNotice(
+          String(message.reason || '').trim() || 'Buffering live narration and preparing playback fallback...'
+        );
+        return;
+      }
       if ('type' in message && message.type === 'run-meta') {
+        if (liveStartTimeoutRef.current) {
+          window.clearTimeout(liveStartTimeoutRef.current);
+          liveStartTimeoutRef.current = null;
+        }
+        liveStreamStartedRef.current = true;
+        setFetching(false);
+        setPlaybackNotice(describeLiveTransport('run'));
         onStateChange({
           ...playbackStateRef.current,
           isPlaying: true,
@@ -284,6 +394,7 @@ export function MiniPlayer({
         return;
       }
       if ('done' in message && message.done) {
+        setPlaybackNotice(describeLiveTransport(liveTransportRef.current));
         const remainingMs = Math.max(0, (nextAudioTimeRef.current - audioContext.currentTime) * 1000);
         if (liveCompleteTimerRef.current) {
           window.clearTimeout(liveCompleteTimerRef.current);
@@ -300,16 +411,29 @@ export function MiniPlayer({
     };
 
     socket.onerror = () => {
+      if (liveStartTimeoutRef.current) {
+        window.clearTimeout(liveStartTimeoutRef.current);
+        liveStartTimeoutRef.current = null;
+      }
       setFetching(false);
+      setPlaybackError('Live playback connection was interrupted.');
       onStateChange({ ...playbackStateRef.current, isPlaying: false });
       stopLivePlayback();
     };
     socket.onclose = () => {
-      if (fetching) {
-        setFetching(false);
+      if (liveStartTimeoutRef.current) {
+        window.clearTimeout(liveStartTimeoutRef.current);
+        liveStartTimeoutRef.current = null;
+      }
+      const wasIntentionalClose = liveSocketClosingRef.current;
+      liveSocketClosingRef.current = false;
+      setFetching(false);
+      if (!wasIntentionalClose && !liveStreamStartedRef.current) {
+        setPlaybackNotice('');
+        setPlaybackError('Live playback could not start. Please try again.');
       }
     };
-  }, [bookId, chapterId, decodeLivePcmChunk, fetching, narrationText, onStateChange, publishedMode, stopLivePlayback]);
+  }, [bookId, bookSource, chapterId, decodeLivePcmChunk, describeLiveTransport, formatPlaybackError, narrationText, onStateChange, publishedMode, stopLivePlayback]);
 
   useEffect(() => {
     return () => {
@@ -369,13 +493,15 @@ export function MiniPlayer({
       return;
     }
 
-    if (playbackStateRef.current.isPlaying) {
+    if (fetching || playbackStateRef.current.isPlaying) {
       stopLivePlayback();
+      setPlaybackNotice('Playback paused.');
+      setPlaybackError('');
       onStateChange({ ...playbackStateRef.current, isPlaying: false });
       return;
     }
     void startLivePlayback();
-  }, [ensurePublishedAudioElement, narrationText, onStateChange, playPublishedAudio, startLivePlayback, stopLivePlayback, transportMode]);
+  }, [ensurePublishedAudioElement, fetching, narrationText, onStateChange, playPublishedAudio, startLivePlayback, stopLivePlayback, transportMode]);
 
   const handleSkipForward15 = useCallback(() => {
     if (transportMode !== 'published') return;
@@ -420,6 +546,32 @@ export function MiniPlayer({
   };
 
   const canSeekByChunk = transportMode === 'published';
+  const playbackSourceLabel = transportMode === 'published'
+    ? 'CDN chapter audio'
+    : scriptSource === 'ai'
+      ? 'AI-directed script'
+      : 'Raw chapter script';
+  const transportLabel = transportMode === 'published'
+    ? 'Cached chapter audio via signed URL'
+    : liveTransport === 'bidi'
+      ? 'Live Gemini Flash bidi streaming'
+      : liveTransport === 'run'
+        ? 'Live run streaming fallback'
+        : 'Live Gemini Flash streaming';
+  const transportStatus = playbackError || playbackNotice || (
+    transportMode === 'published'
+      ? 'Pre-generated chapter audio is streaming from the CDN.'
+      : scriptSource === 'ai'
+        ? 'Playback is using the AI-created script and prefers bidi streaming first.'
+        : 'Playback is using the raw chapter text and prefers bidi streaming first.'
+  );
+  const compactTransportLabel = transportMode === 'published'
+    ? 'Cached audio'
+    : liveTransport === 'bidi'
+      ? 'Bidi live'
+      : liveTransport === 'run'
+        ? 'Run live'
+        : 'Flash live';
 
   if (isCompact) {
     return (
@@ -433,7 +585,6 @@ export function MiniPlayer({
         </button>
         <button
           onClick={handlePlayPause}
-          disabled={fetching}
           className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[var(--vf-reader-primary-btn-bg)] text-[var(--vf-reader-primary-btn-text)] shadow-md transition hover:bg-[var(--vf-reader-primary-btn-hover-bg)] disabled:opacity-60"
         >
           {fetching ? (
@@ -451,7 +602,14 @@ export function MiniPlayer({
         >
           <SkipForward size={13} className="text-[var(--vf-reader-muted)]" />
         </button>
-        <span className="ml-0.5 text-[10px] text-[var(--vf-reader-muted)]">{ttsSettings.speed.toFixed(1)}x</span>
+        <span
+          data-testid="reader-compact-transport"
+          title={transportStatus}
+          className="ml-0.5 max-w-[5.5rem] truncate text-[10px] text-[var(--vf-reader-muted)]"
+        >
+          {compactTransportLabel}
+        </span>
+        <span className="text-[10px] text-[var(--vf-reader-muted)]">{ttsSettings.speed.toFixed(1)}x</span>
       </div>
     );
   }
@@ -501,7 +659,6 @@ export function MiniPlayer({
         </button>
         <button
           onClick={handlePlayPause}
-          disabled={fetching}
           className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--vf-reader-primary-btn-bg)] text-[var(--vf-reader-primary-btn-text)] shadow-md transition hover:bg-[var(--vf-reader-primary-btn-hover-bg)] disabled:opacity-60"
         >
           {fetching ? (
@@ -548,8 +705,29 @@ export function MiniPlayer({
         </button>
       </div>
 
-      <div className="flex items-center justify-between rounded bg-[var(--vf-reader-card-bg)] px-2 py-1 text-xs">
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--vf-reader-panel-text)]">
+      <div className="flex items-start justify-between gap-3 rounded bg-[var(--vf-reader-card-bg)] px-2 py-1 text-xs">
+        <div className="min-w-0">
+          <div className="truncate text-[10px] uppercase tracking-wide text-[var(--vf-reader-muted)]">
+            {playbackSourceLabel}
+          </div>
+          <div
+            data-testid="reader-transport-label"
+            className="truncate text-xs font-medium text-[var(--vf-reader-panel-text)]"
+          >
+            {transportLabel}
+          </div>
+          <div
+            data-testid="reader-transport-status"
+            className={`mt-0.5 text-[11px] ${
+              playbackError
+                ? 'text-amber-300'
+                : 'text-[var(--vf-reader-muted)]'
+            }`}
+          >
+            {transportStatus}
+          </div>
+        </div>
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-[var(--vf-reader-panel-text)]">
           <input
             type="checkbox"
             checked={playbackState.isPreloading}
@@ -561,7 +739,7 @@ export function MiniPlayer({
             }
             className="accent-[var(--vf-reader-accent-text)]"
           />
-          <span>{transportMode === 'published' ? 'Signed URL Playback' : 'Live WebSocket Playback'}</span>
+          <span>Preload</span>
         </label>
       </div>
     </div>

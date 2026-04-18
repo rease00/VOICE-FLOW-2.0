@@ -67,6 +67,8 @@ export interface PlaybackState {
   chunkDuration?: number;
 }
 
+export type ReaderScriptPlaybackSource = 'raw' | 'ai' | 'cached';
+
 export type TtsEngine = 'cloud';
 export type SpeakerMode = 'single' | 'multi';
 

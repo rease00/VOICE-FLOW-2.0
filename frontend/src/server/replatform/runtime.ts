@@ -1,3 +1,5 @@
+import { resolveLegacyBackendSummary } from './backendProxyConfig';
+
 export const CANONICAL_API_FAMILIES = Object.freeze({
   account: '/api/v1/account',
   billing: '/api/v1/billing',
@@ -13,15 +15,11 @@ export const LEGACY_PROXY_BASE = '/api/backend';
 
 export const getReplatformRuntimeSummary = () => {
   const nextRuntime = String(process.env.NEXT_RUNTIME || 'nodejs').trim() || 'nodejs';
-  const backendOrigin = String(
-    process.env.VF_MEDIA_BACKEND_URL
-    || process.env.VF_MEDIA_BACKEND_ORIGINS_JSON
-    || ''
-  ).trim();
+  const backend = resolveLegacyBackendSummary();
 
   return {
     active: true,
-    mode: backendOrigin ? 'compatibility-shim' : 'nextjs-first',
+    mode: backend.configured ? 'compatibility-shim' : 'nextjs-first',
     nextRuntime,
     nodeEnv: String(process.env.NODE_ENV || '').trim() || 'development',
     cloudRun: {
@@ -29,7 +27,9 @@ export const getReplatformRuntimeSummary = () => {
       standaloneOutput: true,
     },
     legacyProxyBase: LEGACY_PROXY_BASE,
-    legacyProxyConfigured: Boolean(backendOrigin),
+    legacyProxyConfigured: backend.configured,
+    legacyProxyLocalDevFallbackEnabled: backend.localDevFallbackEnabled,
+    legacyProxyLaunchReady: backend.launchReady,
     canonicalFamilies: CANONICAL_API_FAMILIES,
   };
 };

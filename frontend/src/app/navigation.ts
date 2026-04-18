@@ -1,4 +1,5 @@
 import { AppScreen } from '../../types';
+import { normalizeLoginRouteMode } from '../shared/auth/signupLock';
 
 export const APP_ROUTE_PATHS = {
   main: '/app',
@@ -76,7 +77,8 @@ export const resolveSafeInternalNextPath = (candidate?: string | null, fallback:
 
 export const resolveLoginPath = (mode?: AuthRouteMode, nextPath?: string | null): string => {
   const params = new URLSearchParams();
-  if (mode) params.set('mode', mode);
+  const normalizedMode = normalizeLoginRouteMode(mode);
+  if (normalizedMode) params.set('mode', normalizedMode);
   const safeNextPath = resolveSafeInternalNextPath(nextPath, null);
   if (safeNextPath) params.set('next', safeNextPath);
   if (!params.toString()) return APP_ROUTE_PATHS.login;

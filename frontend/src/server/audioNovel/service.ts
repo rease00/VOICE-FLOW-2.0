@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
 
+import { verifyFirebaseRequest } from '../auth/requestAuth.ts';
 import { getFirebaseAdminFirestore } from '../firebaseAdmin.ts';
-import { createDomainJobRecord, getDomainJobRecord, saveDomainJobRecord, type DomainJobRecord } from '../jobs/domainJobStore.ts';
+import {
+  createDomainJobRecord,
+  createDomainJobRecordIfAbsent,
+  getDomainJobRecord,
+  saveDomainJobRecord,
+  type DomainJobRecord,
+} from '../jobs/domainJobStore.ts';
 import { compressToRuns } from './compress.ts';
 import type {
   AudioNovelChapterAudioResponse,
@@ -13,15 +20,27 @@ import type {
 } from './contracts.ts';
 import { parseDialogue, sanitizeText, validateInput } from './input.ts';
 import { getAudioNovelSignedUrl, headAudioNovelObject, readAudioNovelObject, writeAudioNovelObject } from './storage.ts';
-import { getAudioNovelSilenceBuffer, synthesizeAudioNovelRun } from './synthesizer.ts';
+import { getAudioNovelSilenceBuffer, streamAudioNovelBidi, synthesizeAudioNovelRun } from './synthesizer.ts';
+import {
+  buildUniversalTtsRateLimitResponse,
+  consumeUniversalTtsRateLimit,
+} from '../tts/userRateLimit.ts';
 import { resolveVoice, resolveVoiceSync } from './voice.ts';
+import { getRuntimeLabelForEngine } from '../tts/runtimePolicy.ts';
 
 const AUDIO_NOVEL_DOMAIN = 'audioNovel';
 const AUDIO_NOVEL_JOB_PREFIX = 'audio-novel';
 const AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS = 10_800;
+const AUDIO_NOVEL_ENGINE = 'VECTOR' as const;
+const AUDIO_NOVEL_RUNTIME_LABEL = getRuntimeLabelForEngine(AUDIO_NOVEL_ENGINE);
 const AUDIO_NOVEL_HTTP_ONLY_ERROR = {
   error: 'Use a WebSocket upgrade for live audio novel playback.',
   code: 'UPGRADE_REQUIRED',
+};
+
+const AUDIO_NOVEL_UNAUTHORIZED_ERROR = {
+  error: 'Unauthorized',
+  code: 'UNAUTHORIZED',
 };
 
 const activeJobPromises = new Map<string, Promise<void>>();
@@ -37,6 +56,15 @@ const getDb = () => {
 const sanitizeOptional = (value: unknown): string | undefined => {
   const safe = String(value || '').trim();
   return safe || undefined;
+};
+
+const authorizeAudioNovelRequest = async (request: Request): Promise<{ uid: string } | Response> => {
+  try {
+    const decoded = await verifyFirebaseRequest(request);
+    return { uid: String(decoded.uid || '').trim() };
+  } catch {
+    return Response.json(AUDIO_NOVEL_UNAUTHORIZED_ERROR, { status: 401 });
+  }
 };
 
 const normalizeJobRequest = (body: unknown): AudioNovelJobRequest | null => {
@@ -209,6 +237,11 @@ const generatePublishedChapterAudio = async (
       audioUrl: await getAudioNovelSignedUrl(audioKey, AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS),
       syncUrl: await getAudioNovelSignedUrl(syncKey, AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS),
       source: 'r2',
+      cacheStatus: 'hit',
+      storage: 'r2',
+      engine: AUDIO_NOVEL_ENGINE,
+      runtimeLabel: AUDIO_NOVEL_RUNTIME_LABEL,
+      persisted: true,
       hash,
       totalRuns: syncEntries.length,
       speakers: [...new Set(syncEntries.map((entry) => entry.speaker))],
@@ -250,6 +283,11 @@ const generatePublishedChapterAudio = async (
     audioUrl: await getAudioNovelSignedUrl(audioKey, AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS),
     syncUrl: await getAudioNovelSignedUrl(syncKey, AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS),
     source: 'generated',
+    cacheStatus: 'generated',
+    storage: 'r2',
+    engine: AUDIO_NOVEL_ENGINE,
+    runtimeLabel: AUDIO_NOVEL_RUNTIME_LABEL,
+    persisted: true,
     hash,
     totalRuns: syncEntries.length,
     speakers: [...new Set(syncEntries.map((entry) => entry.speaker))],
@@ -312,11 +350,12 @@ const kickOffJob = (jobId: string, request: AudioNovelJobRequest): void => {
 };
 
 const toJobResponse = (record: DomainJobRecord | null, jobId: string): AudioNovelJobResponse => {
+  const result = record?.result as unknown as AudioNovelChapterAudioResponse | undefined;
   return {
     jobId,
     status: record?.status || 'queued',
-    cacheHit: Boolean((record?.result as unknown as AudioNovelChapterAudioResponse | undefined)?.generated),
-    ...(record?.result ? { result: record.result as unknown as AudioNovelChapterAudioResponse } : {}),
+    cacheHit: result?.generated === true && result.source === 'r2',
+    ...(result ? { result } : {}),
     ...(record?.error ? { error: record.error } : {}),
   };
 };
@@ -344,6 +383,11 @@ export const getPublishedChapterAudioResponse = async (
     return {
       generated: false,
       source: 'missing',
+      cacheStatus: 'missing',
+      storage: 'r2',
+      engine: AUDIO_NOVEL_ENGINE,
+      runtimeLabel: AUDIO_NOVEL_RUNTIME_LABEL,
+      persisted: false,
       hash,
       reason: 'not-generated',
     };
@@ -355,6 +399,11 @@ export const getPublishedChapterAudioResponse = async (
     audioUrl: await getAudioNovelSignedUrl(audioKey, AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS),
     syncUrl: await getAudioNovelSignedUrl(syncKey, AUDIO_NOVEL_SIGNED_URL_TTL_SECONDS),
     source: 'r2',
+    cacheStatus: 'hit',
+    storage: 'r2',
+    engine: AUDIO_NOVEL_ENGINE,
+    runtimeLabel: AUDIO_NOVEL_RUNTIME_LABEL,
+    persisted: true,
     hash,
     totalRuns: syncEntries.length,
     speakers: [...new Set(syncEntries.map((entry) => entry.speaker))],
@@ -362,26 +411,34 @@ export const getPublishedChapterAudioResponse = async (
 };
 
 export const handleAudioNovelJobCreateRoute = async (request: Request): Promise<Response> => {
+  const auth = await authorizeAudioNovelRequest(request);
+  if (auth instanceof Response) return auth;
+
   const body = await request.json().catch(() => null);
   const normalized = normalizeJobRequest(body);
   if (!normalized) {
     return Response.json({ error: 'Invalid audio novel request.' }, { status: 400 });
   }
-
-  const jobId = buildJobId(normalized);
-  const existing = await getDomainJobRecord(jobId);
-  if (existing) {
-    if (existing.status === 'queued' || existing.status === 'running') {
-      kickOffJob(jobId, normalized);
-    }
-    return Response.json(toJobResponse(existing, jobId));
+  const limit = consumeUniversalTtsRateLimit(auth.uid);
+  if (!limit.allowed) {
+    return buildUniversalTtsRateLimitResponse(limit.retryAfterSeconds);
   }
 
-  await saveDomainJobRecord(createDomainJobRecord<Record<string, unknown>>({
+  const jobId = buildJobId(normalized);
+  const initialRecord = createDomainJobRecord<Record<string, unknown>>({
     id: jobId,
     domain: AUDIO_NOVEL_DOMAIN,
+    ownerUid: auth.uid,
     payload: normalized as unknown as Record<string, unknown>,
-  }));
+  });
+  const { record, created } = await createDomainJobRecordIfAbsent(initialRecord);
+  if (!created) {
+    if (record.status === 'queued' || record.status === 'running') {
+      kickOffJob(jobId, normalized);
+    }
+    return Response.json(toJobResponse(record, jobId));
+  }
+
   kickOffJob(jobId, normalized);
   return Response.json({
     jobId,
@@ -390,7 +447,10 @@ export const handleAudioNovelJobCreateRoute = async (request: Request): Promise<
   } satisfies AudioNovelJobResponse);
 };
 
-export const handleAudioNovelJobStatusRoute = async (jobId: string): Promise<Response> => {
+export const handleAudioNovelJobStatusRoute = async (request: Request, jobId: string): Promise<Response> => {
+  const auth = await authorizeAudioNovelRequest(request);
+  if (auth instanceof Response) return auth;
+
   const record = await getDomainJobRecord(jobId);
   if (!record || record.domain !== AUDIO_NOVEL_DOMAIN) {
     return Response.json({ error: 'Audio novel job not found.' }, { status: 404 });
@@ -399,10 +459,13 @@ export const handleAudioNovelJobStatusRoute = async (jobId: string): Promise<Res
 };
 
 export const handleLibraryBookChapterAudioRoute = async (
-  _request: Request,
+  request: Request,
   bookId: string,
   chapterId: string,
 ): Promise<Response> => {
+  const auth = await authorizeAudioNovelRequest(request);
+  if (auth instanceof Response) return auth;
+
   try {
     const result = await getPublishedChapterAudioResponse(bookId, chapterId);
     return Response.json(result);
@@ -418,8 +481,10 @@ export const handleAudioNovelWebSocketHttpRequest = async (): Promise<Response> 
 };
 
 export const streamAudioNovelLive = async (
+  uid: string,
   text: string,
   bookId: string | undefined,
+  bookSource: string | undefined,
   send: (payload: Buffer | Record<string, unknown>) => void,
 ): Promise<void> => {
   const clean = sanitizeText(text);
@@ -428,23 +493,75 @@ export const streamAudioNovelLive = async (
     send({ error: validation.code || 'INVALID_INPUT' });
     return;
   }
+  const limit = consumeUniversalTtsRateLimit(uid);
+  if (!limit.allowed) {
+    send({
+      error: 'TTS is limited to 10 requests per minute per user.',
+      code: 'TTS_RPM_LIMIT',
+      retryAfterSeconds: limit.retryAfterSeconds,
+      limit: limit.limit,
+    });
+    return;
+  }
 
   const lines = parseDialogue(clean);
-  const runs = await Promise.all(
-    compressToRuns(lines, (speaker) => resolveVoiceSync(speaker)).map(async (run) => ({
-      ...run,
-      voice: await resolveVoice(run.speaker, bookId),
-    })),
-  );
+  const shouldUseBookCast = String(bookSource || '').trim().toLowerCase() === 'published';
+  const baseRuns = compressToRuns(lines, (speaker) => resolveVoiceSync(speaker));
+  const runs = shouldUseBookCast
+    ? await Promise.all(
+        baseRuns.map(async (run) => ({
+          ...run,
+          voice: await resolveVoice(run.speaker, bookId),
+        })),
+      )
+    : baseRuns;
+
+  const uniqueVoices = [...new Set(runs.map((run) => run.voice).filter(Boolean))];
+  const canUseBidi = uniqueVoices.length === 1 && runs.length > 0;
 
   send({
     status: 'start',
-    totalRuns: runs.length,
+    totalRuns: canUseBidi ? 1 : runs.length,
     totalLines: lines.length,
     mode: lines.some((line) => line.speaker !== 'Narrator') ? 'multi' : 'single',
+    transport: canUseBidi ? 'bidi' : 'run',
   });
 
   const startedAt = Date.now();
+  if (canUseBidi) {
+    let emittedBidiAudio = false;
+    try {
+      await streamAudioNovelBidi(runs, (buffer) => {
+        if (buffer.length > getAudioNovelSilenceBuffer().length) {
+          emittedBidiAudio = true;
+          send(buffer);
+        }
+      });
+
+      send({
+        done: true,
+        totalRuns: 1,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    } catch (error) {
+      if (emittedBidiAudio) {
+        send({
+          error: 'Live audio stream was interrupted before completion. Please retry.',
+          code: 'BIDI_STREAM_INTERRUPTED',
+          partial: true,
+          durationMs: Date.now() - startedAt,
+        });
+        return;
+      }
+      send({
+        status: 'buffering',
+        waitMs: 0,
+        reason: error instanceof Error ? error.message : 'Bidi stream unavailable, retrying with run fallback.',
+      } as Record<string, unknown>);
+    }
+  }
+
   for (const run of runs) {
     const audio = await synthesizeAudioNovelRun(run, 'LINEAR16', 4);
     send({

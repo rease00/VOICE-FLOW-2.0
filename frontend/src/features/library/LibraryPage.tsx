@@ -1,8 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, X, Loader2, Heart, Play } from 'lucide-react';
+import { Search, X, Loader2, Heart, Play, Mic } from 'lucide-react';
 import dynamic from 'next/dynamic';
+import type { GenerationSettings } from '../../../types';
+import { APP_ROUTE_PATHS } from '../../app/navigation';
+import { readStorageJson, writeStorageString } from '../../shared/storage/localStore';
+import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { BookCard } from './components/BookCard';
 import { BookDetail } from './components/BookDetail';
 import {
@@ -18,7 +22,51 @@ const AILibrarian = dynamic(
   { ssr: false },
 );
 
-type SubNav = 'browse' | 'favorites' | 'chat';
+const NovelWriterSurface = dynamic(
+  () => import('../novel/components/NovelTabContent').then((m) => ({ default: m.NovelTabContent })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex min-h-[480px] items-center justify-center rounded-[1.5rem] border border-white/10 bg-white/[0.04]">
+        <div className="flex items-center gap-2 text-sm text-white/65">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading writer workspace...
+        </div>
+      </div>
+    ),
+  },
+);
+
+type SubNav = 'browse' | 'favorites' | 'writer' | 'chat';
+
+type WriterToastState = {
+  message: string;
+  type: 'success' | 'error' | 'info';
+};
+
+const LIBRARY_FAVORITES_KEY = 'vf-library-favorites';
+const LIBRARY_LAST_PLAYED_KEY = 'vf-library-last-played';
+
+const FALLBACK_WRITER_SETTINGS: GenerationSettings = {
+  voiceId: '',
+  speed: 1,
+  pitch: 'Medium',
+  language: 'Auto',
+  emotion: 'Neutral',
+  style: 'default',
+  engine: 'PRIME',
+  helperProvider: 'GEMINI',
+  assistantProviderControlsEnabled: true,
+  musicTrackId: '',
+  musicVolume: 0.18,
+  speechVolume: 1,
+  autoEnhance: true,
+  useModelSourceSeparation: false,
+  preserveDubVoiceTone: true,
+  multiSpeakerEnabled: true,
+  uiMotionLevel: 'balanced',
+  autoPlayGeneratedAudio: false,
+};
 
 const GENRES = [
   'all',
@@ -61,6 +109,8 @@ export function LibraryPage() {
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [favorites, setFavorites] = useState<Set<string | number>>(new Set());
   const [lastPlayed, setLastPlayed] = useState<Book | null>(null);
+  const [writerSettings, setWriterSettings] = useState<GenerationSettings>(FALLBACK_WRITER_SETTINGS);
+  const [writerToast, setWriterToast] = useState<WriterToastState | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef(search);
@@ -69,7 +119,7 @@ export function LibraryPage() {
   // Load favorites from localStorage
   useEffect(() => {
     try {
-      const raw = localStorage.getItem('vf-library-favorites');
+      const raw = localStorage.getItem(LIBRARY_FAVORITES_KEY);
       if (raw) {
         const ids: (string | number)[] = JSON.parse(raw);
         setFavorites(new Set(ids));
@@ -77,16 +127,31 @@ export function LibraryPage() {
     } catch { /* ignore */ }
 
     try {
-      const raw = localStorage.getItem('vf-library-last-played');
+      const raw = localStorage.getItem(LIBRARY_LAST_PLAYED_KEY);
       if (raw) setLastPlayed(JSON.parse(raw));
     } catch { /* ignore */ }
   }, []);
+
+  useEffect(() => {
+    const storedSettings = readStorageJson<Partial<GenerationSettings>>(STORAGE_KEYS.settings);
+    if (!storedSettings) return;
+    setWriterSettings({
+      ...FALLBACK_WRITER_SETTINGS,
+      ...storedSettings,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!writerToast) return undefined;
+    const timer = window.setTimeout(() => setWriterToast(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [writerToast]);
 
   // Persist favorites
   const saveFavorites = useCallback((next: Set<string | number>) => {
     setFavorites(next);
     try {
-      localStorage.setItem('vf-library-favorites', JSON.stringify([...next]));
+      localStorage.setItem(LIBRARY_FAVORITES_KEY, JSON.stringify([...next]));
     } catch { /* ignore */ }
   }, []);
 
@@ -131,11 +196,25 @@ export function LibraryPage() {
 
   const handleRead = useCallback((book: Book) => {
     try {
-      localStorage.setItem('vf-library-last-played', JSON.stringify(book));
+      localStorage.setItem(LIBRARY_LAST_PLAYED_KEY, JSON.stringify(book));
     } catch { /* ignore */ }
     rememberSelectedLibraryBook(book);
     window.location.assign(buildLibraryReadHref(book));
   }, []);
+
+  const handleWriterToast = useCallback((message: string, type: WriterToastState['type'] = 'info') => {
+    setWriterToast({ message, type });
+  }, []);
+
+  const handleStudioSwitch = useCallback((content: string) => {
+    const draft = String(content || '').trim();
+    if (!draft) {
+      handleWriterToast('Add some chapter text before sending it to Studio.', 'error');
+      return;
+    }
+    writeStorageString(STORAGE_KEYS.studioDraftText, draft);
+    window.location.assign(APP_ROUTE_PATHS.studio);
+  }, [handleWriterToast]);
 
   const favBooks = books.filter((b) => favorites.has(b.id));
 
@@ -144,25 +223,56 @@ export function LibraryPage() {
       className="min-h-screen p-4 md:p-6 lg:p-8"
       style={{ background: 'var(--vf-bg)', color: 'var(--vf-text)' }}
     >
+      <div className="mb-5 flex flex-col gap-2">
+        <p className="text-[11px] font-black uppercase tracking-[0.22em] text-cyan-300/80">Readers</p>
+        <div className="max-w-3xl">
+          <h1 className="text-xl font-semibold text-white sm:text-2xl">Browse books, save favorites, and step into Writer without leaving Readers.</h1>
+          <p className="mt-1.5 text-sm leading-6 text-white/55">
+            Keep discovery, reading history, and your novel workspace connected in one place.
+          </p>
+        </div>
+      </div>
+
       {/* Sub-navigation */}
-      <div className="flex items-center gap-1 mb-6 border-b border-white/10 pb-2">
-        {([
-          { key: 'browse', label: 'Browse' },
-          { key: 'favorites', label: 'Favorites' },
-          { key: 'chat', label: 'AI Chat' },
-        ] as const).map(({ key, label }) => (
+      <div
+        className="mb-6 flex items-center justify-between gap-3 border-b border-white/10 pb-2"
+        data-testid="readers-subnav"
+      >
+        <div className="flex items-center gap-1">
+          {([
+            { key: 'browse', label: 'Browse' },
+            { key: 'favorites', label: 'Favorites' },
+            { key: 'writer', label: 'Writer' },
+            { key: 'chat', label: 'AI Chat' },
+          ] as const).map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${
+                tab === key
+                  ? 'text-blue-400 border-b-2 border-blue-400'
+                  : 'text-white/60 hover:text-white/80'
+              }`}
+              data-testid={key === 'writer' ? 'readers-writer-trigger' : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'writer' ? (
           <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${
-              tab === key
-                ? 'text-blue-400 border-b-2 border-blue-400'
-                : 'text-white/60 hover:text-white/80'
-            }`}
+            type="button"
+            onClick={() => window.location.assign(APP_ROUTE_PATHS.studio)}
+            aria-label="Switch to Studio"
+            title="Switch to Studio"
+            data-testid="readers-studio-switch"
+            className="inline-flex h-10 items-center gap-2 rounded-full border border-cyan-400/30 bg-[linear-gradient(180deg,rgba(9,26,43,0.94),rgba(8,18,32,0.92))] px-3.5 text-[10px] font-black uppercase tracking-[0.22em] text-cyan-100 shadow-[0_10px_26px_rgba(8,145,178,0.16)] transition hover:border-cyan-300/45 hover:bg-[linear-gradient(180deg,rgba(10,34,56,0.98),rgba(8,24,40,0.95))] hover:text-white"
           >
-            {label}
+            <Mic className="h-3.5 w-3.5" />
+            <span>Studio</span>
           </button>
-        ))}
+        ) : null}
       </div>
 
       {/* Browse tab */}
@@ -285,6 +395,47 @@ export function LibraryPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Writer tab */}
+      {tab === 'writer' && (
+        <div
+          className="overflow-hidden rounded-[1.5rem] border border-white/10 bg-[linear-gradient(180deg,rgba(10,15,27,0.92),rgba(8,13,24,0.78))]"
+          data-testid="readers-writer-tab"
+        >
+          <div className="border-b border-white/10 px-4 py-3 sm:px-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-cyan-300/70">Writer</p>
+                <h2 className="mt-1 text-base font-semibold text-white sm:text-lg">Draft novels here, then hand chapters to Studio when they are ready for audio.</h2>
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white/55">
+                Readers keeps writing progress and discovery in one workflow.
+              </div>
+            </div>
+            {writerToast ? (
+              <div
+                className={`mt-3 rounded-2xl border px-3 py-2 text-sm ${
+                  writerToast.type === 'error'
+                    ? 'border-rose-300/30 bg-rose-400/10 text-rose-100'
+                    : writerToast.type === 'success'
+                      ? 'border-emerald-300/25 bg-emerald-400/10 text-emerald-100'
+                      : 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100'
+                }`}
+              >
+                {writerToast.message}
+              </div>
+            ) : null}
+          </div>
+          <div className="min-h-[72vh]" data-testid="embedded-writer-surface">
+            <NovelWriterSurface
+              settings={writerSettings}
+              onToast={handleWriterToast}
+              onSendToStudio={handleStudioSwitch}
+              embeddedMode
+            />
+          </div>
+        </div>
       )}
 
       {/* AI Chat tab */}

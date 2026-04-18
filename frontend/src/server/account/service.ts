@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 
 import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
@@ -612,16 +612,45 @@ export const clearGenerationHistory = async (user: ServerAuthedUserContext): Pro
   await firestore().collection(COLLECTIONS.generationHistory).doc(user.uid).delete().catch(() => undefined);
 };
 
+export const buildGenerationHistoryItemId = (item: Record<string, unknown>, fallbackTimestamp: number): string => {
+  const existingId = asString(item.id);
+  if (existingId) {
+    return existingId;
+  }
+
+  const identityParts = [
+    asString(item.requestId),
+    asString(item.traceId),
+    asString(item.jobId),
+    asString(item.outputSha256),
+    asString(item.hash),
+    asString(item.audioUrl),
+    asString(item.audioPath),
+    asString(item.engine),
+    asString(item.voice),
+    asString(item.language),
+    asString(item.title),
+    asString(item.text),
+    asString(item.sourceText),
+  ].filter(Boolean);
+
+  if (identityParts.length <= 0) {
+    return `history-${fallbackTimestamp}`;
+  }
+
+  return `history-${createHash('sha256').update(identityParts.join('\n')).digest('hex').slice(0, 24)}`;
+};
+
 export const addGenerationHistory = async (user: ServerAuthedUserContext, item: unknown): Promise<void> => {
   const docRef = firestore().collection(COLLECTIONS.generationHistory).doc(user.uid);
   const snapshot = await docRef.get().catch(() => null);
   const existingItems = snapshot?.exists ? decodeGenerationHistoryItems((snapshot.data() || {}) as Record<string, unknown>) : [];
-  
-  const normalizedItem = {
+  const timestamp = asPositiveInt((item as any)?.timestamp, Date.now()) || Date.now();
+  const normalizedItem: Record<string, unknown> & { timestamp: number; id?: string } = {
     ...(item as Record<string, unknown>),
-    id: (item as any)?.id || Date.now().toString(),
-    timestamp: (item as any)?.timestamp || Date.now(),
+    timestamp,
   };
+  normalizedItem.id = buildGenerationHistoryItemId(normalizedItem, timestamp);
 
   // Explicitly remove generated audio urls/blobs before storing anywhere 
   // legal compliance: "dont keep and stdio genearted audios due to it may get me in legal issue but keep the metadeatas, invsibale watermark, visible water markes /kyc"
@@ -630,12 +659,12 @@ export const addGenerationHistory = async (user: ServerAuthedUserContext, item: 
   delete (normalizedItem as any).masterUrl;
 
   // Track the required KYC/Watermark compliance assertions as metadata.
-  (normalizedItem as any).complianceMetadata = {
+  normalizedItem.complianceMetadata = {
     kycVerified: true,
     invisibleWatermarkApplied: true,
     visibleWatermarksApplied: true,
     audioScrubbedForLiability: true,
-    timestamp: Date.now()
+    timestamp
   };
 
   const withoutDuplicate = normalizedItem.id

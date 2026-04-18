@@ -7,25 +7,54 @@
  */
 
 const PROTECTED_SELECTOR = '[data-protected="true"]';
+const CONTENT_PROTECTION_STYLE_SELECTOR = 'style[data-content-protection="true"]';
+const CONTENT_PROTECTION_STATE_KEY = '__voiceFlowContentProtectionState__' as const;
 
-/**
- * Prevent copy, cut, and context menu on protected content.
- */
-function blockCopyPaste(e: Event) {
-  const target = e.target as HTMLElement | null;
-  if (target?.closest(PROTECTED_SELECTOR)) {
-    e.preventDefault();
-  }
+interface ContentProtectionHandlers {
+  blockCopyPaste: EventListener;
+  visibilityChange: EventListener;
+  keyUp: (event: KeyboardEvent) => void;
 }
 
-/**
- * Blur protected content when tab loses focus.
- */
-function handleVisibilityChange() {
-  const els = document.querySelectorAll<HTMLElement>(PROTECTED_SELECTOR);
-  const hidden = document.visibilityState === 'hidden';
-  els.forEach((el) => {
-    el.style.filter = hidden ? 'blur(30px)' : '';
+interface ContentProtectionState {
+  activeConsumers: number;
+  isActive: boolean;
+  styleEl: HTMLStyleElement | null;
+  devToolsOverlay: HTMLDivElement | null;
+  devToolsInterval: ReturnType<typeof setInterval> | null;
+  printBlurTimeout: ReturnType<typeof setTimeout> | null;
+  handlers: ContentProtectionHandlers | null;
+}
+
+type WindowWithContentProtectionState = Window & {
+  [CONTENT_PROTECTION_STATE_KEY]?: ContentProtectionState;
+};
+
+function getContentProtectionState(): ContentProtectionState {
+  const globalWindow = window as WindowWithContentProtectionState;
+  const existingState = globalWindow[CONTENT_PROTECTION_STATE_KEY];
+  if (existingState) return existingState;
+
+  const createdState: ContentProtectionState = {
+    activeConsumers: 0,
+    isActive: false,
+    styleEl: null,
+    devToolsOverlay: null,
+    devToolsInterval: null,
+    printBlurTimeout: null,
+    handlers: null,
+  };
+  globalWindow[CONTENT_PROTECTION_STATE_KEY] = createdState;
+  return createdState;
+}
+
+function getProtectedElements() {
+  return document.querySelectorAll<HTMLElement>(PROTECTED_SELECTOR);
+}
+
+function setProtectedContentBlur(blurred: boolean) {
+  getProtectedElements().forEach((el) => {
+    el.style.filter = blurred ? 'blur(30px)' : '';
     el.style.transition = 'filter 0.2s ease';
   });
 }
@@ -41,13 +70,13 @@ function checkDevTools(): boolean {
   );
 }
 
-let devToolsOverlay: HTMLDivElement | null = null;
+function showDevToolsWarning(state: ContentProtectionState) {
+  if (!state.devToolsOverlay) {
+    state.devToolsOverlay = document.createElement('div');
+    state.devToolsOverlay.setAttribute('data-devtools-warning', 'true');
+  }
 
-function showDevToolsWarning() {
-  if (devToolsOverlay) return;
-  devToolsOverlay = document.createElement('div');
-  devToolsOverlay.setAttribute('data-devtools-warning', 'true');
-  Object.assign(devToolsOverlay.style, {
+  Object.assign(state.devToolsOverlay.style, {
     position: 'fixed',
     inset: '0',
     zIndex: '99999',
@@ -61,25 +90,31 @@ function showDevToolsWarning() {
     textAlign: 'center',
     padding: '2rem',
   } satisfies Partial<Record<string, string>>);
-  devToolsOverlay.textContent =
+  state.devToolsOverlay.textContent =
     'Developer tools detected. Content is protected against unauthorized access.';
-  document.body.appendChild(devToolsOverlay);
-}
-
-function hideDevToolsWarning() {
-  if (devToolsOverlay) {
-    devToolsOverlay.remove();
-    devToolsOverlay = null;
+  if (!state.devToolsOverlay.isConnected) {
+    document.body.appendChild(state.devToolsOverlay);
   }
 }
 
-let devToolsInterval: ReturnType<typeof setInterval> | null = null;
+function hideDevToolsWarning(state: ContentProtectionState) {
+  if (state.devToolsOverlay) {
+    state.devToolsOverlay.remove();
+    state.devToolsOverlay = null;
+  }
+}
 
 /**
  * Apply user-select: none CSS to protected elements.
  */
-function applySelectNone() {
-  const style = document.createElement('style');
+function applySelectNone(state: ContentProtectionState) {
+  const styleElements = Array.from(
+    document.querySelectorAll<HTMLStyleElement>(CONTENT_PROTECTION_STYLE_SELECTOR),
+  );
+  const [existingStyle, ...duplicateStyles] = styleElements;
+  duplicateStyles.forEach((el) => el.remove());
+
+  const style = existingStyle ?? document.createElement('style');
   style.setAttribute('data-content-protection', 'true');
   style.textContent = `
     ${PROTECTED_SELECTOR} {
@@ -93,11 +128,90 @@ function applySelectNone() {
       }
     }
   `;
-  document.head.appendChild(style);
+
+  if (!style.isConnected) {
+    document.head.appendChild(style);
+  }
+
+  state.styleEl = style;
   return style;
 }
 
-let cleanupFns: (() => void)[] = [];
+function clearPrintBlurTimeout(state: ContentProtectionState) {
+  if (state.printBlurTimeout) {
+    clearTimeout(state.printBlurTimeout);
+    state.printBlurTimeout = null;
+  }
+}
+
+function startDevToolsDetection(state: ContentProtectionState) {
+  if (state.devToolsInterval) return;
+
+  state.devToolsInterval = setInterval(() => {
+    if (checkDevTools()) {
+      showDevToolsWarning(state);
+    } else {
+      hideDevToolsWarning(state);
+    }
+  }, 2000);
+}
+
+function stopDevToolsDetection(state: ContentProtectionState) {
+  if (state.devToolsInterval) {
+    clearInterval(state.devToolsInterval);
+    state.devToolsInterval = null;
+  }
+  hideDevToolsWarning(state);
+}
+
+function createHandlers(state: ContentProtectionState): ContentProtectionHandlers {
+  const blockCopyPaste: EventListener = (e) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest(PROTECTED_SELECTOR)) {
+      e.preventDefault();
+    }
+  };
+
+  const visibilityChange: EventListener = () => {
+    setProtectedContentBlur(document.visibilityState === 'hidden');
+  };
+
+  const keyUp = (e: KeyboardEvent) => {
+    if (e.key !== 'PrintScreen') return;
+
+    setProtectedContentBlur(true);
+    clearPrintBlurTimeout(state);
+    state.printBlurTimeout = setTimeout(() => {
+      setProtectedContentBlur(false);
+      state.printBlurTimeout = null;
+    }, 1500);
+  };
+
+  return { blockCopyPaste, visibilityChange, keyUp };
+}
+
+function teardownContentProtection(state: ContentProtectionState) {
+  if (state.handlers) {
+    document.removeEventListener('copy', state.handlers.blockCopyPaste, true);
+    document.removeEventListener('cut', state.handlers.blockCopyPaste, true);
+    document.removeEventListener('contextmenu', state.handlers.blockCopyPaste, true);
+    document.removeEventListener('visibilitychange', state.handlers.visibilityChange);
+    document.removeEventListener('keyup', state.handlers.keyUp);
+    state.handlers = null;
+  }
+
+  clearPrintBlurTimeout(state);
+  stopDevToolsDetection(state);
+  setProtectedContentBlur(false);
+
+  state.styleEl?.remove();
+  state.styleEl = null;
+  document
+    .querySelectorAll<HTMLStyleElement>(CONTENT_PROTECTION_STYLE_SELECTOR)
+    .forEach((el) => el.remove());
+
+  state.isActive = false;
+}
 
 /**
  * Activate content protection. Call once when the app mounts.
@@ -106,50 +220,31 @@ let cleanupFns: (() => void)[] = [];
 export function activateContentProtection(): () => void {
   if (typeof window === 'undefined') return () => {};
 
-  // CSS
-  const styleEl = applySelectNone();
+  const state = getContentProtectionState();
+  state.activeConsumers += 1;
 
-  // Event listeners
-  document.addEventListener('copy', blockCopyPaste, true);
-  document.addEventListener('cut', blockCopyPaste, true);
-  document.addEventListener('contextmenu', blockCopyPaste, true);
-  document.addEventListener('visibilitychange', handleVisibilityChange);
+  if (!state.isActive) {
+    state.handlers = state.handlers ?? createHandlers(state);
 
-  // DevTools detection
-  devToolsInterval = setInterval(() => {
-    if (checkDevTools()) {
-      showDevToolsWarning();
-    } else {
-      hideDevToolsWarning();
-    }
-  }, 2000);
+    applySelectNone(state);
+    document.addEventListener('copy', state.handlers.blockCopyPaste, true);
+    document.addEventListener('cut', state.handlers.blockCopyPaste, true);
+    document.addEventListener('contextmenu', state.handlers.blockCopyPaste, true);
+    document.addEventListener('visibilitychange', state.handlers.visibilityChange);
+    document.addEventListener('keyup', state.handlers.keyUp);
+    startDevToolsDetection(state);
 
-  // PrintScreen detection
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'PrintScreen') {
-      const els = document.querySelectorAll<HTMLElement>(PROTECTED_SELECTOR);
-      els.forEach((el) => {
-        el.style.filter = 'blur(30px)';
-      });
-      setTimeout(() => {
-        els.forEach((el) => {
-          el.style.filter = '';
-        });
-      }, 1500);
+    state.isActive = true;
+  }
+
+  let cleanedUp = false;
+  return () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+
+    state.activeConsumers = Math.max(0, state.activeConsumers - 1);
+    if (state.activeConsumers === 0) {
+      teardownContentProtection(state);
     }
   };
-  document.addEventListener('keyup', handleKeyDown);
-
-  const cleanup = () => {
-    styleEl.remove();
-    document.removeEventListener('copy', blockCopyPaste, true);
-    document.removeEventListener('cut', blockCopyPaste, true);
-    document.removeEventListener('contextmenu', blockCopyPaste, true);
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
-    document.removeEventListener('keyup', handleKeyDown);
-    if (devToolsInterval) clearInterval(devToolsInterval);
-    hideDevToolsWarning();
-  };
-
-  return cleanup;
 }

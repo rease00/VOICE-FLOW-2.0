@@ -7,17 +7,14 @@ type PhonemizeFn = (text: string, language?: string, options?: unknown) => Promi
 let phonemizerModulePromise: Promise<{ phonemize: PhonemizeFn }> | null = null;
 
 const resolveBrowserPhonemizerUrl = (): string => {
-  const configured = readEnvValue(
-    process.env.NEXT_PUBLIC_BROWSER_PHONEMIZER_URL,
-    process.env.VITE_BROWSER_PHONEMIZER_URL
-  );
+  const configured = readEnvValue(process.env.NEXT_PUBLIC_BROWSER_PHONEMIZER_URL);
   return configured || DEFAULT_BROWSER_PHONEMIZER_URL;
 };
 
 const loadBrowserPhonemizer = async (): Promise<{ phonemize: PhonemizeFn }> => {
   if (!phonemizerModulePromise) {
     const url = resolveBrowserPhonemizerUrl();
-    phonemizerModulePromise = import(/* @vite-ignore */ url) as Promise<{ phonemize: PhonemizeFn }>;
+    phonemizerModulePromise = import(/* webpackIgnore: true */ url) as Promise<{ phonemize: PhonemizeFn }>;
   }
   return phonemizerModulePromise;
 };

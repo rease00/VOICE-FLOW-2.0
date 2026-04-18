@@ -1,6 +1,6 @@
 'use client';
-import React, { useState, useCallback } from 'react';
-import { PanelLeftClose, PanelLeftOpen, SlidersHorizontal, ArrowLeft } from 'lucide-react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { PanelLeftClose, PanelLeftOpen, SlidersHorizontal, ArrowLeft, Maximize2, Minimize2 } from 'lucide-react';
 import type { GenerationSettings } from '../../../../types';
 import { NovelEditorProvider, useNovelEditor } from '../contexts/NovelEditorContext';
 import { ChapterSidebar } from './ChapterSidebar';
@@ -29,6 +29,7 @@ const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [isProofreading, setIsProofreading] = useState(false);
+  const [editorSelectedText, setEditorSelectedText] = useState('');
 
   const { chapterText, adaptedOutput, updateAdaptedOutput } = useChapterEditor();
   const { isAdapting, adaptSingle } = useAdaptation(settings, onToast);
@@ -68,6 +69,20 @@ const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
     const text = adaptedOutput.trim() || chapterText;
     onSendToStudio(text, selectedChapter.title);
   }, [selectedChapter, adaptedOutput, chapterText, onSendToStudio]);
+
+  const handleTextChange = useCallback((_text: string) => {}, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'p') {
+        e.preventDefault();
+        setToolsOpen(v => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -131,7 +146,7 @@ const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
                 ? 'bg-blue-600 text-white'
                 : 'hover:bg-white/10 text-slate-400 hover:text-white'
             }`}
-            title="Toggle tools panel"
+            title="Toggle tools panel (Ctrl+Shift+P)"
           >
             <SlidersHorizontal size={14} />
           </button>
@@ -149,6 +164,8 @@ const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
                 onSendToStudio={onSendToStudio ? handleSendToStudio : undefined}
                 onProofread={handleProofread}
                 isProofreading={isProofreading}
+                onTextChange={handleTextChange}
+                onSelectionChange={setEditorSelectedText}
               />
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-2">
@@ -167,6 +184,7 @@ const NovelEditorShellInner: React.FC<NovelEditorShellInnerProps> = ({
             onToast={onToast}
             onRequestAdapt={handleAdaptRequest}
             isAdapting={isAdapting}
+            editorSelectedText={editorSelectedText}
           />
         </div>
       </div>

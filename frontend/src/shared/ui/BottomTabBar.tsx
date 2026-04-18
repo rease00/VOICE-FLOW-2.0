@@ -18,7 +18,7 @@ interface BottomTabBarProps {
 }
 
 const TABS: { key: BottomTab; label: string; icon: React.ReactNode }[] = [
-  { key: 'library', label: 'Library', icon: <BookOpen className="h-5 w-5" /> },
+  { key: 'library', label: 'Readers', icon: <BookOpen className="h-5 w-5" /> },
   { key: 'studio', label: 'Studio', icon: <Mic className="h-5 w-5" /> },
   { key: 'writing', label: 'Writing', icon: <PenTool className="h-5 w-5" /> },
   { key: 'wallet', label: 'Wallet', icon: <Wallet className="h-5 w-5" /> },

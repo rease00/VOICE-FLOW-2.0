@@ -33,6 +33,8 @@ export const SFX_REGEX = new RegExp(
   'iu'
 );
 
+const BREAK_TAG_REGEX = /^<break\s+time\s*=\s*["']?\s*(\d+(?:\.\d+)?)\s*(ms|s)?\s*["']?\s*\/?>$/iu;
+
 const SPEAKER_IGNORE_PREFIXES = [
   'chapter',
   'scene',
@@ -288,9 +290,6 @@ export const normalizeSpeakerHeaderScript = (text: string): string => (
   String(text || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => normalizeLegacySpeakerHeaderLine(line))
-    .join('\n')
 );
 
 const parseSpeakerLine = (line: string): ParsedSpeakerLine | null => {
@@ -406,6 +405,7 @@ export const parseScriptToSegments = (text: string): {
   speaker: string;
   text: string;
   emotion?: string | undefined;
+  pauseMs?: number | undefined;
   crewTags?: string[] | undefined;
   emotionTags?: string[] | undefined;
 }[] => {
@@ -416,6 +416,7 @@ export const parseScriptToSegments = (text: string): {
     speaker: string;
     text: string;
     emotion?: string | undefined;
+    pauseMs?: number | undefined;
     crewTags?: string[] | undefined;
     emotionTags?: string[] | undefined;
   }[] = [];
@@ -461,6 +462,27 @@ export const parseScriptToSegments = (text: string): {
     }
 
     if (!working) return;
+
+    const breakTagMatch = working.match(BREAK_TAG_REGEX);
+    if (breakTagMatch) {
+      const numeric = Number.parseFloat(String(breakTagMatch[1] || '0'));
+      const unit = String(breakTagMatch[2] || 'ms').toLowerCase();
+      const durationMs = Math.max(0, Math.floor(unit === 's' ? numeric * 1000 : numeric));
+      if (durationMs <= 0) return;
+
+      const start = explicitStart ?? fallbackCursor;
+      const durationSeconds = durationMs / 1000;
+      segments.push({
+        startTime: start,
+        endTime: explicitEnd,
+        speaker: '__pause__',
+        text: '',
+        emotion: 'Neutral',
+        pauseMs: durationMs,
+      });
+      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + durationSeconds;
+      return;
+    }
 
     const sfxMatch = working.match(SFX_REGEX);
     if (sfxMatch) {

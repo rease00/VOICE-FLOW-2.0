@@ -10,6 +10,12 @@ import { useOptionalNotifications } from '../../shared/notifications/Notificatio
 import { sanitizeUiText } from '../../shared/ui/terminology';
 import { resolveLegalDocument } from '../legal/legalContent';
 import { resolveSafeInternalNextPath, type AuthRouteMode } from '../../app/navigation';
+import {
+  SIGNUP_DISABLED_DETAIL,
+  SIGNUP_DISABLED_TITLE,
+  isSignupMode,
+  normalizeLoginRouteMode,
+} from '../../shared/auth/signupLock';
 
 interface LoginProps {
   setScreen: (screen: AppScreen) => void;
@@ -29,14 +35,13 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     isFirebaseConfigured,
     firebaseConfigIssue,
     signInWithEmail,
-    signUpWithEmail,
     resendEmailVerification,
     requestPasswordReset,
     signInWithGoogle,
   } = useAuthSession();
   const notifications = useOptionalNotifications();
   const emit = notifications?.emit;
-  const [mode, setMode] = useState<AuthMode>(initialMode ?? 'login');
+  const [mode, setMode] = useState<AuthMode>('login');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -57,14 +62,21 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   const [isHydrated, setIsHydrated] = useState(false);
   const activeLegalDocument = activeLegalPath ? resolveLegalDocument(activeLegalPath) : null;
   const firebaseIssue = !isFirebaseConfigured
-    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart frontend.')
+    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart frontend.')
     : '';
   const disableEmailAuthSubmit = Boolean(firebaseIssue);
   const disableOAuthAuthSubmit = Boolean(firebaseIssue);
+  const signupRequestedByRoute = isSignupMode(initialMode);
+  const signupRequestedByStorage = !initialMode && isSignupMode(readStorageString(STORAGE_KEYS.authIntent));
+  const signupRequestDetected = signupRequestedByRoute || signupRequestedByStorage;
+  const isSignupScreen = false;
 
   useEffect(() => {
     if (!initialMode) return;
-    setMode(initialMode);
+    const nextMode = normalizeLoginRouteMode(initialMode);
+    if (nextMode) {
+      setMode(nextMode);
+    }
   }, [initialMode]);
 
   useEffect(() => {
@@ -77,8 +89,9 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
       return;
     }
     const intent = readStorageString(STORAGE_KEYS.authIntent);
-    if (intent === 'signup' || intent === 'login') {
-      setMode(intent);
+    const normalizedIntent = normalizeLoginRouteMode(intent);
+    if (normalizedIntent) {
+      setMode(normalizedIntent);
     }
     removeStorageKey(STORAGE_KEYS.authIntent);
   }, [initialMode]);
@@ -146,14 +159,14 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   const authButtonTransitionClass = 'transition-[background-color,color,box-shadow,filter,opacity,transform]';
   const authControlFocusClass = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950';
   const authButtonFocusClass = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950';
-  const authHeading = mode === 'signup' ? 'Create your V FLOW AI account' : 'Welcome back';
-  const authSubtitle = mode === 'signup'
-    ? 'Start with email or Google, then head straight into the studio.'
-    : 'Secure access to your V FLOW AI account.';
+  const authHeading = 'Welcome back';
+  const authSubtitle = 'Secure access to your V FLOW AI account.';
   const safeNextPath = resolveSafeInternalNextPath(nextPath, null);
   const setAuthMode = (nextMode: AuthMode) => {
-    setMode(nextMode);
-    syncModeToRoute?.(nextMode);
+    const normalizedMode = normalizeLoginRouteMode(nextMode);
+    if (!normalizedMode) return;
+    setMode(normalizedMode);
+    syncModeToRoute?.(normalizedMode);
   };
 
   const handleEmailSubmit = async (event: React.FormEvent) => {
@@ -162,67 +175,39 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     setInfoMsg(null);
     setProvisioningHintMsg(null);
     setNeedsEmailVerification(false);
-    if (mode === 'signup' && !acceptedTerms) {
-      setTermsErrorMsg('Please accept Terms and Conditions to create your account.');
-      return;
-    }
-    if (mode === 'signup' && password !== confirmPassword) {
-      setErrorMsg('Passwords do not match.');
-      return;
-    }
     setTermsErrorMsg(null);
     setIsLoading(true);
     try {
-      const result = mode === 'signup'
-        ? await signUpWithEmail(email, password, displayName)
-        : await signInWithEmail(email, password);
-      if (result.ok && mode === 'signup' && result.requiresEmailVerification) {
-        const message = 'Account created. Verify your email before signing in.';
-        setAuthMode('login');
-        setNeedsEmailVerification(true);
-        setPassword('');
-        setInfoMsg(message);
-        setVerificationCooldownUntil(Date.now() + 30_000);
-        emit?.('auth.signup.success', {
-          title: 'Sign Up Success',
-          message,
-          category: 'security',
-          dedupeKey: 'auth-signup-email-verification-required',
-        });
-        return;
-      }
+      const result = await signInWithEmail(email, password);
       if (!result.ok) {
         const message = sanitizeUiText(
-          result.error
-          || (mode === 'signup'
-            ? 'Sign-up failed. Please check your details and try again.'
-            : 'Sign-in failed. Please check your details and try again.')
+          result.error || 'Sign-in failed. Please check your details and try again.'
         );
         if ('requiresEmailVerification' in result && result.requiresEmailVerification) {
           setNeedsEmailVerification(true);
           setInfoMsg(message);
-          emit?.(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
-            title: mode === 'signup' ? 'Email Verification Required' : 'Email Verification Required',
+          emit?.('auth.signin.failed', {
+            title: 'Email Verification Required',
             message,
             category: 'security',
-            dedupeKey: mode === 'signup' ? 'auth-signup-email-verification-required' : 'auth-signin-email-verification-required',
+            dedupeKey: 'auth-signin-email-verification-required',
           });
           return;
         }
         setErrorMsg(message);
         const provisioningHint = 'provisioningHint' in result ? String(result.provisioningHint || '').trim() : '';
         setProvisioningHintMsg(provisioningHint ? sanitizeUiText(provisioningHint) : null);
-        emit?.(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
-          title: mode === 'signup' ? 'Sign Up Failed' : 'Sign In Failed',
+        emit?.('auth.signin.failed', {
+          title: 'Sign In Failed',
           message,
           category: 'security',
-          dedupeKey: mode === 'signup' ? 'auth-signup-failed' : 'auth-signin-failed',
+          dedupeKey: 'auth-signin-failed',
         });
         return;
       }
-      emit?.(mode === 'signup' ? 'auth.signup.success' : 'auth.signin.success', {
-        title: mode === 'signup' ? 'Sign Up Success' : 'Sign In Success',
-        message: mode === 'signup' ? 'Account created successfully.' : 'Signed in successfully.',
+      emit?.('auth.signin.success', {
+        title: 'Sign In Success',
+        message: 'Signed in successfully.',
         category: 'security',
       });
       if (safeNextPath) {
@@ -279,16 +264,12 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
     setErrorMsg(null);
     setInfoMsg(null);
     setProvisioningHintMsg(null);
-    if (mode === 'signup' && !acceptedTerms) {
-      setTermsErrorMsg('Please accept Terms and Privacy before creating your account.');
-      return;
-    }
     setIsLoading(true);
     try {
       const result = await signInWithGoogle();
       if (!result.ok) {
         const message = sanitizeUiText(
-          result.error || (mode === 'signup' ? 'Google sign-up failed.' : 'Google sign-in failed.')
+          result.error || 'Google sign-in failed.'
         );
         setErrorMsg(message);
         emit?.('auth.signin.failed', {
@@ -300,8 +281,8 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         return;
       }
       emit?.('auth.signin.success', {
-        title: mode === 'signup' ? 'Account Ready' : 'Sign In Success',
-        message: mode === 'signup' ? 'Your account is ready with Google.' : 'Signed in with Google.',
+        title: 'Sign In Success',
+        message: 'Signed in with Google.',
         category: 'security',
       });
       if (safeNextPath) {
@@ -382,19 +363,21 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             type="button"
             onClick={() => setAuthMode('login')}
             aria-pressed={mode === 'login'}
-            className={`ap-mode-tab__btn ${mode === 'login' ? 'ap-mode-tab__btn--active' : 'ap-mode-tab__btn--inactive'} ${authButtonFocusClass}`}
+            className={`ap-mode-tab__btn ap-mode-tab__btn--active ${authButtonFocusClass}`}
           >
             Login
           </button>
-          <button
-            type="button"
-            onClick={() => setAuthMode('signup')}
-            aria-pressed={mode === 'signup'}
-            className={`ap-mode-tab__btn ${mode === 'signup' ? 'ap-mode-tab__btn--active' : 'ap-mode-tab__btn--inactive'} ${authButtonFocusClass}`}
-          >
-            Sign Up
-          </button>
+          <div className="ap-mode-tab__btn ap-mode-tab__btn--inactive text-left text-[11px] leading-5">
+            {SIGNUP_DISABLED_TITLE}
+          </div>
         </div>
+
+        {signupRequestDetected ? (
+          <div className="ap-banner ap-banner--warn mb-4" role="status" aria-live="polite" aria-atomic="true">
+            <AlertCircle size={15} className="mt-0.5 shrink-0" />
+            <span><strong>{SIGNUP_DISABLED_TITLE}.</strong> {SIGNUP_DISABLED_DETAIL}</span>
+          </div>
+        ) : null}
 
         {errorMsg && (
           <div className="ap-banner ap-banner--error mb-4" role="alert" aria-live="assertive" aria-atomic="true">
@@ -422,7 +405,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
         )}
 
         <form onSubmit={handleEmailSubmit} className="space-y-3.5">
-          {mode === 'signup' && (
+          {isSignupScreen && (
             <>
               <div>
                 <label htmlFor="display-name" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">Display Name</label>
@@ -478,7 +461,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="Enter password"
-                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                autoComplete={isSignupScreen ? 'new-password' : 'current-password'}
                 spellCheck={false}
                 aria-describedby="auth-password-help"
                 className={`ap-field pr-10 text-sm ${authControlTransitionClass} ${authControlFocusClass}`}
@@ -497,9 +480,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
               </button>
             </div>
             <p id="auth-password-help" className="mt-1 text-[11px] text-[#9CB1C9]">
-              {mode === 'signup'
-                ? 'Use at least 6 characters. A longer password is safer.'
-                : 'Keep this private. Use a strong password you can remember.'}
+              Keep this private. Use a strong password you can remember.
             </p>
             {mode === 'login' && (
               <div className="mt-2 text-right">
@@ -515,7 +496,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             )}
           </div>
 
-          {mode === 'signup' && (
+          {isSignupScreen && (
             <div>
               <label htmlFor="auth-password-confirm" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">Confirm Password</label>
               <div className="relative">
@@ -538,7 +519,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             </div>
           )}
 
-          {mode === 'signup' && (
+          {isSignupScreen && (
             <div className="rounded-[1.2rem] border border-white/10 bg-white/[0.03] px-4 py-4">
               <div className="flex items-start gap-2 text-sm text-[#DCE6F3]">
                 <label htmlFor="accepted-terms" className="flex min-h-12 shrink-0 cursor-pointer items-start">
@@ -598,7 +579,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             aria-busy={isLoading || isResetting}
             className={`ap-btn-primary text-sm ${authButtonFocusClass} disabled:cursor-not-allowed disabled:opacity-70`}
           >
-            {isLoading ? 'Please wait...' : mode === 'signup' ? 'Create Account' : 'Sign In'} {!isLoading && <ArrowRight size={16} />}
+            {isLoading ? 'Please wait...' : 'Sign In'} {!isLoading && <ArrowRight size={16} />}
           </button>
         </form>
 
@@ -635,14 +616,12 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             aria-busy={isLoading}
             className={`ap-google-btn ${authButtonFocusClass} disabled:opacity-60`}
           >
-            {mode === 'signup' ? 'Continue with Google' : 'Sign in with Google'}
+            Sign in with Google
           </button>
         </div>
 
         <p className="mt-4 text-center text-[11px] leading-relaxed text-slate-500">
-          {mode === 'signup'
-            ? 'Create your account with email or Google. If email verification is required, you will be guided back here after confirming.'
-            : 'Use your email or Google account to continue into V FLOW AI.'}
+          Use your email or Google account to continue into V FLOW AI.
         </p>
       </div>
       </div>

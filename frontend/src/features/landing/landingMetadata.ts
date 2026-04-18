@@ -1,19 +1,20 @@
 import type { Metadata } from 'next';
+import type { LandingPageVariant } from './landingTabs';
+import { getLandingTabDefinition } from './landingTabs';
 
-const landingPath = '/';
+const landingPath = '/landing';
 
 export const landingMetadata: Metadata = {
-  title: 'V FLOW AI | Premium voice studio',
+  title: 'Voice Flow | Audition voices, direct scenes, and approve the final take',
   description:
-    'Prime scenes, voice clone checks, direction, and writing review in one clean flow.',
+    'Voice Flow helps teams audition voices, review multi-speaker scenes, direct delivery, and approve reader-ready audio.',
   keywords: [
-    'ai voice studio',
-    'voice cloning',
-    'prime multi-speaker voice',
-    'ai narration',
-    'production audio',
-    'writing review',
     'voice workflow',
+    'single voice audition',
+    'multi-speaker scenes',
+    'ai direction',
+    'reader review',
+    'production audio',
   ],
   alternates: {
     canonical: landingPath,
@@ -25,8 +26,9 @@ export const landingMetadata: Metadata = {
   openGraph: {
     type: 'website',
     url: landingPath,
-    title: 'V FLOW AI | Premium voice studio',
-    description: 'Prime scenes, clone checks, direction, and writing review.',
+    title: 'Voice Flow | Voice production workflow',
+    description:
+      'Audition voices, review scenes, direct delivery, and move into the full Voice Flow studio.',
     siteName: 'V FLOW AI',
     images: [
       {
@@ -39,8 +41,36 @@ export const landingMetadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'V FLOW AI | Premium voice studio',
-    description: 'Prime scenes, clone checks, direction, and writing review.',
+    title: 'Voice Flow | Voice production workflow',
+    description:
+      'Audition voices, review scenes, direct delivery, and move into the full Voice Flow studio.',
     images: ['/brand-logo.svg'],
   },
+};
+
+export const buildLandingMetadata = (page: LandingPageVariant): Metadata => {
+  if (page === 'overview') {
+    return landingMetadata;
+  }
+
+  const tab = getLandingTabDefinition(page);
+  return {
+    ...landingMetadata,
+    title: `${tab.title} | Voice Flow`,
+    description: tab.description,
+    alternates: {
+      canonical: tab.href,
+    },
+    openGraph: {
+      ...landingMetadata.openGraph,
+      url: tab.href,
+      title: `${tab.title} | Voice Flow`,
+      description: tab.description,
+    },
+    twitter: {
+      ...landingMetadata.twitter,
+      title: `${tab.title} | Voice Flow`,
+      description: tab.description,
+    },
+  };
 };

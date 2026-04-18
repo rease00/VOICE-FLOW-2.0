@@ -29,6 +29,7 @@ export const REPLATFORM_CONTRACT_DOMAINS: ReplatformContractDomain[] = [
     status: 'planned',
     notes: [
       'Billing still primarily resolves through the compatibility proxy.',
+      'Cloudflare-only launch stays blocked until billing routes are migrated or VF_MEDIA_BACKEND_URL points at a real compatibility backend.',
       'Stripe and Razorpay server clients should converge behind Next.js routes in the next migration slice.',
     ],
   },
@@ -40,6 +41,7 @@ export const REPLATFORM_CONTRACT_DOMAINS: ReplatformContractDomain[] = [
     status: 'migrating',
     notes: [
       'Canonical studio TTS, novel jobs, long-text, stream, export, and modernize paths now exist under /api/v1/studio.',
+      'The legacy /api/v1/tts compatibility surface still requires an external backend for launch.',
       'Heavy media work can stay behind provider APIs or managed runtimes while product-facing routes converge in Next.js.',
     ],
   },
@@ -51,6 +53,7 @@ export const REPLATFORM_CONTRACT_DOMAINS: ReplatformContractDomain[] = [
     status: 'migrating',
     notes: [
       'Reader object delivery and legal acknowledgement now have first-party Next.js surfaces.',
+      'The compatibility /api/v1/library proxy still requires an external backend for unmigrated reader flows.',
       'Full reader dashboard, sessions, uploads, and commercial checks still need domain-by-domain migration.',
     ],
   },
@@ -73,6 +76,7 @@ export const REPLATFORM_CONTRACT_DOMAINS: ReplatformContractDomain[] = [
     status: 'planned',
     notes: [
       'Voice clone and heavy media orchestration are intentionally deferred behind managed runtimes until the control plane is ready.',
+      'Proxy mode is launch-safe only when VF_MEDIA_BACKEND_URL is configured to a real compatibility backend.',
     ],
   },
   {

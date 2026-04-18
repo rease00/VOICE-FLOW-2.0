@@ -723,7 +723,7 @@ export const resolveDirectorPromptProfile = (options?: {
       modeLabel: 'Auto + Expressive Emotion',
       requestedTone: 'dramatic',
       temperature: 0.28,
-      userPromptLead: 'Auto-rewrite the following text into a performance-ready dramatic audio script.',
+      userPromptLead: 'Auto-rewrite the following text into a performance-ready dramatic audio script using the [Speaker|emotion|pace|cue]: format EXACTLY and ONLY.',
       extraInstructions: [
         'AUTO REWRITE MODE: tighten pacing, clarify speaker intent, and preserve plot fidelity.',
         'EXPRESSIVE EMOTION MODE: intensify emotional delivery while staying true to the source.',
@@ -731,13 +731,13 @@ export const resolveDirectorPromptProfile = (options?: {
     };
   }
 
-  if (autoRewrite) {
+    if (autoRewrite) {
     return {
       modeId: 'auto',
       modeLabel: 'Auto',
       requestedTone: 'neutral',
       temperature: 0.24,
-      userPromptLead: 'Auto-rewrite the following text into a clean audio script.',
+      userPromptLead: 'Auto-rewrite the following text into a clean audio script using the [Speaker|emotion|pace|cue]: format EXACTLY and ONLY.',
       extraInstructions: [
         'AUTO REWRITE MODE: improve readability, pacing, and audio performance without changing intent.',
       ],
@@ -750,7 +750,7 @@ export const resolveDirectorPromptProfile = (options?: {
       modeLabel: 'Expressive Emotion',
       requestedTone: 'dramatic',
       temperature: 0.25,
-      userPromptLead: 'Direct the following text with heightened performance emotion.',
+      userPromptLead: 'Direct the following text with heightened performance emotion using the [Speaker|emotion|pace|cue]: format EXACTLY and ONLY.',
       extraInstructions: [
         'EXPRESSIVE EMOTION MODE: make the emotional beats vivid while preserving attribution.',
       ],
@@ -762,7 +762,7 @@ export const resolveDirectorPromptProfile = (options?: {
     modeLabel: 'AI Director',
     requestedTone: 'neutral',
     temperature: 0.2,
-    userPromptLead: 'Direct the following text into a clean audio script.',
+    userPromptLead: 'Direct the following text into a clean audio script using the [Speaker|emotion|pace|cue]: format EXACTLY and ONLY.',
     extraInstructions: [
       'DEFAULT MODE: preserve narrative sequence, speaker attribution, and clean studio readability.',
     ],

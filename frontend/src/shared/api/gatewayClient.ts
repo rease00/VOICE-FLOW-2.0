@@ -17,6 +17,7 @@ const TTS_V2_SESSION_HEADER = 'x-vf-tts-session-key';
 const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 const CLIENT_DEDUPE_HEADER = 'X-VF-Client-Request-Dedupe';
 const TTS_V2_SESSION_REFRESH_SKEW_MS = 30_000;
+const TTS_V2_SESSION_IDEMPOTENCY_WINDOW_MS = 5 * 60_000;
 const TTS_V2_CREATE_RECENT_TTL_MS = 60_000;
 const TTS_V2_AUTO_REQUEST_ID_TTL_MS = 24 * 60 * 60 * 1000;
 const TTS_V2_AUTO_REQUEST_ID_STORAGE_PREFIX = 'vf:tts:auto-request-id:v1';
@@ -63,6 +64,14 @@ const removedGatewayFeature = (feature: string): Error =>
 
 const ttsV2SessionCacheKey = (baseUrl?: string): string => {
   return resolveApiBaseUrl(baseUrl) || 'default';
+};
+
+const createTtsV2SessionIdempotencyKey = (requestKey: string, nowMs: number): string => {
+  return `vf:tts:session:${hashText(requestKey)}:${Math.floor(nowMs / TTS_V2_SESSION_IDEMPOTENCY_WINDOW_MS).toString(36)}`;
+};
+
+const createTtsV2SessionCancelIdempotencyKey = (cacheKey: string, sessionKey: string): string => {
+  return `vf:tts:session-cancel:${hashText(`${cacheKey}:${sessionKey}`)}`;
 };
 
 const cloneTtsJobResponse = (response: TtsJobStatusResponse): TtsJobStatusResponse => {
@@ -256,6 +265,7 @@ export const issueTtsV2SessionKey = async (options?: {
     probeAllSlotRegions: options?.probeAllSlotRegions === true,
   };
   const requestKey = `${cacheKey}:${JSON.stringify(requestBody)}`;
+  const idempotencyKey = createTtsV2SessionIdempotencyKey(requestKey, now);
   const inFlight = TTS_V2_SESSION_IN_FLIGHT.get(requestKey);
   if (inFlight) {
     return inFlight;
@@ -266,7 +276,10 @@ export const issueTtsV2SessionKey = async (options?: {
       '/tts/v2/sessions',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+        },
         body: JSON.stringify(requestBody),
         ...(options?.signal ? { signal: options.signal } : {}),
       },
@@ -306,7 +319,12 @@ export const cancelTtsSession = async (options?: {
   try {
     return await requestJson<TtsV2SessionCancelResponse>(
       `/tts/v2/sessions/${encodeURIComponent(sessionKey)}/cancel`,
-      { method: 'POST' },
+      {
+        method: 'POST',
+        headers: {
+          'Idempotency-Key': createTtsV2SessionCancelIdempotencyKey(cacheKey, sessionKey),
+        },
+      },
       { ...withBaseUrl(options?.baseUrl), requireAuth: true }
     );
   } finally {

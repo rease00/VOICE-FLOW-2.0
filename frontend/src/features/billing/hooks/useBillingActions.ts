@@ -13,6 +13,7 @@ import {
   type RazorpayCheckoutOptions,
 } from '../api/billingApi';
 import type { BillingPlanKey, BillingVcPackKey, TokenPackKey, VnTokenPackKey } from '../../../../services/accountService';
+import { BILLING_CHECKOUT_LOCK_MESSAGE, isBillingCheckoutLocked } from '../../../shared/billing/checkoutLock';
 
 interface UseBillingActionsArgs {
   baseUrl: string;
@@ -20,7 +21,7 @@ interface UseBillingActionsArgs {
 }
 
 type BillingRouteState = 'success' | 'cancel' | 'none';
-type BillingRouteTab = 'plans' | 'token' | 'vc';
+type BillingRouteTab = 'plans' | 'token' | 'vc' | 'vn';
 type BillingLocationLike = Pick<Location, 'origin' | 'pathname'>;
 const BILLING_PUBLIC_PATH = '/billing';
 
@@ -43,6 +44,12 @@ declare global {
 }
 
 let razorpayScriptPromise: Promise<void> | null = null;
+
+const assertBillingCheckoutAvailable = (): void => {
+  if (isBillingCheckoutLocked()) {
+    throw new Error(BILLING_CHECKOUT_LOCK_MESSAGE);
+  }
+};
 
 const loadRazorpayScript = async (): Promise<void> => {
   if (typeof window === 'undefined') {
@@ -123,7 +130,16 @@ export const buildBillingReturnUrl = (
   const safeReturnPath = String(returnPath || BILLING_PUBLIC_PATH).trim();
   const normalizedReturnPath = safeReturnPath.startsWith('/') ? safeReturnPath : BILLING_PUBLIC_PATH;
   const url = new URL(`${location.origin}${normalizedReturnPath}`);
-  url.searchParams.set('tab', tab === 'token' ? 'token-buy' : tab === 'vc' ? 'vc-packs' : 'subscription');
+  url.searchParams.set(
+    'tab',
+    tab === 'token'
+      ? 'token-buy'
+      : tab === 'vc'
+        ? 'vc-packs'
+        : tab === 'vn'
+          ? 'vn-packs'
+          : 'subscription'
+  );
   if (state === 'success' || state === 'cancel') {
     url.searchParams.set('billing', state);
   } else {
@@ -134,6 +150,7 @@ export const buildBillingReturnUrl = (
 
 export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }: UseBillingActionsArgs) => {
   const startPlanCheckout = useCallback(async (plan: BillingPlanKey, couponCode?: string) => {
+    assertBillingCheckoutAvailable();
     const options: { successUrl: string; cancelUrl: string; couponCode?: string } = {
       successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'plans'),
       cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'plans'),
@@ -146,6 +163,7 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
   }, [baseUrl, returnPath]);
 
   const startTokenPackCheckout = useCallback(async (pack: TokenPackKey) => {
+    assertBillingCheckoutAvailable();
     return createTokenPackCheckoutSession(pack, baseUrl, {
       successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'token'),
       cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'token'),
@@ -153,6 +171,7 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
   }, [baseUrl, returnPath]);
 
   const startVcTokenPackCheckout = useCallback(async (pack: BillingVcPackKey) => {
+    assertBillingCheckoutAvailable();
     return startVcTokenPackCheckoutSession(pack, baseUrl, {
       successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'vc'),
       cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'vc'),
@@ -160,9 +179,10 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
   }, [baseUrl, returnPath]);
 
   const startVnTokenPackCheckout = useCallback(async (pack: VnTokenPackKey) => {
+    assertBillingCheckoutAvailable();
     return startVnTokenPackCheckoutSession(pack, baseUrl, {
-      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'vc'),
-      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'vc'),
+      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'vn'),
+      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'vn'),
     });
   }, [baseUrl, returnPath]);
 

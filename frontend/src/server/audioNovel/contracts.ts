@@ -54,6 +54,11 @@ export interface AudioNovelChapterAudioReadyResponse {
   audioUrl: string;
   syncUrl: string;
   source: 'r2' | 'generated';
+  cacheStatus: 'hit' | 'generated';
+  storage: 'r2';
+  engine: 'VECTOR';
+  runtimeLabel: string;
+  persisted: true;
   hash: string;
   totalRuns: number;
   speakers: string[];
@@ -62,6 +67,11 @@ export interface AudioNovelChapterAudioReadyResponse {
 export interface AudioNovelChapterAudioMissingResponse {
   generated: false;
   source: 'missing';
+  cacheStatus: 'missing';
+  storage: 'r2';
+  engine: 'VECTOR';
+  runtimeLabel: string;
+  persisted: false;
   hash: string;
   reason: 'not-generated';
 }
@@ -98,11 +108,13 @@ export interface AudioNovelLiveStartMessage {
   totalRuns: number;
   totalLines: number;
   mode: 'single' | 'multi';
+  transport?: 'bidi' | 'run';
 }
 
 export interface AudioNovelLiveBufferingMessage {
   status: 'buffering';
   waitMs: number;
+  reason?: string;
 }
 
 export interface AudioNovelLiveRunMetaMessage {
@@ -140,6 +152,8 @@ export interface AudioNovelLiveClientMessage {
   text?: string;
   bookId?: string;
   chapterId?: string;
+  guestSessionId?: string;
+  bookSource?: string;
 }
 
 export type ReaderNovelJobRequest = AudioNovelJobRequest;

@@ -57,7 +57,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   const [isHydrated, setIsHydrated] = useState(false);
   const activeLegalDocument = activeLegalPath ? resolveLegalDocument(activeLegalPath) : null;
   const firebaseIssue = !isFirebaseConfigured
-    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart frontend.')
+    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart frontend.')
     : '';
   const disableEmailAuthSubmit = Boolean(firebaseIssue);
   const disableOAuthAuthSubmit = Boolean(firebaseIssue);

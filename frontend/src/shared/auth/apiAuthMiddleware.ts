@@ -53,7 +53,37 @@ export async function requireKyc(uid: string): Promise<NextResponse | null> {
 
 /* ─── Rate limiting (in-memory, per-instance) ─── */
 
-const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+
+interface RateLimitRuntimeState {
+  store: Map<string, RateLimitEntry>;
+  cleanupInterval: ReturnType<typeof setInterval> | null;
+}
+
+const RATE_LIMIT_STATE_KEY = '__voiceFlowApiAuthRateLimitState__' as const;
+
+type GlobalWithRateLimitState = typeof globalThis & {
+  [RATE_LIMIT_STATE_KEY]?: RateLimitRuntimeState;
+};
+
+function getRateLimitRuntimeState(): RateLimitRuntimeState {
+  const globalScope = globalThis as GlobalWithRateLimitState;
+  const existingState = globalScope[RATE_LIMIT_STATE_KEY];
+  if (existingState) return existingState;
+
+  const createdState: RateLimitRuntimeState = {
+    store: new Map<string, RateLimitEntry>(),
+    cleanupInterval: null,
+  };
+  globalScope[RATE_LIMIT_STATE_KEY] = createdState;
+  return createdState;
+}
+
+const rateLimitState = getRateLimitRuntimeState();
+const rateLimitStore = rateLimitState.store;
 
 interface RateLimitConfig {
   maxRequests: number;
@@ -103,13 +133,29 @@ export function sanitizePromptInput(value: string): string {
 
 /* ─── Periodic cleanup for rate limit store ─── */
 
-if (typeof globalThis !== 'undefined') {
-  setInterval(() => {
-    const now = Date.now();
-    for (const [key, entry] of rateLimitStore) {
-      if (now >= entry.resetAt) {
-        rateLimitStore.delete(key);
-      }
+function cleanupExpiredRateLimitEntries() {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitStore) {
+    if (now >= entry.resetAt) {
+      rateLimitStore.delete(key);
     }
+  }
+}
+
+function ensureRateLimitCleanupInterval() {
+  if (rateLimitState.cleanupInterval) return;
+
+  rateLimitState.cleanupInterval = setInterval(() => {
+    cleanupExpiredRateLimitEntries();
   }, 300_000); // Clean every 5 min
+
+  // Avoid keeping Node.js processes alive solely for maintenance cleanup.
+  const interval = rateLimitState.cleanupInterval as
+    | (ReturnType<typeof setInterval> & { unref?: () => void })
+    | null;
+  interval?.unref?.();
+}
+
+if (typeof globalThis !== 'undefined') {
+  ensureRateLimitCleanupInterval();
 }

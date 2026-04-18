@@ -3,6 +3,7 @@ import type { ClonedVoice } from '../../../types';
 export interface OpenVoiceBenchmarkRequest {
   mode: 'tts' | 'vc' | 'tts_then_vc';
   runKind: 'warm' | 'cold';
+  seedVcVersion?: 'v1' | 'v2';
   durationSec: number;
   language: string;
   text: string;
@@ -82,6 +83,7 @@ export interface OpenVoiceBenchmarkResponse {
   status?: string;
   mode?: 'tts' | 'vc' | 'tts_then_vc' | string;
   runKind?: 'warm' | 'cold' | string;
+  seedVcVersion?: 'v1' | 'v2' | string;
   requestId?: string;
   traceId?: string;
   language?: string;

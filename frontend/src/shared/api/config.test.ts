@@ -27,14 +27,14 @@ afterEach(() => {
 
 describe('api config', () => {
   it('uses the canonical v1 API by default when the app is running remotely', () => {
-    vi.stubEnv('VITE_API_BASE_URL', '');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
     expect(getDefaultApiBaseUrl()).toBe('/api/v1');
   });
 
   it('heals stale localhost overrides on hosted deployments', () => {
-    vi.stubEnv('VITE_API_BASE_URL', '');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
     expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/v1');
@@ -42,28 +42,28 @@ describe('api config', () => {
   });
 
   it('keeps explicit local backend overrides during local development', () => {
-    vi.stubEnv('VITE_API_BASE_URL', '');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', '');
     setWindowLocation('http://localhost:5173');
 
     expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('http://127.0.0.1:7800');
   });
 
   it('uses explicit local env backend during local development', () => {
-    vi.stubEnv('VITE_API_BASE_URL', 'http://127.0.0.1:7800');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'http://127.0.0.1:7800');
     setWindowLocation('http://localhost:5173');
 
     expect(getDefaultApiBaseUrl()).toBe('http://127.0.0.1:7800');
   });
 
   it('forces hosted browser sessions back onto the canonical v1 surface for remote backends', () => {
-    vi.stubEnv('VITE_API_BASE_URL', '');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
     expect(resolveApiBaseUrl('https://api.voiceflow.example')).toBe('/api/v1');
   });
 
   it('heals stale localhost overrides to the configured remote backend when one is set', () => {
-    vi.stubEnv('VITE_API_BASE_URL', 'https://api.voiceflow.example');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.voiceflow.example');
     setWindowLocation('https://voiceflow-demo.pages.dev');
 
     expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/v1');

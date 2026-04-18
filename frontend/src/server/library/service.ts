@@ -11,6 +11,15 @@ import {
   readPublishedBookById,
 } from '../publishing/service';
 
+type LibraryDiscoveryMeta = {
+  publishedBooksAvailable: boolean;
+  degradedSources: string[];
+};
+
+type LibraryDiscoveryResult = GutendexResponse & {
+  meta?: LibraryDiscoveryMeta;
+};
+
 const PRIVATE_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1)$/i;
 const ALLOWED_HOST_SUFFIXES = [
   'gutenberg.org',
@@ -53,15 +62,33 @@ const parseDiscoveryOptions = (request: NextRequest): BookDiscoveryOptions => {
   return options;
 };
 
-export const fetchLibraryBooks = async (options: BookDiscoveryOptions = {}): Promise<GutendexResponse> => {
-  const [external, published] = await Promise.all([
+export const fetchLibraryBooks = async (options: BookDiscoveryOptions = {}): Promise<LibraryDiscoveryResult> => {
+  const [external, publishedResult] = await Promise.all([
     fetchDiscoveredBooks(options),
-    listPublishedBooksForLibrary(options),
+    listPublishedBooksForLibrary(options).then(
+      (books) => ({ ok: true as const, books }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
   ]);
+  const published = publishedResult.ok ? publishedResult.books : [];
+
+  if (!publishedResult.ok) {
+    console.warn('[library] Published book discovery degraded; continuing with external catalog only.', {
+      error: publishedResult.error instanceof Error ? publishedResult.error.message : String(publishedResult.error || 'unknown'),
+      options,
+    });
+  }
+
   return {
     ...external,
     count: external.count + published.length,
     results: [...published, ...(external.results || [])],
+    ...(publishedResult.ok ? {} : {
+      meta: {
+        publishedBooksAvailable: false,
+        degradedSources: ['publishedBooks'],
+      } satisfies LibraryDiscoveryMeta,
+    }),
   };
 };
 

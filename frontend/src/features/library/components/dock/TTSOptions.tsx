@@ -73,7 +73,7 @@ export function TTSOptions({ isCompact = false, ttsSettings, onSettingsChange }:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode: 'studio',
-          text: 'Hello, this is a Cloud TTS preview.',
+          text: 'Hello, this is a Gemini Flash reader preview.',
           engine: 'VECTOR',
           voice: settings.voice,
           language: settings.language,
@@ -116,15 +116,19 @@ export function TTSOptions({ isCompact = false, ttsSettings, onSettingsChange }:
 
   return (
     <div className="space-y-4 rounded-[24px] border border-[var(--vf-reader-card-border)] bg-[var(--vf-reader-card-bg)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <h3 className="text-sm font-semibold text-[var(--vf-reader-shell-text)]">Cloud TTS</h3>
+      <h3 className="text-sm font-semibold text-[var(--vf-reader-shell-text)]">Reader TTS</h3>
 
-      <div className="rounded-2xl border border-[var(--vf-reader-card-border)] bg-[var(--vf-reader-card-bg)] p-3">
+      <div
+        data-testid="reader-tts-runtime-card"
+        className="rounded-2xl border border-[var(--vf-reader-card-border)] bg-[var(--vf-reader-card-bg)] p-3"
+      >
         <div className="flex items-center gap-2 text-xs font-medium text-[var(--vf-reader-muted)]">
           <Cloud size={14} className="text-[var(--vf-reader-accent-text)]" />
-          <span>Google Cloud Text-to-Speech</span>
+          <span>Google Cloud Gemini TTS</span>
         </div>
         <p className="mt-2 text-xs text-[var(--vf-reader-muted)]">
-          Reader playback uses one low-latency Cloud TTS path backed by <span className="font-semibold text-[var(--vf-reader-panel-text)]">gemini-2.5-flash-tts</span>.
+          Reader playback stays on <span className="font-semibold text-[var(--vf-reader-panel-text)]">gemini-2.5-flash-tts</span>.
+          Cached chapters use signed URL playback first, and uncached listens fall back to live bidi streaming for the fastest start.
         </p>
       </div>
 

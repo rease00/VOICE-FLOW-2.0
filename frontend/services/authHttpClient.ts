@@ -26,8 +26,7 @@ const NETWORK_FAILURE_HINTS = [
 ];
 
 const DEV_UID_HEADER_ENABLED = Boolean(readEnvBoolean(
-  process.env.NEXT_PUBLIC_ENABLE_DEV_UID_HEADER,
-  process.env.VITE_ENABLE_DEV_UID_HEADER
+  process.env.NEXT_PUBLIC_ENABLE_DEV_UID_HEADER
 ));
 const TOKEN_TIMING_HINTS = [
   'token used too early',

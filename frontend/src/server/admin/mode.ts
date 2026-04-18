@@ -1,4 +1,5 @@
 import { readEnvValue } from '../../shared/runtime/env';
+import { hasConfiguredLegacyBackendOrigin } from '../replatform/backendProxyConfig';
 
 export type AdminOpsMode = 'native' | 'proxy';
 
@@ -16,10 +17,4 @@ export const getAdminOpsMode = (): AdminOpsMode => normalizeMode(
 
 export const isAdminOpsProxyMode = (): boolean => getAdminOpsMode() === 'proxy';
 
-export const hasLegacyAdminOpsProxyConfigured = (): boolean => Boolean(
-  readEnvValue(
-    process.env.VF_MEDIA_BACKEND_URL,
-    process.env.VF_MEDIA_BACKEND_ORIGINS_JSON,
-    process.env.VF_MEDIA_BACKEND_URLS_JSON,
-  )
-);
+export const hasLegacyAdminOpsProxyConfigured = (): boolean => hasConfiguredLegacyBackendOrigin();

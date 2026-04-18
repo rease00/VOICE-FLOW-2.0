@@ -1,6 +1,6 @@
 import { RequestConfig, ApiClient } from './apiClient';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '/api/v1';
 
 const requestConfig: RequestConfig = {
   baseURL: API_BASE_URL,

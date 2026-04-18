@@ -185,6 +185,13 @@ export const readPublishedBookById = async (bookId: string): Promise<PublishedBo
   return toPublishedBook(await getBookRef(bookId).get());
 };
 
+const toSortableTimestamp = (value: string | undefined): number => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return 0;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
 export const listPublishedBooksForLibrary = async (input?: {
   search?: string;
   topic?: string;
@@ -193,8 +200,7 @@ export const listPublishedBooksForLibrary = async (input?: {
   const snapshot = await db()
     .collection('publishedBooks')
     .where('status', '==', 'published')
-    .orderBy('publishedAt', 'desc')
-    .limit(50)
+    .limit(100)
     .get();
 
   const search = String(input?.search || '').trim().toLowerCase();
@@ -218,6 +224,12 @@ export const listPublishedBooksForLibrary = async (input?: {
       }
       return true;
     })
+    .sort((left, right) => {
+      const rightPublishedAt = toSortableTimestamp(right.publishedAt || right.createdAt);
+      const leftPublishedAt = toSortableTimestamp(left.publishedAt || left.createdAt);
+      return rightPublishedAt - leftPublishedAt;
+    })
+    .slice(0, 50)
     .map((book) => mapPublishedBookToLibraryBook(book));
 };
 

@@ -21,7 +21,7 @@ import {
   saveDomainJobRecord,
   type DomainJobRecord,
 } from '../jobs/domainJobStore';
-import { requireServerUser } from '../auth/requestAuth';
+import { requireServerUser } from '../auth/requestAuth.ts';
 import { readEnvNumber, readEnvValue } from '../../shared/runtime/env';
 import { hasLegacyVoiceCloneProxyConfigured, isVoiceCloneProxyMode } from './mode';
 
@@ -464,7 +464,7 @@ const executeVoiceCloneJob = async (
         method: 'POST',
         body: JSON.stringify({
           ...inputPayload,
-          mode: 'vc',
+          mode: String(inputPayload.mode || 'vc').trim() || 'vc',
           runKind: String(inputPayload.runKind || 'warm').trim() || 'warm',
           requestId: record.payload?.requestId || inputPayload.requestId || randomUUID(),
           traceId: record.payload?.traceId || inputPayload.traceId || record.payload?.requestId || randomUUID(),
@@ -701,7 +701,7 @@ const handleRender = async (request: Request): Promise<Response> => {
       method: 'POST',
       body: JSON.stringify({
         ...payload,
-        mode: 'vc',
+        mode: String(payload.mode || 'vc').trim() || 'vc',
         runKind: String(payload.runKind || 'warm').trim() || 'warm',
         requestId: String(payload.requestId || '').trim() || randomUUID(),
         traceId: String(payload.traceId || '').trim() || randomUUID(),

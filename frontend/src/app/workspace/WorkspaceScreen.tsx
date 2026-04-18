@@ -20,14 +20,17 @@ const BOOTSTRAP_STALL_MS = 8_000;
 
 const resolveWorkspaceAuthGateContent = (pathname?: string | null) => {
   const safePath = String(pathname || '').trim().toLowerCase();
-  if (safePath.startsWith('/app/voices')) return { eyebrow: 'Voices workspace', title: 'Sign in to open Voices', description: 'Voice tools, clone flows, and cast presets stay behind secure workspace access.' };
+  if (safePath.startsWith('/app/voices')) return { eyebrow: 'Voices workspace', title: 'Sign in to open Voices', description: 'Voice tools, clone flows, and cast presets stay behind secure workspace access. Public signup is paused until launch.' };
   if (safePath.startsWith('/app/writing')) {
-    return { eyebrow: 'Writing workspace', title: 'Sign in to open Writing', description: 'Drafts and workspace state restore after secure sign-in.' };
+    return { eyebrow: 'Writing workspace', title: 'Sign in to open Writing', description: 'Drafts and workspace state restore after secure sign-in. Public signup is paused until launch.' };
   }
-  if (safePath.startsWith('/app/runs')) return { eyebrow: 'Runs workspace', title: 'Sign in to open Runs', description: 'History, queue status, and job recovery stay tied to your account session.' };
-  if (safePath.startsWith('/app/admin')) return { eyebrow: 'Admin workspace', title: 'Sign in to open Admin', description: 'Operational controls and audit tooling require a verified workspace session.' };
-  if (safePath.startsWith('/app/billing')) return { eyebrow: 'Billing workspace', title: 'Sign in to open Billing', description: 'Usage, token balance, and checkout recovery stay attached to your secure account.' };
-  return { eyebrow: 'Studio workspace', title: 'Sign in to open Studio', description: 'Drafts, engine controls, and generation history stay inside your secure workspace session.' };
+  if (safePath.startsWith('/app/library')) {
+    return { eyebrow: 'Readers platform', title: 'Sign in to open Readers', description: 'Your books, writing progress, and reader history restore after secure sign-in. Public signup is paused until launch.' };
+  }
+  if (safePath.startsWith('/app/runs')) return { eyebrow: 'Runs workspace', title: 'Sign in to open Runs', description: 'History, queue status, and job recovery stay tied to your account session. Public signup is paused until launch.' };
+  if (safePath.startsWith('/app/admin')) return { eyebrow: 'Admin workspace', title: 'Sign in to open Admin', description: 'Operational controls and audit tooling require a verified workspace session. Public signup is paused until launch.' };
+  if (safePath.startsWith('/app/billing')) return { eyebrow: 'Billing workspace', title: 'Sign in to open Billing', description: 'Usage, token balance, and checkout recovery stay attached to your secure account. Public signup is paused until launch.' };
+  return { eyebrow: 'Studio workspace', title: 'Sign in to open Studio', description: 'Drafts, engine controls, and generation history stay inside your secure workspace session. Public signup is paused until launch.' };
 };
 
 // ── Shared shell wrapper ─────────────────────────────────────────────────────
@@ -252,7 +255,7 @@ export function WorkspaceScreen() {
   const shouldShowWorkspaceAuthGate = authReady && !isAuthenticated && !isWorkspaceRootPath;
   const workspaceAuthGate = useMemo(() => resolveWorkspaceAuthGateContent(normalizedPathname), [normalizedPathname]);
   const workspaceLoginHref = useMemo(() => resolveLoginPath('login', pathname), [pathname]);
-  const workspaceSignupHref = useMemo(() => resolveLoginPath('signup', pathname), [pathname]);
+  const workspaceSecondaryHref = '/landing';
 
   const setScreen = useCallback((screen: AppScreen) => {
     router.replace(resolveAppPath(screen));
@@ -335,8 +338,8 @@ export function WorkspaceScreen() {
           description={workspaceAuthGate.description}
           primaryHref={workspaceLoginHref}
           primaryLabel="Open secure sign-in"
-          secondaryHref={workspaceSignupHref}
-          secondaryLabel="Create account"
+          secondaryHref={workspaceSecondaryHref}
+          secondaryLabel="Launch soon"
         />
       </PremiumShell>
     );

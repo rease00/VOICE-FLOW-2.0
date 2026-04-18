@@ -174,6 +174,35 @@ const isRetryableChunkFetchStatus = (statusCode: number): boolean => {
   return statusCode >= 500 && statusCode <= 599;
 };
 
+const READY_CHUNK_STATE_TOKENS = new Set([
+  'ready',
+  'playable',
+  'available',
+  'complete',
+  'completed',
+  'done',
+  'success',
+  'succeeded',
+]);
+
+const normalizeChunkStateToken = (value: unknown): string => (
+  String(value || '').trim().toLowerCase()
+);
+
+const shouldAttemptChunkAudioFetch = (rawChunk: Record<string, unknown>): boolean => {
+  const status = normalizeChunkStateToken(rawChunk.status);
+  const generationStatus = normalizeChunkStateToken(rawChunk.generationStatus);
+  const readyState = normalizeChunkStateToken(rawChunk.readyState);
+  const downloadUrl = String(rawChunk.downloadUrl || '').trim();
+  const artifactHandle = String(rawChunk.artifactHandle || '').trim();
+  const explicitReady =
+    READY_CHUNK_STATE_TOKENS.has(status) ||
+    READY_CHUNK_STATE_TOKENS.has(generationStatus) ||
+    READY_CHUNK_STATE_TOKENS.has(readyState);
+  if (explicitReady) return true;
+  return Boolean(downloadUrl || artifactHandle);
+};
+
 const fetchChunkAudioWithRetry = async (input: {
   jobId: string;
   chunkIndex: number;
@@ -350,7 +379,7 @@ export const pollTtsGatewayJobForAudio = async (
           if (emittedChunkKeys.has(key)) continue;
 
           let audioBase64 = String(rawChunk.audioBase64 || '').trim();
-          if (!audioBase64) {
+          if (!audioBase64 && shouldAttemptChunkAudioFetch(rawChunkAny)) {
             const chunkBytes = await fetchChunkAudioWithRetry({
               jobId,
               chunkIndex: safeIndex,

@@ -30,8 +30,8 @@ export default function ReadPage() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const bookId = decodeURIComponent(String(params.bookId || ''));
-  const bookSource = searchParams.get('source');
+  const bookId = decodeURIComponent(String(params?.bookId || ''));
+  const bookSource = searchParams?.get('source');
   const [book, setBook] = useState<Book | null>(null);
 
   useEffect(() => {

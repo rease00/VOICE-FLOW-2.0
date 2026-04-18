@@ -28,6 +28,7 @@ export const resolveStudioRailTab = (value: unknown): StudioRailTab => {
 
 export interface StudioCreditsActionStateInput {
   isAuthenticated?: boolean;
+  billingCheckoutLocked?: boolean;
   isBuyingTokenPack: boolean;
   isRedeemingCoupon: boolean;
   couponCode: string;
@@ -41,6 +42,6 @@ export interface StudioCreditsActionState {
 export const getStudioCreditsActionState = (
   input: StudioCreditsActionStateInput
 ): StudioCreditsActionState => ({
-  buyTokenPackDisabled: input.isBuyingTokenPack,
+  buyTokenPackDisabled: Boolean(input.billingCheckoutLocked) || input.isBuyingTokenPack,
   redeemCouponDisabled: input.isRedeemingCoupon || !String(input.couponCode || '').trim(),
 });

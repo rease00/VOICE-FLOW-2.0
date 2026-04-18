@@ -7,6 +7,7 @@ import {
   BookmarkCheck,
   ChevronDown,
   ChevronUp,
+  Cloud,
   FileText,
   GraduationCap,
   List,
@@ -27,8 +28,10 @@ import type {
   LastPlayedRecord,
   PlaybackState,
   ReaderChapter,
+  ReaderScriptPlaybackSource,
   TtsSettings,
 } from '../model/types';
+import type { AudioNovelChapterAudioResponse } from '../../../server/audioNovel/contracts';
 import { getBookDownloadLink } from '../services/bookDiscoveryService';
 import { tokenizeParagraph, DEFAULT_CHUNK_LIMIT } from '../services/ttsUtils';
 import { AmbiancePanel } from './dock/AmbiancePanel';
@@ -65,6 +68,7 @@ interface TranslationLanguageOption {
 }
 
 const DISPLAY_SETTINGS_KEY = 'vf:reader-display-settings';
+const AI_SCRIPT_STORAGE_PREFIX = 'vf:reader-ai-script:';
 
 const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   background: 'dark',
@@ -144,6 +148,37 @@ const readDisplaySettings = (): DisplaySettings => {
     };
   } catch {
     return DEFAULT_DISPLAY_SETTINGS;
+  }
+};
+
+const getAiScriptStorageKey = (chapterKey: string) => `${AI_SCRIPT_STORAGE_PREFIX}${chapterKey}`;
+
+const readStoredAiScript = (chapterKey: string): string => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  try {
+    return window.localStorage.getItem(getAiScriptStorageKey(chapterKey)) || '';
+  } catch {
+    return '';
+  }
+};
+
+const writeStoredAiScript = (chapterKey: string, value: string): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+      window.localStorage.removeItem(getAiScriptStorageKey(chapterKey));
+      return;
+    }
+    window.localStorage.setItem(getAiScriptStorageKey(chapterKey), normalized);
+  } catch {
+    // Ignore localStorage failures so Reader playback still works.
   }
 };
 
@@ -283,6 +318,9 @@ export function ReaderView({
     speakerMode: 'single',
     speakerConfigs: [],
   });
+  const [preferredPlaybackSource, setPreferredPlaybackSource] = useState<ReaderScriptPlaybackSource>('raw');
+  const [aiScriptsByChapter, setAiScriptsByChapter] = useState<Record<string, string>>({});
+  const [cachedAudioByChapter, setCachedAudioByChapter] = useState<Record<string, AudioNovelChapterAudioResponse | null>>({});
   const effectiveTtsSettings = useMemo(() => {
     return {
       ...ttsSettings,
@@ -325,8 +363,18 @@ export function ReaderView({
   }, [chapterSearchQuery, chapters]);
 
   const activeChapter = chapters[selectedChapterIndex];
+  const activeChapterKey = `${String(book.id)}:${String(activeChapter?.id || selectedChapterIndex)}`;
   const readerText = activeChapter?.text || rawContent;
   const visibleReaderText = translationEnabled && translatedText ? translatedText : readerText;
+  const activeAiScript = aiScriptsByChapter[activeChapterKey] || '';
+  const cachedAudioResponse = cachedAudioByChapter[activeChapterKey] || null;
+  const cachedAudioReady = Boolean(cachedAudioResponse && cachedAudioResponse.generated);
+  const resolvedPlaybackSource: ReaderScriptPlaybackSource = preferredPlaybackSource === 'cached' && cachedAudioReady
+    ? 'cached'
+    : preferredPlaybackSource === 'ai' && activeAiScript.trim()
+      ? 'ai'
+      : 'raw';
+  const playbackScriptText = resolvedPlaybackSource === 'ai' ? activeAiScript : readerText;
   const previewLink = getBookDownloadLink(book, 'html');
   const hasDirectTextSource = Boolean(getBookDownloadLink(book, 'txt'));
   const canOpenArchivePreview = book.source === 'openlibrary' && !hasDirectTextSource && Boolean(previewLink);
@@ -343,6 +391,73 @@ export function ReaderView({
       .map((paragraph) => paragraph.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim())
       .filter(Boolean);
   }, [visibleReaderText]);
+
+  useEffect(() => {
+    if (preferredPlaybackSource !== 'cached') {
+      return;
+    }
+    if (!cachedAudioReady) {
+      setPreferredPlaybackSource('raw');
+    }
+  }, [cachedAudioReady, preferredPlaybackSource]);
+
+  useEffect(() => {
+    if (!activeChapterKey || activeChapterKey in aiScriptsByChapter) {
+      return;
+    }
+
+    const storedScript = readStoredAiScript(activeChapterKey);
+    if (!storedScript) {
+      return;
+    }
+
+    setAiScriptsByChapter((prev) => {
+      if (prev[activeChapterKey]) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [activeChapterKey]: storedScript,
+      };
+    });
+  }, [activeChapterKey, aiScriptsByChapter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const shouldCheckCachedAudio = book.source === 'published' && Boolean(activeChapter?.id);
+
+    if (!shouldCheckCachedAudio) {
+      return;
+    }
+
+    if (activeChapterKey in cachedAudioByChapter) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        const response = await fetch(
+          API_ROUTES.library.bookChapterAudio(String(book.id), String(activeChapter?.id || '')),
+          { cache: 'no-store' },
+        );
+        if (!response.ok) {
+          throw new Error(`Chapter audio lookup failed (${response.status}).`);
+        }
+        const payload = await response.json() as AudioNovelChapterAudioResponse;
+        if (!cancelled) {
+          setCachedAudioByChapter((prev) => ({ ...prev, [activeChapterKey]: payload }));
+        }
+      } catch {
+        if (!cancelled) {
+          setCachedAudioByChapter((prev) => ({ ...prev, [activeChapterKey]: null }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChapter?.id, activeChapterKey, book.id, book.source, cachedAudioByChapter]);
 
   // Tokenize paragraphs and build a paragraph->chunk map so we can
   // highlight words in sync with audio chunks produced by MiniPlayer.
@@ -1220,7 +1335,20 @@ export function ReaderView({
     }
 
     if (activeDockPopup === 'script') {
-      return <ScriptDetails currentText={readerText} {...(activeChapter?.title != null ? { chapterTitle: activeChapter.title } : {})} />;
+      return (
+        <ScriptDetails
+          currentText={readerText}
+          initialAiScript={activeAiScript}
+          onAiScriptChange={(value) => {
+            writeStoredAiScript(activeChapterKey, value);
+            setAiScriptsByChapter((prev) => ({ ...prev, [activeChapterKey]: value }));
+          }}
+          preferredPlaybackSource={preferredPlaybackSource}
+          onPreferredPlaybackSourceChange={setPreferredPlaybackSource}
+          cachedAudioReady={cachedAudioReady}
+          {...(activeChapter?.title != null ? { chapterTitle: activeChapter.title } : {})}
+        />
+      );
     }
 
     if (activeDockPopup === 'speaker') {
@@ -1939,11 +2067,13 @@ export function ReaderView({
                 <MiniPlayer
                   bookId={String(book.id)}
                   chapterId={activeChapter?.id}
-                  publishedMode={book.source === 'published'}
+                  bookSource={book.source}
+                  publishedMode={resolvedPlaybackSource === 'cached'}
                   playbackState={playbackState}
                   ttsSettings={effectiveTtsSettings}
-                  sourceText={readerText}
+                  sourceText={playbackScriptText}
                   bookText={visibleReaderText}
+                  scriptSource={resolvedPlaybackSource}
                   translationTargetLanguage={translationEnabled ? targetLanguage : undefined}
                   onStateChange={setPlaybackState}
                   isCompact
@@ -1983,6 +2113,11 @@ export function ReaderView({
                 >
                   <FileText size={13} />
                   <span className="hidden sm:inline">Script</span>
+                  {resolvedPlaybackSource === 'ai' ? (
+                    <Sparkles size={11} className="text-purple-300" aria-hidden="true" />
+                  ) : resolvedPlaybackSource === 'cached' ? (
+                    <Cloud size={11} className="text-cyan-300" aria-hidden="true" />
+                  ) : null}
                 </button>
 
                 <button

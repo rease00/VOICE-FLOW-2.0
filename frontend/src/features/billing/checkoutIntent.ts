@@ -124,7 +124,7 @@ export const createBillingCheckoutIntent = (
   draft: BillingCheckoutIntentDraft,
   now = Date.now()
 ): BillingCheckoutIntent | null => {
-  const kind = draft.kind === 'subscription' || draft.kind === 'token-pack' || draft.kind === 'vc-token-pack' ? draft.kind : null;
+  const kind = draft.kind === 'subscription' || draft.kind === 'token-pack' || draft.kind === 'vc-token-pack' || draft.kind === 'vn-token-pack' ? draft.kind : null;
   if (!kind) return null;
   const authMode = isAuthRouteMode(draft.authMode) ? draft.authMode : null;
   if (!authMode) return null;

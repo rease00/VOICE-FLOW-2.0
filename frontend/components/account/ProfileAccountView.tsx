@@ -2,10 +2,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  BookOpen,
   CheckCircle2,
+  Coins,
   ExternalLink,
+  History as HistoryIcon,
   Loader2,
   LogOut,
+  Mic,
+  PenSquare,
   RefreshCcw,
   Sparkles,
 } from 'lucide-react';
@@ -18,7 +23,7 @@ import { APP_ROUTE_PATHS } from '../../src/app/navigation';
 import { useBillingActions } from '../../src/features/billing/hooks/useBillingActions';
 import { useNotifications } from '../../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../src/shared/notifications/deepLink';
-import { readStorageString, writeStorageString } from '../../src/shared/storage/localStore';
+import { readStorageJson, readStorageString, writeStorageString } from '../../src/shared/storage/localStore';
 import { STORAGE_KEYS } from '../../src/shared/storage/keys';
 import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } from '../../src/shared/theme/brandThemes';
 import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../../src/shared/theme/themeDom';
@@ -56,6 +61,7 @@ import {
 import { consumeBillingReturnState } from './billingReturnState';
 import {
   ACCOUNT_TAB_ICONS,
+  AccountSummaryStrip,
   InfoRow,
   MetricCard,
   PreferenceToggle,
@@ -90,13 +96,25 @@ type ThemeChoice = 'light' | 'dark' | 'system';
 type SupportLoadState = 'idle' | 'loading' | 'ready' | 'forbidden' | 'error';
 type SupportLoadOptions = { force?: boolean };
 type BillingProfileSaveState = 'idle' | 'saving' | 'saved' | 'error';
+type ReadersWorkspaceSnapshot = {
+  favoritesCount: number;
+  lastPlayedTitle: string;
+  selectedProjectId: string;
+  selectedChapterId: string;
+};
 
 const EAGER_ACCOUNT_TABS: AccountTabKey[] = ['account'];
+const EMPTY_READERS_WORKSPACE_SNAPSHOT: ReadersWorkspaceSnapshot = {
+  favoritesCount: 0,
+  lastPlayedTitle: '',
+  selectedProjectId: '',
+  selectedChapterId: '',
+};
 
 const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }> = {
   account: {
     title: 'Account',
-    detail: 'Identity, access, membership, and synced entitlements.',
+    detail: 'Identity plus platform access across Studio and Readers.',
   },
   billing: {
     title: 'Billing',
@@ -430,6 +448,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const [billingProfileSaveState, setBillingProfileSaveState] = useState<BillingProfileSaveState>('idle');
   const [billingProfileSaveError, setBillingProfileSaveError] = useState('');
   const [activeTab, setActiveTab] = useState<AccountTabKey>(DEFAULT_ACCOUNT_TAB);
+  const [readersSnapshot, setReadersSnapshot] = useState<ReadersWorkspaceSnapshot>(EMPTY_READERS_WORKSPACE_SNAPSHOT);
   const [hasResolvedInitialSearchState, setHasResolvedInitialSearchState] = useState(false);
   const [loadedTabs, setLoadedTabs] = useState<Set<AccountTabKey>>(() => new Set(EAGER_ACCOUNT_TABS));
   const [highlightedConversationId, setHighlightedConversationId] = useState<string>('');
@@ -487,6 +506,27 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     setThemeChoice(readSavedUiTheme());
     setBrandThemeChoice(readSavedUiBrandTheme());
     setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    try {
+      const favoriteIds = JSON.parse(window.localStorage.getItem('vf-library-favorites') || '[]');
+      const lastPlayed = JSON.parse(window.localStorage.getItem('vf-library-last-played') || 'null');
+      const workspaceMeta = readStorageJson<{
+        selectedProjectId?: string;
+        selectedChapterId?: string;
+      }>(STORAGE_KEYS.novelWorkspaceMeta);
+      setReadersSnapshot({
+        favoritesCount: Array.isArray(favoriteIds) ? favoriteIds.length : 0,
+        lastPlayedTitle: sanitizeUiText(String(lastPlayed?.title || '').trim()),
+        selectedProjectId: String(workspaceMeta?.selectedProjectId || '').trim(),
+        selectedChapterId: String(workspaceMeta?.selectedChapterId || '').trim(),
+      });
+    } catch {
+      setReadersSnapshot(EMPTY_READERS_WORKSPACE_SNAPSHOT);
+    }
+    return undefined;
   }, []);
 
   useEffect(() => {
@@ -1175,6 +1215,52 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 : 'No support conversations yet.',
     [activeSupportConversationCount, isLoadingSupport, loadedTabs, supportConversations.length, supportLoadError, supportLoadState]
   );
+  const readersFavoritesSummary = readersSnapshot.favoritesCount > 0
+    ? `${formatNumber(readersSnapshot.favoritesCount)} saved title${readersSnapshot.favoritesCount === 1 ? '' : 's'}`
+    : 'No saved titles yet';
+  const readersProgressSummary = readersSnapshot.lastPlayedTitle
+    ? `Continue ${readersSnapshot.lastPlayedTitle}`
+    : 'No reader resume point saved yet';
+  const writerWorkspaceSummary = readersSnapshot.selectedProjectId
+    ? readersSnapshot.selectedChapterId
+      ? 'Project and chapter progress are saved locally'
+      : 'Project selected and ready for chapter drafting'
+    : 'No active writer project yet';
+  const accountOverviewItems = useMemo(() => ([
+    {
+      id: 'current-plan',
+      label: 'Current plan',
+      value: planName,
+      detail: renewalHeadline,
+    },
+    {
+      id: 'studio-access',
+      label: 'Studio access',
+      value: allowedEngineSummary,
+      detail: hasUnlimitedAccess ? 'Unlimited generation access is active.' : 'Generation engines and runtime access stay in Studio.',
+    },
+    {
+      id: 'readers',
+      label: 'Readers',
+      value: readersFavoritesSummary,
+      detail: readersProgressSummary,
+    },
+    {
+      id: 'writer',
+      label: 'Writer',
+      value: readersSnapshot.selectedProjectId ? 'Draft in progress' : 'Writer ready',
+      detail: writerWorkspaceSummary,
+    },
+  ]), [
+    allowedEngineSummary,
+    hasUnlimitedAccess,
+    planName,
+    readersFavoritesSummary,
+    readersProgressSummary,
+    readersSnapshot.selectedProjectId,
+    renewalHeadline,
+    writerWorkspaceSummary,
+  ]);
   const supportConversationCards = useMemo(
     () => supportConversations.map((conversation) => {
       const statusToken = String(conversation.status || '').trim().toLowerCase();
@@ -1209,7 +1295,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     [recentActivity]
   );
   const navItems = useMemo(() => ([
-    { key: 'account' as AccountTabKey, label: 'Account', summary: `${planName} plan | Member since ${memberSinceLabel}` },
+    { key: 'account' as AccountTabKey, label: 'Account', summary: `${planName} plan | Studio and Readers overview` },
     { key: 'billing' as AccountTabKey, label: 'Billing', summary: canManageBilling ? `${paymentMethodLabel} | ${renewalHeadline}` : 'Billing management and invoices stay here.' },
     { key: 'usage' as AccountTabKey, label: 'Usage', summary: hasUnlimitedAccess ? `Unlimited access | ${formatNumber(monthlyUsed)} VF used this month` : `${formatNumber(monthlyUsed)} of ${formatNumber(monthlyLimit)} VF used this month` },
     { key: 'preferences' as AccountTabKey, label: 'Preferences', summary: `${activeThemeSummary} theme | ${enabledPreferenceCount}/${totalPreferenceCount} toggles enabled` },
@@ -1228,6 +1314,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     supportSummaryText,
     totalPreferenceCount,
   ]);
+  const openWorkspacePath = useCallback((path: string) => {
+    if (typeof window === 'undefined') return;
+    window.location.assign(path);
+  }, []);
 
   const setTab = (tab: AccountTabKey): void => {
     setActiveTab(tab);
@@ -1285,6 +1375,198 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.accountStatus} value={accountStatus} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.authProviders} value={providerSummary} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.memberSince} value={memberSinceLabel} />
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Platform overview</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              One account, with distinct Studio and Readers capabilities.
+            </div>
+            <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>
+              Studio focuses on generation, voices, runs, and billing. Readers focuses on bookshelves, favorites, reading progress, writing, and novel management.
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <StatusBadge isDarkUi={isDarkUi} tone={summary.subscription.active ? 'success' : 'neutral'} label={planName} />
+            <StatusBadge isDarkUi={isDarkUi} tone={hasUnlimitedAccess ? 'success' : 'neutral'} label={hasUnlimitedAccess ? 'Unlimited access' : 'Metered access'} />
+            <StatusBadge isDarkUi={isDarkUi} tone={readersSnapshot.selectedProjectId ? 'success' : 'neutral'} label={readersSnapshot.selectedProjectId ? 'Writer active' : 'Writer ready'} />
+          </div>
+        </div>
+        <div className="mt-4">
+          <AccountSummaryStrip isDarkUi={isDarkUi} items={accountOverviewItems} />
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Studio platform</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              Audio generation and runtime controls live here.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => openWorkspacePath(APP_ROUTE_PATHS.studio)}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100'
+            }`}
+          >
+            Open Studio
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              id: 'studio-generate',
+              icon: <Mic size={16} />,
+              eyebrow: 'Studio',
+              title: 'Generation access',
+              detail: `${allowedEngineSummary}. ${renewalHeadline}.`,
+              href: APP_ROUTE_PATHS.studio,
+              action: 'Open Studio',
+            },
+            {
+              id: 'studio-voices',
+              icon: <Sparkles size={16} />,
+              eyebrow: 'Voices',
+              title: 'Voice and clone controls',
+              detail: summary.plan.earlyAccess ? 'Early access voice tooling is enabled for this account.' : 'Manage cast presets, reusable voices, and clone workflows.',
+              href: APP_ROUTE_PATHS.voices,
+              action: 'Open Voices',
+            },
+            {
+              id: 'studio-runs',
+              icon: <HistoryIcon size={16} />,
+              eyebrow: 'Runs',
+              title: recentActivity.length > 0 ? `${recentActivity.length} recent generation item${recentActivity.length === 1 ? '' : 's'}` : 'Generation history',
+              detail: recentActivity.length > 0 ? 'Inspect recent output runs, recovery status, and activity history.' : 'Runs, queue recovery, and output history appear here once you generate.',
+              href: APP_ROUTE_PATHS.runs,
+              action: 'Open Runs',
+            },
+            {
+              id: 'studio-billing',
+              icon: <Coins size={16} />,
+              eyebrow: 'Billing',
+              title: paymentMethodLabel,
+              detail: canManageBilling ? `Billing is active. ${renewalHeadline}.` : 'Billing is still available here even if no payment method is on file.',
+              href: APP_ROUTE_PATHS.billing,
+              action: 'Open Billing',
+            },
+          ].map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => openWorkspacePath(item.href)}
+              className={`rounded-[1.05rem] border p-3 text-left transition ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'hover:bg-white/[0.07]' : 'hover:bg-white'}`}
+            >
+              <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>
+                {item.icon}
+              </div>
+              <p className={labelClass(isDarkUi)}>{item.eyebrow}</p>
+              <div className={`mt-1 text-[14px] font-semibold leading-5 ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{item.title}</div>
+              <div className={`mt-1.5 text-[12px] leading-5 sm:text-[13px] ${subduedClass(isDarkUi)}`}>{item.detail}</div>
+              <div className={`mt-3 text-[12px] font-semibold ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{item.action}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Readers platform</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              Bookshelves, favorites, reading flow, writer access, and novel management belong here.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => openWorkspacePath(APP_ROUTE_PATHS.library)}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100'
+            }`}
+          >
+            Open Readers
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              id: 'readers-bookshelf',
+              icon: <BookOpen size={16} />,
+              eyebrow: 'Bookshelf',
+              title: readersFavoritesSummary,
+              detail: readersProgressSummary,
+              href: APP_ROUTE_PATHS.library,
+              action: 'Open Readers',
+            },
+            {
+              id: 'readers-writer',
+              icon: <PenSquare size={16} />,
+              eyebrow: 'Writer',
+              title: readersSnapshot.selectedProjectId ? 'Novel workspace in progress' : 'Open the embedded Writer tab',
+              detail: writerWorkspaceSummary,
+              href: APP_ROUTE_PATHS.library,
+              action: 'Open Writer in Readers',
+            },
+            {
+              id: 'readers-management',
+              icon: <Sparkles size={16} />,
+              eyebrow: 'Novel management',
+              title: readersSnapshot.selectedChapterId ? 'Chapter organization is active' : 'Project organization and chapter editing',
+              detail: 'Use the writing workspace for chapter structure, adaptation passes, publishing prep, and Studio handoff.',
+              href: APP_ROUTE_PATHS.writing,
+              action: 'Open Writing workspace',
+            },
+            {
+              id: 'readers-history',
+              icon: <HistoryIcon size={16} />,
+              eyebrow: 'Reader tools',
+              title: readersSnapshot.lastPlayedTitle ? 'Continue reading is ready' : 'Reader preferences and bookmarks',
+              detail: 'Reading progress, favorites, saved items, and handoff from bookshelf to playback stay tied to Readers.',
+              href: APP_ROUTE_PATHS.library,
+              action: 'Open reader tools',
+            },
+          ].map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => openWorkspacePath(item.href)}
+              className={`rounded-[1.05rem] border p-3 text-left transition ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'hover:bg-white/[0.07]' : 'hover:bg-white'}`}
+            >
+              <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>
+                {item.icon}
+              </div>
+              <p className={labelClass(isDarkUi)}>{item.eyebrow}</p>
+              <div className={`mt-1 text-[14px] font-semibold leading-5 ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{item.title}</div>
+              <div className={`mt-1.5 text-[12px] leading-5 sm:text-[13px] ${subduedClass(isDarkUi)}`}>{item.detail}</div>
+              <div className={`mt-3 text-[12px] font-semibold ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{item.action}</div>
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setTab('preferences')}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-white/10 bg-white/[0.05] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+            }`}
+          >
+            Preferences
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('support')}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-white/10 bg-white/[0.05] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+            }`}
+          >
+            Support
+          </button>
         </div>
       </div>
 

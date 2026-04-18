@@ -7,6 +7,10 @@ import { BrandLogo } from '../../../components/BrandLogo';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { writeStorageString } from '../../shared/storage/localStore';
 import type { AuthRouteMode } from '../../app/navigation';
+import {
+  SIGNUP_DISABLED_MARKETING_DETAIL,
+  SIGNUP_DISABLED_MARKETING_HEADLINE,
+} from '../../shared/auth/signupLock';
 
 interface OnboardingProps {
   setScreen: (screen: AppScreen) => void;
@@ -17,8 +21,8 @@ const ONBOARDING_STEPS = [
   {
     num: 1,
     icon: <Sparkles size={14} />,
-    title: 'Create your account or sign in',
-    body: 'We keep the path short and only ask for what is needed.',
+    title: 'Sign in with your approved account',
+    body: 'Public signup is paused while we finish launch checks.',
     color: 'rgba(6,182,212,0.8)',
     delay: '80ms',
   },
@@ -51,8 +55,8 @@ const WAVE_HEIGHTS = [0.45, 0.78, 0.55, 0.92, 0.65, 0.82, 0.48, 0.7, 0.58, 0.88,
 
 export const Onboarding: React.FC<OnboardingProps> = ({ setScreen, openAuthScreen }) => {
   const goToSignup = () => {
-    writeStorageString(STORAGE_KEYS.authIntent, 'signup');
-    if (openAuthScreen) { openAuthScreen('signup'); return; }
+    writeStorageString(STORAGE_KEYS.authIntent, 'login');
+    if (openAuthScreen) { openAuthScreen('login'); return; }
     setScreen(AppScreen.LOGIN);
   };
 
@@ -113,6 +117,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({ setScreen, openAuthScree
             Choose an account path, finish setup only if prompted, and land in Studio ready to import a script or try a demo scene.
           </p>
 
+          <div className="mb-8 rounded-[1.4rem] border border-amber-300/20 bg-amber-400/10 px-4 py-4 text-sm leading-7 text-amber-50">
+            <p className="font-semibold">{SIGNUP_DISABLED_MARKETING_HEADLINE}</p>
+            <p className="mt-1 text-amber-100/90">{SIGNUP_DISABLED_MARKETING_DETAIL}</p>
+          </div>
+
           {/* Steps */}
           <ol className="mb-8 space-y-3">
             {ONBOARDING_STEPS.map((step) => (
@@ -149,7 +158,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ setScreen, openAuthScree
               className="ap-btn-primary sm:w-auto sm:flex-none"
               style={{ width: 'auto', paddingLeft: '1.75rem', paddingRight: '1.75rem' }}
             >
-              Create Account <ArrowRight size={16} />
+              Sign In <ArrowRight size={16} />
             </button>
             <button
               type="button"
@@ -213,7 +222,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ setScreen, openAuthScree
 
             {/* Note */}
             <div className="mt-4 rounded-xl border border-cyan-500/[0.18] bg-cyan-500/[0.07] px-4 py-3 text-xs leading-6 text-slate-300">
-              You stay in control: sign up, sign in, or move on if your account is already ready.
+              Existing users can sign in now. Public signup will reopen after launch checks are complete.
             </div>
 
             <p className="mt-5 text-center text-[11px] text-slate-500">

@@ -170,9 +170,9 @@ export function MarketingAudioCard({
         </div>
         {badges.length > 0 ? (
           <div className="vf-marketing-audio-card__badges" aria-label={`${title} highlights`}>
-            {badges.map((badge) => (
+            {badges.map((badge, index) => (
               <span
-                key={`${title}-${badge.label}`}
+                key={`${title}-badge-${badge.label}-${index}`}
                 className={`vf-marketing-audio-card__badge vf-marketing-audio-card__badge--${badge.tone || 'neutral'}`}
               >
                 {badge.label}
@@ -186,8 +186,8 @@ export function MarketingAudioCard({
 
       {cast.length > 0 ? (
         <div className="vf-marketing-audio-card__cast" aria-label={`${title} cast`}>
-          {cast.map((member) => (
-            <span key={`${title}-${member}`} className="vf-marketing-audio-card__cast-chip">
+          {cast.map((member, index) => (
+            <span key={`${title}-cast-${member}-${index}`} className="vf-marketing-audio-card__cast-chip">
               {member}
             </span>
           ))}

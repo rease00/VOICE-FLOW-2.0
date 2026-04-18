@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { reportFrontendError } from '../../shared/telemetry/frontendErrors';
 import { sanitizeUiText } from '../../shared/ui/terminology';
-import { useNotifications } from '../../shared/notifications/NotificationProvider';
+import { useOptionalNotifications } from '../../shared/notifications/NotificationProvider';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { BrandLogo } from '../../../components/BrandLogo';
 import { classifyUnhandledRejection } from './unhandledRejectionRecovery';
@@ -150,7 +150,8 @@ class ReactAppErrorBoundary extends React.Component<ReactAppErrorBoundaryProps, 
 
 export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [uiError, setUiError] = useState<AppErrorBoundaryState>({ message: '', technicalMessage: '' });
-  const { emit } = useNotifications();
+  const notifications = useOptionalNotifications();
+  const emit = notifications?.emit;
 
   const reportCapturedError = useCallback((error: CapturedAppError, options: { showFallback?: boolean; title: string; userMessage: string; dedupeKey: string }) => {
     const telemetryPayload: Parameters<typeof reportFrontendError>[0] = {
@@ -164,7 +165,7 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
     if (error.metadata) {
       telemetryPayload.metadata = error.metadata;
     }
-    emit('app.crash.captured', {
+    emit?.('app.crash.captured', {
       title: options.title,
       message: options.userMessage,
       details: options.userMessage,
@@ -221,7 +222,7 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
           telemetryPayload.stack = reason.stack;
         }
         event.preventDefault();
-        emit('custom.message', {
+        emit?.('custom.message', {
           title: recovery.title,
           message: recovery.message,
           details: recovery.details,

@@ -2,8 +2,7 @@ import React from 'react';
 import { BookOpen, Coins, History, Mic, ShieldCheck } from 'lucide-react';
 
 export enum WorkspaceTab {
-  WRITING = 'WRITING',
-  NOVEL = 'WRITING',
+  LIBRARY = 'LIBRARY',
   STUDIO = 'STUDIO',
   VOICE_CLONING = 'VOICE_CLONING',
   HISTORY = 'HISTORY',
@@ -51,12 +50,12 @@ export const buildWorkspaceTabs = (isAdmin: boolean): WorkspaceTabItem[] => {
       route: '/app/voices',
     },
     {
-      id: WorkspaceTab.WRITING,
+      id: WorkspaceTab.LIBRARY,
       icon: <BookOpen size={18} />,
-      label: 'Writing',
-      displayLabel: 'Writing',
+      label: 'Readers',
+      displayLabel: 'Readers',
       section: 'create',
-      route: '/app/writing',
+      route: '/app/library',
     },
     {
       id: WorkspaceTab.HISTORY,

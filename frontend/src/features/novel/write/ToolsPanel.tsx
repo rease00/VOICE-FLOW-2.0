@@ -1,9 +1,11 @@
 'use client';
 import React, { useState } from 'react';
-import { X, Wand2, BookMarked, Clock, RefreshCw, Upload } from 'lucide-react';
+import { X, Wand2, BookMarked, Clock, RefreshCw, Upload, Sparkles, Target, FileText, ListTree } from 'lucide-react';
 import type { GenerationSettings } from '../../../../types';
 import { MemoryLedger } from './MemoryLedger';
 import { VersionHistory } from './VersionHistory';
+import { AiAssistantPanel } from './AiAssistantPanel';
+import { WritingGoalTracker } from './WritingGoalTracker';
 import { useChapterEditor } from '../hooks/useChapterEditor';
 import { useAdaptation } from '../hooks/useAdaptation';
 import { useDriveSync } from '../hooks/useDriveSync';
@@ -11,7 +13,7 @@ import { useLocalFolderSync } from '../hooks/useLocalFolderSync';
 import { useNovelEditor } from '../contexts/NovelEditorContext';
 import { PublishingPanel } from '../../publishing/components/PublishingPanel';
 
-type PanelTab = 'adapt' | 'memory' | 'versions' | 'sync' | 'publish';
+type PanelTab = 'adapt' | 'ai' | 'memory' | 'versions' | 'goals' | 'outline' | 'notes' | 'sync' | 'publish';
 
 type ToastFn = (msg: string, type?: 'success' | 'error' | 'info') => void;
 
@@ -22,15 +24,20 @@ interface ToolsPanelProps {
   onToast: ToastFn;
   onRequestAdapt: (text: string, updateAdapted: (t: string) => void) => Promise<void>;
   isAdapting: boolean;
+  editorSelectedText?: string;
 }
 
-const TAB_ICONS: Record<PanelTab, React.ReactNode> = {
-  adapt: <Wand2 size={14} />,
-  memory: <BookMarked size={14} />,
-  versions: <Clock size={14} />,
-  sync: <RefreshCw size={14} />,
-  publish: <Upload size={14} />,
-};
+const TAB_ITEMS: Array<{ id: PanelTab; icon: React.ReactNode; label: string }> = [
+  { id: 'ai', icon: <Sparkles size={14} />, label: 'AI' },
+  { id: 'adapt', icon: <Wand2 size={14} />, label: 'Adapt' },
+  { id: 'goals', icon: <Target size={14} />, label: 'Goals' },
+  { id: 'outline', icon: <ListTree size={14} />, label: 'Outline' },
+  { id: 'notes', icon: <FileText size={14} />, label: 'Notes' },
+  { id: 'memory', icon: <BookMarked size={14} />, label: 'Memory' },
+  { id: 'versions', icon: <Clock size={14} />, label: 'Versions' },
+  { id: 'sync', icon: <RefreshCw size={14} />, label: 'Sync' },
+  { id: 'publish', icon: <Upload size={14} />, label: 'Publish' },
+];
 
 export const ToolsPanel: React.FC<ToolsPanelProps> = ({
   isOpen,
@@ -39,8 +46,12 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
   onToast,
   onRequestAdapt,
   isAdapting,
+  editorSelectedText = '',
 }) => {
-  const [activeTab, setActiveTab] = useState<PanelTab>('adapt');
+  const [activeTab, setActiveTab] = useState<PanelTab>('ai');
+  const [notesText, setNotesText] = useState(() => {
+    try { return localStorage.getItem('vf_writing_notes') || ''; } catch { return ''; }
+  });
 
   const { selectedProject, chapters, projects, chaptersByProjectId: allChaptersByProjectId, memoryLedgerByProjectId, chapterSummariesByProjectId, chapterVersionsByProjectId, selectedProjectId, setProjects, setChaptersByProjectId: setAllChapters } = useNovelEditor();
   const { versions, updateAdaptedOutput } = useChapterEditor();
@@ -63,6 +74,16 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
 
   const { revertToVersion } = useChapterEditor();
 
+  const handleNotesChange = (text: string) => {
+    setNotesText(text);
+    try { localStorage.setItem('vf_writing_notes', text); } catch {}
+  };
+
+  const handleAiApply = (text: string) => {
+    updateAdaptedOutput(text);
+    onToast('AI suggestion applied to adapted text', 'success');
+  };
+
   return (
     <aside
       className={`shrink-0 flex flex-col border-l border-white/10 bg-slate-900/80 backdrop-blur-xl transition-all duration-300 ${
@@ -83,25 +104,42 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
           </div>
 
           {/* Tab bar */}
-          <div className="flex items-center gap-1 px-3 py-2 border-b border-white/10 shrink-0 flex-wrap">
-            {(Object.keys(TAB_ICONS) as PanelTab[]).map((tab) => (
+          <div className="flex items-center gap-0.5 px-2 py-2 border-b border-white/10 shrink-0 overflow-x-auto">
+            {TAB_ITEMS.map((tab) => (
               <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors capitalize ${
-                  activeTab === tab
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1 px-2 py-1.5 text-[10px] rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === tab.id
                     ? 'bg-blue-600 text-white'
                     : 'text-slate-400 hover:text-white hover:bg-white/10'
                 }`}
+                title={tab.label}
               >
-                {TAB_ICONS[tab]}
-                {tab}
+                {tab.icon}
               </button>
             ))}
           </div>
 
+          {/* Tab label */}
+          <div className="px-4 pt-3 pb-1">
+            <span className="text-xs font-medium text-slate-300">
+              {TAB_ITEMS.find(t => t.id === activeTab)?.label}
+            </span>
+          </div>
+
           {/* Tab content */}
-          <div className="flex-1 overflow-y-auto min-h-0 p-4">
+          <div className="flex-1 overflow-y-auto min-h-0 px-4 pb-4">
+            {activeTab === 'ai' && (
+              <AiAssistantPanel
+                selectedText={editorSelectedText}
+                fullText={chapterText}
+                settings={settings}
+                onApply={handleAiApply}
+                onToast={onToast}
+              />
+            )}
+
             {activeTab === 'adapt' && (
               <div className="space-y-4">
                 <div>
@@ -132,7 +170,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
                   ) : (
                     <Wand2 size={14} />
                   )}
-                  {isAdapting ? 'Adapting…' : 'Adapt Chapter'}
+                  {isAdapting ? 'Adapting...' : 'Adapt Chapter'}
                 </button>
                 <div className="border-t border-white/10 pt-3">
                   <p className="text-xs text-slate-400 mb-2">Batch Adapt All</p>
@@ -162,6 +200,58 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
               </div>
             )}
 
+            {activeTab === 'goals' && (
+              <WritingGoalTracker
+                currentWordCount={chapterText.trim() ? chapterText.trim().split(/\s+/).length : 0}
+                sessionStartWordCount={0}
+              />
+            )}
+
+            {activeTab === 'outline' && (
+              <div className="space-y-2">
+                {chapters.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-6">No chapters to outline</p>
+                ) : (
+                  chapters.map((ch, idx) => (
+                    <div
+                      key={ch.id}
+                      className="bg-slate-800/60 rounded-lg p-3 border border-white/5 hover:border-white/15 transition-colors"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] font-mono text-slate-500">{String(idx + 1).padStart(2, '0')}</span>
+                        <span className="text-xs font-medium text-white truncate">{ch.title}</span>
+                      </div>
+                      {ch.text.trim() && (
+                        <p className="text-[10px] text-slate-500 leading-relaxed line-clamp-2 ml-5">
+                          {ch.text.trim().slice(0, 120)}...
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 mt-1.5 ml-5">
+                        <span className="text-[9px] text-slate-600">
+                          {ch.text.trim() ? `${ch.text.trim().split(/\s+/).length.toLocaleString()} words` : 'Empty'}
+                        </span>
+                        {ch.adaptedText?.trim() && (
+                          <span className="text-[9px] text-emerald-500">Adapted</span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {activeTab === 'notes' && (
+              <div className="space-y-2">
+                <p className="text-[10px] text-slate-500">Scratchpad for ideas, research, and notes</p>
+                <textarea
+                  value={notesText}
+                  onChange={(e) => handleNotesChange(e.target.value)}
+                  placeholder="Write your notes, ideas, research here..."
+                  className="w-full h-64 bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 resize-none leading-relaxed"
+                />
+              </div>
+            )}
+
             {activeTab === 'memory' && <MemoryLedger />}
 
             {activeTab === 'versions' && (
@@ -188,7 +278,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
                       disabled={isConnecting}
                       className="w-full py-2 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-white/10 transition-colors"
                     >
-                      {isConnecting ? 'Connecting…' : 'Connect Drive'}
+                      {isConnecting ? 'Connecting...' : 'Connect Drive'}
                     </button>
                   ) : (
                     <div className="flex gap-2">
@@ -197,7 +287,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
                         disabled={isUploading || isDownloading}
                         className="flex-1 py-1.5 text-xs rounded-lg bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white transition-colors"
                       >
-                        {isUploading ? 'Uploading…' : '↑ Upload'}
+                        {isUploading ? 'Uploading...' : '↑ Upload'}
                       </button>
                       <button
                         onClick={async () => {
@@ -214,7 +304,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
                         disabled={isUploading || isDownloading}
                         className="flex-1 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-white/10 transition-colors"
                       >
-                        {isDownloading ? 'Downloading…' : '↓ Download'}
+                        {isDownloading ? 'Downloading...' : '↓ Download'}
                       </button>
                     </div>
                   )}
@@ -238,7 +328,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
                           disabled={isBinding}
                           className="flex-1 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-white/10 transition-colors"
                         >
-                          {isBinding ? 'Binding…' : boundFolderName ? 'Change Folder' : 'Bind Folder'}
+                          {isBinding ? 'Binding...' : boundFolderName ? 'Change Folder' : 'Bind Folder'}
                         </button>
                         {boundFolderName && selectedProject && (
                           <button

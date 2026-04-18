@@ -1,4 +1,5 @@
 import { readEnvValue } from '../../shared/runtime/env';
+import { hasConfiguredLegacyBackendOrigin } from '../replatform/backendProxyConfig';
 
 export type VoiceCloneMode = 'native' | 'proxy';
 
@@ -16,10 +17,4 @@ export const getVoiceCloneMode = (): VoiceCloneMode => normalizeMode(
 
 export const isVoiceCloneProxyMode = (): boolean => getVoiceCloneMode() === 'proxy';
 
-export const hasLegacyVoiceCloneProxyConfigured = (): boolean => Boolean(
-  readEnvValue(
-    process.env.VF_MEDIA_BACKEND_URL,
-    process.env.VF_MEDIA_BACKEND_ORIGINS_JSON,
-    process.env.VF_MEDIA_BACKEND_URLS_JSON,
-  )
-);
+export const hasLegacyVoiceCloneProxyConfigured = (): boolean => hasConfiguredLegacyBackendOrigin();

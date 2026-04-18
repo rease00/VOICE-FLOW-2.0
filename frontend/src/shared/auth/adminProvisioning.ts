@@ -7,18 +7,12 @@ const normalizeEmail = (value: unknown): string => String(value || '').trim().to
 
 const readAdminLoginEmails = (): Set<string> => {
   const values = new Set<string>();
-  const configuredLoginEmail = readEnvValue(
-    process.env.NEXT_PUBLIC_ADMIN_LOGIN_EMAIL,
-    process.env.VITE_ADMIN_LOGIN_EMAIL
-  );
+  const configuredLoginEmail = readEnvValue(process.env.NEXT_PUBLIC_ADMIN_LOGIN_EMAIL);
   if (configuredLoginEmail) {
     values.add(normalizeEmail(configuredLoginEmail));
   }
 
-  for (const email of readEnvCsv(
-    process.env.NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST,
-    process.env.VITE_ADMIN_EMAIL_ALLOWLIST
-  )) {
+  for (const email of readEnvCsv(process.env.NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST)) {
     values.add(normalizeEmail(email));
   }
 

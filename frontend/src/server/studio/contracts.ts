@@ -20,6 +20,7 @@ export interface ReaderSpeakerConfig {
 export interface ReaderStudioSynthesizeRequest {
   mode?: 'studio' | undefined;
   text: string;
+  requestId?: string | undefined;
   language?: string | undefined;
   voice?: string | undefined;
   engine?: string | undefined;

@@ -1,8 +1,9 @@
-﻿'use client';
+'use client';
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+    BookOpen,
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles,
     Music, Video,
     Save, Fingerprint, UploadCloud, Loader2,
@@ -124,6 +125,10 @@ import { audioBufferToWav } from '../../shared/audio/wav';
 import { getSharedAudioContext as getAudioContext } from '../../shared/audio/audioContext';
 import { resolveHistoryVoiceLabel } from '../../shared/voices/historyVoiceLabel';
 import { resolvePublicVoiceLabel } from '../../shared/voices/voicePublicName';
+import {
+  checkStudioGenerationBudget,
+  checkStudioQueueBudget,
+} from './studioGenerationBudget';
 
 // Runtime types imported from inlined barrel
 import {
@@ -139,6 +144,7 @@ import {
 
 import { createSynthesisTraceId } from '../../../services/synthesisContractService';
 import { APP_ROUTE_PATHS, resolveLoginPath } from '../navigation';
+import { BILLING_CHECKOUT_LOCK_MESSAGE, isBillingCheckoutLocked } from '../../shared/billing/checkoutLock';
 import type { VoiceCloneModalResult } from '../../features/voice-cloning/VoiceCloneModal';
 import { applyMotionLevelToDocument } from '../../shared/theme/themeDom';
 
@@ -206,7 +212,7 @@ const loadStudioMixService = (() => {
   };
 })();
 const loadAdminTabContent = () => import('../../features/admin/components/AdminTabContent');
-const loadNovelTabContent = () => import('../../features/novel/components/NovelTabContent');
+const loadLibraryContent = () => import('../../features/novel/components/NovelTabContent');
 const loadVoiceCloningTabContent = () => import('../../features/voice-cloning/VoiceCloningTabContent');
 const loadAudioPlayer = () => import('../../../components/AudioPlayer');
 const LazyBlockScriptEditor = lazy(async () => {
@@ -389,7 +395,7 @@ const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk';
 const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
 
 const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
-const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
+const LibraryTabContent = lazy(async () => loadLibraryContent().then((module) => ({ default: module.NovelTabContent })));
 const VoiceCloningTabContent = lazy(async () => loadVoiceCloningTabContent().then((module) => ({ default: module.VoiceCloningTabContent })));
 const VoiceCloneModal = lazy(async () => import('../../features/voice-cloning/VoiceCloneModal').then((module) => ({ default: module.VoiceCloneModal })));
 const AudioPlayer = lazy(async () => loadAudioPlayer().then((module) => ({ default: module.AudioPlayer })));
@@ -402,12 +408,12 @@ const readBooleanEnv = (value: unknown, fallback: boolean): boolean => {
   return fallback;
 };
 
-const ENABLE_RESOURCE_MONITOR = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR ?? process.env.VITE_ENABLE_RESOURCE_MONITOR, process.env.NODE_ENV !== 'production');
-const ENABLE_RESOURCE_MONITOR_LONGTASK = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR_LONGTASK ?? process.env.VITE_ENABLE_RESOURCE_MONITOR_LONGTASK, false);
+const ENABLE_RESOURCE_MONITOR = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR, process.env.NODE_ENV !== 'production');
+const ENABLE_RESOURCE_MONITOR_LONGTASK = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR_LONGTASK, false);
 
 const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   [Tab.ADMIN]: loadAdminTabContent,
-  [Tab.NOVEL]: loadNovelTabContent,
+  [Tab.LIBRARY]: loadLibraryContent,
   [Tab.VOICE_CLONING]: loadVoiceCloningTabContent,
 };
 
@@ -1234,7 +1240,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const pathname = usePathname();
   const [activeTab, setActiveTab] = useState<Tab>(() => resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO);
   const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
-  const isNovelWorkspaceTab = activeTab === Tab.NOVEL;
+  const isLibraryWorkspaceTab = activeTab === Tab.LIBRARY;
   const shouldHydrateStudioWorkspaceStateOnInit = isStudioWorkspaceTab;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -1299,6 +1305,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const processingStageRef = useRef('');
   const [generationTiming, setGenerationTiming] = useState<GenerationTimingSnapshot | null>(null);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
+  const [audioPlayerAutoplayNonce, setAudioPlayerAutoplayNonce] = useState(0);
+  const [audioPlayerSessionKey, setAudioPlayerSessionKey] = useState('');
   const [liveAudioChunks, setLiveAudioChunks] = useState<LiveAudioChunkItem[]>([]);
   const [studioQueueState, setStudioQueueState] = useState<StudioQueueState | null>(() => (
     shouldHydrateStudioWorkspaceStateOnInit
@@ -1440,6 +1448,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       studioObjectUrlRegistryRef.current.replace(previousUrl, nextUrl);
       return nextUrl;
     });
+    if (nextUrl) {
+      setAudioPlayerAutoplayNonce((previous) => previous + 1);
+    }
   }, []);
   const writeSingleInflightGenerationLedger = useCallback((nextLedger: StudioSingleInflightGenerationLedger | null) => {
     singleInflightLedgerRef.current = nextLedger;
@@ -1490,6 +1501,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const safeJobId = String(jobId || '').trim();
     activeGatewayRequestIdRef.current = safeRequestId;
     activeGatewayJobIdRef.current = safeJobId;
+    const nextSessionKey = safeJobId
+      ? `job:${safeJobId}`
+      : safeRequestId
+        ? `request:${safeRequestId}`
+        : '';
+    setAudioPlayerSessionKey((previous) => (previous === nextSessionKey ? previous : nextSessionKey));
   }, []);
   const [uiMotionLevel, setUiMotionLevel] = useState<UiMotionLevel>(() => {
     const saved = readStorageString(STORAGE_KEYS.uiMotionLevel);
@@ -1804,12 +1821,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const selectedTokenPackPriceInr = applyTokenPackDiscount(selectedTokenPackMeta.baseInr, tokenPackDiscountPercent);
   const selectedTokenPackSavingsInr = Math.max(0, selectedTokenPackMeta.baseInr - selectedTokenPackPriceInr);
 
+  const activeGenerationEngine = managedActiveEngine || settings.engine;
   const currentEngineSpendable = Math.max(
     0,
-    Number(stats.wallet?.spendableNowByEngine?.[managedActiveEngine || settings.engine] || 0)
+    Number(stats.wallet?.spendableNowByEngine?.[activeGenerationEngine] || 0)
   );
-  const canRunVectorWithoutWallet = (managedActiveEngine || settings.engine) === 'VECTOR';
-  const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
+  const currentEngineVfRate = Math.max(
+    0,
+    Number(stats?.vfUsage?.rates?.[activeGenerationEngine] || 0)
+  );
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletMonthlyFreeLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
   const walletPaid = walletPaidVfBalance;
@@ -1822,6 +1842,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
   const allowedEngineSummary = primeAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ');
+  const formatStudioVfAmount = useCallback((value: number): string => (
+    new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(Math.max(0, Number(value) || 0))
+  ), []);
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
     return formatFrontendError(raw, {
       fallback,
@@ -2017,7 +2040,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const rediscoverBackendRouting = useCallback(
     async (_reason: string): Promise<boolean> => {
-      // Backend routing removed â€” Cloud TTS routes are local API routes
+      // Backend routing removed — Cloud TTS routes are local API routes
       return false;
     },
     []
@@ -2701,6 +2724,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   });
   const creditsActionState = useMemo(
     () => getStudioCreditsActionState({
+      billingCheckoutLocked: isBillingCheckoutLocked(),
       isAuthenticated: hasSessionIdentity,
       isBuyingTokenPack,
       isRedeemingCoupon,
@@ -3082,6 +3106,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
       }
       const currentStatus = ttsRuntimeStatusRef.current[engine];
+      const currentRuntimeUrl = normalizeRuntimeUrl(currentStatus?.runtimeUrl);
+      if (currentRuntimeUrl) {
+        runtimeUrl = currentRuntimeUrl;
+      }
       const canReuseCurrentRuntime = Boolean(
         !engineSwitchInProgress
         && (managedActiveEngine === engine || settings.engine === engine)
@@ -3344,6 +3372,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [activeTab]);
   useEffect(() => {
       if (typeof window === 'undefined') return;
+      if (process.env.NODE_ENV !== 'development') return;
       const host = String(window.location.hostname || '').trim().toLowerCase();
       const isLocalHost = host === 'localhost' || host === '127.0.0.1';
       if (!isLocalHost) return;
@@ -3764,10 +3793,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           void refreshTtsRuntimeStatus();
       };
       document.addEventListener('visibilitychange', onVisibility);
-      window.addEventListener('focus', onVisibility);
       return () => {
           document.removeEventListener('visibilitychange', onVisibility);
-          window.removeEventListener('focus', onVisibility);
       };
   }, [isStudioWorkspaceTab, refreshTtsRuntimeStatus]);
 
@@ -3938,13 +3965,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const activeRequestId = String(activeGatewayRequestIdRef.current || '').trim();
           if (detailRequestId) {
               if (activeRequestId && detailRequestId !== activeRequestId) return;
-              if (!activeRequestId) activeGatewayRequestIdRef.current = detailRequestId;
+              if (!activeRequestId) syncActiveGatewayIds(detailRequestId, activeGatewayJobIdRef.current);
           }
           const detailJobId = String(detail.jobId || '').trim();
           const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
           if (detailJobId) {
               if (activeJobId && detailJobId !== activeJobId) return;
-              if (!activeJobId) activeGatewayJobIdRef.current = detailJobId;
+              if (!activeJobId) syncActiveGatewayIds(activeGatewayRequestIdRef.current, detailJobId);
               if (activeQueueItem && String(activeQueueItem.jobId || '').trim() !== detailJobId) {
                   setStudioQueueState((prev) => {
                       if (!prev) return prev;
@@ -3968,6 +3995,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   });
               }
           }
+          const resolvedSessionId = String(
+              detailJobId
+              || activeGatewayJobIdRef.current
+              || detailRequestId
+              || activeGatewayRequestIdRef.current
+              || ''
+          ).trim();
+          if (!resolvedSessionId) return;
           const pct = Number(detail.progressPct || 0);
           const stage = String(detail.stage || '').trim();
           generationActivityAtRef.current = Date.now();
@@ -4073,12 +4108,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   disposeUnclaimedAudioUrl();
                   return;
               }
-              if (!activeRequestId) activeGatewayRequestIdRef.current = detailRequestId;
+              if (!activeRequestId) syncActiveGatewayIds(detailRequestId, activeGatewayJobIdRef.current);
           }
           const detailJobId = String(detail.jobId || '').trim();
           let activeJobId = String(activeGatewayJobIdRef.current || '').trim();
           if (!activeJobId && detailJobId) {
-              activeGatewayJobIdRef.current = detailJobId;
+              syncActiveGatewayIds(activeGatewayRequestIdRef.current, detailJobId);
               activeJobId = detailJobId;
               if (activeQueueItem && String(activeQueueItem.jobId || '').trim() !== detailJobId) {
                   setStudioQueueState((prev) => {
@@ -4103,7 +4138,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   });
               }
           }
-          if (!activeJobId) {
+          const resolvedSessionId = String(
+              detailJobId
+              || activeJobId
+              || detailRequestId
+              || activeGatewayRequestIdRef.current
+              || ''
+          ).trim();
+          if (!resolvedSessionId) {
               disposeUnclaimedAudioUrl();
               return;
           }
@@ -4111,8 +4153,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               disposeUnclaimedAudioUrl();
               return;
           }
-          const resolvedJobId = detailJobId || activeJobId;
-          const key = `${resolvedJobId}:${Math.round(index)}`;
+          const key = `${resolvedSessionId}:${Math.round(index)}`;
           if (seenLiveChunkKeysRef.current.has(key)) {
               disposeUnclaimedAudioUrl();
               return;
@@ -4130,7 +4171,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }
           }
           const nextChunk: LiveAudioChunkItem = {
-              jobId: resolvedJobId,
+              jobId: resolvedSessionId,
               index: Math.round(index),
               engine: (detailEngine || resolveEngineToken(settings.engine)) as GenerationSettings['engine'],
               contentType: String(detail.contentType || 'audio/wav'),
@@ -4482,8 +4523,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       generationAbortReasonRef.current = 'stall';
       generationAbortController.current.abort();
       generationAbortController.current = null;
-      activeGatewayRequestIdRef.current = '';
-      activeGatewayJobIdRef.current = '';
+      syncActiveGatewayIds('', '');
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
       if (progressTimerRef.current) {
@@ -4980,8 +5020,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           throw error;
       } finally {
           delete queueItemTimingRef.current[item.id];
-          activeGatewayRequestIdRef.current = '';
-          activeGatewayJobIdRef.current = '';
+          syncActiveGatewayIds('', '');
       }
   }, [
       performGeneration,
@@ -5119,7 +5158,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       : `Queue ${computeStudioQueueMasterOrder(completedItems)}`,
                   timestamp: Date.now(),
               });
-              void loadHistory(30);
           }
           generationFailureBurstRef.current = 0;
           const queueTimingLabel = queueTotalGenerationMs > 0
@@ -5142,8 +5180,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           isStudioQueueRunActiveRef.current = false;
           clearStudioQueueCooldownTimer();
           generationAbortController.current = null;
-          activeGatewayRequestIdRef.current = '';
-          activeGatewayJobIdRef.current = '';
+          syncActiveGatewayIds('', '');
           activeStudioQueueItemIdRef.current = '';
           stopSimulation();
       }
@@ -5217,6 +5254,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               };
           }
       }
+      const queueBudgetCheck = checkStudioQueueBudget({
+          items: nextState.items,
+          vfRate: currentEngineVfRate,
+          spendableBalance: currentEngineSpendable,
+          hasUnlimitedAccess,
+      });
+      if (!queueBudgetCheck.allowed && queueBudgetCheck.itemCount > 0) {
+          presentStudioBudgetBlock({
+              scopeLabel: queueBudgetCheck.itemCount > 1 ? `Queue run (${queueBudgetCheck.itemCount} parts)` : 'Queue run',
+              engine: generationEngine,
+              estimatedCost: queueBudgetCheck.estimatedCost,
+              shortfall: queueBudgetCheck.shortfall,
+          });
+          return;
+      }
 
       if (!hasResumableCurrentQueue) {
           await resetStudioQueueOutputState(true);
@@ -5224,8 +5276,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setStudioQueueState(nextState);
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
-      activeGatewayRequestIdRef.current = '';
-      activeGatewayJobIdRef.current = '';
+      syncActiveGatewayIds('', '');
       generationRunStartedAtRef.current = Date.now();
       generationFirstAudioAtRef.current = 0;
       setGenerationTiming(null);
@@ -5330,6 +5381,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               setStudioQueueState(currentState);
           }
       }
+      const resumeBudgetCheck = checkStudioQueueBudget({
+          items: currentState.items,
+          vfRate: currentEngineVfRate,
+          spendableBalance: currentEngineSpendable,
+          hasUnlimitedAccess,
+      });
+      if (!resumeBudgetCheck.allowed && resumeBudgetCheck.itemCount > 0) {
+          presentStudioBudgetBlock({
+              scopeLabel: resumeBudgetCheck.itemCount > 1 ? `Queue resume (${resumeBudgetCheck.itemCount} parts)` : 'Queue resume',
+              engine: managedActiveEngine || settings.engine,
+              estimatedCost: resumeBudgetCheck.estimatedCost,
+              shortfall: resumeBudgetCheck.shortfall,
+          });
+          return;
+      }
       startSimulation(Math.max(4, Math.ceil(text.length / 14)), 'Resuming queued generation...', 'live');
       try {
           await executeStudioQueue(currentState);
@@ -5393,8 +5459,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
 
       clearGenerationWatchdog();
-      activeGatewayRequestIdRef.current = '';
-      activeGatewayJobIdRef.current = '';
+      syncActiveGatewayIds('', '');
       clearSingleInflightGenerationLedger();
       cancelInflightTtsJobs();
       updateStudioQueueState((prev) => {
@@ -5471,6 +5536,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ...studioSettings,
           multiSpeakerEnabled: shouldUseMultiSpeakerForRun,
           voiceId,
+          geminiTtsServiceUrl: engineState.runtimeUrl || studioSettings.geminiTtsServiceUrl,
           runtimeVoiceCatalog: freshCatalog,
       } as GenerationSettings & { runtimeVoiceCatalog?: VoiceOption[] };
 
@@ -5547,6 +5613,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           || createSynthesisTraceId(resolveEngineToken(generationEngine) as GenerationSettings['engine']);
       let activeRequestId = generationRequestId;
       let currentJobId = String(inflightLedger?.jobId || '').trim();
+      if (!currentJobId) {
+          const generationBudgetCheck = checkStudioGenerationBudget({
+              charCount: generationText.length,
+              vfRate: currentEngineVfRate,
+              spendableBalance: currentEngineSpendable,
+              hasUnlimitedAccess,
+          });
+          if (!generationBudgetCheck.allowed) {
+              generationAbortController.current = null;
+              singleRunLockRef.current = false;
+              presentStudioBudgetBlock({
+                  scopeLabel: options?.treatAsRecovery ? 'Recovered generation' : 'Generation',
+                  engine: generationEngine,
+                  estimatedCost: generationBudgetCheck.estimatedCost,
+                  shortfall: generationBudgetCheck.shortfall,
+              });
+              return;
+          }
+      }
       patchSingleInflightGenerationLedger({
           mode: 'single',
           requestId: activeRequestId,
@@ -5681,7 +5766,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   : voiceNameDisplay,
               timestamp: Date.now(),
           });
-          void loadHistory(30);
 
           clearSingleInflightGenerationLedger();
           generationFailureBurstRef.current = 0;
@@ -5737,8 +5821,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           singleRunLockRef.current = false;
           stopSimulation();
           generationAbortController.current = null;
-          activeGatewayRequestIdRef.current = '';
-          activeGatewayJobIdRef.current = '';
+          syncActiveGatewayIds('', '');
           generationAbortReasonRef.current = '';
           generationRunStartedAtRef.current = 0;
           generationFirstAudioAtRef.current = 0;
@@ -5806,9 +5889,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await startStudioQueuedGeneration();
       return;
     }
-    if (isWalletBlocked && !canRunVectorWithoutWallet) {
-      showToast(`Insufficient ${getEngineDisplayName(activeEngineForGeneration)} VF balance. Open Billing to top up or upgrade.`, 'error');
-      openBillingCenter();
+    const singleBudgetCheck = checkStudioGenerationBudget({
+      charCount: text.length,
+      vfRate: currentEngineVfRate,
+      spendableBalance: currentEngineSpendable,
+      hasUnlimitedAccess,
+    });
+    if (!singleBudgetCheck.allowed) {
+      presentStudioBudgetBlock({
+        scopeLabel: 'Generation',
+        engine: activeEngineForGeneration,
+        estimatedCost: singleBudgetCheck.estimatedCost,
+        shortfall: singleBudgetCheck.shortfall,
+      });
       return;
     }
     await runSingleGeneration();
@@ -5958,6 +6051,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           voiceId: normalizedVoiceId,
           speed: 1.0,
           emotion: 'Neutral',
+          geminiTtsServiceUrl: normalizeRuntimeUrl(
+            ttsRuntimeStatusRef.current[normalizedEngine]?.runtimeUrl
+          ) || settings.geminiTtsServiceUrl,
       };
 
       const text = `Hello! I am ${normalizedName || 'the speaker'}. I can bring your story to life.`;
@@ -6084,6 +6180,30 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     user.email.toLowerCase() === 'guest@v-flow-ai.com' ||
     user.email.toLowerCase() === 'guest@voiceflow.ai' ||
     user.googleId === 'guest_mode';
+
+  const presentStudioBudgetBlock = useCallback((input: {
+    scopeLabel: string;
+    engine: GenerationSettings['engine'];
+    estimatedCost: number;
+    shortfall: number;
+  }) => {
+    const engineLabel = getEngineDisplayName(input.engine);
+    const spendableLabel = formatStudioVfAmount(currentEngineSpendable);
+    const estimatedLabel = formatStudioVfAmount(input.estimatedCost);
+    const shortfallLabel = formatStudioVfAmount(input.shortfall);
+    showToast(
+      `${input.scopeLabel} needs ${estimatedLabel} VF on ${engineLabel}. Available now: ${spendableLabel} VF. Short by ${shortfallLabel} VF. Opening Billing...`,
+      'error'
+    );
+    if (hasSessionIdentity && !isGuestSession) {
+      setIsMobileMenuOpen(false);
+      router.push(APP_ROUTE_PATHS.billing);
+      return;
+    }
+    writeStorageString(STORAGE_KEYS.authIntent, 'login');
+    setIsMobileMenuOpen(false);
+    router.push(resolveLoginPath('login', APP_ROUTE_PATHS.billing));
+  }, [currentEngineSpendable, formatStudioVfAmount, hasSessionIdentity, isGuestSession, router, showToast]);
 
   // --- AI Tools (Shared) ---
 
@@ -6836,7 +6956,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
   const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
-  const contentMaxWidthClass = isNovelWorkspaceTab || isStudioWorkspaceTab
+  const contentMaxWidthClass = isLibraryWorkspaceTab || isStudioWorkspaceTab
       ? 'max-w-[1480px]'
       : activeTab === Tab.VOICE_CLONING
         ? 'max-w-[1360px]'
@@ -7066,6 +7186,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             }`}>
               Sign in to buy token packs or redeem coupons.
             </div>
+          ) : isBillingCheckoutLocked() ? (
+            <div className={`mt-3 rounded-xl border px-3 py-2 text-[11px] ${
+              isDarkUi
+                ? 'border-amber-400/25 bg-amber-500/10 text-amber-100'
+                : 'border-amber-200 bg-amber-50 text-amber-700'
+            }`}>
+              {BILLING_CHECKOUT_LOCK_MESSAGE}
+            </div>
           ) : null}
 
           <div className="mt-3 grid grid-cols-2 gap-2">
@@ -7090,7 +7218,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }`}
             >
               {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-              Buy {selectedTokenPackMeta.label}
+              {isBillingCheckoutLocked() ? 'Checkout paused' : `Buy ${selectedTokenPackMeta.label}`}
             </button>
           </div>
           <div className="mt-2">
@@ -7153,7 +7281,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const Sidebar = () => {
     const isDesktopCompact = isDesktop && sidebarMode === 'compact';
     const primaryWorkspaceTabs = workspaceTabs.filter((item) => item.id !== Tab.ADMIN);
-    const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create');
+    const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create' && item.id !== Tab.LIBRARY);
     const accountWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'account');
     const adminWorkspaceTab = workspaceTabs.find((item) => item.id === Tab.ADMIN);
     const getSidebarButtonClassName = (isActive: boolean) => `flex w-full items-center rounded-xl text-sm font-semibold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
@@ -7295,10 +7423,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <LogIn size={13} />
                     </button>
                     <button
-                      onClick={() => openAuthScreen('signup')}
+                      onClick={() => { if (typeof window !== 'undefined') window.location.assign('/landing'); }}
                       className={`inline-flex items-center justify-center rounded-lg border py-2 ${isDarkUi ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700'}`}
-                      title="Sign up"
-                      aria-label="Sign up"
+                      title="Launch soon"
+                      aria-label="Launch soon"
                     >
                       <UserPlus size={13} />
                     </button>
@@ -7358,14 +7486,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <LogIn size={12} /> Login
                     </button>
                     <button
-                      onClick={() => openAuthScreen('signup')}
+                      onClick={() => { if (typeof window !== 'undefined') window.location.assign('/landing'); }}
                       className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
                         isDarkUi
                           ? 'border-cyan-400/40 bg-cyan-500 text-slate-950 hover:bg-cyan-400'
                           : 'border-cyan-600 bg-cyan-600 text-white hover:bg-cyan-700'
                       }`}
                     >
-                      <UserPlus size={12} /> Sign Up
+                      <UserPlus size={12} /> Launch Soon
                     </button>
                   </div>
                 )}
@@ -7533,7 +7661,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       })}
                                   </div>
                               </div>
-                              <div className="mt-1.5 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} Â· {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
+                              <div className="mt-1.5 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
                           </div>
 
                           <div>
@@ -7799,9 +7927,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                        resolvedTheme={resolvedTheme}
                        onActivate={activateTtsEngine}
                      />
-                  </div>
+                 </div>
 
                   <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
+                     {isStudioWorkspaceTab ? (
+                       <button
+                        type="button"
+                        onClick={() => router.push(APP_ROUTE_PATHS.library)}
+                        aria-label="Open Readers"
+                        className={`inline-flex h-[40px] items-center gap-2 rounded-full border px-3.5 text-[10px] font-black uppercase tracking-[0.22em] shadow-[0_12px_28px_rgba(8,145,178,0.16)] transition-colors ${
+                          resolvedTheme === 'dark'
+                            ? 'border-cyan-400/30 bg-[linear-gradient(180deg,rgba(9,26,43,0.96),rgba(8,18,32,0.92))] text-cyan-100 hover:border-cyan-300/45 hover:bg-[linear-gradient(180deg,rgba(10,34,56,0.98),rgba(8,24,40,0.95))] hover:text-white'
+                            : 'border-cyan-200 bg-[linear-gradient(180deg,rgba(240,249,255,0.98),rgba(226,244,255,0.94))] text-cyan-800 hover:border-cyan-300 hover:bg-cyan-100'
+                        }`}
+                       >
+                        <BookOpen size={13} />
+                        <span className={isPhone ? 'sr-only' : ''}>Readers</span>
+                       </button>
+                     ) : null}
                      <button
                         type="button"
                         ref={creditsSurfaceTriggerRef}
@@ -7816,7 +7959,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         <Coins size={14} className="text-amber-500" />
                         <span>
                           {hasUnlimitedAccess
-                            ? 'âœ¨ Unlimited'
+                            ? '✨ Unlimited'
                             : `${currentEngineSpendable.toLocaleString()} VF`}
                         </span>
                       </button>
@@ -8113,16 +8256,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     <Suspense fallback={<div className={`rounded-3xl border px-4 py-4 text-sm ${isDarkUi ? 'border-slate-800 bg-slate-950 text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>Loading audio player...</div>}>
                                       <AudioPlayer
                                         audioUrl={generatedAudioUrl}
+                                        playbackSessionKey={audioPlayerSessionKey}
                                         isGenerating={isGenerating}
                                         liveChunks={liveAudioChunks}
                                         isLiveStreaming={isGenerating || liveAudioChunks.length > 0}
                                         autoPlayOnFirstChunk={settings.autoPlayGeneratedAudio !== false}
+                                        autoPlayGeneratedAudio={settings.autoPlayGeneratedAudio !== false}
+                                        autoplayNonce={audioPlayerAutoplayNonce}
                                         onReset={() => {
                                           setGeneratedAudioUrlManaged(null);
                                           setLiveAudioChunks([]);
                                           seenLiveChunkKeysRef.current.clear();
-                                          activeGatewayRequestIdRef.current = '';
-                                          activeGatewayJobIdRef.current = '';
+                                          syncActiveGatewayIds('', '');
                                         }}
                                       />
                                     </Suspense>
@@ -9187,14 +9332,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   </div>
                 )}
 
-                {mountedWorkspaceTabs[Tab.NOVEL] && (
+                {mountedWorkspaceTabs[Tab.LIBRARY] && (
                   <div
-                    hidden={activeTab !== Tab.NOVEL}
-                    aria-hidden={activeTab !== Tab.NOVEL}
-                    className={activeTab === Tab.NOVEL ? '' : 'hidden'}
+                    hidden={activeTab !== Tab.LIBRARY}
+                    aria-hidden={activeTab !== Tab.LIBRARY}
+                    className={activeTab === Tab.LIBRARY ? '' : 'hidden'}
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading writing workspace...</SectionCard>}>
-                      <NovelTabContent
+                      <LibraryTabContent
                         settings={settings}
                         onToast={showToast}
                         onSendToStudio={(content: string) => {
@@ -9457,5 +9602,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     </div>
   );
 };
+
 
 

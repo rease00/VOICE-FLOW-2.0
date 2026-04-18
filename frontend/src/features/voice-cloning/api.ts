@@ -18,7 +18,7 @@ import type {
 const DEFAULT_VOICE_CLONE_BASE_URL = '/api/v1';
 
 export type VoiceCloneRenderRequest = Omit<VoiceCloneBenchmarkRequest, 'mode' | 'runKind'> & {
-  mode?: 'vc';
+  mode?: 'vc' | 'tts_then_vc';
   runKind?: 'warm';
 };
 
@@ -139,7 +139,7 @@ export const renderVoiceClone = async (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...payload,
-      mode: 'vc',
+      mode: payload.mode || 'vc',
       runKind: 'warm',
     }),
     ...(options?.signal ? { signal: options.signal } : {}),
@@ -163,7 +163,7 @@ export const startVoiceCloneRenderJob = async (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...payload,
-      mode: 'vc',
+      mode: payload.mode || 'vc',
       runKind: 'warm',
     }),
     ...(options?.signal ? { signal: options.signal } : {}),

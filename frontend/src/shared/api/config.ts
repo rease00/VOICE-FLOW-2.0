@@ -151,8 +151,7 @@ export const sanitizeConfiguredApiBaseUrl = (
 };
 
 const readConfiguredApiBaseUrl = (): string => readEnvValue(
-  process.env.NEXT_PUBLIC_API_BASE_URL,
-  process.env.VITE_API_BASE_URL
+  process.env.NEXT_PUBLIC_API_BASE_URL
 );
 
 export const getDefaultApiBaseUrl = (): string => {

@@ -19,6 +19,7 @@ export const useChapterEditor = () => {
   const [chapterText, setChapterText] = useState('');
   const [adaptedOutput, setAdaptedOutput] = useState('');
   const [isDirty, setIsDirty] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
 
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedTextRef = useRef('');
@@ -53,6 +54,7 @@ export const useChapterEditor = () => {
       }));
       lastSavedTextRef.current = text;
       setIsDirty(false);
+      setLastSavedAt(new Date().toISOString());
     }, 500);
   }, [selectedProjectId, selectedChapterId, setChaptersByProjectId]);
 
@@ -78,6 +80,7 @@ export const useChapterEditor = () => {
     }));
     lastSavedTextRef.current = chapterText;
     setIsDirty(false);
+    setLastSavedAt(new Date().toISOString());
   }, [selectedProjectId, selectedChapterId, chapterText, adaptedOutput, setChaptersByProjectId]);
 
   const recordVersionSnapshot = useCallback((reason: string = 'manual') => {
@@ -152,6 +155,7 @@ export const useChapterEditor = () => {
     chapterText,
     adaptedOutput,
     isDirty,
+    lastSavedAt,
     wordCount,
     charCount,
     selectedChapterIndex,

@@ -1,5 +1,6 @@
 import React from 'react';
 import { BrandLogo } from '../../../components/BrandLogo';
+import { APP_ROUTE_PATHS, resolveLoginPath } from '../../app/navigation';
 import { LegalLinks } from './LegalLinks';
 import { getLegalDocuments, type LegalDocument } from './legalContent';
 
@@ -28,13 +29,13 @@ export const LegalCenter: React.FC<LegalCenterProps> = ({ activeDocument }) => {
             </div>
             <div className="flex items-center gap-2">
               <a
-                href="/app"
+                href="/"
                 className="inline-flex min-h-11 items-center whitespace-nowrap rounded-full border border-sky-200 bg-white px-4 py-2.5 text-sm font-semibold text-sky-700 transition hover:bg-sky-50"
               >
                 Home
               </a>
               <a
-                href="/app"
+                href={resolveLoginPath('login', APP_ROUTE_PATHS.studio)}
                 className="inline-flex min-h-11 items-center whitespace-nowrap rounded-full bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-200 transition hover:brightness-105"
               >
                 Open App

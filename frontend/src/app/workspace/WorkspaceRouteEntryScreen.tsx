@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ArrowRight } from 'lucide-react';
 import { usePathname, useRouter } from 'next/navigation';
@@ -8,6 +8,7 @@ import { BrandLogo } from '../../../components/BrandLogo';
 import { firebaseAuth } from '../../../services/firebaseClient';
 import { AppScreen } from '../../../types';
 import { useUser } from '../../features/auth/context/UserContext';
+import { SIGNUP_DISABLED_DETAIL, SIGNUP_DISABLED_TITLE } from '../../shared/auth/signupLock';
 import { resolveAppPath, resolveLoginPath } from '../navigation';
 import { WorkspaceMainApp } from './WorkspaceMainApp';
 
@@ -31,11 +32,11 @@ const DEFAULT_LOADING_BADGES: WorkspaceRouteBadge[] = [
   { label: 'Access', value: 'Waiting' },
 ];
 
-const AUTH_GATE_FALLBACK_MS = 350;
+const AUTH_GATE_FALLBACK_MS = 1_200;
 const WORKSPACE_STYLESHEET_CHECK_DELAY_MS = 1_000;
 const WORKSPACE_STYLESHEET_RECOVERY_EVENT = 'vf:workspace-stylesheet-healthcheck-failed';
 
-const WAVE_HEIGHTS = [0.55, 0.82, 0.48, 0.9, 0.65, 0.78, 0.52, 0.88] as const;
+const WAVE_BAR_COUNT = 5;
 
 const hasHealthyWorkspaceStylesheets = (): boolean => {
   if (typeof document === 'undefined') return true;
@@ -74,7 +75,7 @@ function WorkspaceRouteShell({
   loading = false,
   badges = DEFAULT_LOADING_BADGES,
   loginHref = '',
-  signupHref = '',
+  secondaryHref = '',
 }: {
   eyebrow: string;
   title: string;
@@ -82,7 +83,7 @@ function WorkspaceRouteShell({
   loading?: boolean;
   badges?: WorkspaceRouteBadge[];
   loginHref?: string;
-  signupHref?: string;
+  secondaryHref?: string;
 }) {
   return (
     <PremiumShell>
@@ -90,7 +91,7 @@ function WorkspaceRouteShell({
 
         {/* Eyebrow */}
         <span className="ap-eyebrow">
-          {loading && <span className="ap-live-dot" style={{ height: '6px', width: '6px' }} />}
+          {loading && <span className="ap-live-dot" />}
           {eyebrow}
         </span>
 
@@ -105,11 +106,10 @@ function WorkspaceRouteShell({
           {/* Waveform if loading */}
           {loading && (
             <div className="ap-wave-loader shrink-0 pt-1" aria-hidden="true">
-              {WAVE_HEIGHTS.map((h, i) => (
+              {Array.from({ length: WAVE_BAR_COUNT }).map((_, i) => (
                 <span
                   key={`rwave-${i}`}
                   className="ap-wave-bar"
-                  style={{ height: `${h * 100}%`, animationDelay: `${i * 120}ms` } as CSSProperties}
                 />
               ))}
             </div>
@@ -141,13 +141,19 @@ function WorkspaceRouteShell({
           </div>
         ) : (
           /* Auth gate buttons */
-          <div className="mt-6 flex flex-wrap gap-3">
-            <a href={loginHref} className="ap-btn-primary flex-1 sm:flex-none" style={{ width: 'auto' }}>
-              Open secure sign-in <ArrowRight size={15} />
-            </a>
-            <a href={signupHref} className="ap-btn-secondary flex-1 sm:flex-none" style={{ width: 'auto' }}>
-              Create account
-            </a>
+          <div className="mt-6 space-y-4">
+            <div className="rounded-xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-50">
+              <p className="font-semibold">{SIGNUP_DISABLED_TITLE}</p>
+              <p className="mt-1 text-amber-100/90">{SIGNUP_DISABLED_DETAIL}</p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <a href={loginHref} className="ap-btn-primary flex-1 sm:w-auto sm:flex-none">
+                Open secure sign-in <ArrowRight size={15} />
+              </a>
+              <a href={secondaryHref} className="ap-btn-secondary flex-1 sm:w-auto sm:flex-none">
+                Launch soon
+              </a>
+            </div>
           </div>
         )}
       </div>
@@ -167,13 +173,15 @@ export function WorkspaceRouteEntryScreen({
 }: WorkspaceRouteEntryScreenProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { authReady, isAuthenticated } = useUser();
+  const { authReady, isAuthenticated, sessionCookieReady } = useUser();
   const [hasImmediateFirebaseSession, setHasImmediateFirebaseSession] = useState(() => Boolean(firebaseAuth.currentUser));
   const [authGateFallbackElapsed, setAuthGateFallbackElapsed] = useState(false);
-  const shouldWarmWorkspaceShell = authReady ? isAuthenticated : hasImmediateFirebaseSession;
+  const shouldWarmWorkspaceShell = authReady
+    ? isAuthenticated && sessionCookieReady
+    : hasImmediateFirebaseSession && sessionCookieReady;
   const shouldShowOptimisticSignInGate = !authReady && !hasImmediateFirebaseSession && authGateFallbackElapsed;
   const loginHref = useMemo(() => resolveLoginPath('login', pathname), [pathname]);
-  const signupHref = useMemo(() => resolveLoginPath('signup', pathname), [pathname]);
+  const secondaryHref = '/landing';
 
   const setScreen = useCallback((screen: AppScreen) => {
     router.replace(resolveAppPath(screen));
@@ -213,7 +221,7 @@ export function WorkspaceRouteEntryScreen({
         title={signInTitle}
         description={signInDescription}
         loginHref={loginHref}
-        signupHref={signupHref}
+        secondaryHref={secondaryHref}
       />
     );
   }

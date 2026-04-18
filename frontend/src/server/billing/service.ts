@@ -20,7 +20,8 @@ import {
   type BillingVnPackCatalogRow,
 } from '../../features/billing/catalog';
 import { readEnvNumber, readEnvValue } from '../../shared/runtime/env';
-import type { ServerAuthedUserContext } from '../auth/requestAuth';
+import { BILLING_CHECKOUT_LOCK_MESSAGE, isBillingCheckoutLocked } from '../../shared/billing/checkoutLock';
+import type { ServerAuthedUserContext } from '../auth/requestAuth.ts';
 import { getFirebaseAdminFirestore } from '../firebaseAdmin';
 import { getAccountEntitlements, getAccountProfile } from '../account/service';
 
@@ -67,7 +68,6 @@ const stripePortalConfigurationId = (): string => readEnvValue(
 const vcConversionRate = (): number => readEnvNumber(
   process.env.VF_VC_CONVERSION_RATE,
   process.env.NEXT_PUBLIC_VF_VC_CONVERSION_RATE,
-  process.env.VITE_VF_VC_CONVERSION_RATE,
 ) || 0;
 
 const currentIso = (): string => new Date().toISOString();
@@ -76,6 +76,12 @@ const throwHttpError = (status: number, message: string): never => {
   const error = new Error(message) as Error & { status: number };
   error.status = status;
   throw error;
+};
+
+const assertBillingCheckoutUnlocked = (): void => {
+  if (isBillingCheckoutLocked()) {
+    throwHttpError(403, BILLING_CHECKOUT_LOCK_MESSAGE);
+  }
 };
 
 const assertStripeReady = (): string => {
@@ -275,6 +281,7 @@ export const createPlanCheckoutSession = async (
   input: { plan: string; successUrl?: string; cancelUrl?: string; couponCode?: string },
   idempotencyKey?: string
 ): Promise<BillingCheckoutLaunch> => {
+  assertBillingCheckoutUnlocked();
   const planKey = normalizePlanKey(input.plan);
   if (planKey === 'free') throwHttpError(400, 'Unknown billing plan.');
   const paidPlanKey = planKey as Exclude<ReturnType<typeof normalizePlanKey>, 'free'>;
@@ -339,6 +346,7 @@ const createOneTimeCheckoutSession = async (
   },
   idempotencyKey?: string
 ): Promise<{ session: { id: string; url: string }; customer: string }> => {
+  assertBillingCheckoutUnlocked();
   const customer = await ensureStripeCustomer(user);
   const session = await stripeRequest<{ id: string; url: string }>('POST', '/checkout/sessions', {
     idempotencyKey,
@@ -469,6 +477,7 @@ export const createPortalSession = async (
   user: ServerAuthedUserContext,
   input: { returnUrl?: string }
 ): Promise<{ ok: true; provider: string; url: string }> => {
+  assertBillingCheckoutUnlocked();
   const customer = await ensureStripeCustomer(user);
   const configuration = stripePortalConfigurationId();
   const session = await stripeRequest<{ url: string }>('POST', '/billing_portal/sessions', {
@@ -639,6 +648,7 @@ const syncSubscriptionEntitlement = async (
 };
 
 export const cancelSubscription = async (user: ServerAuthedUserContext): Promise<BillingSubscriptionActionResult> => {
+  assertBillingCheckoutUnlocked();
   const entitlements = await getAccountEntitlements(user);
   const subscriptionId = asString(entitlements.billing?.subscriptionId);
   if (!subscriptionId) throwHttpError(400, 'No active subscription found.');
@@ -655,6 +665,7 @@ export const cancelSubscription = async (user: ServerAuthedUserContext): Promise
 };
 
 export const resumeSubscription = async (user: ServerAuthedUserContext): Promise<BillingSubscriptionActionResult> => {
+  assertBillingCheckoutUnlocked();
   const entitlements = await getAccountEntitlements(user);
   const subscriptionId = asString(entitlements.billing?.subscriptionId);
   if (!subscriptionId) throwHttpError(400, 'No active subscription found.');

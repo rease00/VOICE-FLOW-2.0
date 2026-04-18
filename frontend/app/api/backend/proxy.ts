@@ -1,9 +1,16 @@
 import { NextRequest } from 'next/server';
+import {
+  getLocalDevLegacyBackendOrigin,
+  isLoopbackOrigin,
+  isProductionNodeEnv,
+  readConfiguredLegacyBackendOriginValue,
+} from '../../../src/server/replatform/backendProxyConfig';
+import { verifyFirebaseRequest } from '../../../src/server/auth/requestAuth';
 
-const DEFAULT_BACKEND_ORIGIN = 'http://127.0.0.1:7800';
 const DEFAULT_BACKEND_REGION_PRIORITY = ['us-central1', 'europe-west1', 'asia-southeast1'] as const;
 const HEALTH_CACHE_TTL_MS = 10_000;
 const DEFAULT_ALLOWED_PATH_PREFIXES = [
+  '/ai',
   '/account',
   '/admin',
   '/api',
@@ -106,6 +113,18 @@ const normalizeBackendOrigin = (candidate: string): string | null => {
   }
 };
 
+const getMissingBackendProxyReason = (): string => {
+  const configuredValue = readConfiguredLegacyBackendOriginValue();
+  if (configuredValue) {
+    return isProductionNodeEnv()
+      ? 'Legacy backend proxy targets cannot use localhost or loopback origins in production. Set VF_MEDIA_BACKEND_URL or VF_MEDIA_BACKEND_ORIGINS_JSON to a reachable remote HTTPS origin.'
+      : 'Legacy backend proxy configuration is invalid. Check VF_MEDIA_BACKEND_URL or VF_MEDIA_BACKEND_ORIGINS_JSON.';
+  }
+  return isProductionNodeEnv()
+    ? 'Legacy backend compatibility routes require VF_MEDIA_BACKEND_URL or VF_MEDIA_BACKEND_ORIGINS_JSON in production.'
+    : 'Legacy backend compatibility routes require a reachable local backend or an explicit VF_MEDIA_BACKEND_URL.';
+};
+
 const parseBackendOrigins = (): BackendOrigin[] => {
   const configured = String(
     process.env.VF_MEDIA_BACKEND_ORIGINS_JSON || process.env.VF_MEDIA_BACKEND_URLS_JSON || ''
@@ -117,6 +136,7 @@ const parseBackendOrigins = (): BackendOrigin[] => {
         const mapped = Object.entries(payload).flatMap(([region, value]) => {
           const origin = normalizeBackendOrigin(String(value || ''));
           if (!origin) return [];
+          if (isProductionNodeEnv() && isLoopbackOrigin(origin)) return [];
           return [{ region: String(region || '').trim().toLowerCase(), origin }];
         });
         if (mapped.length > 0) {
@@ -128,9 +148,19 @@ const parseBackendOrigins = (): BackendOrigin[] => {
     }
   }
 
-  const fallbackOrigin = normalizeBackendOrigin(String(process.env.VF_MEDIA_BACKEND_URL || '').trim())
-    || DEFAULT_BACKEND_ORIGIN;
-  return [{ region: 'default', origin: fallbackOrigin.replace(/\/+$/, '') }];
+  const configuredOrigin = normalizeBackendOrigin(String(process.env.VF_MEDIA_BACKEND_URL || '').trim());
+  if (configuredOrigin) {
+    if (isProductionNodeEnv() && isLoopbackOrigin(configuredOrigin)) {
+      return [];
+    }
+    return [{ region: 'default', origin: configuredOrigin.replace(/\/+$/, '') }];
+  }
+
+  const fallbackOrigin = normalizeBackendOrigin(getLocalDevLegacyBackendOrigin());
+  if (!fallbackOrigin) {
+    return [];
+  }
+  return [{ region: 'local-dev', origin: fallbackOrigin.replace(/\/+$/, '') }];
 };
 
 const preferredRegionOrder = (request: NextRequest, configuredRegions: string[]): string[] => {
@@ -291,6 +321,31 @@ const applyLegacyProxyHeaders = (headers: Headers, pathname: string): Headers =>
   return headers;
 };
 
+const buildMissingBackendProxyResponse = (pathname: string): Response => {
+  return new Response(
+    JSON.stringify({
+      detail: getMissingBackendProxyReason(),
+      path: String(pathname || '/'),
+    }),
+    {
+      status: 503,
+      headers: applyLegacyProxyHeaders(
+        new Headers({ 'content-type': 'application/json; charset=utf-8' }),
+        pathname,
+      ),
+    }
+  );
+};
+
+const hasVerifiedAuthContext = async (request: NextRequest): Promise<boolean> => {
+  try {
+    await verifyFirebaseRequest(request);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const proxyBackendRequest = async (
   request: NextRequest,
   pathSegments: string[] = []
@@ -299,10 +354,6 @@ export const proxyBackendRequest = async (
   const normalizedPath = normalizePathSegments(pathSegments);
   const allowedPathPrefixes = getAllowedPathPrefixes();
   const unsafeMethodPrefixes = getUnsafeMethodPrefixes();
-  const hasAuthContext = Boolean(
-    String(request.headers.get('authorization') || '').trim()
-    || String(request.headers.get('cookie') || '').trim()
-  );
   if (!pathMatchesPrefix(normalizedPath, allowedPathPrefixes)) {
     return new Response('Backend path is not allowed by proxy policy.', {
       status: 403,
@@ -315,7 +366,7 @@ export const proxyBackendRequest = async (
       headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
     });
   }
-  if (UNSAFE_METHODS.has(method) && !hasAuthContext) {
+  if (UNSAFE_METHODS.has(method) && !(await hasVerifiedAuthContext(request))) {
     return new Response('Backend proxy requires authentication for write methods.', {
       status: 401,
       headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
@@ -335,6 +386,9 @@ export const proxyBackendRequest = async (
   }
 
   const backendCandidates = await resolveBackendOriginsForRequest(request);
+  if (backendCandidates.length === 0) {
+    return buildMissingBackendProxyResponse(normalizedPath);
+  }
   const retryable = SAFE_RETRY_METHODS.has(method);
   const attempts = retryable ? backendCandidates : backendCandidates.slice(0, 1);
   let lastFailure: { target: URL; error: unknown; region: string } | null = null;

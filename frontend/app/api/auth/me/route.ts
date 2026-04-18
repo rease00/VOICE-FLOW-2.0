@@ -1,11 +1,9 @@
 import { NextResponse } from 'next/server';
 
 import { getFirebaseAdminAuth } from '../../../../src/server/firebaseAdmin';
-import jwt from 'jsonwebtoken';
 
 export const runtime = 'nodejs';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'default-secret';
+const SESSION_COOKIE_NAME = '__session';
 
 const buildJsonResponse = (body: Record<string, unknown>, status: number = 200): NextResponse =>
   NextResponse.json(body, {
@@ -21,24 +19,54 @@ const readBearerToken = (request: Request): string => {
   return authHeader.slice(7).trim();
 };
 
+const readCookieValue = (request: Request, cookieName: string): string => {
+  const cookieHeader = String(request.headers.get('cookie') || '').trim();
+  if (!cookieHeader) return '';
+  for (const entry of cookieHeader.split(';')) {
+    const [name, ...rawValue] = entry.split('=');
+    if (String(name || '').trim() !== cookieName) continue;
+    return decodeURIComponent(rawValue.join('=').trim());
+  }
+  return '';
+};
+
+const resolveDecodedToken = async (
+  request: Request,
+): Promise<{ uid: string } | null> => {
+  const bearerToken = readBearerToken(request);
+  const sessionCookie = readCookieValue(request, SESSION_COOKIE_NAME);
+  if (!bearerToken && !sessionCookie) {
+    return null;
+  }
+
+  const auth = getFirebaseAdminAuth();
+  if (sessionCookie) {
+    try {
+      return await auth.verifySessionCookie(sessionCookie, true);
+    } catch {
+      // Fall back to bearer verification for callers that send an explicit token.
+    }
+  }
+
+  if (bearerToken) {
+    try {
+      return await auth.verifyIdToken(bearerToken);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
 export const GET = async (request: Request): Promise<Response> => {
   try {
-    const token = readBearerToken(request);
-    if (!token) {
+    const decoded = await resolveDecodedToken(request);
+    if (!decoded) {
       return buildJsonResponse({ error: 'Unauthorized' }, 401);
     }
 
     const auth = getFirebaseAdminAuth();
-
-    // Verify JWT token
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET) as { uid: string; email: string };
-    } catch {
-      return buildJsonResponse({ error: 'Invalid token' }, 401);
-    }
-
-    // Get user by UID
     const userRecord = await auth.getUser(decoded.uid);
     if (!userRecord) {
       return buildJsonResponse({ error: 'User not found' }, 404);

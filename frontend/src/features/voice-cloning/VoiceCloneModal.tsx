@@ -139,8 +139,8 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     [sourceVoiceId]
   );
   const canSubmit = Boolean(referenceFile) && !isSubmitting;
-  const modalTitle = 'Attach Modal VC Reference';
-  const modalDescription = 'Upload a consented reference clip and bind it to this speaker for Modal voice conversion.';
+  const modalTitle = 'Attach Seed VC Reference';
+  const modalDescription = 'Upload a consented reference clip and bind it to this speaker for Seed VC conversion.';
 
   const handleOverlayClick = () => {
     if (!isSubmitting) onClose();
@@ -353,7 +353,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
               <span>{currentSourceLabel}</span>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              This speaker will use Modal voice conversion with the uploaded reference during generation.
+              This speaker will use Seed VC with the uploaded reference during generation.
             </p>
           </div>
 

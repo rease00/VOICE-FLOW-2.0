@@ -12,6 +12,15 @@ import { useManagedTabs } from '../../../shared/ui/tabs';
 import { LegalLinks } from '../../legal/LegalLinks';
 import { resolveLoginPath, resolveSafeInternalNextPath, type AuthRouteMode } from '../../../app/navigation';
 import {
+  SIGNUP_DISABLED_MARKETING_DETAIL,
+  SIGNUP_DISABLED_TITLE,
+} from '../../../shared/auth/signupLock';
+import {
+  BILLING_CHECKOUT_LOCK_MESSAGE,
+  BILLING_CHECKOUT_LOCK_TITLE,
+  isBillingCheckoutLocked,
+} from '../../../shared/billing/checkoutLock';
+import {
   consumeBillingCheckoutIntent,
   writeBillingCheckoutIntent,
   type BillingCheckoutIntentDraft,
@@ -249,9 +258,10 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   const [authPrompt, setAuthPrompt] = useState<BillingAuthPromptState | null>(null);
   const resumeAttemptedRef = useRef(false);
 
-  const resolvedAuthMode = authMode || (mode === 'public' ? 'signup' : 'login');
+  const resolvedAuthMode = 'login';
   const hasActiveAuthSession = Boolean(hasFirebaseSession || isAuthenticated);
   const nativeCurrencyCode = useMemo(() => resolveNativeCurrencyCode(billingCountry), [billingCountry]);
+  const billingCheckoutLocked = isBillingCheckoutLocked();
 
   const selectedPackSummary = useMemo(
     () => BILLING_TOKEN_PACK_ROWS.find((item) => item.key === selectedPack) || BILLING_TOKEN_PACK_ROWS[1] || BILLING_TOKEN_PACK_ROWS[0] || FALLBACK_TOKEN_PACK,
@@ -367,7 +377,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     if (mode === 'public') {
       setAuthPrompt({
         intentDraft,
-        message: `Choose sign up or log in to continue checkout for ${selectionLabel}. We will bring you back here and resume the flow.`,
+        message: `Sign in to continue checkout for ${selectionLabel}. We will bring you back here and resume the flow.`,
       });
       return;
     }
@@ -727,7 +737,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   <div className="mt-4 rounded-[1.35rem] border border-cyan-300/16 bg-[linear-gradient(180deg,rgba(11,22,42,0.84),rgba(7,15,30,0.96))] p-4 shadow-[0_16px_40px_rgba(2,6,23,0.28)]">
                     <div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-200/78">Checkout path</div>
                     <p className="mt-2 text-sm leading-6 text-slate-300">
-                      Review a plan or pack first. Sign up or log in only when you decide to continue into secure checkout.
+                      Review a plan or pack first. Sign in only when you decide to continue into secure checkout.
                     </p>
                     <p className="mt-3 text-[11px] leading-5 text-cyan-100/86">
                       Renewal pricing stays visible up front, so the comparison never disappears once you select a lane.
@@ -804,7 +814,18 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
 
         {mode === 'public' && !hasActiveAuthSession ? (
           <div className="mt-3 rounded-xl border border-cyan-300/20 bg-cyan-500/8 px-3.5 py-2.5 text-[13px] text-cyan-50">
-            Browse pricing first. Sign up or log in only when you are ready to start secure checkout.
+            Browse pricing first. Sign in only when you are ready to start secure checkout.
+          </div>
+        ) : null}
+
+        {billingCheckoutLocked ? (
+          <div className={`mt-3 rounded-xl border px-3.5 py-3 text-[13px] ${
+            mode === 'app'
+              ? 'border-amber-300/35 bg-amber-500/12 text-amber-100'
+              : 'border-amber-300/30 bg-amber-500/12 text-amber-100'
+          }`}>
+            <p className="font-semibold">{BILLING_CHECKOUT_LOCK_TITLE}</p>
+            <p className="mt-1 text-[12px] leading-5 text-amber-100/90">{BILLING_CHECKOUT_LOCK_MESSAGE}</p>
           </div>
         ) : null}
 
@@ -970,14 +991,14 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                       <button
                         type="button"
                         onClick={() => void handlePlanCheckout(plan.key)}
-                        disabled={Boolean(loadingKey)}
+                        disabled={Boolean(loadingKey) || billingCheckoutLocked}
                         className={`vf-billing-public-cta mt-auto inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                           mode === 'app'
                             ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
                             : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
                         }`}
                       >
-                        {loadingKey === `plan:${plan.key}` ? 'Starting...' : 'Checkout'}
+                        {billingCheckoutLocked ? 'Checkout paused' : loadingKey === `plan:${plan.key}` ? 'Starting...' : 'Checkout'}
                         <ArrowRight size={13} />
                       </button>
                     </article>
@@ -1060,7 +1081,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 <button
                   type="button"
                   onClick={() => void handleTokenCheckout()}
-                  disabled={Boolean(loadingKey)}
+                  disabled={Boolean(loadingKey) || billingCheckoutLocked}
                   className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                     mode === 'app'
                       ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
@@ -1068,8 +1089,10 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   }`}
                 >
                   {loadingKey === `token:${selectedPack}`
-                    ? 'Starting checkout...'
-                    : `Checkout ${selectedPackSummary.label} credit pack`}
+                    ? 'Checkout paused'
+                    : loadingKey === `token:${selectedPack}`
+                      ? 'Starting checkout...'
+                      : `Checkout ${selectedPackSummary.label} credit pack`}
                   <ArrowRight size={14} />
                 </button>
               </div>
@@ -1191,16 +1214,18 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 <button
                   type="button"
                   onClick={() => void handleVcCheckout()}
-                  disabled={Boolean(loadingKey)}
+                  disabled={Boolean(loadingKey) || billingCheckoutLocked}
                   className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                     mode === 'app'
                       ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
                       : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
                   }`}
                 >
-                  {loadingKey === `vc:${selectedVcPack}`
-                    ? 'Starting checkout...'
-                    : `Checkout ${selectedVcPackSummary.label} minutes pack`}
+                  {billingCheckoutLocked
+                    ? 'Checkout paused'
+                    : loadingKey === `vc:${selectedVcPack}`
+                      ? 'Starting checkout...'
+                      : `Checkout ${selectedVcPackSummary.label} minutes pack`}
                   <ArrowRight size={14} />
                 </button>
               </div>
@@ -1264,7 +1289,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               <div className="mt-3 flex items-center justify-end gap-3">
                 <button
                   type="button"
-                  disabled={!!loadingKey}
+                  disabled={Boolean(loadingKey) || billingCheckoutLocked}
                   onClick={() => void runVnCheckout(selectedVnPack)}
                   className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                     mode === 'app'
@@ -1272,9 +1297,11 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                       : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
                   }`}
                 >
-                  {loadingKey === `vn:${selectedVnPack}`
-                    ? 'Starting checkout...'
-                    : `Checkout ${BILLING_VN_PACK_ROWS.find((p) => p.key === selectedVnPack)?.label || ''} VN pack`}
+                  {billingCheckoutLocked
+                    ? 'Checkout paused'
+                    : loadingKey === `vn:${selectedVnPack}`
+                      ? 'Starting checkout...'
+                      : `Checkout ${BILLING_VN_PACK_ROWS.find((p) => p.key === selectedVnPack)?.label || ''} VN pack`}
                   <ArrowRight size={14} />
                 </button>
               </div>
@@ -1301,7 +1328,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-200/80">Secure checkout</p>
-                <h2 className="mt-1 text-xl font-semibold tracking-tight text-white">Choose how to continue</h2>
+                <h2 className="mt-1 text-xl font-semibold tracking-tight text-white">Continue with sign-in</h2>
               </div>
               <button
                 type="button"
@@ -1317,28 +1344,21 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               {authPrompt.message}
             </p>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => redirectToAuthWithIntent(authPrompt.intentDraft, 'signup')}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#47d6ca] via-[#2f80ed] to-[#f3b86b] px-4 py-2 text-sm font-semibold text-slate-950 shadow-[0_16px_36px_rgba(71,214,202,0.24)] transition hover:translate-y-[-1px] hover:brightness-105"
-              >
-                Sign up
-                <ArrowRight size={15} />
-              </button>
+            <div className="mt-5 grid gap-3">
               <button
                 type="button"
                 onClick={() => redirectToAuthWithIntent(authPrompt.intentDraft, 'login')}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/14 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-white/10"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#47d6ca] via-[#2f80ed] to-[#f3b86b] px-4 py-2 text-sm font-semibold text-slate-950 shadow-[0_16px_36px_rgba(71,214,202,0.24)] transition hover:translate-y-[-1px] hover:brightness-105"
               >
-                Log in
+                Sign in
                 <ArrowRight size={15} />
               </button>
             </div>
 
-            <p className="mt-3 text-xs text-slate-400">
-              Your plan or pack selection stays saved and resumes as soon as you return to billing.
-            </p>
+            <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-400/10 px-3.5 py-3 text-xs leading-5 text-amber-50">
+              <p className="font-semibold">{SIGNUP_DISABLED_TITLE}</p>
+              <p className="mt-1 text-amber-100/90">{SIGNUP_DISABLED_MARKETING_DETAIL}</p>
+            </div>
           </div>
         </div>
       ) : null}

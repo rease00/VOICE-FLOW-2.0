@@ -18,8 +18,10 @@ import {
   RefreshCw,
   Pencil,
   Eye,
+  Cloud,
 } from 'lucide-react';
 import { splitIntoSentenceChunks } from '../../services/ttsUtils';
+import type { ReaderScriptPlaybackSource } from '../../model/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +34,11 @@ interface ScriptDetailsProps {
   isCompact?: boolean;
   currentText?: string;
   chapterTitle?: string;
+  initialAiScript?: string;
+  onAiScriptChange?: (value: string) => void;
+  preferredPlaybackSource?: ReaderScriptPlaybackSource;
+  onPreferredPlaybackSourceChange?: (value: ReaderScriptPlaybackSource) => void;
+  cachedAudioReady?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +82,11 @@ export function ScriptDetails({
   isCompact = false,
   currentText = '',
   chapterTitle = 'Current chapter',
+  initialAiScript = '',
+  onAiScriptChange,
+  preferredPlaybackSource = 'raw',
+  onPreferredPlaybackSourceChange,
+  cachedAudioReady = false,
 }: ScriptDetailsProps) {
   const [showPanel, setShowPanel] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('play');
@@ -99,21 +111,26 @@ export function ScriptDetails({
 
   // Reset AI script when chapter text changes
   useEffect(() => {
-    if (currentText !== prevTextRef.current) {
-      prevTextRef.current = currentText;
-      setAiScript('');
-      setAiError(null);
-      setIsEditingAi(false);
-      setEditedAiScript('');
-      autoGenRef.current = false;
-    }
-  }, [currentText]);
+    prevTextRef.current = currentText;
+    setAiScript(initialAiScript);
+    setAiError(null);
+    setIsEditingAi(false);
+    setEditedAiScript(initialAiScript);
+    autoGenRef.current = Boolean(initialAiScript);
+  }, [currentText, initialAiScript]);
 
   const detectedLanguage = useMemo(() => detectLanguage(currentText), [currentText]);
 
+  const playbackScriptText = useMemo(() => {
+    if (preferredPlaybackSource === 'ai' && aiScript.trim()) {
+      return aiScript;
+    }
+    return currentText;
+  }, [aiScript, currentText, preferredPlaybackSource]);
+
   const chunks = useMemo(
-    () => splitIntoSentenceChunks(currentText, chunkSize),
-    [currentText, chunkSize]
+    () => splitIntoSentenceChunks(playbackScriptText, chunkSize),
+    [chunkSize, playbackScriptText]
   );
 
   const displayAiScript = isEditingAi ? editedAiScript : aiScript;
@@ -139,12 +156,13 @@ export function ScriptDetails({
       setAiScript(data.annotatedText);
       setEditedAiScript(data.annotatedText);
       setIsEditingAi(false);
+      onAiScriptChange?.(data.annotatedText);
     } catch (e) {
       setAiError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       setAiLoading(false);
     }
-  }, [currentText, directorNotes]);
+  }, [currentText, directorNotes, onAiScriptChange]);
 
   // Auto-generate AI script when text is available
   useEffect(() => {
@@ -179,6 +197,44 @@ export function ScriptDetails({
     { id: 'ai', label: 'AI Script', icon: <Sparkles size={14} /> },
     { id: 'play', label: 'Play Script', icon: <PlayCircle size={14} /> },
   ];
+
+  const playbackSourceOptions: Array<{
+    id: ReaderScriptPlaybackSource;
+    label: string;
+    icon: React.ReactNode;
+    visible: boolean;
+    description: string;
+  }> = [
+    {
+      id: 'raw',
+      label: 'Raw',
+      icon: <FileText size={12} />,
+      visible: true,
+      description: 'Generate and play directly from the raw chapter text.',
+    },
+    {
+      id: 'ai',
+      label: 'AI Script',
+      icon: <Sparkles size={12} />,
+      visible: true,
+      description: aiScript
+        ? 'Generate and play using the AI-directed playback script.'
+        : aiLoading
+          ? 'AI script is generating. Raw playback will be used until it is ready.'
+          : 'No AI script is ready yet. Raw playback will be used until one exists.',
+    },
+    {
+      id: 'cached',
+      label: 'CDN Audio',
+      icon: <Cloud size={12} />,
+      visible: cachedAudioReady,
+      description: 'Play the pre-generated signed chapter audio from the CDN.',
+    },
+  ];
+
+  const visiblePlaybackSourceOptions = playbackSourceOptions.filter((option) => option.visible);
+  const selectedPlaybackSource = visiblePlaybackSourceOptions.find((option) => option.id === preferredPlaybackSource)
+    ?? visiblePlaybackSourceOptions[0];
 
   return (
     <>
@@ -296,6 +352,7 @@ export function ScriptDetails({
                             onClick={() => {
                               if (isEditingAi) {
                                 setAiScript(editedAiScript);
+                                onAiScriptChange?.(editedAiScript);
                               }
                               setIsEditingAi(!isEditingAi);
                             }}
@@ -370,6 +427,36 @@ export function ScriptDetails({
 
           {activeTab === 'play' && (
             <div className="space-y-2">
+              <div className="rounded-md border border-[#2f4f83]/50 bg-[#0a1530] p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                    Playback Source
+                  </span>
+                  <span className="text-[10px] text-slate-500">
+                    {selectedPlaybackSource?.label || 'Raw'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {visiblePlaybackSourceOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      onClick={() => onPreferredPlaybackSourceChange?.(option.id)}
+                      className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                        preferredPlaybackSource === option.id
+                          ? 'bg-[#1a366d] text-white'
+                          : 'text-slate-400 hover:bg-[#10244c] hover:text-slate-200'
+                      }`}
+                    >
+                      {option.icon}
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+                  {selectedPlaybackSource?.description}
+                </p>
+              </div>
+
               <button
                 onClick={() => setShowChunkConfig(!showChunkConfig)}
                 className="flex w-full items-center justify-between rounded-md bg-[#0a1530] px-2 py-1.5 text-xs text-slate-300 hover:bg-[#10244c]"
@@ -440,7 +527,9 @@ export function ScriptDetails({
                   {chunks.length} chunk{chunks.length !== 1 ? 's' : ''} total
                 </span>
                 <span className="text-[10px] text-slate-500">
-                  Queue: {Math.min(pregenCount, chunks.length)}
+                  {preferredPlaybackSource === 'cached'
+                    ? 'CDN ready'
+                    : `Queue: ${Math.min(pregenCount, chunks.length)}`}
                 </span>
               </div>
 
@@ -461,7 +550,7 @@ export function ScriptDetails({
                       </span>
                       <div className="flex items-center gap-1">
                         <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300">
-                          Ready
+                          {preferredPlaybackSource === 'cached' ? 'CDN' : 'Ready'}
                         </span>
                         <button
                           onClick={() => copyChunk(i, chunk)}
@@ -601,7 +690,10 @@ export function ScriptDetails({
                             <div className="flex items-center gap-2">
                               <button
                                 onClick={() => {
-                                  if (isEditingAi) setAiScript(editedAiScript);
+                                  if (isEditingAi) {
+                                    setAiScript(editedAiScript);
+                                    onAiScriptChange?.(editedAiScript);
+                                  }
                                   setIsEditingAi(!isEditingAi);
                                 }}
                                 className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-400 hover:bg-[#1a366d] hover:text-slate-200"
@@ -666,8 +758,38 @@ export function ScriptDetails({
                 </div>
               )}
 
-              {activeTab === 'play' && (
+          {activeTab === 'play' && (
                 <div className="space-y-3">
+                  <div className="rounded-lg border border-[#2f4f83]/50 bg-[#0a1530] p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                        Playback Source
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {selectedPlaybackSource?.label || 'Raw'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {visiblePlaybackSourceOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => onPreferredPlaybackSourceChange?.(option.id)}
+                          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                            preferredPlaybackSource === option.id
+                              ? 'bg-[#1a366d] text-white'
+                              : 'text-slate-400 hover:bg-[#10244c] hover:text-slate-200'
+                          }`}
+                        >
+                          {option.icon}
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                      {selectedPlaybackSource?.description}
+                    </p>
+                  </div>
+
                   <div className="rounded-lg border border-[#2f4f83]/50 bg-[#0a1530] p-3">
                     <button
                       onClick={() => setShowChunkConfig(!showChunkConfig)}
@@ -731,7 +853,9 @@ export function ScriptDetails({
                       {chunks.length} chunk{chunks.length !== 1 ? 's' : ''} total
                     </span>
                     <span className="text-xs text-slate-500">
-                      Pre-gen queue: {Math.min(pregenCount, chunks.length)}
+                      {preferredPlaybackSource === 'cached'
+                        ? 'CDN ready'
+                        : `Pre-gen queue: ${Math.min(pregenCount, chunks.length)}`}
                     </span>
                   </div>
 
@@ -770,7 +894,9 @@ export function ScriptDetails({
                                     : 'bg-slate-700/30 text-slate-500'
                                 }`}
                               >
-                                {isQueued ? 'Ready' : 'Queued'}
+                                {preferredPlaybackSource === 'cached'
+                                  ? 'CDN'
+                                  : isQueued ? 'Ready' : 'Queued'}
                               </span>
                               <button
                                 onClick={() => copyChunk(i, chunk)}

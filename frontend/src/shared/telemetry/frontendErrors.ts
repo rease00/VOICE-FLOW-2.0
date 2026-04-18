@@ -13,18 +13,12 @@ interface FrontendErrorPayload {
 }
 
 const isTelemetryEnabled = (): boolean => {
-  const enabled = readEnvBoolean(
-    process.env.NEXT_PUBLIC_FRONTEND_OBSERVABILITY_ENABLED,
-    process.env.VITE_FRONTEND_OBSERVABILITY_ENABLED
-  );
+  const enabled = readEnvBoolean(process.env.NEXT_PUBLIC_FRONTEND_OBSERVABILITY_ENABLED);
   return enabled ?? true;
 };
 
 const errorSampleRate = (): number => {
-  const raw = readEnvNumber(
-    process.env.NEXT_PUBLIC_FRONTEND_ERROR_SAMPLE_RATE,
-    process.env.VITE_FRONTEND_ERROR_SAMPLE_RATE
-  );
+  const raw = readEnvNumber(process.env.NEXT_PUBLIC_FRONTEND_ERROR_SAMPLE_RATE);
   if (!Number.isFinite(raw)) return 1;
   return Math.max(0, Math.min(1, raw || 1));
 };

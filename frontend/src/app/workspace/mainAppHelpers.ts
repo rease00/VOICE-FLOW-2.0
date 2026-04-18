@@ -33,7 +33,7 @@ export {
 
 export type { EngineSelectorCopy } from '../../shared/workspace/mainAppHelpers';
 
-export interface DubbingClip {
+interface DubbingClip {
   id: string;
   file: File;
   objectUrl: string;
@@ -200,7 +200,6 @@ const MAINAPP_SPEAKER_LINE_REGEX_V2 = new RegExp(
   String.raw`^\s*(?:\[(.+?)\]|\((.+?)\)|(${MAINAPP_SPEAKER_NAME_PATTERN_V2}))(?:\s*[\(\[]([^\)\]]{1,120})[\)\]])?\s*[:\uFF1A]\s*(.*)$`,
   'u'
 );
-
 const MAINAPP_SFX_REGEX = /^(?:\[|\()(?:SFX|sfx|Sound|SOUND|Music|MUSIC)\b/i;
 const MAINAPP_SPEAKER_LINE_REGEX = MAINAPP_SPEAKER_LINE_REGEX_V2;
 const MAINAPP_CANONICAL_HEADER_ONLY_REGEX = /^\s*\[[^\]\n]{1,80}\](?:\s*\([^\)\n]{1,120}\))?\s*[:\uFF1A]\s*$/u;
@@ -295,56 +294,9 @@ const normalizeDirectedTitleMetaStrict = (sourceText: string, directedText: stri
 };
 
 export const normalizeSpeakerHeaderScript = (text: string): string => (
-  (() => {
-    const normalizedLines = String(text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .split('\n')
-      .map((line) => {
-        const match = String(line || '').match(MAINAPP_SPEAKER_LINE_REGEX);
-        if (!match) return line;
-        const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
-        if (!speaker) return line;
-        const rawTagBlock = String(match[4] || '').trim();
-        const dialogue = String(match[5] || '').trim();
-        const tagBlock = rawTagBlock ? ` (${rawTagBlock})` : '';
-        return dialogue ? `[${speaker}]${tagBlock}: ${dialogue}` : `[${speaker}]${tagBlock}:`;
-      });
-
-    // Remove duplicate orphan headers and merge orphan headers with following plain dialogue lines.
-    const compacted: string[] = [];
-    for (let index = 0; index < normalizedLines.length; index += 1) {
-      const rawLine = String(normalizedLines[index] || '');
-      const trimmed = rawLine.trim();
-      if (!trimmed) {
-        compacted.push(rawLine);
-        continue;
-      }
-      if (!MAINAPP_CANONICAL_HEADER_ONLY_REGEX.test(trimmed)) {
-        compacted.push(rawLine);
-        continue;
-      }
-
-      const previous = String(compacted[compacted.length - 1] || '').trim();
-      if (previous === trimmed) continue;
-
-      const nextRaw = String(normalizedLines[index + 1] || '');
-      const nextTrimmed = nextRaw.trim();
-      if (
-        nextTrimmed &&
-        !MAINAPP_SFX_REGEX.test(nextTrimmed) &&
-        !MAINAPP_SPEAKER_LINE_REGEX.test(nextTrimmed)
-      ) {
-        compacted.push(`${trimmed} ${nextTrimmed}`);
-        index += 1;
-        continue;
-      }
-
-      compacted.push(trimmed);
-    }
-
-    return compacted.join('\n');
-  })()
+  String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
 );
 
 export const parseMultiSpeakerScript = (text: string): { isMultiSpeaker: boolean; speakersList: string[]; crewTagsList: string[] } => {
@@ -507,7 +459,7 @@ export const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number
 };
 
 export const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
-  [Tab.WRITING]: 'Chapter-by-chapter writing with import, memory, and adaptation tools',
+  [Tab.LIBRARY]: 'Write novels, manage chapters, adapt stories, and generate audiobooks',
   [Tab.STUDIO]: 'Write, direct, and preview your next scene',
   [Tab.VOICE_CLONING]: 'Manage voices, cloning, and cast-ready voice assets',
   [Tab.HISTORY]: 'Rendered previews, exports, and runs history',
@@ -525,7 +477,8 @@ export const formatInr = (amount: number): string =>
 export type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 
 const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
-  { prefix: '/app/writing', tab: Tab.WRITING },
+  { prefix: '/app/library', tab: Tab.LIBRARY },
+  { prefix: '/app/writing', tab: Tab.LIBRARY },
   { prefix: '/app/studio', tab: Tab.STUDIO },
   { prefix: '/app/voices', tab: Tab.VOICE_CLONING },
   { prefix: '/app/runs', tab: Tab.HISTORY },
@@ -547,8 +500,8 @@ export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | u
 
 export const resolveWorkspaceRoutePath = (tab: Tab): string => {
   switch (tab) {
-    case Tab.WRITING:
-      return '/app/writing';
+    case Tab.LIBRARY:
+      return '/app/library';
     case Tab.VOICE_CLONING:
       return '/app/voices';
     case Tab.HISTORY:
@@ -603,7 +556,7 @@ export const resolveWorkspaceTabFromUrl = (): Tab | null => {
 
 export const resolveWorkspaceTabFromStorage = (): Tab | null => {
   const persisted = String(readStorageString(STORAGE_KEYS.workspaceActiveTab) || '').trim().toUpperCase();
-  if (persisted === 'NOVEL') return Tab.WRITING;
+  if (persisted === 'NOVEL' || persisted === 'WRITING') return Tab.LIBRARY;
   return Object.values(Tab).includes(persisted as Tab) ? (persisted as Tab) : null;
 };
 

@@ -280,6 +280,8 @@ interface NovelEditorContextValue {
   renameProject: (projectId: string, name: string) => void;
   createChapterLocal: (projectId: string, title: string) => string;
   deleteChapterLocal: (projectId: string, chapterId: string) => void;
+  reorderChapters: (projectId: string, fromId: string, toId: string) => void;
+  duplicateChapter: (projectId: string, chapterId: string) => string;
   persistSnapshot: () => void;
 }
 
@@ -499,6 +501,48 @@ export const NovelEditorProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
   }, [selectedChapterId]);
 
+  const reorderChapters = useCallback((projectId: string, fromId: string, toId: string) => {
+    setChaptersByProjectId((prev) => {
+      const chapters = [...(prev[projectId] || [])];
+      const fromIndex = chapters.findIndex((c) => c.id === fromId);
+      const toIndex = chapters.findIndex((c) => c.id === toId);
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return prev;
+      const moved = chapters.splice(fromIndex, 1)[0];
+      if (!moved) return prev;
+      chapters.splice(toIndex, 0, moved);
+      return {
+        ...prev,
+        [projectId]: chapters.map((c, i) => ({ ...c, index: i + 1 })).sort(chapterSort),
+      };
+    });
+  }, []);
+
+  const duplicateChapter = useCallback((projectId: string, chapterId: string): string => {
+    const newChapterId = createLocalId('chapter');
+    const nowIso = new Date().toISOString();
+    setChaptersByProjectId((prev) => {
+      const existing = prev[projectId] || [];
+      const source = existing.find((c) => c.id === chapterId);
+      if (!source) return prev;
+      const nextIndex = existing.length > 0 ? Math.max(...existing.map((c) => c.index)) + 1 : 1;
+      const duplicate: LocalNovelChapter = {
+        id: newChapterId,
+        projectId,
+        title: `${source.title} (copy)`,
+        name: buildChapterName(nextIndex, `${source.title} (copy)`),
+        index: nextIndex,
+        text: source.text,
+        adaptedText: source.adaptedText || '',
+        adaptationStatus: 'idle',
+        createdTime: nowIso,
+        modifiedTime: nowIso,
+      };
+      return { ...prev, [projectId]: [...existing, duplicate].sort(chapterSort) };
+    });
+    setSelectedChapterId(newChapterId);
+    return newChapterId;
+  }, []);
+
   const value = useMemo<NovelEditorContextValue>(() => ({
     projects,
     chaptersByProjectId,
@@ -526,13 +570,15 @@ export const NovelEditorProvider: React.FC<{ children: React.ReactNode }> = ({ c
     renameProject,
     createChapterLocal,
     deleteChapterLocal,
+    reorderChapters,
+    duplicateChapter,
     persistSnapshot,
   }), [
     projects, chaptersByProjectId, memoryLedgerByProjectId, adaptationStateByProjectId,
     chapterSummariesByProjectId, chapterVersionsByProjectId, selectedProjectId, selectedChapterId,
     isHydrating, selectedProject, chapters, selectedChapter, selectedLedger,
     selectProject, selectChapter, createProject, deleteProject, renameProject,
-    createChapterLocal, deleteChapterLocal, persistSnapshot,
+    createChapterLocal, deleteChapterLocal, reorderChapters, duplicateChapter, persistSnapshot,
   ]);
 
   return (
