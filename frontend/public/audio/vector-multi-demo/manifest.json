@@ -1,323 +1,291 @@
 {
-  "generatedAt": "2026-03-31T21:25:23.137Z",
-  "engine": "Prime Voice Engine",
-  "selectionNote": "Featured weekend plan, family dinner, boutique, office deadline, and city tour demos regenerated from the Prime multi-speaker set.",
+  "generatedAt": "2026-04-17T21:25:06.620Z",
+  "engine": "App studio multi-speaker",
+  "selectionNote": "Generated through app studio synth API with Aryan/Puck, Neha/Kore, Raj/Charon, Priya/Zephyr.",
   "featuredIds": [
-    "en-weekend-plan",
-    "hi-family-dinner",
-    "es-boutique-shop",
-    "ja-office-deadline",
-    "fr-city-tour"
+    "en-smart-home-chat",
+    "hi-support-call",
+    "es-delivery-chat",
+    "en-podcast-style"
   ],
   "entries": [
     {
-      "id": "en-weekend-plan",
+      "id": "en-smart-home-chat",
+      "title": "Morning Smart Home Chat",
       "language": "English",
-      "languageCode": "en-US",
-      "resolvedLanguage": "en-US",
-      "market": "United States / Global English",
-      "useCase": "Movie Night",
-      "scenario": "The Weekend Plan",
-      "direction": "Casual, energetic, and opinionated pacing with playful handoffs.",
-      "summary": "Three friends debate weekend movie plans with quick, expressive turns.",
-      "translation": "A friend pitches a sci-fi blockbuster, another pushes for an indie drama, and the third lands on doing both.",
-      "castSummary": "Alex: Ethan US Male + Jordan: Ava US Female + Casey: Grace UK Elder",
+      "market": "Global English",
+      "useCase": "Daily assistant",
+      "scenario": "Smart home morning chat",
+      "direction": "Cheerful, playful handoffs with a natural wake-up rhythm.",
+      "summary": "A light two-voice morning exchange with weather and reminder cues.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/en-smart-home-chat.wav",
       "cast": [
         {
-          "speaker": "Alex",
-          "role": "Alex",
-          "displayName": "Ethan US Male",
-          "voiceId": "Alnilam",
-          "voiceGender": "Male",
-          "lineCount": 1
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Puck"
         },
         {
-          "speaker": "Jordan",
-          "role": "Jordan",
-          "displayName": "Ava US Female",
-          "voiceId": "Leda",
-          "voiceGender": "Male",
-          "lineCount": 1
-        },
-        {
-          "speaker": "Casey",
-          "role": "Casey",
-          "displayName": "Grace UK Elder",
-          "voiceId": "Laomedeia",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "displayName": "Voice 2",
+          "voiceId": "Kore"
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/en-weekend-plan.wav",
       "lines": [
         {
-          "lineIndex": 0,
-          "speaker": "Alex",
-          "role": "Alex",
-          "displayName": "Ethan US Male",
-          "voiceId": "Alnilam",
-          "voiceGender": "Female",
-          "text": "<tone=\"excited\">Hey guys! Have you seen the trailer for the new sci-fi epic? It looks absolutely stunning!</tone>"
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[cheerfully] Hey Neha! Good morning — quick heads up before you start your day."
         },
         {
-          "lineIndex": 1,
-          "speaker": "Jordan",
-          "role": "Jordan",
-          "displayName": "Ava US Female",
-          "voiceId": "Leda",
-          "voiceGender": "Female",
-          "text": "<tone=\"skeptical\">I do not know, Alex. <pause=\"300ms\"/> The last one was all special effects and no plot. I would rather catch that new indie drama.</tone>"
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "text": "[sleepily] Mm... yeah go ahead, what's up?"
         },
         {
-          "lineIndex": 2,
-          "speaker": "Casey",
-          "role": "Casey",
-          "displayName": "Grace UK Elder",
-          "voiceId": "Laomedeia",
-          "voiceGender": "Female",
-          "text": "<tone=\"diplomatic\"><mood=\"calm\">Why not both? We can do the blockbuster tonight and the drama on Sunday.</mood> <tone=\"playful\">Plus, I am really just here for the popcorn!</tone></tone>"
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[playfully] So, it's 24 degrees outside, pretty sunny — great day to not stay indoors."
+        },
+        {
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "text": "[laughs] You literally say that every day."
+        },
+        {
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[warmly] Because every day you stay indoors! Anyway — your 10 AM standup is still on."
+        },
+        {
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "text": "[sighs] Ugh, fine. Okay. Coffee first though."
+        },
+        {
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[bright] Obviously. Go go go!"
         }
       ]
     },
     {
-      "id": "hi-family-dinner",
+      "id": "hi-support-call",
+      "title": "Customer Support Call",
       "language": "Hindi",
-      "languageCode": "hi-IN",
-      "resolvedLanguage": "hi-IN",
-      "market": "India",
-      "useCase": "Family Scene",
-      "scenario": "Family Dinner",
-      "direction": "Warm, authentic, and relatable pacing with natural family dynamics.",
-      "summary": "A mother calls everyone to dinner while the son delays and the father teases him.",
-      "translation": "A warm family moment where urgency, distraction, and gentle authority blend naturally.",
-      "castSummary": "Mother: Meera India Female + Rohan: Adi India Boy + Father: Arjun India Male",
+      "market": "India Hindi",
+      "useCase": "Support escalation",
+      "scenario": "Customer support call",
+      "direction": "Empathetic escalation with reassurance and clear resolution cues.",
+      "summary": "A Hindi support conversation with escalation and supervisor intervention.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/hi-support-call.wav",
       "cast": [
         {
-          "speaker": "Mother",
-          "role": "Mother",
-          "displayName": "Meera India Female",
-          "voiceId": "Kore",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Raj",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Charon"
         },
         {
-          "speaker": "Rohan",
-          "role": "Rohan",
-          "displayName": "Adi India Boy",
-          "voiceId": "Achird",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Priya",
+          "role": "Voice 2",
+          "displayName": "Voice 2",
+          "voiceId": "Zephyr"
         },
         {
-          "speaker": "Father",
-          "role": "Father",
-          "displayName": "Arjun India Male",
-          "voiceId": "Fenrir",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Aryan",
+          "role": "Voice 3",
+          "displayName": "Voice 3",
+          "voiceId": "Puck"
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/hi-family-dinner.wav",
       "lines": [
         {
-          "lineIndex": 0,
-          "speaker": "Mother",
-          "role": "Mother",
-          "displayName": "Meera India Female",
-          "voiceId": "Kore",
-          "voiceGender": "Female",
-          "text": "<tone=\"shouting_softly\">रोहन! खाने की मेज पर आओ, खाना ठंडा हो रहा है!</tone>"
+          "speaker": "Raj",
+          "role": "Voice 1",
+          "text": "[frustrated] Yaar, mera order abhi tak nahi aaya — teen din ho gaye hain!"
         },
         {
-          "lineIndex": 1,
-          "speaker": "Rohan",
-          "role": "Rohan",
-          "displayName": "Adi India Boy",
-          "voiceId": "Achird",
-          "voiceGender": "Female",
-          "text": "<tone=\"distracted\"><mood=\"busy\">बस दो मिनट मम्मी! मैं अपना गेम बस खत्म ही करने वाला हूँ!</mood></tone>"
+          "speaker": "Priya",
+          "role": "Voice 2",
+          "text": "[calmly] Arrey, main samajh sakti hoon aapki baat. Ek second, main check karti hoon."
         },
         {
-          "lineIndex": 2,
-          "speaker": "Father",
-          "role": "Father",
-          "displayName": "Arjun India Male",
-          "voiceId": "Fenrir",
-          "voiceGender": "Female",
-          "text": "<tone=\"authoritative\"><mood=\"teasing\">बेटा, तुम्हारी माँ की डाँट से अच्छा है कि तुम गेम अभी बंद कर दो। <pause=\"400ms\"/> और वैसे भी, आज खुशबू बहुत अच्छी आ रही है!</mood></tone>"
+          "speaker": "Priya",
+          "role": "Voice 2",
+          "text": "[reassuringly] Haan, aapka order kal dispatch hua hai — kal shaam tak aa jayega pakka."
+        },
+        {
+          "speaker": "Raj",
+          "role": "Voice 1",
+          "text": "[doubtfully] Pakka? Pehle bhi yahi bola tha na..."
+        },
+        {
+          "speaker": "Priya",
+          "role": "Voice 2",
+          "text": "[gently] Main guarantee de rahi hoon is baar. Aur agar nahi aaya toh—"
+        },
+        {
+          "speaker": "Aryan",
+          "role": "Voice 3",
+          "text": "[professionally] Main supervisor Aryan bol raha hoon — hum personally ensure karenge delivery. Sorry for the wait!"
+        },
+        {
+          "speaker": "Raj",
+          "role": "Voice 1",
+          "text": "[relieved] Okay okay, theek hai. Thanks yaar."
         }
       ]
     },
     {
-      "id": "es-boutique-shop",
+      "id": "es-delivery-chat",
+      "title": "Delivery Update Chat",
       "language": "Spanish",
-      "languageCode": "es-ES",
-      "resolvedLanguage": "es-ES",
-      "market": "Spain / Latin America",
-      "useCase": "Retail",
-      "scenario": "The Boutique Shop",
-      "direction": "Polite and vibrant delivery with helpful, expressive customer-service pacing.",
-      "summary": "A tourist asks for a smaller jacket and the shopkeeper finds the final piece in stock.",
-      "translation": "A customer asks for another size in blue and the shopkeeper returns with the last available one.",
-      "castSummary": "Customer: Valentina Spain Female + Shopkeeper: Zephyr Spain Female",
+      "market": "Spain Spanish",
+      "useCase": "Delivery update",
+      "scenario": "Delivery handoff chat",
+      "direction": "Upbeat status exchange with playful but clear logistics pacing.",
+      "summary": "A Spanish two-voice delivery handoff with timing confirmation.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/es-delivery-chat.wav",
       "cast": [
         {
-          "speaker": "Customer",
-          "role": "Customer",
-          "displayName": "Valentina Spain Female",
-          "voiceId": "Callirrhoe",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Neha",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Kore"
         },
         {
-          "speaker": "Shopkeeper",
-          "role": "Shopkeeper",
-          "displayName": "Zephyr Spain Female",
-          "voiceId": "Zephyr",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Raj",
+          "role": "Voice 2",
+          "displayName": "Voice 2",
+          "voiceId": "Charon"
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/es-boutique-shop.wav",
       "lines": [
         {
-          "lineIndex": 0,
-          "speaker": "Customer",
-          "role": "Customer",
-          "displayName": "Valentina Spain Female",
-          "voiceId": "Callirrhoe",
-          "voiceGender": "Male",
-          "text": "<tone=\"curious\">¡Perdón! Esta chaqueta es hermosa. ¿La tienen en una talla más pequeña, tal vez en azul?</tone>"
+          "speaker": "Neha",
+          "role": "Voice 1",
+          "text": "[upbeat] ¡Ey! Tu paquete está casi en tu puerta."
         },
         {
-          "lineIndex": 1,
-          "speaker": "Shopkeeper",
-          "role": "Shopkeeper",
-          "displayName": "Zephyr Spain Female",
-          "voiceId": "Zephyr",
-          "voiceGender": "Male",
-          "text": "<tone=\"helpful\"><mood=\"joyful\">¡Claro que sí! Déjame revisar en el almacén. <pause=\"500ms\"/> Estás de suerte, <tone=\"excited\">¡es la última que nos queda y te verás increíble!</tone></mood></tone>"
+          "speaker": "Raj",
+          "role": "Voice 2",
+          "text": "[surprised] ¿En serio? ¿Ya?"
+        },
+        {
+          "speaker": "Neha",
+          "role": "Voice 1",
+          "text": "[cheerfully] ¡Sí! El repartidor llega entre las 3 y las 5. ¡Hoy es el día!"
+        },
+        {
+          "speaker": "Raj",
+          "role": "Voice 2",
+          "text": "[playfully] Buf, por fin — llevaba esperándolo como una semana."
+        },
+        {
+          "speaker": "Neha",
+          "role": "Voice 1",
+          "text": "[warmly] Lo sabemos, perdona la espera. ¿Estarás en casa a esa hora?"
+        },
+        {
+          "speaker": "Raj",
+          "role": "Voice 2",
+          "text": "[casually] Sí sí, no me muevo. Gracias eh."
+        },
+        {
+          "speaker": "Neha",
+          "role": "Voice 1",
+          "text": "[bright] ¡Perfecto! ¡Que lo disfrutes!"
         }
       ]
     },
     {
-      "id": "ja-office-deadline",
-      "language": "Japanese",
-      "languageCode": "ja-JP",
-      "resolvedLanguage": "ja-JP",
-      "market": "Japan",
-      "useCase": "Office",
-      "scenario": "The Office Deadline",
-      "direction": "Professional but exhausted pacing with clear support between coworkers.",
-      "summary": "Two colleagues close a late-night presentation and hand off final review.",
-      "translation": "One teammate finishes the slides and the other reassures them while taking final checks.",
-      "castSummary": "Tanaka: Achernar Japan Female + Sato: Yui Japan Female",
+      "id": "en-podcast-style",
+      "title": "Podcast Style Roundtable",
+      "language": "English",
+      "market": "Global English",
+      "useCase": "Podcast conversation",
+      "scenario": "Podcast style roundtable",
+      "direction": "Conversational panel cadence with dynamic but readable handoffs.",
+      "summary": "A four-voice English roundtable discussing TTS quality and expression.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/en-podcast-style.wav",
       "cast": [
         {
-          "speaker": "Tanaka",
-          "role": "Tanaka",
-          "displayName": "Achernar Japan Female",
-          "voiceId": "Achernar",
-          "voiceGender": "Male",
-          "lineCount": 1
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Puck"
         },
         {
-          "speaker": "Sato",
-          "role": "Sato",
-          "displayName": "Yui Japan Female",
-          "voiceId": "Despina",
-          "voiceGender": "Male",
-          "lineCount": 1
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "displayName": "Voice 2",
+          "voiceId": "Kore"
+        },
+        {
+          "speaker": "Raj",
+          "role": "Voice 3",
+          "displayName": "Voice 3",
+          "voiceId": "Charon"
+        },
+        {
+          "speaker": "Priya",
+          "role": "Voice 4",
+          "displayName": "Voice 4",
+          "voiceId": "Zephyr"
         }
       ],
-      "audioSrc": "/audio/vector-multi-demo/ja-office-deadline.wav",
       "lines": [
         {
-          "lineIndex": 0,
-          "speaker": "Tanaka",
-          "role": "Tanaka",
-          "displayName": "Achernar Japan Female",
-          "voiceId": "Achernar",
-          "voiceGender": "Male",
-          "text": "<tone=\"tired\">佐藤さん、プレゼンの資料はやっと終わりました。チェックをお願いできますか？</tone>"
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[enthusiastically] Alright folks, welcome back! Today we're talking about AI voices — and it's gonna get nerdy."
         },
         {
-          "lineIndex": 1,
-          "speaker": "Sato",
-          "role": "Sato",
-          "displayName": "Yui Japan Female",
-          "voiceId": "Despina",
-          "voiceGender": "Female",
-          "text": "<tone=\"encouraging\"><mood=\"focused\">お疲れ様です、田中さん！ <pause=\"400ms\"/> 本当に助かりました。 <tone=\"determined\">あとは私が最終確認をしておきますから、今日はもう帰って休んでください。</tone></mood></tone>"
-        }
-      ]
-    },
-    {
-      "id": "fr-city-tour",
-      "language": "French",
-      "languageCode": "fr-FR",
-      "resolvedLanguage": "fr-FR",
-      "market": "France / Francophone Europe",
-      "useCase": "Tour",
-      "scenario": "The City Tour",
-      "direction": "Sophisticated and wonder-filled pacing with a warm romantic close.",
-      "summary": "A guide introduces the Eiffel Tower while a couple responds with awe and gratitude.",
-      "translation": "A guide presents historical context and two tourists react with amazement as the tower begins to sparkle.",
-      "castSummary": "Guide: Pierre France Male + Tourist1: Schedar France Male + Tourist2: Oliver UK Male",
-      "cast": [
-        {
-          "speaker": "Guide",
-          "role": "Guide",
-          "displayName": "Pierre France Male",
-          "voiceId": "Sadaltager",
-          "voiceGender": "Male",
-          "lineCount": 1
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "text": "[laughs] I mean, when does it NOT get nerdy with us?"
         },
         {
-          "speaker": "Tourist1",
-          "role": "Tourist1",
-          "displayName": "Schedar France Male",
-          "voiceId": "Schedar",
-          "voiceGender": "Female",
-          "lineCount": 1
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[playfully] Fair point. So Raj, you've been testing Gemini TTS — first impressions?"
         },
         {
-          "speaker": "Tourist2",
-          "role": "Tourist2",
-          "displayName": "Oliver UK Male",
-          "voiceId": "Iapetus",
-          "voiceGender": "Male",
-          "lineCount": 1
-        }
-      ],
-      "audioSrc": "/audio/vector-multi-demo/fr-city-tour.wav",
-      "lines": [
-        {
-          "lineIndex": 0,
-          "speaker": "Guide",
-          "role": "Guide",
-          "displayName": "Pierre France Male",
-          "voiceId": "Sadaltager",
-          "voiceGender": "Male",
-          "text": "<tone=\"informative\">Et voilà! Devant vous, la Dame de Fer. Elle a été construite pour l'Exposition Universelle de 1889.</tone>"
+          "speaker": "Raj",
+          "role": "Voice 3",
+          "text": "[casually] Honestly? Way better than I expected. Like the emotions actually land, you know?"
         },
         {
-          "lineIndex": 1,
-          "speaker": "Tourist1",
-          "role": "Tourist1",
-          "displayName": "Schedar France Male",
-          "voiceId": "Schedar",
-          "voiceGender": "Female",
-          "text": "<tone=\"amazed\"><mood=\"breathless\">C'est encore plus grand que ce que j'imaginais... C'est magnifique, n'est-ce pas ?</mood></tone>"
+          "speaker": "Priya",
+          "role": "Voice 4",
+          "text": "[thoughtfully] That's the thing — most TTS engines fake emotion. Gemini actually reads context."
         },
         {
-          "lineIndex": 2,
-          "speaker": "Tourist2",
-          "role": "Tourist2",
-          "displayName": "Oliver UK Male",
-          "voiceId": "Iapetus",
-          "voiceGender": "Male",
-          "text": "<tone=\"romantic\"><mood=\"soft\">Absolument. <pause=\"500ms\"/> Merci de nous avoir amenés ici juste au moment où elle commence à briller.</mood></tone>"
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "text": "[curious] So like, it figures out the vibe from the sentence itself?"
+        },
+        {
+          "speaker": "Priya",
+          "role": "Voice 4",
+          "text": "[warmly] Exactly. You write \"ugh, not again\" — it doesn't need a tag. It just... gets it."
+        },
+        {
+          "speaker": "Aryan",
+          "role": "Voice 1",
+          "text": "[impressed] That's wild. Okay we are definitely doing a full demo next episode."
+        },
+        {
+          "speaker": "Neha",
+          "role": "Voice 2",
+          "text": "[bright] Subscribe people — you don't wanna miss that one!"
         }
       ]
     }
