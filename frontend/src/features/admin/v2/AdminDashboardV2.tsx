@@ -222,7 +222,7 @@ export function AdminDashboardV2() {
     setUsersStatus,
   } = useAdminStore();
 
-  /* ── admin guard ──────────────────────────────── */
+  /* ── admin guard (UI-only; server enforces auth via JWT on all /api/admin/* endpoints) ── */
   const currentEmail = firebaseAuth?.currentUser?.email ?? "";
   const isAdmin = Boolean(currentEmail && isAdminLoginEmail(currentEmail));
 
@@ -240,7 +240,8 @@ export function AdminDashboardV2() {
       });
       setMetricsStatus("loaded");
     } catch (e) {
-      setMetricsStatus("error", e instanceof Error ? e.message : "Failed to load metrics");
+      const msg = e instanceof Error ? e.message.slice(0, 200) : "Failed to load metrics";
+      setMetricsStatus("error", msg);
     }
   }, [setMetrics, setMetricsStatus]);
 
@@ -265,7 +266,8 @@ export function AdminDashboardV2() {
       setUsers(mapped);
       setUsersStatus("loaded");
     } catch (e) {
-      setUsersStatus("error", e instanceof Error ? e.message : "Failed to load users");
+      const msg = e instanceof Error ? e.message.slice(0, 200) : "Failed to load users";
+      setUsersStatus("error", msg);
     }
   }, [setUsers, setUsersStatus]);
 

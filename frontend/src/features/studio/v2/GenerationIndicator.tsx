@@ -104,7 +104,14 @@ export function GenerationIndicator() {
 
             {/* Progress bar (only while generating) */}
             {status === "generating" && (
-              <div className="relative h-1 w-24 shrink-0 overflow-hidden rounded-full bg-white/10">
+              <div
+                className="relative h-1 w-24 shrink-0 overflow-hidden rounded-full bg-white/10"
+                role="progressbar"
+                aria-valuenow={Math.round(progress)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Generation progress"
+              >
                 <motion.div
                   className="absolute inset-y-0 left-0 rounded-full bg-[var(--aurora-1)]"
                   style={{ width: `${progress}%` }}

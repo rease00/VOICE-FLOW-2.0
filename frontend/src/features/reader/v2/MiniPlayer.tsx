@@ -62,7 +62,11 @@ export function MiniPlayer() {
     }
 
     if (!audioRef.current) {
-      audioRef.current = new Audio();
+      try {
+        audioRef.current = new Audio();
+      } catch {
+        return; // Audio API unavailable (SSR, restricted browser context)
+      }
     }
     const el = audioRef.current;
     el.src = audioUrl;
@@ -84,9 +88,11 @@ export function MiniPlayer() {
       el.removeEventListener("durationchange", onDuration);
       el.removeEventListener("loadedmetadata", onDuration);
       el.removeEventListener("ended", onEnded);
+      el.pause();
+      el.src = "";
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioUrl]);
+    // Zustand action refs are stable across renders — safe to omit from deps
+  }, [audioUrl, setCurrentTime, setDuration, setPlaying]);
 
   /* ── sync speed ──────────────────────────────── */
   useEffect(() => {
@@ -168,6 +174,7 @@ export function MiniPlayer() {
                   disabled={synthesizing || duration === 0}
                   className="mini-scrubber h-1 flex-1 cursor-pointer accent-[var(--aurora-1)] disabled:opacity-30"
                   aria-label="Seek"
+                  aria-valuetext={`${fmt(currentTime)} of ${fmt(duration)}`}
                 />
                 <span className="tabular-nums text-[10px] text-[var(--vf-color-text-muted)]">
                   {fmt(duration)}
