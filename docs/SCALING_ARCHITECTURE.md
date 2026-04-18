@@ -1,5 +1,10 @@
 # Scaling Architecture
 
+Note:
+- This document describes the production topology, not a repo-local deploy from this checkout.
+- The Cloudflare-hosted frontend in `frontend/` is present here.
+- The compatibility backend and Python runtimes referenced below are external dependencies and are not included in this workspace snapshot.
+
 ## Target Model
 
 V FLOW AI scaling is queue-first and asynchronous:
@@ -16,10 +21,10 @@ Current production profile: `cloudrun-2vcpu`
 ## Services
 
 1. `voiceflow-api`
-   - FastAPI app (`backend/app.py`)
+   - External compatibility backend deployed on Cloud Run.
    - Handles auth, admission control, queue enqueue, status APIs, admin metrics.
 2. `voiceflow-worker`
-   - Same codebase, worker-focused deployment profile.
+   - Worker deployment of the external compatibility backend.
    - Runs queue consumers and runtime dispatch loops.
 3. `gemini-runtime`
    - `/synthesize` and `/v1/generate-text` for Gemini-backed workloads.

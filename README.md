@@ -5,8 +5,10 @@ V FLOW AI is now a Next.js-first product with a single browser-facing control pl
 ## Architecture
 
 - `frontend/` contains the app, server routes, and domain services.
-- Cloudflare handles edge delivery and cached object access.
-- Next.js on Node/Cloud Run handles product-facing APIs, auth, billing, studio flows, publishing, reader flows, and live audio orchestration.
+- Cloudflare Workers/OpenNext is the preferred public web edge for launch.
+- Browser traffic stays on `/api/v1/*`.
+- Some `/api/v1/*` families are already native in this workspace, but billing, library compatibility routes, and `/api/v1/tts/*` still rely on an external compatibility backend configured by `VF_MEDIA_BACKEND_URL` or `VF_MEDIA_BACKEND_ORIGINS_JSON`.
+- Cloud Run is still required for that compatibility backend and any specialist runtimes, but the backend source is not included in this checkout.
 - Finished chapter audio is stored in R2 and delivered by signed URL instead of being proxied through the app runtime.
 - Hosted external runtimes remain only for specialist media workloads such as voice cloning and source separation.
 
@@ -23,7 +25,7 @@ Active product areas:
 
 Removed from this codebase:
 
-- Legacy backend runtime
+- Repo-local legacy backend runtime sources
 - Legacy video post-processing pipeline
 
 ## Local Development
@@ -40,6 +42,7 @@ npm --prefix frontend install
 - copy values from `.env.example`
 - keep `NEXT_PUBLIC_API_BASE_URL=/api/v1`
 - add Firebase, R2, Stripe, and any hosted runtime credentials you need
+- set `VF_MEDIA_BACKEND_URL` or `VF_MEDIA_BACKEND_ORIGINS_JSON` for any production deployment that still depends on compatibility-backed `/api/v1` routes
 
 3. Start the app:
 
@@ -60,3 +63,4 @@ npm run frontend:audit:prod
 
 - `domainJobs` is the canonical async job substrate.
 - Browser-facing product APIs should resolve through `/api/v1/*`.
+- This workspace is launch-ready only as a split topology: Cloudflare for the public frontend, plus a separately deployed compatibility backend for unmigrated API families.

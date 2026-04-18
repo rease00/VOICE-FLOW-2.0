@@ -7,5 +7,8 @@ export default defineConfig({
     reporters: ['default'],
     testTimeout: 15_000,
     hookTimeout: 15_000,
+    // Keep CI stable on Windows where high worker fan-out can intermittently
+    // trigger tinypool IPC channel closures at process shutdown.
+    maxWorkers: 4,
   },
 });

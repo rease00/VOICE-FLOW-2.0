@@ -51,7 +51,9 @@
     "audio.dom.d.ts",
     "next-env.d.ts",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    ".next_probe/types/**/*.ts",
+    ".next_probe/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

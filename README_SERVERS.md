@@ -2,6 +2,11 @@
 
 This file lists the exact commands to start and manage all local servers for this repo.
 
+Important:
+- This checkout only contains the Next.js control plane in `frontend/`.
+- Any command below that references `backend/` or Python runtimes assumes you also have the separate compatibility backend sources available locally.
+- For launch, prefer Cloudflare Workers/OpenNext for the public frontend and treat the compatibility backend as an external Cloud Run dependency until those routes are fully migrated.
+
 ## Prerequisites
 
 - Node.js

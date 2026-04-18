@@ -10,6 +10,7 @@ export default [
       '.next-buildcheck/**',
       '.next-ci/**',
       '.next-playwright/**',
+      '.next_probe/**',
       '.open-next/**',
       '.wrangler/**',
       'artifacts/**',
@@ -39,6 +40,9 @@ export default [
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // The compiler advisory pass is currently unstable on a few large workspace files
+      // in this repo and can crash ESLint before normal hook diagnostics are reported.
+      'react-hooks/static-components': 'off',
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       'react-hooks/set-state-in-effect': 'off',
       'react-hooks/purity': 'off',

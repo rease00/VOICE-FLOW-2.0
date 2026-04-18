@@ -88,7 +88,9 @@ VF_TTS_TEXTTOSPEECH_AUTH_MODE=google_cloud
 VF_AI_TEXT_DEFAULT_MODEL=gemini-2.5-flash-lite
 ```
 
-### Cloudflare R2 Storage (Optional)
+### Cloudflare R2 Storage
+
+R2 is used by the library stack for generated chapter audio and reader object delivery. Local fallback behavior still exists for some development paths, but production-grade library audio and reader storage should be treated as R2-backed.
 
 ```env
 R2_ACCOUNT_ID=your_account_id
@@ -144,11 +146,13 @@ In the Firebase Console:
 
 ### 5. Configure Firestore Security Rules
 
-Deploy the security rules from [`frontend/firestore.rules`](frontend/firestore.rules.md):
+Deploy the Firestore rules and indexes from the committed frontend Firebase config:
 
 ```bash
-firebase deploy --only firestore:rules
+firebase deploy --config frontend/firebase.json --only firestore:rules,firestore:indexes
 ```
+
+This includes the `publishedBooks(status asc, publishedAt desc)` composite index required for library discovery.
 
 ## Local Development
 

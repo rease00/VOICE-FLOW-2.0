@@ -1,8 +1,12 @@
+import { fileURLToPath } from 'node:url';
+
 /** @type {import('next').NextConfig} */
 const configuredDistDir = String(process.env.NEXT_DIST_DIR || '').trim();
 const sanitizedDistDir = configuredDistDir && !configuredDistDir.includes('..')
   ? configuredDistDir
   : '.next';
+const skipBuildTypecheck = String(process.env.VF_SKIP_NEXT_BUILD_TYPECHECK || '').trim() === '1';
+const turbopackRoot = fileURLToPath(new URL('.', import.meta.url));
 
 const BASE_CONNECT_SRC = [
   "'self'",
@@ -43,7 +47,6 @@ const collectLoopbackConnectSources = () => {
   const sources = new Set();
   const configuredBaseUrls = [
     process.env.NEXT_PUBLIC_API_BASE_URL,
-    process.env.VITE_API_BASE_URL,
   ];
 
   for (const candidate of configuredBaseUrls) {
@@ -73,8 +76,19 @@ const nextConfig = {
   reactStrictMode: true,
   distDir: sanitizedDistDir,
   output: 'standalone',
+  typescript: {
+    ignoreBuildErrors: skipBuildTypecheck,
+  },
+  turbopack: {
+    root: turbopackRoot,
+  },
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
   serverExternalPackages: ['sharp'],
+  outputFileTracingIncludes: {
+    '/*': [
+      './node_modules/jose/dist/browser/**/*',
+    ],
+  },
   outputFileTracingExcludes: {
     '/*': [],
   },

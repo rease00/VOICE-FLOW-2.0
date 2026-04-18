@@ -25,5 +25,11 @@
     "audit:secrets": "npm run audit:secrets:staged && npm run audit:secrets:tracked-config",
     "precommit:secrets": "npm run audit:secrets:staged",
     "hooks:install": "git config core.hooksPath .githooks"
+  },
+  "dependencies": {
+    "crypto-js": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2"
   }
 }

@@ -37,8 +37,12 @@ output/
 frontend/playwright-report/
 frontend/.next*
 frontend/.open-next/
+frontend/.codex-logs/
 frontend/tsconfig.tsbuildinfo
 frontend/tmp_pages_legacy_dist/
+frontend/tmp_dir/playwright/
+.playwright-cli/
+.playwright-mcp/
 tmp_dir/playwright/
 .serena/
 test-results/

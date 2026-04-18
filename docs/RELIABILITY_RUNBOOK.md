@@ -1,5 +1,10 @@
 # Reliability Runbook
 
+Note:
+- This workspace contains the Next.js control plane and native `/api/v1/*` handlers that have already been migrated.
+- References below to `backend/` or Python runtime internals describe the external compatibility backend used by still-proxied launch surfaces.
+- Do not treat those backend paths as buildable from this checkout unless the missing backend sources have been restored.
+
 ## Admin Coupons and Ops
 
 1. Coupon policy matrix:
