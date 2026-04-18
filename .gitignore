@@ -72,15 +72,19 @@ voiceflow-*-service-account*.json
 ✨Soul Land EP 260 [MULTI SUB].mp4
 
 # --- Phase 1 cleanup additions (feat/relaunch-aurora) ---
-# Junk one-off patches & discovery dumps (never commit)
-discovery*.json
-optimization.live.md
-pytest_output.txt
-patch*.cjs
-patch*.mjs
-update_script.cjs
-fix_*.py
-fix_*.mjs
+# Junk one-off patches & discovery dumps at REPO ROOT only (never commit)
+/discovery*.json
+/optimization.live.md
+/pytest_output.txt
+/patch*.cjs
+/patch*.mjs
+/patch3.cjs
+/update_script.cjs
+/fix_*.py
+/fix_*.mjs
+/get_error.mjs
+/get_html.mjs
+/get_terminal_pattern.mjs
 
 # Generated build/wrangler/artifacts (frontend)
 frontend/.artifacts/
