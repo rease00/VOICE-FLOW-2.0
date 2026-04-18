@@ -105,7 +105,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
-          command: deploy
+          command: deploy ${{ steps.target.outputs.env != 'production' && format('--name v-flow-ai-{0}', steps.target.outputs.name) || '' }}
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
