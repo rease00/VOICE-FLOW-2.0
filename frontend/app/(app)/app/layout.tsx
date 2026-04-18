@@ -3,6 +3,8 @@ import { UiV2FlagProvider } from '../../../src/features/feature-flags/UiV2FlagCo
 import { AuroraDevPanel } from '../../../src/features/feature-flags/AuroraDevPanel';
 import { MiniPlayer } from '../../../src/features/reader/v2/MiniPlayer';
 import { GenerationIndicator } from '../../../src/features/studio/v2/GenerationIndicator';
+import { CommandPalette } from '../../../src/features/app-chrome/CommandPalette';
+import { AppToaster } from '../../../src/features/app-chrome/AppToaster';
 
 // The /app workspace ships with a nonce-based CSP from middleware.ts.
 // Force request-time rendering so Next can stamp matching nonces onto its
@@ -15,6 +17,8 @@ export default function WorkspaceShellLayout({ children }: Readonly<{ children: 
       {children}
       <GenerationIndicator />
       <MiniPlayer />
+      <CommandPalette />
+      <AppToaster />
       <AuroraDevPanel />
     </UiV2FlagProvider>
   );
