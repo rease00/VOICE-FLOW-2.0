@@ -27,6 +27,6 @@ All app-level storage keys are centralized in `src/shared/storage/keys.ts` and r
 
 ## Preserved public contracts
 
-- Engine contract: `GenerationSettings.engine = 'PRIME' | 'DUNO'`
+- Engine contract: `GenerationSettings.engine = 'PRIME' | 'VECTOR'`
 - User auth/state contract: `UserContextType`
 - Billing entitlements contract: `AccountEntitlements`

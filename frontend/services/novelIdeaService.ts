@@ -49,6 +49,8 @@ const normalizeCards = (input: any[]): NovelIdeaCard[] => {
     const conflict = String(card.conflict || '').trim();
     const twist = String(card.twist || '').trim();
     if (!title || !premise) return;
+    const tone = String(card.tone || '').trim();
+    const openingLine = String(card.openingLine || '').trim();
     cards.push({
       id: `idea_${Date.now()}_${idx}`,
       title,
@@ -56,8 +58,8 @@ const normalizeCards = (input: any[]): NovelIdeaCard[] => {
       hook,
       conflict,
       twist,
-      tone: String(card.tone || '').trim() || undefined,
-      openingLine: String(card.openingLine || '').trim() || undefined,
+      ...(tone ? { tone } : {}),
+      ...(openingLine ? { openingLine } : {}),
     });
   });
   return cards.slice(0, 6);

@@ -95,11 +95,23 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
   }, [emotions]);
 
   useEffect(() => {
-    const normalizedIncoming = serializeBlocksToScript(parseScriptToBlocks(value));
+    const nextBlocks = parseScriptToBlocks(value);
+    const normalizedIncoming = serializeBlocksToScript(nextBlocks);
+    
     if (normalizedIncoming === lastSerializedRef.current) return;
-    const parsed = parseScriptToBlocks(value);
-    setBlocks(parsed.length > 0 ? parsed : [createEmptyDialogueBlock()]);
-  }, [value]);
+
+    // If we're in Raw mode, we debounce the block-sync to avoid re-parsing invalid tags while typing
+    if (mode === 'raw') {
+      const timer = setTimeout(() => {
+        setBlocks(nextBlocks.length > 0 ? nextBlocks : [createEmptyDialogueBlock()]);
+        lastSerializedRef.current = normalizedIncoming;
+      }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      setBlocks(nextBlocks.length > 0 ? nextBlocks : [createEmptyDialogueBlock()]);
+      lastSerializedRef.current = normalizedIncoming;
+    }
+  }, [value, mode]);
 
   const commitBlocks = (nextBlocks: ScriptBlock[]) => {
     const normalized = normalizeScriptBlocks(nextBlocks);

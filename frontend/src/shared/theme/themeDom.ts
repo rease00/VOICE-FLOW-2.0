@@ -100,7 +100,7 @@ const resolveUiMotionLevel = (value: string | null | undefined): UiMotionLevel =
   if (token === 'off' || token === 'balanced' || token === 'rich') {
     return token;
   }
-  return 'off';
+  return 'rich';
 };
 
 export const applyThemeModeToDocument = (

@@ -24,7 +24,7 @@ const LegacyMainApp = dynamic<{ setScreen: (screen: AppScreen) => void }>(
               <div>
                 <BrandLogo size="lg" tone="light" />
                 <h1 className="mt-5 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-                  Loading Studio workspace
+                  Loading workspace
                 </h1>
                 <p className="mt-3 max-w-lg text-sm leading-7 text-slate-300 sm:text-base">
                   Pulling in the full production workspace only after your session handoff finishes.

@@ -1,7 +1,7 @@
 import type { GenerationSettings, StudioQueueItem, StudioQueueState } from '../../../../types';
 import { buildSentenceAlignedCharWindows } from '../../../../services/ttsLongTextService';
 
-const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['DUNO', 'VECTOR', 'PRIME']);
+const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['VECTOR', 'PRIME']);
 
 const normalizeQueueEngineTokenKey = (
   value: unknown,
@@ -27,7 +27,7 @@ const normalizeQueueEngineToken = (
   fallback: GenerationSettings['engine'] = 'PRIME'
 ): GenerationSettings['engine'] => {
   const token = resolveQueueEngineToken(value);
-  if (token === 'DUNO' || token === 'VECTOR' || token === 'PRIME') return token;
+  if (token === 'VECTOR' || token === 'PRIME') return token;
   return fallback;
 };
 

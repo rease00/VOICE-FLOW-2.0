@@ -14,8 +14,10 @@ export interface EngineStatusItem {
 
 export interface TtsEngineStatusResponse {
   ok: boolean;
+  requestedEngine?: string;
   engines: Partial<Record<GenerationSettings['engine'], EngineStatusItem>>;
-  fetchedAt: string;
+  fetchedAt?: string;
+  generatedAtMs?: number;
 }
 
 export interface RuntimeVoiceItem {
@@ -219,88 +221,3 @@ export interface VideoTranscriptionResponse {
   segments: VideoTranscriptionSegment[];
 }
 
-export interface DubbingJobStatusResponse {
-  ok: boolean;
-  job: {
-    id?: string;
-    status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'cancelling';
-    progress?: number;
-    stage?: string;
-    error?: string;
-    errorCode?: string | null;
-    pipelineVersion?: 'v1' | 'v2' | '2026.1' | string;
-    stageTimeline?: Array<{
-      stage: string;
-      status: string;
-      startMs?: number | null;
-      endMs?: number | null;
-      durationMs?: number | null;
-    }>;
-    outputFiles?: Record<string, unknown>;
-    reportPath?: string | null;
-    resultPath?: string | null;
-    directorJson?: Record<string, unknown> | null;
-    isochronyStats?: Record<string, unknown> | null;
-    voiceTransferMetrics?: Record<string, unknown> | null;
-    videoSyncMetrics?: Record<string, unknown> | null;
-    tokenUsage?: Record<string, unknown> | null;
-    assets?: Record<string, unknown> | null;
-    thinkingPolicy?: Record<string, unknown> | null;
-    processingProfile?: 'cpu_quality' | 'cpu_balanced' | 'cpu_fast' | string;
-    clipWindow?: { start_ms: number; end_ms: number } | null;
-    live?: {
-      enabled?: boolean;
-      mode?: string;
-      playableChunks?: number;
-      playableDurationMs?: number;
-      chunkCursorNext?: number;
-    };
-    chunks?: Array<{
-      index: number;
-      contentType?: string;
-      durationMs?: number;
-      speakerId?: string;
-      engine?: string;
-      voiceId?: string;
-      textChars?: number;
-      timelineStartMs?: number;
-      timelineEndMs?: number;
-      previewKind?: string;
-      downloadUrl?: string;
-      audioBase64?: string;
-    }>;
-    chunkCursorNext?: number;
-    speakerStats?: {
-      detectedSpeakers?: number;
-      mappedSpeakers?: number;
-      fallbackBindings?: Array<Record<string, unknown>>;
-      driftAlerts?: Array<Record<string, unknown>>;
-    };
-    qosState?: {
-      selectedProfile?: string;
-      downgraded?: boolean;
-      reason?: string;
-      gpuUsed?: boolean;
-    };
-    languageStats?: {
-      mixedSourceDetected?: boolean;
-      dominantSourceLanguage?: string;
-      segmentLanguageCounts?: Record<string, number>;
-      targetLanguageApplied?: string;
-      unsupportedSegments?: Array<Record<string, unknown>> | number;
-    };
-    policyEnforcement?: {
-      requestedTtsRoute?: string;
-      appliedTtsRoute?: string;
-      pinnedDirectorModel?: string;
-      pinnedTtsModel?: string;
-      strictNoFallback?: boolean;
-    };
-    [key: string]: unknown;
-  };
-}
-
-export interface CreateDubbingJobV2Response {
-  ok: boolean;
-  job_id: string;
-}

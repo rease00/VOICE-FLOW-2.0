@@ -10,7 +10,7 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:3000';
 const DEFAULT_TARGETS = [
   { route: 'studio', path: '/app/studio' },
   { route: 'voices', path: '/app/voices' },
-  { route: 'reader', path: '/app/reader' },
+  { route: 'writing', path: '/app/writing' },
 ];
 
 const truthy = (value) => {

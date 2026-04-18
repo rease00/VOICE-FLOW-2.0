@@ -1,111 +1,73 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { WorkspaceTab } from '../src/features/workspace/model/tabs';
+import { WorkspaceTab, buildWorkspaceTabs } from '../src/features/workspace/model/tabs';
 import {
   buildWorkspaceTabNavigationHref,
-  formatMobileAvailableCreditsPercent,
   resolveWorkspaceTabFromPathname,
+  resolveWorkspaceTabFromStorage,
 } from '../src/app/workspace/mainAppHelpers';
+import { STORAGE_KEYS } from '../src/shared/storage/keys';
+
+const storageState = new Map<string, string>();
+
+beforeEach(() => {
+  storageState.clear();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => storageState.get(key) || null,
+    setItem: (key: string, value: string) => {
+      storageState.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      storageState.delete(key);
+    },
+    clear: () => {
+      storageState.clear();
+    },
+  } as unknown as Storage);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('workspace tab navigation model', () => {
-  it('maps each main workspace tab to its canonical route path', () => {
-    const expectations: Array<{ tab: WorkspaceTab; path: string }> = [
-      { tab: WorkspaceTab.STUDIO, path: '/app/studio' },
-      { tab: WorkspaceTab.VOICE_CLONING, path: '/app/voices' },
-      { tab: WorkspaceTab.NOVEL, path: '/app/writing' },
-      { tab: WorkspaceTab.READER, path: '/app/reader' },
-      { tab: WorkspaceTab.HISTORY, path: '/app/runs' },
-      { tab: WorkspaceTab.BILLING, path: '/app/billing' },
-      { tab: WorkspaceTab.ADMIN, path: '/app/admin' },
-    ];
-
-    expectations.forEach(({ tab, path }) => {
-      const result = buildWorkspaceTabNavigationHref(
-        'https://v-flow-ai.local/app/voices?billing=success#top',
-        tab
-      );
-      expect(result.tab).toBe(tab);
-      expect(result.href).toBe(`${path}?billing=success#top`);
-    });
+  it('keeps the create tabs in the studio, voices, readers order', () => {
+    const tabs = buildWorkspaceTabs(false);
+    expect(tabs.map((item) => item.id)).toEqual([
+      WorkspaceTab.STUDIO,
+      WorkspaceTab.VOICE_CLONING,
+      WorkspaceTab.LIBRARY,
+      WorkspaceTab.HISTORY,
+      WorkspaceTab.BILLING,
+    ]);
+    expect(tabs.some((item) => item.id === WorkspaceTab.LIBRARY && item.label === 'Readers')).toBe(true);
   });
 
-  it('canonicalizes reader alias paths back to the app reader route during navigation', () => {
+  it('maps the library tab to the canonical library route', () => {
     const result = buildWorkspaceTabNavigationHref(
-      'https://v-flow-ai.local/reader/novel/book-7?billing=success#top',
-      WorkspaceTab.READER
+      'https://v-flow-ai.local/app/voices?billing=success#top',
+      WorkspaceTab.LIBRARY
     );
 
-    expect(result.tab).toBe(WorkspaceTab.READER);
-    expect(result.href).toBe('/app/reader?billing=success#top');
+    expect(result.tab).toBe(WorkspaceTab.LIBRARY);
+    expect(result.href).toBe('/app/library?billing=success#top');
     expect(result.changed).toBe(true);
   });
 
-  it('collapses nested canonical and alias reader deep links to the same workspace route', () => {
-    const canonical = buildWorkspaceTabNavigationHref(
-      'https://v-flow-ai.local/app/reader/novel/book-7?billing=success#top',
-      WorkspaceTab.READER
-    );
-    const alias = buildWorkspaceTabNavigationHref(
-      'https://v-flow-ai.local/reader/novel/book-7?billing=success#top',
-      WorkspaceTab.READER
-    );
-
-    expect(canonical.tab).toBe(WorkspaceTab.READER);
-    expect(canonical.href).toBe('/app/reader?billing=success#top');
-    expect(canonical.changed).toBe(true);
-
-    expect(alias.tab).toBe(WorkspaceTab.READER);
-    expect(alias.href).toBe(canonical.href);
-    expect(alias.changed).toBe(true);
+  it('hydrates the library tab from pathname', () => {
+    expect(resolveWorkspaceTabFromPathname('/app/library')).toBe(WorkspaceTab.LIBRARY);
+    expect(resolveWorkspaceTabFromPathname('/app/library/chapter-1')).toBe(WorkspaceTab.LIBRARY);
+    expect(resolveWorkspaceTabFromPathname('/app/writing')).toBe(WorkspaceTab.LIBRARY);
+    expect(resolveWorkspaceTabFromPathname('/app/writing/chapter-1')).toBe(WorkspaceTab.LIBRARY);
   });
 
-  it('removes legacy vf-tab query params during tab navigation', () => {
-    const result = buildWorkspaceTabNavigationHref(
-      'https://v-flow-ai.local/app/voices?vf-tab=READER&billing=success#credits',
-      WorkspaceTab.READER
-    );
-
-    expect(result.tab).toBe(WorkspaceTab.READER);
-    expect(result.href).toBe('/app/reader?billing=success#credits');
-    expect(result.changed).toBe(true);
+  it('upgrades legacy novel/writing storage to the library tab', () => {
+    localStorage.setItem(STORAGE_KEYS.workspaceActiveTab, 'NOVEL');
+    expect(resolveWorkspaceTabFromStorage()).toBe(WorkspaceTab.LIBRARY);
   });
 
-  it('hydrates active tab from pathname and keeps billing canonical', () => {
-    expect(resolveWorkspaceTabFromPathname('/billing')).toBeNull();
-    expect(resolveWorkspaceTabFromPathname('/app/billing')).toBe(WorkspaceTab.BILLING);
-    expect(resolveWorkspaceTabFromPathname('/app/reader')).toBe(WorkspaceTab.READER);
-    expect(resolveWorkspaceTabFromPathname('/app/voices')).toBe(WorkspaceTab.VOICE_CLONING);
-    expect(resolveWorkspaceTabFromPathname('/app/reader/novel/book-7')).toBe(WorkspaceTab.READER);
-  });
-
-  it('does not hydrate active tab from legacy vf-tab state', () => {
-    expect(resolveWorkspaceTabFromPathname('/app/reader')).toBe(WorkspaceTab.READER);
-    expect(resolveWorkspaceTabFromPathname('/reader')).toBe(WorkspaceTab.READER);
-    expect(resolveWorkspaceTabFromPathname('/reader/novel/book-7')).toBe(WorkspaceTab.READER);
-  });
-
-  it('formats mobile available credits as percentage of free-limit plus paid capacity', () => {
-    expect(formatMobileAvailableCreditsPercent({
-      hasUnlimitedAccess: false,
-      monthlyFreeRemaining: 500,
-      monthlyFreeLimit: 1000,
-      paidVfBalance: 500,
-    })).toBe('67%');
-
-    expect(formatMobileAvailableCreditsPercent({
-      hasUnlimitedAccess: false,
-      monthlyFreeRemaining: 0,
-      monthlyFreeLimit: 1000,
-      paidVfBalance: 0,
-    })).toBe('0%');
-  });
-
-  it('reports full mobile available credits for unlimited access', () => {
-    expect(formatMobileAvailableCreditsPercent({
-      hasUnlimitedAccess: true,
-      monthlyFreeRemaining: 0,
-      monthlyFreeLimit: 0,
-      paidVfBalance: 0,
-    })).toBe('100%');
+  it('upgrades legacy WRITING storage to the library tab', () => {
+    localStorage.setItem(STORAGE_KEYS.workspaceActiveTab, 'WRITING');
+    expect(resolveWorkspaceTabFromStorage()).toBe(WorkspaceTab.LIBRARY);
   });
 });

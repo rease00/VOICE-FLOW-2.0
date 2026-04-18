@@ -10,7 +10,9 @@ vi.mock('../services/authHttpClient', () => ({
 
 import {
   ADMIN_READ_TIMEOUT_MS,
+  fetchAdminDashboardSummary,
   fetchAdminAccountingSummary,
+  fetchAdminSupportQueues,
   fetchAdminUsers,
   patchAdminUser,
 } from '../services/adminService';
@@ -32,12 +34,12 @@ describe('adminService read timeouts', () => {
     await fetchAdminUsers('http://127.0.0.1:7800', { limit: 20 });
 
     expect(authFetchMock).toHaveBeenCalledWith(
-      '/api/backend/admin/users?limit=20',
+      '/api/v1/admin/users?limit=20',
       undefined,
-      expect.objectContaining({
+      {
         requireAuth: true,
         timeoutMs: ADMIN_READ_TIMEOUT_MS,
-      })
+      }
     );
   });
 
@@ -47,12 +49,12 @@ describe('adminService read timeouts', () => {
     await patchAdminUser('uid_1', { plan: 'Pro' }, 'http://127.0.0.1:7800');
 
     expect(authFetchMock).toHaveBeenCalledWith(
-      '/api/backend/admin/users/uid_1',
-      expect.objectContaining({
+      '/api/v1/admin/users/uid_1',
+      {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan: 'Pro' }),
-      }),
+      },
       { requireAuth: true }
     );
   });
@@ -63,12 +65,40 @@ describe('adminService read timeouts', () => {
     await fetchAdminAccountingSummary('http://127.0.0.1:7800', { from: '2026-03-01', to: '2026-03-13' });
 
     expect(authFetchMock).toHaveBeenCalledWith(
-      '/api/backend/admin/accounting/summary?from=2026-03-01&to=2026-03-13',
+      '/api/v1/admin/accounting/summary?from=2026-03-01&to=2026-03-13',
       undefined,
-      expect.objectContaining({
+      {
         requireAuth: true,
         timeoutMs: ADMIN_READ_TIMEOUT_MS,
-      })
+      }
+    );
+  });
+
+  it('normalizes admin-shaped base urls back to the canonical v1 root', async () => {
+    authFetchMock
+      .mockResolvedValueOnce(jsonResponse({ ok: true, health: {}, spending: {}, support: {}, incidents: [], anomalies: [], recentRiskyActions: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, queues: [] }));
+
+    await fetchAdminDashboardSummary('/api/v1/admin');
+    await fetchAdminSupportQueues('/api/backend/admin');
+
+    expect(authFetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/admin/dashboard/summary',
+      undefined,
+      {
+        requireAuth: true,
+        timeoutMs: ADMIN_READ_TIMEOUT_MS,
+      }
+    );
+    expect(authFetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/admin/support/queues',
+      undefined,
+      {
+        requireAuth: true,
+        timeoutMs: ADMIN_READ_TIMEOUT_MS,
+      }
     );
   });
 });

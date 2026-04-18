@@ -6,9 +6,7 @@ const resolveWorkspacePathForTab = (tabToken: string): string | null => {
   const token = String(tabToken || '').trim().toUpperCase();
   if (!token) return null;
   if (token === 'STUDIO') return '/app/studio';
-  if (token === 'READER') return '/app/reader';
   if (token === 'VOICE_CLONING' || token === 'CHARACTERS') return '/app/voices';
-  if (token === 'NOVEL') return '/app/writing';
   if (token === 'HISTORY') return '/app/runs';
   if (token === 'ADMIN') return '/app/admin';
   return null;
@@ -61,7 +59,7 @@ export const applyNotificationActionTarget = (target: NotificationActionTarget |
   setOrDelete('vf-admin-tab', target.adminTab);
   setOrDelete('vf-conversation-id', target.conversationId);
   setOrDelete('vf-job-id', target.jobId);
-  if (tabPath && (url.pathname === '/app' || url.pathname.startsWith('/app/') || url.pathname.startsWith('/reader'))) {
+  if (tabPath && (url.pathname === '/app' || url.pathname.startsWith('/app/'))) {
     url.pathname = tabPath;
   }
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);

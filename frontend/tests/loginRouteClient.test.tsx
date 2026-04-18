@@ -17,6 +17,9 @@ vi.mock('../src/shared/notifications/NotificationProvider', () => ({
   useNotifications: () => ({
     emit: emitMock,
   }),
+  useOptionalNotifications: () => ({
+    emit: emitMock,
+  }),
 }));
 
 vi.mock('../src/shared/notifications/NotificationUI', () => ({

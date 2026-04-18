@@ -1,7 +1,7 @@
 {
   "generatedAt": "2026-03-31T15:10:12.192Z",
   "engine": "Voice Clone",
-  "source": "backend/artifacts/voice-clone",
+  "source": "frontend/public/audio/openvoice-demo",
   "pairId": "b8e3ea64d588_ov_8cca14d409d7",
   "description": "Public voice-cloning proof pair with a reference clip and rendered clone result.",
   "files": [

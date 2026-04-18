@@ -56,6 +56,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
   const gradientKeyRef = useRef<string>('');
   const graphConnectedRef = useRef(false);
   const connectedElementRef = useRef<HTMLAudioElement | null>(null);
+  const connectedSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const paletteRef = useRef<VisualizerPalette>(DEFAULT_PALETTE);
   const dprRef = useRef<number>(1);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
@@ -109,6 +110,21 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
     const analyser = analyserRef.current;
 
     if (connectedElementRef.current !== audioElement) {
+      if (connectedSourceRef.current) {
+        try {
+          connectedSourceRef.current.disconnect();
+        } catch {
+          // Ignore disconnect failures while swapping sources.
+        }
+        connectedSourceRef.current = null;
+      }
+      if (analyserRef.current) {
+        try {
+          analyserRef.current.disconnect();
+        } catch {
+          // Ignore disconnect failures while swapping sources.
+        }
+      }
       connectedElementRef.current = audioElement;
       graphConnectedRef.current = false;
     }
@@ -122,6 +138,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
         }
         source.connect(analyser);
         analyser.connect(audioCtx.destination);
+        connectedSourceRef.current = source;
         graphConnectedRef.current = true;
       } catch (error) {
         // The graph may already be connected, which is safe to ignore.
@@ -294,6 +311,25 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
+      }
+      if (connectedElementRef.current === audioElement) {
+        if (connectedSourceRef.current) {
+          try {
+            connectedSourceRef.current.disconnect();
+          } catch {
+            // Ignore disconnect failures on unmount.
+          }
+          connectedSourceRef.current = null;
+        }
+        if (analyserRef.current) {
+          try {
+            analyserRef.current.disconnect();
+          } catch {
+            // Ignore disconnect failures on unmount.
+          }
+        }
+        graphConnectedRef.current = false;
+        connectedElementRef.current = null;
       }
     };
   }, [audioElement, isPlaying, prefersReducedMotion]);

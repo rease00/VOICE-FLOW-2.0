@@ -3,13 +3,14 @@
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+    BookOpen,
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles,
     Music, Video,
     Save, Fingerprint, UploadCloud, Loader2,
     Download, Menu, Box,
     Bot, Clock, Send,
     Film, Mic2, Sliders,
-    Lock, RefreshCw, Users, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell
+    Lock, RefreshCw, Users, Palette, Timer, Cpu, Zap, Laptop, Activity, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell, Maximize2, Minimize2
 } from 'lucide-react';
 import { Button } from '../../../components/Button';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS } from '../../../constants';
@@ -25,9 +26,6 @@ import {
   StudioQueueItem,
   StudioQueueState,
   StudioSingleInflightGenerationLedger,
-  DubbingClip,
-  DubbingClipboard,
-  CpuDubbingProfile,
 } from '../../../types';
 import { USER_CONTEXT_CHARACTER_SYNC_WARNING_EVENT, useUser } from '../../../contexts/UserContext';
 import { refreshStudioSpeakerVoices } from '../../shared/voices/castAssignment';
@@ -38,6 +36,7 @@ import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } fro
 import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../../shared/theme/themeDom';
 import { EngineRuntimeStrip } from '../../../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../../../components/ProofreadCluster';
+import { OptimizedAvatar } from '../../../components/ui/OptimizedAvatar';
 import { StudioTranslateBar } from '../../../components/StudioTranslateBar';
 import { SectionCard } from '../../../components/SectionCard';
 import { BrandLogo } from '../../../components/BrandLogo';
@@ -47,22 +46,12 @@ import { normalizeDirectorPreviewComparisonText } from '../../../components/stud
 import { TelemetrySparkline } from '../../../components/ui/TelemetrySparkline';
 import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WORKSPACE_NAV_SECTION_LABELS, WorkspaceTab as Tab } from '../../features/workspace/model/tabs';
 import { useBillingActions } from '../../features/billing/hooks/useBillingActions';
-import { cancelTtsJob, cancelTtsSession, createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../../shared/api/gatewayClient';
-import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../../shared/api/config';
+import { cancelTtsJob, cancelTtsSession, createTtsJob, getTtsJob } from '../../shared/api/gatewayClient';
+import { resolveApiBaseUrl } from '../../shared/api/config';
+import { API_ROUTE_FAMILIES } from '../../shared/api/routes';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../../shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../../shared/ui/useWorkspaceViewport';
 import { useManagedTabs } from '../../shared/ui/tabs';
-import {
-  createRuntimePollTabId,
-  isRuntimePollCoordinationAvailable,
-  readRuntimePollSnapshot,
-  releaseRuntimePollLeadership,
-  renewRuntimePollLeadership,
-  RUNTIME_POLL_LEADER_KEY,
-  RUNTIME_POLL_SNAPSHOT_KEY,
-  writeRuntimePollSnapshot,
-} from '../../shared/runtime/runtimePollCoordinator';
-import { resolveRuntimePollMode } from '../../shared/runtime/runtimePollScheduler';
 import {
   normalizeAssistantProviderControlsEnabled,
   normalizePreferUserGeminiKey,
@@ -85,7 +74,6 @@ import {
   SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT,
   applyTokenPackDiscount,
   appendRollingSample,
-  createDubbingClip,
   formatInr,
   formatMobileAvailableCreditsPercent,
   getStaticVoiceFallback,
@@ -100,7 +88,6 @@ import {
   resolveEngineToken,
   resolveInitialStudioDraftText,
   resolveTokenPackDiscountPercent,
-  resolveMediaBackendUrl,
   normalizePlanToken,
   PRIME_ACCESS_LOCK_MESSAGE,
   resolveSpeakerMappedVoiceId,
@@ -109,7 +96,6 @@ import {
   resolvePrimeAllowedEngines,
   resolveWorkspaceRoutePath,
   resolveWorkspaceTabFromPathname,
-  runDubbingEditorTool,
   shouldRefreshSelectedEngineTelemetry,
 } from './mainAppHelpers';
 import {
@@ -137,21 +123,31 @@ import {
 import { createStudioObjectUrlRegistry } from '../../../services/studioObjectUrlRegistry';
 import { audioBufferToWav } from '../../shared/audio/wav';
 import { getSharedAudioContext as getAudioContext } from '../../shared/audio/audioContext';
-import { hydrateRuntimeStatusSnapshot } from '../../shared/runtime/runtimeStatusHydration';
-import {
-  BACKEND_ROUTING_APPLIED_EVENT,
-  applyNearestBackendRoutingOnLogin,
-  clearNearestBackendRoutingState,
-} from '../../../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../../shared/voices/historyVoiceLabel';
 import { resolvePublicVoiceLabel } from '../../shared/voices/voicePublicName';
-import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../../../services/runtimeStatusMapping';
+import {
+  checkStudioGenerationBudget,
+  checkStudioQueueBudget,
+} from './studioGenerationBudget';
+
+// Runtime types imported from inlined barrel
+import {
+  mapGatewayEngineRuntimeToUiStatus,
+  TTS_RUNTIME_STATUS_EVENT,
+  type EngineRuntimeUiState,
+  type EngineRuntimeUiStatus,
+  type EngineRuntimeMetadata,
+  formatRuntimeMetadataSummary,
+  formatRuntimeServerLabel,
+  normalizeEngineRuntimeStateToken,
+} from '../../shared/runtime/runtimeStatusMapping';
+
 import { createSynthesisTraceId } from '../../../services/synthesisContractService';
 import { APP_ROUTE_PATHS, resolveLoginPath } from '../navigation';
+import { BILLING_CHECKOUT_LOCK_MESSAGE, isBillingCheckoutLocked } from '../../shared/billing/checkoutLock';
 import type { VoiceCloneModalResult } from '../../features/voice-cloning/VoiceCloneModal';
 import { applyMotionLevelToDocument } from '../../shared/theme/themeDom';
 
-const TTS_RUNTIME_STATUS_EVENT = 'voiceflow:tts-runtime-status';
 
 type StudioDirectorOptionKey = 'expressiveEmotion' | 'autoRewrite';
 type StudioDirectorModeState = Record<StudioDirectorOptionKey, boolean>;
@@ -208,81 +204,6 @@ const describeStudioDirectorModeState = (value: StudioDirectorModeState): string
   return activeLabels.length > 0 ? activeLabels.join(' + ') : 'Default';
 };
 
-const normalizeRuntimeToken = (value: unknown): string => String(value || '').trim();
-
-const formatRuntimeServerLabel = (status: Partial<EngineRuntimeUiStatus> | null | undefined): string => {
-  if (!status || typeof status !== 'object') return '';
-  const locationLabel = (
-    normalizeRuntimeToken(status.selectedRegion) ||
-    normalizeRuntimeToken(status.cloudTtsLocation) ||
-    normalizeRuntimeToken(status.vertexLocation) ||
-    normalizeRuntimeToken(status.regionHint)
-  ).replace(/_/g, '-');
-  if (locationLabel) return locationLabel;
-  const token = normalizeRuntimeToken(status.runtimeUrl || status.healthUrl);
-  if (!token) return '';
-  try {
-    return new URL(token).host || token;
-  } catch {
-    return token.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || token;
-  }
-};
-
-const formatRuntimeMetadataSummary = (status: Partial<EngineRuntimeUiStatus> | null | undefined): string => {
-  if (!status || typeof status !== 'object') return '';
-  const provider = normalizeRuntimeToken(status.provider);
-  const lane = normalizeRuntimeToken(status.lane);
-  const server = formatRuntimeServerLabel(status);
-  const modelId = normalizeRuntimeToken(status.modelId);
-  return [provider, lane, server, modelId].filter(Boolean).join(' / ');
-};
-
-const mapGatewayEngineRuntimeToUiStatus = (engineItem: unknown): EngineRuntimeUiStatus => {
-  if (!engineItem || typeof engineItem !== 'object') {
-    return { state: 'offline', detail: 'Gateway did not return runtime status.' };
-  }
-  const candidate = engineItem as Record<string, unknown> & {
-    ready?: unknown;
-    capabilities?: Record<string, unknown> | null;
-    metadata?: Record<string, unknown> | null;
-  };
-  const capabilities = candidate.capabilities && typeof candidate.capabilities === 'object' && !Array.isArray(candidate.capabilities)
-    ? candidate.capabilities
-    : null;
-  const metadata = candidate.metadata && typeof candidate.metadata === 'object' && !Array.isArray(candidate.metadata)
-    ? candidate.metadata
-    : null;
-  const metadataSource = capabilities?.metadata && typeof capabilities.metadata === 'object' && !Array.isArray(capabilities.metadata)
-    ? capabilities.metadata
-    : metadata || capabilities || candidate;
-  const stateToken = normalizeEngineRuntimeState(candidate.state, 'offline');
-  const runtimeReady = typeof candidate.ready === 'boolean' ? candidate.ready : stateToken === 'online';
-  const detail = String(candidate.detail || 'Runtime status updated.') || 'Runtime status updated.';
-  const standbyHint = Boolean((metadataSource as Record<string, unknown>).standby);
-  const mappedState: EngineRuntimeUiState =
-    stateToken === 'not_configured' ? 'not_configured' :
-    stateToken === 'warming' && standbyHint ? 'standby' :
-    stateToken === 'warming' ? 'starting' :
-    (stateToken === 'starting' || (stateToken === 'online' && !runtimeReady)) ? 'starting' :
-    stateToken === 'online' ? 'online' :
-    (stateToken === 'standby' || (stateToken === 'offline' && standbyHint)) ? 'standby' :
-    'offline';
-  return {
-    state: mappedState,
-    detail,
-    provider: normalizeRuntimeToken((metadataSource as Record<string, unknown>).provider),
-    lane: normalizeRuntimeToken((metadataSource as Record<string, unknown>).lane),
-    selectedRegion: normalizeRuntimeToken((metadataSource as Record<string, unknown>).selectedRegion),
-    modelId: normalizeRuntimeToken((metadataSource as Record<string, unknown>).modelId),
-    runtimeUrl: normalizeRuntimeToken((metadataSource as Record<string, unknown>).runtimeUrl),
-    healthUrl: normalizeRuntimeToken((metadataSource as Record<string, unknown>).healthUrl),
-    cloudTtsLocation: normalizeRuntimeToken((metadataSource as Record<string, unknown>).cloudTtsLocation),
-    vertexLocation: normalizeRuntimeToken((metadataSource as Record<string, unknown>).vertexLocation),
-    regionHint: normalizeRuntimeToken((metadataSource as Record<string, unknown>).regionHint),
-    regionSource: normalizeRuntimeToken((metadataSource as Record<string, unknown>).regionSource),
-  };
-};
-
 const loadStudioMixService = (() => {
   let cached: Promise<typeof import('../../../services/studioMixService')> | null = null;
   return () => {
@@ -290,126 +211,8 @@ const loadStudioMixService = (() => {
     return cached;
   };
 })();
-const REMOVED_DUBBING_FEATURE_MESSAGE = 'Video dubbing services have been removed from this build.';
-const reportRemovedDubbingFeature = (feature: string) => {
-  console.warn(`[MainApp] ${feature} requested, but ${REMOVED_DUBBING_FEATURE_MESSAGE}`);
-};
-type RemovedDubbingTimelineUndoRedo = {
-  past: DubbingClip[][];
-  current: DubbingClip[];
-  future: DubbingClip[][];
-  changed: boolean;
-};
-type RemovedDubbingTimelineService = {
-  removeClip: (clips: DubbingClip[], clipId: string) => { clips: DubbingClip[]; removed: DubbingClip | null };
-  removeCompletedClips: (clips: DubbingClip[]) => DubbingClip[];
-  clearAllClips: () => DubbingClip[];
-  undoTimeline: (past: DubbingClip[][], current: DubbingClip[], future: DubbingClip[][]) => RemovedDubbingTimelineUndoRedo;
-  redoTimeline: (past: DubbingClip[][], current: DubbingClip[], future: DubbingClip[][]) => RemovedDubbingTimelineUndoRedo;
-  copyClip: (clips: DubbingClip[], clipId: string) => DubbingClipboard | null;
-  pasteClipAfterSelection: (
-    clips: DubbingClip[],
-    selectedClipId: string,
-    clipboard: DubbingClipboard | null
-  ) => { clips: DubbingClip[]; pastedId: string | null };
-  cutClip: (clips: DubbingClip[], clipId: string) => { clips: DubbingClip[]; removed: DubbingClip | null };
-  splitClipAtPlayhead: (
-    clips: DubbingClip[],
-    clipId: string,
-    playheadMs: number
-  ) => { clips: DubbingClip[]; splitIds: [string, string] | null };
-  trimClipWindow: (
-    clips: DubbingClip[],
-    clipId: string,
-    options: { trimInMs?: number; trimOutMs?: number }
-  ) => DubbingClip[];
-  moveClipLayer: (clips: DubbingClip[], clipId: string, layer: DubbingClip['layer']) => DubbingClip[];
-};
-type RemovedDubbingStemPack = {
-  fullMix: AudioBuffer;
-  speechStem: AudioBuffer;
-  backgroundStem: AudioBuffer;
-  speechStemBlob: Blob;
-  backgroundStemBlob: Blob;
-  duration: number;
-};
-type RemovedDubbingService = {
-  extractAndSeparateDubbingStems: (
-    file: File,
-    options?: { backendUrl?: string; preferBackendModel?: boolean; onStatus?: (message: string) => void }
-  ) => Promise<RemovedDubbingStemPack>;
-};
-const loadDubbingTimelineService = (() => {
-  let cached: Promise<RemovedDubbingTimelineService> | null = null;
-  return () => {
-    cached ??= Promise.resolve({
-      removeClip: (clips, clipId) => {
-        reportRemovedDubbingFeature('Timeline clip remove');
-        const index = clips.findIndex((clip) => clip.id === clipId);
-        if (index < 0) return { clips, removed: null };
-        return { clips: [...clips.slice(0, index), ...clips.slice(index + 1)], removed: clips[index] ?? null };
-      },
-      removeCompletedClips: (clips) => {
-        reportRemovedDubbingFeature('Timeline remove completed');
-        return clips.filter((clip) => clip.status !== 'completed');
-      },
-      clearAllClips: () => {
-        reportRemovedDubbingFeature('Timeline clear queue');
-        return [];
-      },
-      undoTimeline: (past, current, future) => {
-        reportRemovedDubbingFeature('Timeline undo');
-        return { past, current, future, changed: false };
-      },
-      redoTimeline: (past, current, future) => {
-        reportRemovedDubbingFeature('Timeline redo');
-        return { past, current, future, changed: false };
-      },
-      copyClip: (_clips, _clipId) => {
-        reportRemovedDubbingFeature('Timeline copy');
-        return null;
-      },
-      pasteClipAfterSelection: (clips, _selectedClipId, _clipboard) => {
-        reportRemovedDubbingFeature('Timeline paste');
-        return { clips, pastedId: null };
-      },
-      cutClip: (clips, clipId) => {
-        reportRemovedDubbingFeature('Timeline cut');
-        const index = clips.findIndex((clip) => clip.id === clipId);
-        if (index < 0) return { clips, removed: null };
-        return { clips: [...clips.slice(0, index), ...clips.slice(index + 1)], removed: clips[index] ?? null };
-      },
-      splitClipAtPlayhead: (clips, _clipId, _playheadMs) => {
-        reportRemovedDubbingFeature('Timeline split');
-        return { clips, splitIds: null };
-      },
-      trimClipWindow: (clips, _clipId, _options) => {
-        reportRemovedDubbingFeature('Timeline trim');
-        return clips;
-      },
-      moveClipLayer: (clips, _clipId, _layer) => {
-        reportRemovedDubbingFeature('Timeline layer move');
-        return clips;
-      },
-    });
-    return cached;
-  };
-})();
-
-const cloneDubbingTimelineSnapshot = (clips: DubbingClip[]): DubbingClip[] => clips.map((clip) => ({ ...clip }));
-const pushDubbingTimelineHistory = (
-  past: DubbingClip[][],
-  current: DubbingClip[],
-  maxEntries: number = 40
-): DubbingClip[][] => {
-  const next = [...past, cloneDubbingTimelineSnapshot(current)];
-  if (next.length <= maxEntries) return next;
-  return next.slice(next.length - maxEntries);
-};
-
 const loadAdminTabContent = () => import('../../features/admin/components/AdminTabContent');
-const loadNovelTabContent = () => import('../../features/novel/components/NovelTabContent');
-const loadReaderTabContent = () => import('../../features/reader/components/ReaderTabContent');
+const loadLibraryContent = () => import('../../features/novel/components/NovelTabContent');
 const loadVoiceCloningTabContent = () => import('../../features/voice-cloning/VoiceCloningTabContent');
 const loadAudioPlayer = () => import('../../../components/AudioPlayer');
 const LazyBlockScriptEditor = lazy(async () => {
@@ -420,19 +223,6 @@ const LazyStudioQueuePanel = lazy(async () => {
   const module = await import('../../../components/studio/StudioQueuePanel');
   return { default: module.StudioQueuePanel };
 });
-const loadDubbingService = (() => {
-  let cached: Promise<RemovedDubbingService> | null = null;
-  return () => {
-    cached ??= Promise.resolve({
-      extractAndSeparateDubbingStems: async (_file, options) => {
-        reportRemovedDubbingFeature('Stem extraction');
-        options?.onStatus?.('Video dubbing service removed from this build.');
-        throw new Error(REMOVED_DUBBING_FEATURE_MESSAGE);
-      },
-    });
-    return cached;
-  };
-})();
 const loadStudioQueueAudioService = (() => {
   let cached: Promise<typeof import('../../../services/studioQueueAudioService')> | null = null;
   return () => {
@@ -447,13 +237,6 @@ const loadTtsVoiceRegistryService = (() => {
     return cached;
   };
 })();
-const loadMediaBackendService = (() => {
-  let cached: Promise<typeof import('../../../services/mediaBackendService')> | null = null;
-  return () => {
-    cached ??= import('../../../services/mediaBackendService');
-    return cached;
-  };
-})();
 const loadTtsGatewayJobService = (() => {
   let cached: Promise<typeof import('../../../services/ttsGatewayJobService')> | null = null;
   return () => {
@@ -461,6 +244,18 @@ const loadTtsGatewayJobService = (() => {
     return cached;
   };
 })();
+
+const loadMediaBackendService = (() => {
+  let cached: Promise<typeof import('../../../services/mediaBackendService')> | null = null;
+  return () => {
+    cached ??= import('../../../services/mediaBackendService');
+    return cached;
+  };
+})();
+
+/** Stub: backend routing is no longer needed (Cloud TTS). */
+const clearNearestBackendRoutingState = (): void => {};
+const applyNearestBackendRoutingOnLogin = async (_opts?: { signal?: AbortSignal }): Promise<void> => {};
 
 export const findFirstRecoverableStudioQueueItem = (items: StudioQueueItem[]): StudioQueueItem | null => (
   [...items]
@@ -474,6 +269,22 @@ export const hasRecoverableSingleInflightGenerationState = (
   const requestId = String(value?.requestId || '').trim();
   const jobId = String(value?.jobId || '').trim();
   return Boolean(requestId || jobId);
+};
+
+export const normalizeStudioGenerationLedgerText = (value: string): string => (
+  String(value || '').replace(/\s+/g, ' ').trim()
+);
+
+export const shouldResumeSingleGenerationFromLedger = (
+  currentText: string,
+  ledger: Pick<StudioSingleInflightGenerationLedger, 'requestId' | 'jobId' | 'textSnapshot'> | null | undefined
+): boolean => {
+  if (!hasRecoverableSingleInflightGenerationState(ledger)) return false;
+  const normalizedLedgerText = normalizeStudioGenerationLedgerText(String(ledger?.textSnapshot || ''));
+  if (!normalizedLedgerText) return true;
+  const normalizedCurrentText = normalizeStudioGenerationLedgerText(currentText);
+  if (!normalizedCurrentText) return true;
+  return normalizedCurrentText === normalizedLedgerText;
 };
 
 const FRONTEND_PROXY_POLICY_PATTERNS = [
@@ -584,8 +395,7 @@ const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk';
 const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
 
 const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
-const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
-const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
+const LibraryTabContent = lazy(async () => loadLibraryContent().then((module) => ({ default: module.NovelTabContent })));
 const VoiceCloningTabContent = lazy(async () => loadVoiceCloningTabContent().then((module) => ({ default: module.VoiceCloningTabContent })));
 const VoiceCloneModal = lazy(async () => import('../../features/voice-cloning/VoiceCloneModal').then((module) => ({ default: module.VoiceCloneModal })));
 const AudioPlayer = lazy(async () => loadAudioPlayer().then((module) => ({ default: module.AudioPlayer })));
@@ -598,15 +408,13 @@ const readBooleanEnv = (value: unknown, fallback: boolean): boolean => {
   return fallback;
 };
 
-const ENABLE_RESOURCE_MONITOR = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR ?? process.env.VITE_ENABLE_RESOURCE_MONITOR, process.env.NODE_ENV !== 'production');
-const ENABLE_RESOURCE_MONITOR_LONGTASK = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR_LONGTASK ?? process.env.VITE_ENABLE_RESOURCE_MONITOR_LONGTASK, false);
-const ENABLE_STUDIO_READER_PRELOAD = readBooleanEnv(process.env.NEXT_PUBLIC_STUDIO_PRELOAD_READER ?? process.env.VITE_STUDIO_PRELOAD_READER, false);
+const ENABLE_RESOURCE_MONITOR = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR, process.env.NODE_ENV !== 'production');
+const ENABLE_RESOURCE_MONITOR_LONGTASK = readBooleanEnv(process.env.NEXT_PUBLIC_ENABLE_RESOURCE_MONITOR_LONGTASK, false);
 
 const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   [Tab.ADMIN]: loadAdminTabContent,
-  [Tab.NOVEL]: loadNovelTabContent,
+  [Tab.LIBRARY]: loadLibraryContent,
   [Tab.VOICE_CLONING]: loadVoiceCloningTabContent,
-  ...(ENABLE_STUDIO_READER_PRELOAD ? { [Tab.READER]: loadReaderTabContent } : {}),
 };
 
 const loadGeminiService = (() => {
@@ -670,7 +478,6 @@ const hasSpeakerVcReferencePayloadShape = (value: unknown): boolean => {
 };
 
 type UiTheme = 'light' | 'dark' | 'system';
-type UiDensity = 'comfortable' | 'compact';
 type UiMotionLevel = 'off' | 'balanced' | 'rich';
 type EngineRuntimeState = EngineRuntimeUiState;
 
@@ -771,6 +578,7 @@ const shouldRetryTransientGenerationError = (errorLike: unknown): boolean => {
     || 0
   );
   if (RETRYABLE_GENERATION_STATUS_CODES.has(statusCode)) return true;
+  if (statusCode >= 400 && statusCode < 500) return false;
 
   const combined = sanitizeUiText(
     [
@@ -840,10 +648,6 @@ const awaitAbortablePromise = async <T,>(promise: Promise<T>, signal?: AbortSign
 };
 
 type EngineRuntimeStatus = EngineRuntimeUiStatus;
-interface RuntimePollSnapshotPayload {
-  activeEngine: GenerationSettings['engine'];
-  engines: Record<ActiveTtsEngineKey, EngineRuntimeStatus>;
-}
 type SelectedEngineTelemetryKind = 'pending' | 'network' | 'local' | 'error';
 
 interface SelectedEngineTelemetry {
@@ -871,15 +675,6 @@ const createInitialSelectedEngineTelemetry = (): Record<ActiveTtsEngineKey, Sele
   PRIME: createSelectedEngineTelemetry(),
   VECTOR: createSelectedEngineTelemetry(),
 });
-
-const normalizeRuntimeSnapshotActiveEngine = (
-  value: unknown,
-  fallback: ActiveTtsEngineKey
-): ActiveTtsEngineKey => {
-  const token = resolveEngineToken(String(value || '').trim());
-  if (token === 'PRIME' || token === 'VECTOR') return token;
-  return fallback;
-};
 
 const ENGINE_RUNTIME_STATE_SET: ReadonlySet<EngineRuntimeState> = new Set([
   'checking',
@@ -1022,15 +817,6 @@ interface GenerationTimingSnapshot {
   coldStart?: boolean;
 }
 
-interface CachedDubbingStems {
-  key: string;
-  speechFile: File;
-  backgroundBuffer: AudioBuffer;
-  speechObjectUrl: string;
-  backgroundObjectUrl: string;
-  duration: number;
-}
-
 type AssistantApplyMode = 'replace' | 'append';
 
 interface AssistantRequestOptions {
@@ -1056,29 +842,11 @@ interface BackendHealthState {
   severity: HealthSeverity;
 }
 
-type DubbingPhase = 'idle' | 'running' | 'error' | 'done';
-
-interface DubbingUiState {
-  phase: DubbingPhase;
-  progress: number;
-  stage: string;
-  error: string;
-  updatedAt: number;
-}
-
 const ENGINE_ORDER: ActiveTtsEngineKey[] = ['VECTOR', 'PRIME'];
 const FALLBACK_RUNTIME_URLS: Record<ActiveTtsEngineKey, string> = {
   PRIME: 'http://127.0.0.1:7810',
   VECTOR: 'http://127.0.0.1:7810',
 };
-const DEFAULT_MEDIA_BACKEND_URL = getDefaultApiBaseUrl();
-const readPositiveIntEnv = (value: unknown, fallback: number): number => { const parsed = Number(value); if (!Number.isFinite(parsed) || parsed <= 0) return fallback; return Math.floor(parsed); };
-const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_ACTIVE_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 3000);
-const RUNTIME_STATUS_LATENCY_TIMEOUT_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_LATENCY_TIMEOUT_MS ?? process.env.VITE_RUNTIME_STATUS_LATENCY_TIMEOUT_MS, 5000);
-const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_POLL_MS, 60000);
-const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_WINDOW_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
-const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 10000;
-const RUNTIME_STATUS_LEADER_LEASE_MS = 40000;
 const SIMULATED_GENERATION_TICK_MS = 200;
 const EMPTY_RUNTIME_CATALOG: Record<ActiveTtsEngineKey, VoiceOption[]> = { PRIME: [], VECTOR: [] };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
@@ -1114,10 +882,10 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   perplexityApiKey: '',
   localLlmUrl: 'http://localhost:5000',
   geminiApiKey: '',
-  mediaBackendUrl: DEFAULT_MEDIA_BACKEND_URL,
   backendApiKey: '',
   voiceModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.PRIME,
+  uiMotionLevel: 'rich',
 
   musicTrackId: 'm_none',
   musicVolume: 0.3,
@@ -1125,10 +893,8 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   autoEnhance: true,
   useModelSourceSeparation: true,
   preserveDubVoiceTone: false,
-  dubbingSourceLanguage: 'auto',
   multiSpeakerEnabled: true,
   speakerMapping: {},
-  uiMotionLevel: 'off',
   autoPlayGeneratedAudio: true,
 };
 
@@ -1149,9 +915,6 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
   )
     ? rawMusicTrackId
     : DEFAULT_SETTINGS.musicTrackId;
-  const rawMediaBackendUrl = typeof value.mediaBackendUrl === 'string' ? value.mediaBackendUrl : '';
-  const mediaBackendSanitized = sanitizeConfiguredApiBaseUrl(rawMediaBackendUrl, DEFAULT_MEDIA_BACKEND_URL);
-
   const normalized: GenerationSettings = {
     ...DEFAULT_SETTINGS,
     ...value,
@@ -1186,17 +949,13 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     preserveDubVoiceTone: typeof value.preserveDubVoiceTone === 'boolean'
       ? value.preserveDubVoiceTone
       : DEFAULT_SETTINGS.preserveDubVoiceTone,
-    dubbingSourceLanguage: typeof value.dubbingSourceLanguage === 'string' && value.dubbingSourceLanguage.trim()
-      ? value.dubbingSourceLanguage.trim()
-      : DEFAULT_SETTINGS.dubbingSourceLanguage,
-    uiMotionLevel:
-      value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
-        ? value.uiMotionLevel
-    : (DEFAULT_SETTINGS.uiMotionLevel || 'off'),
+  uiMotionLevel:
+    value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
+      ? value.uiMotionLevel
+    : (DEFAULT_SETTINGS.uiMotionLevel || 'rich'),
     multiSpeakerEnabled: typeof value.multiSpeakerEnabled === 'boolean'
       ? value.multiSpeakerEnabled
       : DEFAULT_SETTINGS.multiSpeakerEnabled,
-    mediaBackendUrl: mediaBackendSanitized.value,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
     voiceModel: typeof value.voiceModel === 'string' ? value.voiceModel : DEFAULT_SETTINGS.voiceModel,
     geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.PRIME),
@@ -1380,9 +1139,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     user,
     clonedVoices,
     addClonedVoice,
-    drafts,
-    saveDraft,
-    deleteDraft,
     characterLibrary,
     updateCharacter,
     deleteCharacter,
@@ -1484,7 +1240,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const pathname = usePathname();
   const [activeTab, setActiveTab] = useState<Tab>(() => resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO);
   const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
-  const shouldHydrateStudioWorkspaceStateOnInit = activeTab === Tab.STUDIO;
+  const isLibraryWorkspaceTab = activeTab === Tab.LIBRARY;
+  const shouldHydrateStudioWorkspaceStateOnInit = isStudioWorkspaceTab;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (
@@ -1510,7 +1267,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = readStorageJson(STORAGE_KEYS.settings);
     return normalizeSettings(saved || DEFAULT_SETTINGS);
   });
-  const mediaBackendUrl = resolveMediaBackendUrl(settings);
+  const adminApiBaseUrl = resolveApiBaseUrl();
+  const studioApiBaseUrl = API_ROUTE_FAMILIES.studio;
   const deferredSettings = useDeferredValue(settings);
   const authenticatedUserId = String(user.uid || '').trim();
   const speakerVcReferenceOwnerKey = useMemo(() => {
@@ -1539,26 +1297,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     settingsAuthOwnerRef.current = authenticatedUserId;
     setSettings((previous) => stripSensitiveSettingsForStorage(previous));
   }, [authenticatedUserId]);
-  useEffect(() => {
-    const onBackendRoutingApplied = (event: Event) => {
-      const custom = event as CustomEvent<{ baseUrl?: string }>;
-      const nextBaseUrl = String(custom?.detail?.baseUrl || '').trim();
-      if (!nextBaseUrl) return;
-      setSettings((prev) => {
-        const currentBase = sanitizeConfiguredApiBaseUrl(
-          String(prev.mediaBackendUrl || ''),
-          DEFAULT_MEDIA_BACKEND_URL
-        ).value;
-        const nextBase = sanitizeConfiguredApiBaseUrl(nextBaseUrl, DEFAULT_MEDIA_BACKEND_URL).value;
-        if (currentBase === nextBase) return prev;
-        return { ...prev, mediaBackendUrl: nextBase };
-      });
-    };
-    window.addEventListener(BACKEND_ROUTING_APPLIED_EVENT, onBackendRoutingApplied as EventListener);
-    return () => {
-      window.removeEventListener(BACKEND_ROUTING_APPLIED_EVENT, onBackendRoutingApplied as EventListener);
-    };
-  }, []);
 
   // Generation Status State
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1567,6 +1305,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const processingStageRef = useRef('');
   const [generationTiming, setGenerationTiming] = useState<GenerationTimingSnapshot | null>(null);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
+  const [audioPlayerAutoplayNonce, setAudioPlayerAutoplayNonce] = useState(0);
+  const [audioPlayerSessionKey, setAudioPlayerSessionKey] = useState('');
   const [liveAudioChunks, setLiveAudioChunks] = useState<LiveAudioChunkItem[]>([]);
   const [studioQueueState, setStudioQueueState] = useState<StudioQueueState | null>(() => (
     shouldHydrateStudioWorkspaceStateOnInit
@@ -1701,10 +1441,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = readStorageString(STORAGE_KEYS.uiBrandTheme);
     return saved === 'aurora' || saved === 'sunset' || saved === 'emerald' || saved === 'neon' ? saved : 'neon';
   });
-  const [uiDensity, setUiDensity] = useState<UiDensity>(() => {
-    const saved = readStorageString(STORAGE_KEYS.uiDensity);
-    return saved === 'comfortable' ? 'comfortable' : 'compact';
-  });
   const uiFontScale = UI_FONT_SCALE_DEFAULT;
 
   const setGeneratedAudioUrlManaged = useCallback((nextUrl: string | null) => {
@@ -1712,6 +1448,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       studioObjectUrlRegistryRef.current.replace(previousUrl, nextUrl);
       return nextUrl;
     });
+    if (nextUrl) {
+      setAudioPlayerAutoplayNonce((previous) => previous + 1);
+    }
   }, []);
   const writeSingleInflightGenerationLedger = useCallback((nextLedger: StudioSingleInflightGenerationLedger | null) => {
     singleInflightLedgerRef.current = nextLedger;
@@ -1743,7 +1482,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const current = singleInflightLedgerRef.current;
     const requestId = String(patch.requestId ?? current?.requestId ?? '').trim();
     const jobId = String(patch.jobId ?? current?.jobId ?? '').trim();
-    const textSnapshot = String(patch.textSnapshot ?? current?.textSnapshot ?? '');
+    const textSnapshot = normalizeStudioGenerationLedgerText(String(patch.textSnapshot ?? current?.textSnapshot ?? ''));
     if (!requestId && !jobId) return null;
     const nextLedger: StudioSingleInflightGenerationLedger = {
       mode: 'single',
@@ -1762,6 +1501,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const safeJobId = String(jobId || '').trim();
     activeGatewayRequestIdRef.current = safeRequestId;
     activeGatewayJobIdRef.current = safeJobId;
+    const nextSessionKey = safeJobId
+      ? `job:${safeJobId}`
+      : safeRequestId
+        ? `request:${safeRequestId}`
+        : '';
+    setAudioPlayerSessionKey((previous) => (previous === nextSessionKey ? previous : nextSessionKey));
   }, []);
   const [uiMotionLevel, setUiMotionLevel] = useState<UiMotionLevel>(() => {
     const saved = readStorageString(STORAGE_KEYS.uiMotionLevel);
@@ -1770,7 +1515,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     if (normalized.uiMotionLevel === 'off' || normalized.uiMotionLevel === 'rich' || normalized.uiMotionLevel === 'balanced') {
       return normalized.uiMotionLevel;
     }
-    return DEFAULT_SETTINGS.uiMotionLevel || 'off';
+    return DEFAULT_SETTINGS.uiMotionLevel || 'rich';
   });
 
   // Editor Tools
@@ -1945,39 +1690,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [lastAssistantDraft, setLastAssistantDraft] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // --- Video Dubbing State ---
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [dubScript, setDubScript] = useState('');
-  const [dubbingClips, setDubbingClips] = useState<DubbingClip[]>([]);
-  const [selectedDubbingClipId, setSelectedDubbingClipId] = useState('');
-  const [dubbingClipboard, setDubbingClipboard] = useState<DubbingClipboard | null>(null);
-  const [dubbingHistoryPast, setDubbingHistoryPast] = useState<DubbingClip[][]>([]);
-  const [dubbingHistoryFuture, setDubbingHistoryFuture] = useState<DubbingClip[][]>([]);
-  const [dubbingCpuProfile, setDubbingCpuProfile] = useState<CpuDubbingProfile>('cpu_quality');
-  const [isDubbingAdvancedOpen, setIsDubbingAdvancedOpen] = useState(false);
-  const [dubbingPlayheadMs, setDubbingPlayheadMs] = useState(0);
-  const [dubAudioUrl, setDubAudioUrl] = useState<string | null>(null);
-  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
-  const [isPlayingDub, setIsPlayingDub] = useState(false);
-  const [isVideoPipelineGuideOpen, setIsVideoPipelineGuideOpen] = useState(false);
-  const [dubbingJobResultUrl, setDubbingJobResultUrl] = useState<string | null>(null);
-  const [dubbingReportUrl, setDubbingReportUrl] = useState<string | null>(null);
-  // Mixing
-  const [videoVolume, setVideoVolume] = useState(1.0);
-  const [dubVolume, setDubVolume] = useState(1.0);
-  const [renderedDubVideoUrl, setRenderedDubVideoUrl] = useState<string | null>(null);
-
-  // --- Real Media Backend State (Voice Transfer + Video Tools) ---
+  // --- Runtime Backend State ---
   const [backendHealth, setBackendHealth] = useState<BackendHealthState | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
-  const [dubbingUiState, setDubbingUiState] = useState<DubbingUiState>({
-      phase: 'idle',
-      progress: 0,
-      stage: 'Waiting for source file',
-      error: '',
-      updatedAt: Date.now(),
-  });
 
   // --- Character Management State ---
   const [charTab, setCharTab] = useState<'CAST' | 'GALLERY'>('CAST');
@@ -2035,112 +1750,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const dubAudioRef = useRef<HTMLAudioElement>(null);
-  const dubbingStemsRef = useRef<CachedDubbingStems | null>(null);
-  const activeDubbingJobIdRef = useRef<string>('');
-  const dubbingLiveAudioRef = useRef<HTMLAudioElement | null>(null);
-  const dubbingLiveChunkUrlsRef = useRef<string[]>([]);
-  const dubbingLiveQueueRef = useRef<string[]>([]);
-  const dubbingLiveSeenChunkKeysRef = useRef<Set<string>>(new Set());
-  const dubbingLiveChunkCursorRef = useRef<number>(0);
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const studioMainRef = useRef<HTMLDivElement>(null);
   const studioEditorShellRef = useRef<HTMLDivElement>(null);
   const creditsSurfaceRef = useRef<HTMLDivElement>(null);
   const creditsSurfaceTriggerRef = useRef<HTMLButtonElement>(null);
-  const selectedDubbingClip = useMemo(
-    () => dubbingClips.find((clip) => clip.id === selectedDubbingClipId) || null,
-    [dubbingClips, selectedDubbingClipId]
-  );
-
-  const mutateDubbingTimeline = useCallback(
-    (mutator: (current: DubbingClip[]) => DubbingClip[]) => {
-      setDubbingClips((current) => {
-        const next = mutator(current);
-        if (next === current) return current;
-        setDubbingHistoryPast((past) => pushDubbingTimelineHistory(past, current));
-        setDubbingHistoryFuture([]);
-        return next;
-      });
-    },
-    []
-  );
-
-  const syncSelectedClipPatch = useCallback(
-    (patch: Partial<DubbingClip>) => {
-      if (!selectedDubbingClipId) return;
-      setDubbingClips((current) =>
-        current.map((clip) => (clip.id === selectedDubbingClipId ? { ...clip, ...patch } : clip))
-      );
-    },
-    [selectedDubbingClipId]
-  );
-
-  const resolveClipDurationMs = useCallback(async (file: File): Promise<number> => {
-    if (typeof document === 'undefined') return 0;
-    return new Promise((resolve) => {
-      const probe = document.createElement('video');
-      const objectUrl = URL.createObjectURL(file);
-      const cleanup = () => {
-        try {
-          URL.revokeObjectURL(objectUrl);
-        } catch {}
-      };
-      probe.preload = 'metadata';
-      probe.onloadedmetadata = () => {
-        const durationSec = Number(probe.duration || 0);
-        cleanup();
-        resolve(Number.isFinite(durationSec) && durationSec > 0 ? Math.round(durationSec * 1000) : 0);
-      };
-      probe.onerror = () => {
-        cleanup();
-        resolve(0);
-      };
-      probe.src = objectUrl;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (dubbingClips.length <= 0) {
-      if (selectedDubbingClipId) setSelectedDubbingClipId('');
-      return;
-    }
-    const selectedExists = dubbingClips.some((clip) => clip.id === selectedDubbingClipId);
-    if (!selectedExists) {
-      setSelectedDubbingClipId(dubbingClips[0]?.id || '');
-    }
-  }, [dubbingClips, selectedDubbingClipId]);
-
-  useEffect(() => {
-    if (!selectedDubbingClip) {
-      setVideoFile(null);
-      setVideoUrl(null);
-      setDubScript('');
-      setDubAudioUrl(null);
-      return;
-    }
-    setVideoFile(selectedDubbingClip.file);
-    setVideoUrl(selectedDubbingClip.objectUrl);
-    setDubScript(selectedDubbingClip.script || '');
-    setDubbingPlayheadMs((current) =>
-      Math.max(selectedDubbingClip.trimInMs, Math.min(current, selectedDubbingClip.trimOutMs))
-    );
-    const selectedResultUrl = selectedDubbingClip.resultUrl ? String(selectedDubbingClip.resultUrl) : null;
-    setDubAudioUrl(selectedResultUrl);
-  }, [selectedDubbingClip]);
-
-  useEffect(() => {
-    if (!selectedDubbingClipId) return;
-    setDubbingClips((current) =>
-      current.map((clip) => {
-        if (clip.id !== selectedDubbingClipId) return clip;
-        if ((clip.script || '') === dubScript) return clip;
-        return { ...clip, script: dubScript };
-      })
-    );
-  }, [dubScript, selectedDubbingClipId]);
 
   // --- PREVIEW STATE ---
   const [previewState, setPreviewState] = useState<{ id: string, status: 'loading' | 'playing' } | null>(null);
@@ -2158,13 +1773,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     detail: 'Checking authentication...',
     checkedAt: 0,
   });
-  const [runtimePollLeaderVersion, setRuntimePollLeaderVersion] = useState(0);
-  const runtimePollTabIdRef = useRef<string>(createRuntimePollTabId());
-  const runtimePollIsLeaderRef = useRef(false);
-  const runtimePollActiveUntilRef = useRef(0);
-  const runtimePollCooldownUntilRef = useRef(0);
   const runtimePollRefreshInFlightRef = useRef<Promise<void> | null>(null);
-  const runtimePollWasBusyRef = useRef(false);
   const [selectedEngineTelemetry, setSelectedEngineTelemetry] = useState<Record<ActiveTtsEngineKey, SelectedEngineTelemetry>>(
     createInitialSelectedEngineTelemetry
   );
@@ -2212,12 +1821,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const selectedTokenPackPriceInr = applyTokenPackDiscount(selectedTokenPackMeta.baseInr, tokenPackDiscountPercent);
   const selectedTokenPackSavingsInr = Math.max(0, selectedTokenPackMeta.baseInr - selectedTokenPackPriceInr);
 
+  const activeGenerationEngine = managedActiveEngine || settings.engine;
   const currentEngineSpendable = Math.max(
     0,
-    Number(stats.wallet?.spendableNowByEngine?.[managedActiveEngine || settings.engine] || 0)
+    Number(stats.wallet?.spendableNowByEngine?.[activeGenerationEngine] || 0)
   );
-  const canRunVectorWithoutWallet = (managedActiveEngine || settings.engine) === 'VECTOR';
-  const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
+  const currentEngineVfRate = Math.max(
+    0,
+    Number(stats?.vfUsage?.rates?.[activeGenerationEngine] || 0)
+  );
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletMonthlyFreeLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
   const walletPaid = walletPaidVfBalance;
@@ -2230,6 +1842,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
   const allowedEngineSummary = primeAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ');
+  const formatStudioVfAmount = useCallback((value: number): string => (
+    new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(Math.max(0, Number(value) || 0))
+  ), []);
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
     return formatFrontendError(raw, {
       fallback,
@@ -2315,7 +1930,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ttsAccessProbeRef.current = signedOutProbe;
         return signedOutProbe;
       }
-      const backendUrl = mediaBackendUrl;
       if (!force && cached && now - cached.checkedAt < 15_000) {
         return cached;
       }
@@ -2338,7 +1952,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const pendingProbe = (async (): Promise<RuntimeAccessProbe> => {
         try {
-          const accountProfile = await fetchAccountProfile(backendUrl, { signal: controller.signal });
+          const accountProfile = await fetchAccountProfile(undefined, { signal: controller.signal });
           if (controller.signal.aborted || externalSignal?.aborted) {
             throw createAbortError();
           }
@@ -2400,7 +2014,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         }
       });
     },
-    [hasSessionIdentity, isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason, mediaBackendUrl, user.email, user.uid]
+    [hasSessionIdentity, isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason, user.email, user.uid]
   );
   const refreshTtsAccessState = useCallback(
     async (force: boolean = false, options?: { signal?: AbortSignal }): Promise<RuntimeAccessProbe> => {
@@ -2425,25 +2039,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     [probeProtectedTtsAccess]
   );
   const rediscoverBackendRouting = useCallback(
-    async (reason: string): Promise<boolean> => {
-      if (!hasSessionIdentity) return false;
-      const now = Date.now();
-      if (backendRoutingRediscoveryInFlightRef.current) return false;
-      if ((now - backendRoutingRediscoveryLastAttemptAtRef.current) < 30_000) return false;
-      backendRoutingRediscoveryInFlightRef.current = true;
-      backendRoutingRediscoveryLastAttemptAtRef.current = now;
-      try {
-        clearNearestBackendRoutingState();
-        await applyNearestBackendRoutingOnLogin();
-        return true;
-      } catch (error: unknown) {
-        console.warn('[studio.backend_routing_rediscovery]', reason, error);
-        return false;
-      } finally {
-        backendRoutingRediscoveryInFlightRef.current = false;
-      }
+    async (_reason: string): Promise<boolean> => {
+      // Backend routing removed — Cloud TTS routes are local API routes
+      return false;
     },
-    [hasSessionIdentity, mediaBackendUrl]
+    []
   );
   const syncRuntimeBlockedStateFromError = useCallback(
     (_engine: GenerationSettings['engine'], error: unknown) => {
@@ -2602,65 +2202,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncNotificationDeepLink as EventListener);
       return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncNotificationDeepLink as EventListener);
   }, []);
-  const patchDubbingUiState = useCallback((patch: Partial<DubbingUiState>) => {
-      setDubbingUiState((prev) => ({
-          ...prev,
-          ...patch,
-          progress: Math.max(0, Math.min(100, Number.isFinite(Number(patch.progress)) ? Number(patch.progress) : prev.progress)),
-          stage: typeof patch.stage === 'string' && patch.stage.trim() ? sanitizeUiText(patch.stage) : prev.stage,
-          error: typeof patch.error === 'string' ? sanitizeUiText(patch.error) : prev.error,
-          updatedAt: Date.now(),
-      }));
-  }, []);
-  const resetDubbingLivePlayback = useCallback(() => {
-      const player = dubbingLiveAudioRef.current;
-      if (player) {
-          try {
-              player.pause();
-              player.src = '';
-          } catch {}
-      }
-      for (const url of dubbingLiveChunkUrlsRef.current) {
-          try {
-              URL.revokeObjectURL(url);
-          } catch {}
-      }
-      dubbingLiveChunkUrlsRef.current = [];
-      dubbingLiveQueueRef.current = [];
-      dubbingLiveSeenChunkKeysRef.current = new Set();
-      dubbingLiveChunkCursorRef.current = 0;
-  }, []);
-  const pumpDubbingLivePlayback = useCallback(() => {
-      if (typeof Audio === 'undefined') return;
-      if (!dubbingLiveAudioRef.current) {
-          const player = new Audio();
-          player.preload = 'auto';
-          player.onended = () => {
-              const queue = dubbingLiveQueueRef.current;
-              const next = queue.shift();
-              if (!next) return;
-              player.src = next;
-              void player.play().catch(() => undefined);
-          };
-          dubbingLiveAudioRef.current = player;
-      }
-      const player = dubbingLiveAudioRef.current;
-      if (!player) return;
-      if (!player.paused) return;
-      const queue = dubbingLiveQueueRef.current;
-      const next = queue.shift();
-      if (!next) return;
-      player.src = next;
-      void player.play().catch(() => undefined);
-  }, []);
-  const enqueueDubbingLiveChunk = useCallback((blob: Blob) => {
-      if (!blob || blob.size <= 0) return;
-      const url = URL.createObjectURL(blob);
-      dubbingLiveChunkUrlsRef.current.push(url);
-      dubbingLiveQueueRef.current.push(url);
-      pumpDubbingLivePlayback();
-  }, [pumpDubbingLivePlayback]);
-  const billingActions = useBillingActions({ baseUrl: mediaBackendUrl, returnPath: APP_ROUTE_PATHS.billing });
+  const billingActions = useBillingActions({ baseUrl: '/api/v1', returnPath: APP_ROUTE_PATHS.billing });
   const isGemRuntimeEngine = useCallback(
     (engine: GenerationSettings['engine']) => engine === 'PRIME' || engine === 'VECTOR',
     []
@@ -2739,60 +2281,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       },
       [resolveVoiceAccessTier]
   );
-
-  const getVideoCacheKey = useCallback((file: File): string => {
-      return `${file.name}::${file.size}::${file.lastModified}`;
-  }, []);
-
-  const clearDubbingStemCache = useCallback(() => {
-      if (!dubbingStemsRef.current) return;
-      try {
-          URL.revokeObjectURL(dubbingStemsRef.current.speechObjectUrl);
-          URL.revokeObjectURL(dubbingStemsRef.current.backgroundObjectUrl);
-      } catch {
-          // ignore cleanup errors
-      } finally {
-          dubbingStemsRef.current = null;
-      }
-  }, []);
-
-  const ensureDubbingStemCache = useCallback(async (file: File): Promise<CachedDubbingStems> => {
-      const key = getVideoCacheKey(file);
-      const cached = dubbingStemsRef.current;
-      if (cached && cached.key === key) return cached;
-
-      clearDubbingStemCache();
-      const { extractAndSeparateDubbingStems } = await loadDubbingService();
-      const stems = await extractAndSeparateDubbingStems(file, {
-          backendUrl: mediaBackendUrl,
-          preferBackendModel: settings.useModelSourceSeparation !== false,
-          onStatus: (message) => {
-              setProcessingStage(sanitizeUiText(message));
-              patchDubbingUiState({
-                  phase: 'running',
-                  stage: message,
-              });
-          },
-      });
-      const safeBaseName = (file.name || 'video')
-          .replace(/\.[^/.]+$/, '')
-          .replace(/[^a-z0-9_\-]+/gi, '_')
-          .slice(0, 48) || 'video';
-      const speechFile = new File([stems.speechStemBlob], `${safeBaseName}_speech_stem.wav`, { type: 'audio/wav' });
-      const speechObjectUrl = URL.createObjectURL(stems.speechStemBlob);
-      const backgroundObjectUrl = URL.createObjectURL(stems.backgroundStemBlob);
-
-      const nextCache: CachedDubbingStems = {
-          key,
-          speechFile,
-          backgroundBuffer: stems.backgroundStem,
-          speechObjectUrl,
-          backgroundObjectUrl,
-          duration: stems.duration,
-      };
-      dubbingStemsRef.current = nextCache;
-      return nextCache;
-  }, [clearDubbingStemCache, getVideoCacheKey, mediaBackendUrl, patchDubbingUiState, settings.useModelSourceSeparation]);
 
   const resolveVoiceCountry = useCallback((voice: VoiceOption): string => {
       if (voice.country && voice.country.trim()) return voice.country.trim();
@@ -3161,13 +2649,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       [isStudioWorkspaceTab, resolveTextLanguageCode, text]
   );
 
-  const dubbingTextLanguageCode = useMemo(
-      () => resolveTextLanguageCode(dubScript),
-      [dubScript, resolveTextLanguageCode]
-  );
-
-  const activeScriptLanguageCode =
-      false ? dubbingTextLanguageCode : studioTextLanguageCode;
+  const activeScriptLanguageCode = studioTextLanguageCode;
 
   const studioParsedScript = useMemo(
       () => (isStudioWorkspaceTab ? parseMultiSpeakerScript(text) : EMPTY_PARSED_STUDIO_SCRIPT),
@@ -3242,6 +2724,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   });
   const creditsActionState = useMemo(
     () => getStudioCreditsActionState({
+      billingCheckoutLocked: isBillingCheckoutLocked(),
       isAuthenticated: hasSessionIdentity,
       isBuyingTokenPack,
       isRedeemingCoupon,
@@ -3394,61 +2877,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setStudioRailTab('cast');
   }, []);
 
-  const dubbingStatusAppearance = useMemo(() => {
-      const darkTheme = resolvedTheme === 'dark';
-      if (dubbingUiState.phase === 'running') {
-          return {
-              badge: 'Generating',
-              tone: darkTheme
-                ? 'border-indigo-400/45 bg-indigo-500/12 text-indigo-200'
-                : 'border-indigo-200 bg-indigo-50 text-indigo-700',
-              bar: darkTheme ? 'bg-indigo-400' : 'bg-indigo-500',
-              title: 'Generating dub track',
-              subtitle: dubbingUiState.stage || 'Processing backend async generation pipeline.',
-              progressPct: Math.max(14, Math.min(94, Number(dubbingUiState.progress || 0))),
-          };
-      }
-      if (dubbingUiState.phase === 'error') {
-          return {
-              badge: 'Retry',
-              tone: darkTheme
-                ? 'border-rose-400/45 bg-rose-500/12 text-rose-200'
-                : 'border-red-200 bg-red-50 text-red-700',
-              bar: darkTheme ? 'bg-rose-400' : 'bg-red-500',
-              title: 'Could not generate dub',
-              subtitle: 'Please retry after checking your source media.',
-              progressPct: 100,
-          };
-      }
-      if (dubbingUiState.phase === 'done') {
-          return {
-              badge: 'Ready',
-              tone: darkTheme
-                ? 'border-emerald-400/45 bg-emerald-500/12 text-emerald-200'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-700',
-              bar: darkTheme ? 'bg-emerald-400' : 'bg-emerald-500',
-              title: 'Dub track is ready',
-              subtitle: dubbingUiState.stage || 'Preview, export, or continue editing your script.',
-              progressPct: 100,
-          };
-      }
-      return {
-          badge: 'Idle',
-          tone: darkTheme
-            ? 'border-slate-600 bg-slate-900/80 text-slate-200'
-            : 'border-gray-200 bg-gray-50 text-gray-600',
-          bar: darkTheme ? 'bg-slate-400' : 'bg-gray-300',
-          title: 'Ready for async generation',
-          subtitle: 'Upload source clips, select language, and press AI Dub.',
-          progressPct: 0,
-      };
-  }, [dubbingUiState.phase, dubbingUiState.progress, dubbingUiState.stage, resolvedTheme]);
-
   const refreshEngineVoiceCatalog = useCallback(
       async (engine: GenerationSettings['engine'], _runtimeUrl?: string): Promise<VoiceOption[]> => {
           try {
               const { fetchEngineRuntimeVoices } = await loadTtsVoiceRegistryService();
-              const voices = await fetchEngineRuntimeVoices(engine, mediaBackendUrl, 7000);
+              const voices = await fetchEngineRuntimeVoices(engine, studioApiBaseUrl, 7000);
               const normalizedVoices = voices.map((voice) => withVoiceMeta(voice, engine));
               const staticVoices = getStaticVoicesForEngine(engine);
               const mergedVoices = mergeVoiceCatalogs(normalizedVoices, staticVoices);
@@ -3460,30 +2893,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               return staticVoices;
           }
       },
-      [getStaticVoicesForEngine, mediaBackendUrl, mergeVoiceCatalogs, withVoiceMeta]
+      [getStaticVoicesForEngine, mergeVoiceCatalogs, studioApiBaseUrl, withVoiceMeta]
   );
-
-  const toRuntimeStatus = useCallback((
-      engine: GenerationSettings['engine'],
-      engineItem: any
-  ): EngineRuntimeStatus => {
-      void engine;
-    const mapped = mapGatewayEngineRuntimeToUiStatus(engineItem);
-    return {
-      state: mapped.state as EngineRuntimeState,
-      detail: sanitizeUiText(mapped.detail) || 'Runtime status updated.',
-      provider: cleanRuntimeMetadataField(mapped.provider),
-      lane: cleanRuntimeMetadataField(mapped.lane),
-      selectedRegion: cleanRuntimeMetadataField(mapped.selectedRegion),
-      modelId: cleanRuntimeMetadataField(mapped.modelId),
-      runtimeUrl: cleanRuntimeMetadataField(mapped.runtimeUrl),
-      healthUrl: cleanRuntimeMetadataField(mapped.healthUrl),
-      cloudTtsLocation: cleanRuntimeMetadataField(mapped.cloudTtsLocation),
-      vertexLocation: cleanRuntimeMetadataField(mapped.vertexLocation),
-      regionHint: cleanRuntimeMetadataField(mapped.regionHint),
-      regionSource: cleanRuntimeMetadataField(mapped.regionSource),
-    };
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -3506,162 +2917,117 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     }
   }, [managedActiveEngine, settings.engine, ttsRuntimeStatus]);
 
-  const probeRuntimeStatus = useCallback(async (
-    engine: GenerationSettings['engine'],
-    options?: { timeoutMs?: number; signal?: AbortSignal }
-  ): Promise<EngineRuntimeStatus> => {
-    throwIfSignalAborted(options?.signal);
-    try {
-      const payload = await fetchTtsEnginesStatus(engine, mediaBackendUrl, {
-        ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
-        ...(options?.signal ? { signal: options.signal } : {}),
-      });
-      throwIfSignalAborted(options?.signal);
-      const engineItem = payload.engines?.[engine];
-      return toRuntimeStatus(engine, engineItem);
-    } catch (error: unknown) {
-      if ((error as { name?: string } | null)?.name === 'AbortError') {
-        throw error;
-      }
-      const rawDetail = error instanceof Error ? error.message : 'Runtime offline';
-      const detail = sanitizeUiText(rawDetail || 'Runtime offline');
-      return { state: 'offline', detail };
-    }
-  }, [mediaBackendUrl, toRuntimeStatus]);
-
   const refreshTtsRuntimeStatus = useCallback(async (options?: { broadcast?: boolean }): Promise<void> => {
     if (runtimePollRefreshInFlightRef.current) {
       return runtimePollRefreshInFlightRef.current;
     }
     const selectedRuntimeEngine = managedActiveEngine || settings.engine;
-    const shouldBroadcast = options?.broadcast !== false;
     const idleDetail = `Idle (active: ${getEngineDisplayName(selectedRuntimeEngine)}). Switch to activate.`;
     const inFlight = (async () => {
-      const updateSelectedEngineTelemetry = (
-        engine: GenerationSettings['engine'],
-        updater: (current: SelectedEngineTelemetry) => SelectedEngineTelemetry
-      ) => {
-        if (engine !== selectedRuntimeEngine) return;
+      try {
+        const { fetchTtsEngineStatus } = await loadMediaBackendService();
+        const runtimePayload = await fetchTtsEngineStatus(studioApiBaseUrl, {
+          engine: 'all',
+          forceRefresh: Boolean(options?.broadcast),
+        });
+        const runtimeRows = runtimePayload?.engines && typeof runtimePayload.engines === 'object'
+          ? runtimePayload.engines
+          : {};
+
+        const mappedStatuses = ENGINE_ORDER.reduce((acc, engine) => {
+          const rawStatus = runtimeRows[engine];
+          if (rawStatus) {
+            acc[engine] = mapGatewayEngineRuntimeToUiStatus(rawStatus);
+          }
+          return acc;
+        }, {} as Partial<Record<ActiveTtsEngineKey, EngineRuntimeStatus>>);
+
+        const selectedStatus = mappedStatuses[selectedRuntimeEngine]
+          || ttsRuntimeStatusRef.current[selectedRuntimeEngine]
+          || {
+            state: engineSwitchInProgress === selectedRuntimeEngine ? 'starting' : 'checking',
+            detail: engineSwitchInProgress === selectedRuntimeEngine ? 'Starting runtime...' : 'Checking runtime status...',
+          };
+
         setSelectedEngineTelemetry((prev) => {
-          const current = prev[engine] ?? createSelectedEngineTelemetry();
+          const existing = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
           return {
             ...prev,
-            [engine]: updater(current),
+            [selectedRuntimeEngine]: {
+              ...existing,
+              kind: 'network',
+              label: 'Status',
+              detail: sanitizeUiText(selectedStatus.detail || 'Runtime status updated.') || 'Runtime status updated.',
+              latencyMs: null,
+              measuredAtMs: Date.now(),
+            },
           };
         });
-      };
-      const writeSelectedStatus = (
-        status: EngineRuntimeStatus,
-        otherDetail: string = idleDetail
-      ) => {
-        setTtsRuntimeStatus((prev) => {
-          const next = { ...prev };
-          next[selectedRuntimeEngine] = mergeRuntimeStatus(prev[selectedRuntimeEngine], status);
-          for (const engine of ENGINE_ORDER) {
-            if (engine === selectedRuntimeEngine) continue;
-            if (next[engine]?.state !== 'checking') continue;
-            next[engine] = mergeRuntimeStatus(next[engine], { state: 'standby', detail: otherDetail });
-          }
-          if (shouldBroadcast) {
-            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, {
-              activeEngine: selectedRuntimeEngine,
-              engines: next,
-            } satisfies RuntimePollSnapshotPayload);
-          }
-          return next;
-        });
-      };
 
-      const payload = await fetchTtsEngineLatency(selectedRuntimeEngine, mediaBackendUrl, {
-        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-      });
-      const status = toRuntimeStatus(selectedRuntimeEngine, payload);
-      const latencySampleMs = Number.isFinite(payload.gcpPingMs)
-        ? Math.max(1, Math.floor(Number(payload.gcpPingMs)))
-        : (Number.isFinite(payload.latencyMs) ? Math.max(1, Math.floor(payload.latencyMs)) : null);
-      updateSelectedEngineTelemetry(selectedRuntimeEngine, (current) => ({
-        ...current,
-        kind: 'network',
-        label: typeof latencySampleMs === 'number' ? `${latencySampleMs} ms` : 'Pending',
-        detail: sanitizeUiText(status.detail || 'Runtime status updated.') || 'Runtime status updated.',
-        latencyMs: latencySampleMs,
-        measuredAtMs: Date.now(),
-        samples: typeof latencySampleMs === 'number'
-          ? appendRollingSample(
-              current.samples,
-              latencySampleMs,
-              SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT
-            )
-          : current.samples,
-      }));
-      writeSelectedStatus(status);
-    })()
-      .catch((error) => {
-        runtimePollActiveUntilRef.current = Math.max(
-          runtimePollActiveUntilRef.current,
-          Date.now() + Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS * 3, 15000)
-        );
-        const safeDetail = sanitizeUiText(
-          error instanceof Error ? error.message : String(error || 'Runtime status unavailable')
-        ) || 'Runtime status unavailable';
-        const authBlocked = isAuthOrProfileBlockingMessage(safeDetail);
-        if (authBlocked) {
-          syncRuntimeBlockedStateFromError(managedActiveEngine || settings.engine, error);
-        }
-        if (selectedRuntimeEngine) {
-          setSelectedEngineTelemetry((prev) => {
-            const current = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
-            return {
-              ...prev,
-              [selectedRuntimeEngine]: {
-                ...current,
-                kind: 'error',
-                label: /timeout/i.test(safeDetail) ? 'Timed out' : 'Unavailable',
-                detail: safeDetail,
-                latencyMs: null,
-                measuredAtMs: Date.now(),
-              },
-            };
-          });
-        }
         setTtsRuntimeStatus((prev) => {
           const next = { ...prev };
-          const nextStatus: Partial<EngineRuntimeStatus> = authBlocked
-            ? { state: 'standby' as EngineRuntimeStatus['state'], detail: 'Sign in to check runtime status.' }
-            : { state: 'offline' as EngineRuntimeStatus['state'], detail: safeDetail };
-          next[selectedRuntimeEngine] = mergeRuntimeStatus(prev[selectedRuntimeEngine], nextStatus);
           for (const engine of ENGINE_ORDER) {
-            if (engine === selectedRuntimeEngine) continue;
-            if (next[engine]?.state !== 'checking') continue;
-            next[engine] = mergeRuntimeStatus(prev[engine], {
-              state: 'standby',
-              detail: !hasSessionIdentity || authBlocked ? 'Sign in to check runtime status.' : idleDetail,
-            });
-          }
-          if (shouldBroadcast) {
-            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, {
-              activeEngine: selectedRuntimeEngine,
-              engines: next,
-            } satisfies RuntimePollSnapshotPayload);
+            const mapped = mappedStatuses[engine];
+            if (mapped) {
+              next[engine] = mergeRuntimeStatus(prev[engine], mapped);
+              continue;
+            }
+            if (engine === selectedRuntimeEngine) {
+              next[engine] = mergeRuntimeStatus(prev[engine], selectedStatus);
+              continue;
+            }
+            next[engine] = mergeRuntimeStatus(prev[engine], { state: 'standby', detail: idleDetail });
           }
           return next;
         });
-        console.warn('[studio.runtime_status.refresh]', error);
-      })
-      .finally(() => {
+      } catch (error: any) {
+        const runtimeErrorDetail = sanitizeUiText(
+          toUserFriendlySystemMessage(error?.message || error, 'Runtime health check failed.')
+        ) || 'Runtime health check failed.';
+
+        setSelectedEngineTelemetry((prev) => {
+          const existing = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
+          return {
+            ...prev,
+            [selectedRuntimeEngine]: {
+              ...existing,
+              kind: 'error',
+              label: 'Status',
+              detail: runtimeErrorDetail,
+              latencyMs: null,
+              measuredAtMs: Date.now(),
+            },
+          };
+        });
+
+        setTtsRuntimeStatus((prev) => {
+          const next = { ...prev };
+          const currentSelected = prev[selectedRuntimeEngine];
+          next[selectedRuntimeEngine] = mergeRuntimeStatus(currentSelected, {
+            state: engineSwitchInProgress === selectedRuntimeEngine
+              ? 'starting'
+              : (currentSelected?.state === 'online' ? 'online' : 'offline'),
+            detail: runtimeErrorDetail,
+          });
+          for (const engine of ENGINE_ORDER) {
+            if (engine === selectedRuntimeEngine) continue;
+            if (next[engine]?.state !== 'checking') continue;
+            next[engine] = mergeRuntimeStatus(next[engine], { state: 'standby', detail: idleDetail });
+          }
+          return next;
+        });
+      }
+    })().finally(() => {
         runtimePollRefreshInFlightRef.current = null;
       });
     runtimePollRefreshInFlightRef.current = inFlight;
     return inFlight;
   }, [
-    hasSessionIdentity,
-    isAuthOrProfileBlockingMessage,
-    isStudioWorkspaceTab,
+    engineSwitchInProgress,
     managedActiveEngine,
-    mediaBackendUrl,
     settings.engine,
-    syncRuntimeBlockedStateFromError,
-    toRuntimeStatus,
+    studioApiBaseUrl,
+    toUserFriendlySystemMessage,
   ]);
 
   useEffect(() => {
@@ -3677,142 +3043,41 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     }
     if (hasRuntimeAutoSelectSessionRun()) return;
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    if (isGenerating || Boolean(engineSwitchInProgress)) return;
 
-    let cancelled = false;
-    const controller = new AbortController();
-    const probeGeneration = runtimeAutoSelectGenerationRef.current;
     runtimeAutoSelectProbeInFlightRef.current = true;
-    runtimeAutoSelectAbortControllerRef.current = controller;
-
-    const probeAllRuntimesAndAutoSelect = async (): Promise<void> => {
-      try {
-        const statusProbeStartedAtMs = Date.now();
-        const [statusResult] = await Promise.allSettled([
-          fetchTtsEnginesStatus(undefined, mediaBackendUrl, {
-            timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-            signal: controller.signal,
-          }).then((payload) => ({
-            payload,
-            latencyMs: Math.max(0, Date.now() - statusProbeStartedAtMs),
-          })),
-        ]);
-
-        if (cancelled) return;
-        if (runtimeAutoSelectGenerationRef.current !== probeGeneration) return;
-
-        const statusProbe = statusResult.status === 'fulfilled' ? statusResult.value : null;
-        const statusPayload = statusProbe?.payload || null;
-        const statusPayloadLatencyMs = statusProbe ? Math.max(0, Math.floor(statusProbe.latencyMs)) : null;
-        if (!statusPayload) return;
-
-        const nextStatuses = { ...ttsRuntimeStatusRef.current };
-        const candidateLatencies: Partial<Record<ActiveTtsEngineKey, { state?: string; latencyMs?: number | null }>> = {};
-
-        const enginePayloads = statusPayload?.engines || {};
-        for (const engine of ['PRIME', 'VECTOR'] as const) {
-          const payload = enginePayloads[engine];
-          if (!payload || typeof payload !== 'object') continue;
-          const runtimeStatus = toRuntimeStatus(engine, payload);
-          nextStatuses[engine] = mergeRuntimeStatus(nextStatuses[engine], runtimeStatus);
-          const runtimeLatencyMs = Number((payload as { latencyMs?: unknown }).latencyMs);
-          const latencyMs = (
-            Number.isFinite(runtimeLatencyMs) && runtimeLatencyMs >= 0
-              ? Math.floor(runtimeLatencyMs)
-              : (runtimeStatus.state === 'online' ? statusPayloadLatencyMs : null)
-          );
-          candidateLatencies[engine] = {
-            state: runtimeStatus.state,
-            latencyMs,
-          };
-        }
-
-        setTtsRuntimeStatus(nextStatuses);
-
-        if (!hasSessionIdentity) return;
-
-        const bestEngine = pickLowestLatencyRuntimeEngine(
-          candidateLatencies,
-          primeAllowedEngines
-        );
-        if (!bestEngine) return;
-        if (runtimeAutoSelectGenerationRef.current !== probeGeneration) return;
-
-        const currentEngine = managedActiveEngine || settings.engine;
-        markRuntimeAutoSelectSessionRun();
-        if (bestEngine === currentEngine) return;
-
-        const bestCatalog = getEngineVoiceCatalog(bestEngine);
-        const nextVoiceId = selectVoiceIdFromCatalog(bestEngine, bestCatalog, settings.voiceId);
-        setManagedActiveEngine(bestEngine);
-        setSettings((prev) => (
-          prev.engine === bestEngine && prev.voiceId === nextVoiceId
-            ? prev
-            : { ...prev, engine: bestEngine, voiceId: nextVoiceId }
-        ));
-      } catch (error) {
-        if ((error as { name?: string } | null)?.name === 'AbortError') return;
-        console.warn('[studio.runtime_auto_select]', error);
-      } finally {
-        if (runtimeAutoSelectAbortControllerRef.current === controller) {
-          runtimeAutoSelectAbortControllerRef.current = null;
-        }
-        if (runtimeAutoSelectGenerationRef.current === probeGeneration) {
-          runtimeAutoSelectProbeInFlightRef.current = false;
-        }
+    runtimeAutoSelectAbortControllerRef.current = null;
+    try {
+      const currentEngine = managedActiveEngine || settings.engine;
+      const targetEngine = isPrimeEngineAllowed(currentEngine)
+        ? currentEngine
+        : (isPrimeEngineAllowed('PRIME') ? 'PRIME' : 'VECTOR');
+      markRuntimeAutoSelectSessionRun();
+      if (targetEngine === currentEngine) {
+        return;
       }
-    };
-
-    void probeAllRuntimesAndAutoSelect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (runtimeAutoSelectAbortControllerRef.current === controller) {
-        runtimeAutoSelectAbortControllerRef.current = null;
-      }
-      if (runtimeAutoSelectGenerationRef.current === probeGeneration) {
-        runtimeAutoSelectProbeInFlightRef.current = false;
-      }
-    };
+      const targetCatalog = getEngineVoiceCatalog(targetEngine);
+      const targetVoiceId = selectVoiceIdFromCatalog(targetEngine, targetCatalog, settings.voiceId);
+      setManagedActiveEngine(targetEngine);
+      setSettings((prev) => (
+        prev.engine === targetEngine && prev.voiceId === targetVoiceId
+          ? prev
+          : { ...prev, engine: targetEngine, voiceId: targetVoiceId }
+      ));
+    } finally {
+      runtimeAutoSelectProbeInFlightRef.current = false;
+    }
   }, [
     cancelRuntimeAutoSelectProbe,
-    engineSwitchInProgress,
     getEngineVoiceCatalog,
     hasSessionIdentity,
-    isGenerating,
+    isPrimeEngineAllowed,
     managedActiveEngine,
-    mediaBackendUrl,
-    primeAllowedEngines,
-    probeRuntimeStatus,
     selectVoiceIdFromCatalog,
     setManagedActiveEngine,
     setSettings,
     settings.engine,
     settings.voiceId,
-    toRuntimeStatus,
   ]);
-
-  const waitForRuntimeOnline = async (
-    engine: GenerationSettings['engine'],
-    timeoutMs: number,
-    signal?: AbortSignal
-  ): Promise<boolean> => {
-    const started = Date.now();
-    let pollDelayMs = Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS, 2000);
-    const maxDelayMs = Math.max(RUNTIME_STATUS_COOLDOWN_POLL_MS / 6, 10000);
-    while (Date.now() - started < timeoutMs) {
-      throwIfSignalAborted(signal);
-      const status = await probeRuntimeStatus(engine, {
-        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-        ...(signal ? { signal } : {}),
-      });
-      if (status.state === 'online') return true;
-      await waitForAbortableDelay(pollDelayMs, signal);
-      pollDelayMs = Math.min(maxDelayMs, Math.round(pollDelayMs * 1.5));
-    }
-    throwIfSignalAborted(signal);
-    return false;
-  };
 
   const ensureEngineOnline = async (
       engine: GenerationSettings['engine'],
@@ -3829,56 +3094,42 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       throwIfSignalAborted(options?.signal);
       const engineLabel = getEngineDisplayName(engine);
-      const shouldWaitForOnline = options?.waitForOnline !== false;
       const shouldCommitSettings = options?.commitSettings !== false;
       if (!isPrimeEngineAllowed(engine)) {
           throw new Error(`${engineLabel} is not enabled for your current plan.`);
       }
       let runtimeUrl = getRuntimeUrlForEngine(engine);
-      try {
-          const statusPayload = await fetchTtsEnginesStatus(engine, mediaBackendUrl, {
-            timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-            ...(options?.signal ? { signal: options.signal } : {}),
-          });
-          const gatewayRuntimeUrl = normalizeRuntimeUrl(statusPayload.engines?.[engine]?.runtimeUrl);
-          if (gatewayRuntimeUrl) runtimeUrl = gatewayRuntimeUrl;
-      } catch (error) {
-          if ((error as { name?: string } | null)?.name === 'AbortError') {
-              throw error;
-          }
-          // Runtime URL is now gateway-managed; keep backward-compat fallback value if status call fails.
-      }
-
-      const currentStatus = await probeRuntimeStatus(engine, {
-        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-        ...(options?.signal ? { signal: options.signal } : {}),
-      });
-      if (
-          isGemRuntimeEngine(engine) &&
-          currentStatus.state === 'offline' &&
-          String(currentStatus.detail || '').toLowerCase().includes('slot')
-      ) {
-          throw new Error(currentStatus.detail || 'Primary AI slot set is not configured.');
-      }
-      if (currentStatus.state === 'offline' && isAuthOrProfileBlockingMessage(currentStatus.detail)) {
-          throw new Error(currentStatus.detail || 'Sign in again to enable AI/TTS requests.');
-      }
       if (options?.requireAccess) {
           const access = await refreshTtsAccessState(true);
           if (!access.ok) {
               throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
           }
       }
-      if (currentStatus.state === 'online') {
+      const currentStatus = ttsRuntimeStatusRef.current[engine];
+      const currentRuntimeUrl = normalizeRuntimeUrl(currentStatus?.runtimeUrl);
+      if (currentRuntimeUrl) {
+        runtimeUrl = currentRuntimeUrl;
+      }
+      const canReuseCurrentRuntime = Boolean(
+        !engineSwitchInProgress
+        && (managedActiveEngine === engine || settings.engine === engine)
+        && currentStatus
+        && currentStatus.state !== 'offline'
+        && currentStatus.state !== 'not_configured'
+      );
+      if (canReuseCurrentRuntime) {
           const cachedCatalog = runtimeVoiceCatalogs[engine] || [];
           const shouldRefreshCatalog = cachedCatalog.length === 0;
           const refreshedCatalog = shouldRefreshCatalog
-              ? await refreshEngineVoiceCatalog(engine, runtimeUrl)
+              ? await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(() => cachedCatalog)
               : cachedCatalog;
           setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
               const next = { ...prev };
-                next[engine] = mergeRuntimeStatus(next[engine], { state: 'online', detail: currentStatus.detail || 'Runtime online' });
+                next[engine] = mergeRuntimeStatus(next[engine], {
+                  state: currentStatus?.state || 'standby',
+                  detail: currentStatus?.detail || 'Runtime status checks are disabled in compatibility mode.',
+                });
               ENGINE_ORDER.forEach((other) => {
                   if (other === engine) return;
                   if (next[other].state === 'not_configured') return;
@@ -3904,7 +3155,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           return {
               runtimeUrl,
-              catalog: refreshedCatalog,
+              catalog: refreshedCatalog.length > 0 ? refreshedCatalog : getEngineVoiceCatalog(engine),
               ...(syncedVoiceId ? { syncedVoiceId } : {}),
           };
       }
@@ -3923,7 +3174,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           let switchResult;
           try {
               const { switchTtsEngineRuntime } = await loadMediaBackendService();
-              switchResult = await switchTtsEngineRuntime(mediaBackendUrl, engine);
+              switchResult = await switchTtsEngineRuntime(studioApiBaseUrl, engine);
           } catch (switchError: any) {
               const detail = String(switchError?.message || switchError || '').toLowerCase();
               if (
@@ -3931,38 +3182,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('admin-unlock') ||
                   detail.includes('admin session unlock')
               ) {
-                  const fallbackCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(() => getEngineVoiceCatalog(engine));
-                  const standbyDetail = `${engineLabel} runtime activation is admin-locked. Continuing with managed runtime auto-recovery.`;
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      [engine]: { state: 'standby', detail: standbyDetail },
-                  }));
-                  let syncedVoiceId: string | undefined;
-                   if (options?.syncVoiceId) {
-                       const candidateVoiceId = options.syncVoiceId || settings.voiceId;
-                       const validVoiceId = selectVoiceIdFromCatalog(
-                           engine,
-                           fallbackCatalog.length > 0 ? fallbackCatalog : getEngineVoiceCatalog(engine),
-                           candidateVoiceId
-                       );
-                       syncedVoiceId = validVoiceId;
-                       if (shouldCommitSettings) {
-                           setSettings((prev) => (
-                               prev.engine === engine && prev.voiceId === validVoiceId
-                                   ? prev
-                                   : { ...prev, engine, voiceId: validVoiceId }
-                           ));
-                       }
-                   }
-                  setManagedActiveEngine(engine);
-                  if (!options?.silent) {
-                       showToast(`${engineLabel} runtime switch is admin-locked. Continuing with auto-recovery.`, 'info');
-                   }
-                  return {
-                      runtimeUrl,
-                      catalog: fallbackCatalog,
-                      ...(syncedVoiceId ? { syncedVoiceId } : {}),
-                  };
+                  throw new Error(`${engineLabel} activation is restricted by backend policy.`);
               }
               if (
                   detail.includes('unreachable') ||
@@ -3971,7 +3191,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('networkerror') ||
                   detail.includes('econnrefused')
               ) {
-                  throw new Error(`Media backend is unreachable at ${mediaBackendUrl}. Check backend health and retry.`);
+                  throw new Error(`Studio control plane is unreachable at ${studioApiBaseUrl}. Check service health and retry.`);
               }
               throw new Error(switchError?.message || `Failed to switch ${engineLabel} runtime.`);
           }
@@ -3982,6 +3202,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
            }
           if (switchState === 'offline') {
               throw new Error(switchResult?.detail || getRuntimeOfflineMessage(engine));
+          }
+          const switchHealthUrl = normalizeRuntimeUrl(switchResult?.healthUrl);
+          if (switchHealthUrl) {
+            runtimeUrl = switchHealthUrl;
           }
           setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
@@ -3997,29 +3221,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                });
                return next;
            });
-
-           let runtimeOnline = switchState === 'online';
-           if (!runtimeOnline && shouldWaitForOnline) {
-               const timeoutMs = options?.timeoutMs ?? (switchResult?.state === 'starting' ? 90000 : 60000);
-               const online = await waitForRuntimeOnline(engine, timeoutMs, options?.signal);
-               if (!online) {
-                   setManagedActiveEngine(settings.engine);
-                   throw new Error(`${engineLabel} runtime did not become online within ${Math.round(timeoutMs / 1000)}s. Check gateway status and runtime logs.`);
-               }
-               runtimeOnline = true;
-           }
-
-           const refreshedCatalog =
-               runtimeOnline || shouldWaitForOnline
-                   ? await refreshEngineVoiceCatalog(engine, runtimeUrl)
-                   : (runtimeVoiceCatalogs[engine]?.length > 0
-                       ? runtimeVoiceCatalogs[engine]
-                       : getEngineVoiceCatalog(engine));
+           const refreshedCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(
+             () => (
+               runtimeVoiceCatalogs[engine]?.length > 0
+                 ? runtimeVoiceCatalogs[engine]
+                 : getEngineVoiceCatalog(engine)
+             )
+           );
+           const optimisticOnline = switchState === 'online';
            setTtsRuntimeStatus(prev => ({
              ...prev,
              [engine]: mergeRuntimeStatus(prev[engine], {
-               state: runtimeOnline ? 'online' : 'starting',
-               detail: runtimeOnline ? 'Runtime online' : (switchResult?.detail || 'Runtime starting in background'),
+              state: optimisticOnline ? 'online' : 'starting',
+              detail: optimisticOnline
+                ? 'Runtime online'
+                : (switchResult?.detail || 'Runtime activation requested. Continuing without status polling.'),
              }),
            }));
            let syncedVoiceId: string | undefined;
@@ -4038,8 +3254,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                    ));
                }
            }
-           if (!options?.silent && runtimeOnline) {
+           if (!options?.silent) {
+             if (optimisticOnline) {
                showToast(`${engineLabel} runtime is online.`, 'info');
+             } else {
+               showToast(`${engineLabel} activation requested. Continuing without runtime polling.`, 'info');
+             }
            }
            return {
                runtimeUrl,
@@ -4079,7 +3299,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setIsCheckingBackend(true);
       try {
           const { checkMediaBackendHealth } = await loadMediaBackendService();
-          const health = await checkMediaBackendHealth(mediaBackendUrl, { forceRefresh: Boolean(options?.forceRefresh) });
+          const health = await checkMediaBackendHealth(studioApiBaseUrl, { forceRefresh: Boolean(options?.forceRefresh) });
           const ffmpegMissing = !health.ffmpeg?.available;
           const whisperError = Boolean(health.whisper?.error);
           const hasSubsystemError = ffmpegMissing || whisperError;
@@ -4113,7 +3333,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- Effects ---
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiTheme, uiTheme); }, [uiTheme]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiBrandTheme, uiBrandTheme); }, [uiBrandTheme]);
-  useEffect(() => { writeStorageString(STORAGE_KEYS.uiDensity, uiDensity); }, [uiDensity]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.studioSidebarMode, sidebarMode); }, [sidebarMode]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiFontScale, String(uiFontScale)); }, [uiFontScale]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiMotionLevel, uiMotionLevel); }, [uiMotionLevel]);
@@ -4153,6 +3372,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [activeTab]);
   useEffect(() => {
       if (typeof window === 'undefined') return;
+      if (process.env.NODE_ENV !== 'development') return;
       const host = String(window.location.hostname || '').trim().toLowerCase();
       const isLocalHost = host === 'localhost' || host === '127.0.0.1';
       if (!isLocalHost) return;
@@ -4564,179 +3784,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           cancelled = true;
           startupProbeController.abort();
       };
-  }, [hasSessionIdentity, mapTtsAccessBlockReason, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
-
-  useEffect(() => {
-      const busy = isGenerating || Boolean(engineSwitchInProgress);
-      const now = Date.now();
-      if (busy) {
-          runtimePollActiveUntilRef.current = Math.max(
-            runtimePollActiveUntilRef.current,
-            now + RUNTIME_STATUS_ACTIVE_POLL_MS
-          );
-      } else if (runtimePollWasBusyRef.current) {
-          runtimePollCooldownUntilRef.current = Math.max(
-            runtimePollCooldownUntilRef.current,
-            now + RUNTIME_STATUS_COOLDOWN_WINDOW_MS
-          );
-      }
-      runtimePollWasBusyRef.current = busy;
-  }, [engineSwitchInProgress, isGenerating]);
+  }, [hasSessionIdentity, mapTtsAccessBlockReason, refreshTtsAccessState, user.uid, user.userId, user.email]);
 
   useEffect(() => {
       if (!isStudioWorkspaceTab) return undefined;
-      const tabId = runtimePollTabIdRef.current;
-      const coordinationAvailable = isRuntimePollCoordinationAvailable();
-      const busy = isGenerating || Boolean(engineSwitchInProgress);
-      const applySnapshot = () => {
-          if (!coordinationAvailable) return;
-          const snapshot = readRuntimePollSnapshot<RuntimePollSnapshotPayload>();
-          if (!snapshot || snapshot.tabId === tabId) return;
-          const payload = snapshot.payload;
-          const engineRows = payload?.engines;
-          if (!engineRows || typeof engineRows !== 'object') return;
-          if (!engineSwitchInProgress) {
-              const fallbackEngine = managedActiveEngine || settings.engine;
-              const snapshotActiveEngine = normalizeRuntimeSnapshotActiveEngine(payload.activeEngine, fallbackEngine);
-              setManagedActiveEngine(snapshotActiveEngine);
-          }
-          setTtsRuntimeStatus((prev) => {
-              const nextStatuses = {} as Record<ActiveTtsEngineKey, EngineRuntimeStatus>;
-              for (const engine of ENGINE_ORDER) {
-                  const row = engineRows[engine];
-                  nextStatuses[engine] = hydrateRuntimeStatusSnapshot(
-                    prev[engine],
-                    row && typeof row === 'object' ? (row as Partial<EngineRuntimeStatus>) : null
-                  );
-              }
-              return nextStatuses;
-          });
-      };
-      const refreshLeadership = () => {
-          const previous = runtimePollIsLeaderRef.current;
-          if (typeof document === 'undefined' || document.visibilityState !== 'visible' || !busy) {
-              if (coordinationAvailable) {
-                  releaseRuntimePollLeadership(tabId);
-              }
-              runtimePollIsLeaderRef.current = false;
-              if (previous) setRuntimePollLeaderVersion((value) => value + 1);
-              return;
-          }
-          const nextLeader = coordinationAvailable
-            ? renewRuntimePollLeadership(
-                tabId,
-                Date.now(),
-                RUNTIME_STATUS_LEADER_LEASE_MS
-              )
-            : true;
-          runtimePollIsLeaderRef.current = nextLeader;
-          if (previous !== nextLeader) {
-              setRuntimePollLeaderVersion((value) => value + 1);
-          }
-      };
-
-      refreshLeadership();
-      applySnapshot();
-      const heartbeatId = coordinationAvailable && busy
-        ? window.setInterval(refreshLeadership, RUNTIME_STATUS_LEADER_HEARTBEAT_MS)
-        : null;
-      const onStorage = (event: StorageEvent) => {
-          if (!coordinationAvailable) return;
-          if (event.key === RUNTIME_POLL_LEADER_KEY) {
-              refreshLeadership();
-              return;
-          }
-          if (event.key === RUNTIME_POLL_SNAPSHOT_KEY) {
-              applySnapshot();
-          }
-      };
       const onVisibility = () => {
-          refreshLeadership();
-          if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-          if (!runtimePollIsLeaderRef.current) {
-              applySnapshot();
-              return;
-          }
-          runtimePollCooldownUntilRef.current = Math.max(
-            runtimePollCooldownUntilRef.current,
-            Date.now() + RUNTIME_STATUS_COOLDOWN_POLL_MS
-          );
+          if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
           void refreshTtsRuntimeStatus();
       };
-      if (coordinationAvailable) {
-          window.addEventListener('storage', onStorage);
-      }
       document.addEventListener('visibilitychange', onVisibility);
-      window.addEventListener('focus', onVisibility);
-      onVisibility();
       return () => {
-          if (heartbeatId !== null) {
-              window.clearInterval(heartbeatId);
-          }
-          if (coordinationAvailable) {
-              window.removeEventListener('storage', onStorage);
-          }
           document.removeEventListener('visibilitychange', onVisibility);
-          window.removeEventListener('focus', onVisibility);
-          if (coordinationAvailable) {
-              releaseRuntimePollLeadership(tabId);
-          }
       };
-  }, [engineSwitchInProgress, isGenerating, isStudioWorkspaceTab, managedActiveEngine, refreshTtsRuntimeStatus, settings.engine]);
-
-  useEffect(() => {
-      if (!isStudioWorkspaceTab) return undefined;
-      let cancelled = false;
-      let timerId: number | null = null;
-
-      const scheduleNext = (delayMs: number) => {
-          if (cancelled) return;
-          if (timerId !== null) {
-              window.clearTimeout(timerId);
-              timerId = null;
-          }
-          if (delayMs <= 0) return;
-          timerId = window.setTimeout(() => {
-              void runTick();
-          }, delayMs);
-      };
-
-      const runTick = async () => {
-          if (cancelled) return;
-          const now = Date.now();
-          const isVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
-          const mode = resolveRuntimePollMode({
-              nowMs: now,
-              isBusy: isGenerating || Boolean(engineSwitchInProgress),
-              activeUntilMs: runtimePollActiveUntilRef.current,
-              cooldownUntilMs: runtimePollCooldownUntilRef.current,
-              isVisible,
-              isLeader: runtimePollIsLeaderRef.current,
-          });
-          if (mode === 'none') return;
-          try {
-              await refreshTtsRuntimeStatus();
-          } catch {
-              // Keep polling to preserve runtime indicator continuity during transient failures.
-          }
-          const nextDelay = mode === 'active' ? RUNTIME_STATUS_ACTIVE_POLL_MS : RUNTIME_STATUS_COOLDOWN_POLL_MS;
-          scheduleNext(nextDelay);
-      };
-
-      void runTick();
-      return () => {
-          cancelled = true;
-          if (timerId !== null) {
-              window.clearTimeout(timerId);
-          }
-      };
-  }, [
-      engineSwitchInProgress,
-      isGenerating,
-      isStudioWorkspaceTab,
-      runtimePollLeaderVersion,
-      refreshTtsRuntimeStatus,
-  ]);
+  }, [isStudioWorkspaceTab, refreshTtsRuntimeStatus]);
 
   useEffect(() => {
       if (!hasSessionIdentity) {
@@ -4905,13 +3965,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const activeRequestId = String(activeGatewayRequestIdRef.current || '').trim();
           if (detailRequestId) {
               if (activeRequestId && detailRequestId !== activeRequestId) return;
-              if (!activeRequestId) activeGatewayRequestIdRef.current = detailRequestId;
+              if (!activeRequestId) syncActiveGatewayIds(detailRequestId, activeGatewayJobIdRef.current);
           }
           const detailJobId = String(detail.jobId || '').trim();
           const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
           if (detailJobId) {
               if (activeJobId && detailJobId !== activeJobId) return;
-              if (!activeJobId) activeGatewayJobIdRef.current = detailJobId;
+              if (!activeJobId) syncActiveGatewayIds(activeGatewayRequestIdRef.current, detailJobId);
               if (activeQueueItem && String(activeQueueItem.jobId || '').trim() !== detailJobId) {
                   setStudioQueueState((prev) => {
                       if (!prev) return prev;
@@ -4935,6 +3995,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   });
               }
           }
+          const resolvedSessionId = String(
+              detailJobId
+              || activeGatewayJobIdRef.current
+              || detailRequestId
+              || activeGatewayRequestIdRef.current
+              || ''
+          ).trim();
+          if (!resolvedSessionId) return;
           const pct = Number(detail.progressPct || 0);
           const stage = String(detail.stage || '').trim();
           generationActivityAtRef.current = Date.now();
@@ -5040,12 +4108,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   disposeUnclaimedAudioUrl();
                   return;
               }
-              if (!activeRequestId) activeGatewayRequestIdRef.current = detailRequestId;
+              if (!activeRequestId) syncActiveGatewayIds(detailRequestId, activeGatewayJobIdRef.current);
           }
           const detailJobId = String(detail.jobId || '').trim();
           let activeJobId = String(activeGatewayJobIdRef.current || '').trim();
           if (!activeJobId && detailJobId) {
-              activeGatewayJobIdRef.current = detailJobId;
+              syncActiveGatewayIds(activeGatewayRequestIdRef.current, detailJobId);
               activeJobId = detailJobId;
               if (activeQueueItem && String(activeQueueItem.jobId || '').trim() !== detailJobId) {
                   setStudioQueueState((prev) => {
@@ -5070,7 +4138,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   });
               }
           }
-          if (!activeJobId) {
+          const resolvedSessionId = String(
+              detailJobId
+              || activeJobId
+              || detailRequestId
+              || activeGatewayRequestIdRef.current
+              || ''
+          ).trim();
+          if (!resolvedSessionId) {
               disposeUnclaimedAudioUrl();
               return;
           }
@@ -5078,8 +4153,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               disposeUnclaimedAudioUrl();
               return;
           }
-          const resolvedJobId = detailJobId || activeJobId;
-          const key = `${resolvedJobId}:${Math.round(index)}`;
+          const key = `${resolvedSessionId}:${Math.round(index)}`;
           if (seenLiveChunkKeysRef.current.has(key)) {
               disposeUnclaimedAudioUrl();
               return;
@@ -5097,7 +4171,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }
           }
           const nextChunk: LiveAudioChunkItem = {
-              jobId: resolvedJobId,
+              jobId: resolvedSessionId,
               index: Math.round(index),
               engine: (detailEngine || resolveEngineToken(settings.engine)) as GenerationSettings['engine'],
               contentType: String(detail.contentType || 'audio/wav'),
@@ -5185,20 +4259,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [showSettings]);
 
   useEffect(() => {
-      return () => {
-          if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
-          if (dubbingJobResultUrl) URL.revokeObjectURL(dubbingJobResultUrl);
-          if (dubbingReportUrl) URL.revokeObjectURL(dubbingReportUrl);
-          resetDubbingLivePlayback();
-          if (dubbingStemsRef.current) {
-              URL.revokeObjectURL(dubbingStemsRef.current.speechObjectUrl);
-              URL.revokeObjectURL(dubbingStemsRef.current.backgroundObjectUrl);
-              dubbingStemsRef.current = null;
-          }
-      };
-  }, [renderedDubVideoUrl, dubbingJobResultUrl, dubbingReportUrl, resetDubbingLivePlayback]);
-
-  useEffect(() => {
       if (typeof document === 'undefined') return undefined;
       return applyThemeModeToDocument(document, uiTheme, resolvedTheme);
   }, [uiTheme, resolvedTheme]);
@@ -5207,15 +4267,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (typeof document === 'undefined') return undefined;
       return applyBrandThemeToDocument(document, uiBrandTheme);
   }, [uiBrandTheme]);
-
-  useEffect(() => {
-      const previousCompact = document.body.dataset.compact;
-      document.body.dataset.compact = uiDensity === 'compact' ? 'true' : 'false';
-      return () => {
-          if (previousCompact) document.body.dataset.compact = previousCompact;
-          else delete document.body.dataset.compact;
-      };
-  }, [uiDensity]);
 
   useEffect(() => {
       if (typeof document === 'undefined') return undefined;
@@ -5346,7 +4397,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (observer) observer.disconnect();
           clearDockMetrics();
       };
-  }, [isLargeDesktop, isNarrowDesktop, isStudioEditorFullscreen, isStudioWorkspaceTab, sidebarMode, uiDensity, uiFontScale, viewportMode]);
+  }, [isLargeDesktop, isNarrowDesktop, isStudioEditorFullscreen, isStudioWorkspaceTab, sidebarMode, uiFontScale, viewportMode]);
 
   useEffect(() => {
       if (isChatOpen && chatEndRef.current) {
@@ -5366,7 +4417,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const cancelInflightTtsJobs = useCallback(() => {
       const jobIds = new Set<string>();
-      void cancelTtsSession({ baseUrl: mediaBackendUrl }).catch(() => undefined);
+      void cancelTtsSession({ baseUrl: studioApiBaseUrl }).catch(() => undefined);
       const activeGatewayJobId = String(activeGatewayJobIdRef.current || '').trim();
       if (activeGatewayJobId) {
           jobIds.add(activeGatewayJobId);
@@ -5381,9 +4432,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
       }
       for (const jobId of jobIds) {
-          void cancelTtsJob(jobId, { baseUrl: mediaBackendUrl }).catch(() => undefined);
+          void cancelTtsJob(jobId, { baseUrl: studioApiBaseUrl }).catch(() => undefined);
       }
-  }, [mediaBackendUrl]);
+  }, [studioApiBaseUrl]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -5414,10 +4465,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, []);
 
   const deferredAnalysisText = useDeferredValue(
-    isStudioWorkspaceTab ? text : (false ? dubScript : '')
+    isStudioWorkspaceTab ? text : ''
   );
 
-  // Auto-detect language and speakers in text (Studio Mode AND Dubbing Mode)
+  // Auto-detect language and speakers in text for the Studio editor.
   useEffect(() => {
     const textToAnalyze = deferredAnalysisText;
     if (!textToAnalyze.trim()) {
@@ -5457,97 +4508,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     };
   }, [activeTab, deferredAnalysisText, settings.language, syncCast]);
 
-  // Video Playback Sync
-  useEffect(() => {
-    const video = videoRef.current;
-    const audio = dubAudioRef.current;
-    
-    if (video && audio) {
-        const handlePlay = () => {
-            if (video.readyState >= 2 && audio.readyState >= 2) {
-                 video.play().catch(e => console.error("Video play fail", e));
-                 audio.play().catch(e => console.error("Audio play fail", e));
-                 setIsPlayingDub(true);
-            }
-        };
-        const handlePause = () => {
-            video.pause();
-            audio.pause();
-            setIsPlayingDub(false);
-        };
-        const handleSeek = () => {
-            const drift = Math.abs(audio.currentTime - video.currentTime);
-            if (drift > 0.1) {
-                audio.currentTime = video.currentTime;
-            }
-        };
-        const handleEnded = () => {
-            setIsPlayingDub(false);
-            video.currentTime = 0;
-            audio.currentTime = 0;
-            video.pause();
-            audio.pause();
-        };
-
-        video.addEventListener('play', handlePlay);
-        video.addEventListener('pause', handlePause);
-        video.addEventListener('seeking', handleSeek);
-        video.addEventListener('ended', handleEnded);
-        audio.addEventListener('ended', handleEnded);
-
-        return () => {
-            video.removeEventListener('play', handlePlay);
-            video.removeEventListener('pause', handlePause);
-            video.removeEventListener('seeking', handleSeek);
-            video.removeEventListener('ended', handleEnded);
-            audio.removeEventListener('ended', handleEnded);
-        };
-    }
-  }, [dubAudioUrl, videoUrl]);
-
-  useEffect(() => {
-      if (videoRef.current) {
-          applySafeMediaVolume(videoRef.current, videoVolume, {
-              fallback: 1,
-              context: 'studio_video',
-              onError: (error, info) => {
-                  void reportFrontendSignal({
-                      message: 'studio.media_volume_assignment_failed',
-                      component: 'MainApp',
-                      severity: 'warning',
-                      metadata: {
-                          channel: 'video',
-                          attemptedVolume: info.attemptedVolume,
-                          appliedFallback: info.appliedFallback,
-                          context: info.context,
-                          error: error instanceof Error ? error.message : String(error || 'unknown'),
-                      },
-                  });
-              },
-          });
-      }
-      if (dubAudioRef.current) {
-          applySafeMediaVolume(dubAudioRef.current, dubVolume, {
-              fallback: 1,
-              context: 'studio_dub',
-              onError: (error, info) => {
-                  void reportFrontendSignal({
-                      message: 'studio.media_volume_assignment_failed',
-                      component: 'MainApp',
-                      severity: 'warning',
-                      metadata: {
-                          channel: 'dub',
-                          attemptedVolume: info.attemptedVolume,
-                          appliedFallback: info.appliedFallback,
-                          context: info.context,
-                          error: error instanceof Error ? error.message : String(error || 'unknown'),
-                      },
-                  });
-              },
-          });
-      }
-  }, [videoVolume, dubVolume]);
-
   // --- Logic Functions ---
 
   const clearGenerationWatchdog = useCallback(() => {
@@ -5563,8 +4523,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       generationAbortReasonRef.current = 'stall';
       generationAbortController.current.abort();
       generationAbortController.current = null;
-      activeGatewayRequestIdRef.current = '';
-      activeGatewayJobIdRef.current = '';
+      syncActiveGatewayIds('', '');
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
       if (progressTimerRef.current) {
@@ -5874,7 +4833,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const normalizedQueueEngine = resolveEngineToken(item.settingsSnapshot.engine);
       const persistedRequestId = String(item.requestId || '').trim();
       const initialKnownJobId = String(item.jobId || '').trim();
-      const runRequestId = persistedRequestId || initialKnownJobId || createSynthesisTraceId(normalizedQueueEngine as GenerationSettings['engine']);
+      let runRequestId = persistedRequestId || initialKnownJobId || createSynthesisTraceId(normalizedQueueEngine as GenerationSettings['engine']);
       activeStudioQueueItemIdRef.current = item.id;
       syncActiveGatewayIds(runRequestId, initialKnownJobId);
       generationRunStartedAtRef.current = itemStartedAtMs;
@@ -5927,7 +4886,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (currentJobId) {
                       const { pollTtsGatewayJobForAudio } = await loadTtsGatewayJobService();
                       const queuedResult = await pollTtsGatewayJobForAudio({
-                          baseUrl: resolveMediaBackendUrl(runSettings),
+                          baseUrl: studioApiBaseUrl,
                           jobId: currentJobId,
                           runtimeLabel: getEngineDisplayName(normalizedQueueEngine as GenerationSettings['engine']),
                           engine: normalizedQueueEngine as GenerationSettings['engine'],
@@ -5965,9 +4924,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (staleJobId) {
                       try {
                           const { cancelTtsJob } = await import('../../shared/api/gatewayClient');
-                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(runSettings) });
+                          await cancelTtsJob(staleJobId, { baseUrl: studioApiBaseUrl });
                       } catch {
-                          // Best-effort cancellation before retrying with the same request id.
+                          // Best-effort cancellation before retrying the same request id.
                       }
                   }
                   currentJobId = '';
@@ -5978,13 +4937,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       if (!prev) return prev;
                       return {
                           ...prev,
-                           activeItemId: item.id,
-                           items: prev.items.map((entry) => (
-                               entry.id === item.id
-                                   ? { ...entry, status: 'running', error: undefined, requestId: runRequestId, jobId: undefined }
-                                   : entry
-                           )),
-                       };
+                          activeItemId: item.id,
+                          items: prev.items.map((entry) => (
+                              entry.id === item.id
+                                  ? { ...entry, status: 'running', error: undefined, requestId: runRequestId, jobId: undefined }
+                                  : entry
+                          )),
+                      };
                   });
                   setProcessingStage('Temporary delay detected. Retrying this queue item now...');
                   showToast('We hit a temporary delay. Retrying this queued item now.', 'info');
@@ -6061,8 +5020,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           throw error;
       } finally {
           delete queueItemTimingRef.current[item.id];
-          activeGatewayRequestIdRef.current = '';
-          activeGatewayJobIdRef.current = '';
+          syncActiveGatewayIds('', '');
       }
   }, [
       performGeneration,
@@ -6200,7 +5158,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       : `Queue ${computeStudioQueueMasterOrder(completedItems)}`,
                   timestamp: Date.now(),
               });
-              void loadHistory(30);
           }
           generationFailureBurstRef.current = 0;
           const queueTimingLabel = queueTotalGenerationMs > 0
@@ -6223,8 +5180,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           isStudioQueueRunActiveRef.current = false;
           clearStudioQueueCooldownTimer();
           generationAbortController.current = null;
-          activeGatewayRequestIdRef.current = '';
-          activeGatewayJobIdRef.current = '';
+          syncActiveGatewayIds('', '');
           activeStudioQueueItemIdRef.current = '';
           stopSimulation();
       }
@@ -6246,6 +5202,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ]);
 
   const startStudioQueuedGeneration = useCallback(async (): Promise<void> => {
+      if (queueRunnerLockRef.current || isStudioQueueRunActiveRef.current) return;
       const currentHash = hashStudioQueueSource(text);
       const existingState = studioQueueStateRef.current;
       const generationEngine = managedActiveEngine || settings.engine;
@@ -6297,6 +5254,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               };
           }
       }
+      const queueBudgetCheck = checkStudioQueueBudget({
+          items: nextState.items,
+          vfRate: currentEngineVfRate,
+          spendableBalance: currentEngineSpendable,
+          hasUnlimitedAccess,
+      });
+      if (!queueBudgetCheck.allowed && queueBudgetCheck.itemCount > 0) {
+          presentStudioBudgetBlock({
+              scopeLabel: queueBudgetCheck.itemCount > 1 ? `Queue run (${queueBudgetCheck.itemCount} parts)` : 'Queue run',
+              engine: generationEngine,
+              estimatedCost: queueBudgetCheck.estimatedCost,
+              shortfall: queueBudgetCheck.shortfall,
+          });
+          return;
+      }
 
       if (!hasResumableCurrentQueue) {
           await resetStudioQueueOutputState(true);
@@ -6304,8 +5276,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setStudioQueueState(nextState);
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
-      activeGatewayRequestIdRef.current = '';
-      activeGatewayJobIdRef.current = '';
+      syncActiveGatewayIds('', '');
       generationRunStartedAtRef.current = Date.now();
       generationFirstAudioAtRef.current = 0;
       setGenerationTiming(null);
@@ -6410,6 +5381,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               setStudioQueueState(currentState);
           }
       }
+      const resumeBudgetCheck = checkStudioQueueBudget({
+          items: currentState.items,
+          vfRate: currentEngineVfRate,
+          spendableBalance: currentEngineSpendable,
+          hasUnlimitedAccess,
+      });
+      if (!resumeBudgetCheck.allowed && resumeBudgetCheck.itemCount > 0) {
+          presentStudioBudgetBlock({
+              scopeLabel: resumeBudgetCheck.itemCount > 1 ? `Queue resume (${resumeBudgetCheck.itemCount} parts)` : 'Queue resume',
+              engine: managedActiveEngine || settings.engine,
+              estimatedCost: resumeBudgetCheck.estimatedCost,
+              shortfall: resumeBudgetCheck.shortfall,
+          });
+          return;
+      }
       startSimulation(Math.max(4, Math.ceil(text.length / 14)), 'Resuming queued generation...', 'live');
       try {
           await executeStudioQueue(currentState);
@@ -6468,21 +5454,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           generationAbortController.current?.abort();
           generationAbortController.current = null;
           setProcessingStage(sanitizeUiText('Cancelling generation...'));
-          const activeDubJobId = String(activeDubbingJobIdRef.current || '').trim();
-          if (activeDubJobId) {
-              void loadMediaBackendService()
-                .then(({ cancelDubbingJob }) => cancelDubbingJob(mediaBackendUrl, activeDubJobId))
-                .catch(() => undefined);
-          }
       } else {
           stopSimulation();
       }
 
       clearGenerationWatchdog();
-      activeGatewayRequestIdRef.current = '';
-      activeGatewayJobIdRef.current = '';
+      syncActiveGatewayIds('', '');
       clearSingleInflightGenerationLedger();
-      activeDubbingJobIdRef.current = '';
       cancelInflightTtsJobs();
       updateStudioQueueState((prev) => {
           if (!prev) return prev;
@@ -6558,6 +5536,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ...studioSettings,
           multiSpeakerEnabled: shouldUseMultiSpeakerForRun,
           voiceId,
+          geminiTtsServiceUrl: engineState.runtimeUrl || studioSettings.geminiTtsServiceUrl,
           runtimeVoiceCatalog: freshCatalog,
       } as GenerationSettings & { runtimeVoiceCatalog?: VoiceOption[] };
 
@@ -6632,15 +5611,35 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const generationEngine = managedActiveEngine || settings.engine;
       const generationRequestId = String(inflightLedger?.requestId || '').trim()
           || createSynthesisTraceId(resolveEngineToken(generationEngine) as GenerationSettings['engine']);
+      let activeRequestId = generationRequestId;
       let currentJobId = String(inflightLedger?.jobId || '').trim();
+      if (!currentJobId) {
+          const generationBudgetCheck = checkStudioGenerationBudget({
+              charCount: generationText.length,
+              vfRate: currentEngineVfRate,
+              spendableBalance: currentEngineSpendable,
+              hasUnlimitedAccess,
+          });
+          if (!generationBudgetCheck.allowed) {
+              generationAbortController.current = null;
+              singleRunLockRef.current = false;
+              presentStudioBudgetBlock({
+                  scopeLabel: options?.treatAsRecovery ? 'Recovered generation' : 'Generation',
+                  engine: generationEngine,
+                  estimatedCost: generationBudgetCheck.estimatedCost,
+                  shortfall: generationBudgetCheck.shortfall,
+              });
+              return;
+          }
+      }
       patchSingleInflightGenerationLedger({
           mode: 'single',
-          requestId: generationRequestId,
+          requestId: activeRequestId,
           jobId: currentJobId,
           textSnapshot: generationText,
           startedAtMs: generationStartedAtMs,
       });
-      syncActiveGatewayIds(generationRequestId, currentJobId);
+      syncActiveGatewayIds(activeRequestId, currentJobId);
 
       setGeneratedAudioUrlManaged(null);
       setLiveAudioChunks([]);
@@ -6670,7 +5669,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       const normalizedRunEngine = resolveEngineToken(runSettings.engine);
                       const { pollTtsGatewayJobForAudio } = await loadTtsGatewayJobService();
                       const queuedResult = await pollTtsGatewayJobForAudio({
-                          baseUrl: resolveMediaBackendUrl(runSettings),
+                          baseUrl: studioApiBaseUrl,
                           jobId: currentJobId,
                           runtimeLabel: getEngineDisplayName(normalizedRunEngine as GenerationSettings['engine']),
                           engine: normalizedRunEngine as GenerationSettings['engine'],
@@ -6701,7 +5700,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           generationText,
                           controller.signal,
                           undefined,
-                          { requestId: generationRequestId }
+                          { requestId: activeRequestId }
                       );
                   }
               } catch (attemptError: any) {
@@ -6716,16 +5715,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (staleJobId) {
                       try {
                           const { cancelTtsJob } = await import('../../shared/api/gatewayClient');
-                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(buildStudioGenerationSettings(settings)) });
+                          await cancelTtsJob(staleJobId, { baseUrl: studioApiBaseUrl });
                       } catch {
-                          // Best-effort cancellation before retrying with the same request id.
+                          // Best-effort cancellation before retrying the same request id.
                       }
                   }
                   currentJobId = '';
-                  syncActiveGatewayIds(generationRequestId, undefined);
+                  syncActiveGatewayIds(activeRequestId, undefined);
                   patchSingleInflightGenerationLedger({
                       mode: 'single',
-                      requestId: generationRequestId,
+                      requestId: activeRequestId,
                       jobId: '',
                       textSnapshot: generationText,
                       startedAtMs: generationStartedAtMs,
@@ -6767,7 +5766,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   : voiceNameDisplay,
               timestamp: Date.now(),
           });
-          void loadHistory(30);
 
           clearSingleInflightGenerationLedger();
           generationFailureBurstRef.current = 0;
@@ -6823,8 +5821,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           singleRunLockRef.current = false;
           stopSimulation();
           generationAbortController.current = null;
-          activeGatewayRequestIdRef.current = '';
-          activeGatewayJobIdRef.current = '';
+          syncActiveGatewayIds('', '');
           generationAbortReasonRef.current = '';
           generationRunStartedAtRef.current = 0;
           generationFirstAudioAtRef.current = 0;
@@ -6849,6 +5846,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerate = async () => {
     if (isGenerating || singleRunLockRef.current) return;
+    if (isStudioQueueRunActiveRef.current || queueRunnerLockRef.current) return;
     if (engineSwitchInProgress) {
       showToast('Wait for the engine switch to finish before generating.', 'info');
       return;
@@ -6859,8 +5857,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     }
     const inflightSingle = singleInflightLedgerRef.current;
     if (inflightSingle) {
+        if (!shouldResumeSingleGenerationFromLedger(text, inflightSingle)) {
+          clearSingleInflightGenerationLedger();
+        } else {
         await runSingleGeneration({ inflightLedger: inflightSingle, treatAsRecovery: true });
         return;
+        }
     }
     if (!text.trim()) return showToast("Please enter some text.", "info");
     const activeEngineForGeneration = managedActiveEngine || settings.engine;
@@ -6887,9 +5889,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await startStudioQueuedGeneration();
       return;
     }
-    if (isWalletBlocked && !canRunVectorWithoutWallet) {
-      showToast(`Insufficient ${getEngineDisplayName(activeEngineForGeneration)} VF balance. Open Billing to top up or upgrade.`, 'error');
-      openBillingCenter();
+    const singleBudgetCheck = checkStudioGenerationBudget({
+      charCount: text.length,
+      vfRate: currentEngineVfRate,
+      spendableBalance: currentEngineSpendable,
+      hasUnlimitedAccess,
+    });
+    if (!singleBudgetCheck.allowed) {
+      presentStudioBudgetBlock({
+        scopeLabel: 'Generation',
+        engine: activeEngineForGeneration,
+        estimatedCost: singleBudgetCheck.estimatedCost,
+        shortfall: singleBudgetCheck.shortfall,
+      });
       return;
     }
     await runSingleGeneration();
@@ -6903,6 +5915,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const inflightSingle = singleInflightLedgerRef.current;
       if (!inflightSingle) return;
       if (!hasRecoverableSingleInflightGenerationState(inflightSingle)) return;
+      if (!shouldResumeSingleGenerationFromLedger(text, inflightSingle)) {
+          clearSingleInflightGenerationLedger();
+          return;
+      }
       const inflightStartedAtMs = Number(inflightSingle.startedAtMs || 0);
       if (
           Number.isFinite(inflightStartedAtMs)
@@ -6971,11 +5987,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const resolveVoicePreviewUrl = useCallback((voice?: VoiceOption): string => {
       const raw = String(voice?.previewUrl || '').trim();
       if (!raw) return '';
-      if (/^(?:https?:|blob:|data:)/i.test(raw)) return raw;
-      const base = String(mediaBackendUrl || '').trim().replace(/\/+$/, '');
-      if (!base) return raw;
-      return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
-  }, [mediaBackendUrl]);
+      return raw;
+  }, []);
 
   const resolveClonedVoicePlaybackUrl = useCallback((voice?: VoiceOption): string => {
       if (!voice) return '';
@@ -7038,6 +6051,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           voiceId: normalizedVoiceId,
           speed: 1.0,
           emotion: 'Neutral',
+          geminiTtsServiceUrl: normalizeRuntimeUrl(
+            ttsRuntimeStatusRef.current[normalizedEngine]?.runtimeUrl
+          ) || settings.geminiTtsServiceUrl,
       };
 
       const text = `Hello! I am ${normalizedName || 'the speaker'}. I can bring your story to life.`;
@@ -7156,689 +6172,38 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await playVoiceSample(char.voiceId, char.name, engine);
   };
 
-  // --- Video Dubbing Functions ---
 
-  const releaseClipArtifacts = useCallback((clip: DubbingClip | null | undefined) => {
-      if (!clip) return;
-      try { if (clip.objectUrl) URL.revokeObjectURL(clip.objectUrl); } catch {}
-      try { if (clip.resultUrl) URL.revokeObjectURL(String(clip.resultUrl)); } catch {}
-      try { if (clip.reportUrl) URL.revokeObjectURL(String(clip.reportUrl)); } catch {}
-  }, []);
 
-  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files || []).filter((file) => Boolean(file));
-      if (files.length <= 0) return;
-      clearDubbingStemCache();
-      const nextClips: DubbingClip[] = [];
-      for (const file of files) {
-          const objectUrl = URL.createObjectURL(file);
-          const durationMs = await resolveClipDurationMs(file);
-          nextClips.push(createDubbingClip(file, objectUrl, durationMs));
-      }
-      mutateDubbingTimeline((current) => [...current, ...nextClips]);
-      const firstAdded = nextClips[0];
-      if (firstAdded) {
-          setSelectedDubbingClipId(firstAdded.id);
-          patchDubbingUiState({
-              phase: 'idle',
-              progress: 0,
-              stage: `Loaded ${nextClips.length} source clip${nextClips.length === 1 ? '' : 's'}`,
-              error: '',
-          });
-      }
-      e.target.value = '';
-  };
-
-  const handleRetryClip = useCallback((clipId: string) => {
-      setDubbingClips((current) =>
-          current.map((clip) =>
-              clip.id === clipId
-                  ? { ...clip, status: 'idle', error: '', jobId: '', resultUrl: null, reportUrl: null }
-                  : clip
-          )
-      );
-  }, []);
-
-  const handleRemoveClipFromQueue = useCallback(
-      async (clipId: string, options?: { skipHistory?: boolean }) => {
-          const clip = dubbingClips.find((item) => item.id === clipId) || null;
-          if (!clip) return;
-          const { removeClip } = await loadDubbingTimelineService();
-          const jobId = String(clip.jobId || '').trim();
-          if (jobId) {
-              try {
-                  const { cancelDubbingJob } = await loadMediaBackendService();
-                  await cancelDubbingJob(mediaBackendUrl, jobId);
-              } catch {
-                  // best effort cancel
-              }
-          }
-          releaseClipArtifacts(clip);
-          if (options?.skipHistory) {
-              setDubbingClips((current) => removeClip(current, clipId).clips);
-          } else {
-              mutateDubbingTimeline((current) => removeClip(current, clipId).clips);
-          }
-      },
-      [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]
-  );
-
-  const handleRemoveSelectedClip = useCallback(async () => {
-      if (!selectedDubbingClipId) return;
-      await handleRemoveClipFromQueue(selectedDubbingClipId);
-  }, [handleRemoveClipFromQueue, selectedDubbingClipId]);
-
-  const handleRemoveCompletedQueue = useCallback(async () => {
-      const completed = dubbingClips.filter((clip) => clip.status === 'completed');
-      const { removeCompletedClips } = await loadDubbingTimelineService();
-      completed.forEach((clip) => releaseClipArtifacts(clip));
-      mutateDubbingTimeline((current) => removeCompletedClips(current));
-  }, [dubbingClips, mutateDubbingTimeline, releaseClipArtifacts]);
-
-  const handleClearDubbingQueue = useCallback(async () => {
-      const { clearAllClips } = await loadDubbingTimelineService();
-      for (const clip of dubbingClips) {
-          const jobId = String(clip.jobId || '').trim();
-          if (jobId) {
-              try {
-                  const { cancelDubbingJob } = await loadMediaBackendService();
-                  await cancelDubbingJob(mediaBackendUrl, jobId);
-              } catch {}
-          }
-          releaseClipArtifacts(clip);
-      }
-      mutateDubbingTimeline(() => clearAllClips());
-      setSelectedDubbingClipId('');
-      patchDubbingUiState({
-          phase: 'idle',
-          progress: 0,
-          stage: 'Queue cleared',
-          error: '',
-      });
-  }, [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]);
-
-  const handleTimelineUndo = useCallback(async () => {
-      const { undoTimeline } = await loadDubbingTimelineService();
-      setDubbingHistoryPast((past) => {
-          const undone = undoTimeline(past, dubbingClips, dubbingHistoryFuture);
-          if (undone.changed) {
-              setDubbingClips(undone.current);
-              setDubbingHistoryFuture(undone.future);
-          }
-          return undone.past;
-      });
-  }, [dubbingClips, dubbingHistoryFuture]);
-
-  const handleTimelineRedo = useCallback(async () => {
-      const { redoTimeline } = await loadDubbingTimelineService();
-      setDubbingHistoryFuture((future) => {
-          const redone = redoTimeline(dubbingHistoryPast, dubbingClips, future);
-          if (redone.changed) {
-              setDubbingClips(redone.current);
-              setDubbingHistoryPast(redone.past);
-          }
-          return redone.future;
-      });
-  }, [dubbingClips, dubbingHistoryPast]);
-
-  const handleDubbingTimelineTool = useCallback(async (tool: 'cut' | 'copy' | 'paste' | 'split' | 'trim_in' | 'trim_out' | 'layer' | 'remove') => {
-      if (!selectedDubbingClipId) {
-          showToast('Select a clip first.', 'info');
-          return;
-      }
-      const timelineService = await loadDubbingTimelineService();
-      if (tool === 'copy') {
-          const copied = timelineService.copyClip(dubbingClips, selectedDubbingClipId);
-          if (!copied) {
-              showToast('Unable to copy selected clip.', 'error');
-              return;
-          }
-          setDubbingClipboard(copied);
-          showToast('Clip copied.', 'success');
-          return;
-      }
-      if (tool === 'paste') {
-          let pastedAny = false;
-          mutateDubbingTimeline((current) => {
-              const pasted = timelineService.pasteClipAfterSelection(current, selectedDubbingClipId, dubbingClipboard);
-              pastedAny = Boolean(pasted.pastedId);
-              if (pasted.pastedId) setSelectedDubbingClipId(String(pasted.pastedId));
-              return pasted.clips;
-          });
-          showToast(pastedAny ? 'Clip pasted.' : 'Clipboard is empty.', pastedAny ? 'success' : 'info');
-          return;
-      }
-      if (tool === 'cut') {
-          mutateDubbingTimeline((current) => timelineService.cutClip(current, selectedDubbingClipId).clips);
-          showToast('Clip cut from timeline.', 'success');
-          return;
-      }
-      if (tool === 'split') {
-          let didSplit = false;
-          mutateDubbingTimeline((current) => {
-              const split = timelineService.splitClipAtPlayhead(current, selectedDubbingClipId, dubbingPlayheadMs);
-              didSplit = Boolean(split.splitIds);
-              if (split.splitIds?.[1]) setSelectedDubbingClipId(String(split.splitIds[1]));
-              return split.clips;
-          });
-          showToast(
-              didSplit ? 'Clip split at playhead.' : 'Move playhead inside clip window to split.',
-              didSplit ? 'success' : 'info'
-          );
-          return;
-      }
-      if (tool === 'trim_in') {
-          mutateDubbingTimeline((current) =>
-              timelineService.trimClipWindow(current, selectedDubbingClipId, { trimInMs: Math.max(0, dubbingPlayheadMs) })
-          );
-          showToast('Trim-in updated.', 'success');
-          return;
-      }
-      if (tool === 'trim_out') {
-          mutateDubbingTimeline((current) =>
-              timelineService.trimClipWindow(current, selectedDubbingClipId, { trimOutMs: Math.max(0, dubbingPlayheadMs) })
-          );
-          showToast('Trim-out updated.', 'success');
-          return;
-      }
-      if (tool === 'layer') {
-          const target = dubbingClips.find((clip) => clip.id === selectedDubbingClipId);
-          const nextLayer: DubbingClip['layer'] = target?.layer === 'V2' ? 'V1' : 'V2';
-          mutateDubbingTimeline((current) => timelineService.moveClipLayer(current, selectedDubbingClipId, nextLayer));
-          showToast(`Moved clip to Layer ${nextLayer}.`, 'success');
-          return;
-      }
-      void handleRemoveSelectedClip();
-      showToast('Clip removed.', 'success');
-  }, [
-      dubbingClips,
-      dubbingClipboard,
-      dubbingPlayheadMs,
-      handleRemoveSelectedClip,
-      mutateDubbingTimeline,
-      selectedDubbingClipId,
-      showToast,
-  ]);
-
-  const handleTranslateVideo = async (mode: 'transcribe' | 'translate' = 'transcribe') => {
-      if (!videoFile) return showToast("Upload a video first", "info");
-      setIsProcessingVideo(true);
-      patchDubbingUiState({
-          phase: 'running',
-          progress: 8,
-          stage: 'Extracting dialogue stems...',
-          error: '',
-      });
-      try {
-          setProcessingStage(sanitizeUiText('Extracting audio and separating dialogue/bed...'));
-          const stemCache = await ensureDubbingStemCache(videoFile);
-          patchDubbingUiState({
-              phase: 'running',
-              progress: 24,
-              stage: 'Transcribing source audio...',
-              error: '',
-          });
-
-          const task = mode === 'translate' && targetLang === 'English' ? 'translate' : 'transcribe';
-          const { transcribeVideoWithBackend } = await loadMediaBackendService();
-          const backendResult = await transcribeVideoWithBackend(mediaBackendUrl, stemCache.speechFile, {
-              language: settings.dubbingSourceLanguage || 'auto',
-              task,
-              captureEmotions: true,
-              speakerLabel: 'Speaker 1',
-          });
-
-          let nextScript = backendResult.script;
-          if (mode === 'translate' && targetLang !== 'English') {
-              setProcessingStage(sanitizeUiText(`Translating script to ${targetLang}...`));
-              patchDubbingUiState({
-                  phase: 'running',
-                  progress: 62,
-                  stage: `Translating to ${targetLang}...`,
-                  error: '',
-              });
-              const { translateText } = await loadGeminiService();
-              nextScript = await translateText(backendResult.script, targetLang, settings);
-          }
-
-          setDubScript(nextScript);
-          const discoveredSpeakers = Array.from(new Set((backendResult.segments || []).map((seg) => String(seg.speaker || '').trim()).filter(Boolean)));
-          if (discoveredSpeakers.length > 0) {
-              setDetectedSpeakers(discoveredSpeakers);
-              syncCast(discoveredSpeakers);
-          }
-          const lineCount = Array.isArray(backendResult.segments) ? backendResult.segments.length : 0;
-          const emotionState = backendResult.emotionCapture?.enabled ? 'emotion captured' : 'emotion fallback';
-          showToast(
-              mode === 'translate'
-                  ? `Dubbing script ready (${lineCount} segments, ${emotionState}).`
-                  : `Transcription complete (${lineCount} segments, ${emotionState}).`,
-              "success"
-          );
-          patchDubbingUiState({
-              phase: 'done',
-              progress: 100,
-              stage: mode === 'translate' ? `Script translated to ${targetLang}` : 'Transcription complete',
-              error: '',
-          });
-      } catch (e: any) {
-          try {
-              const lang = mode === 'translate' ? targetLang : 'Original';
-              const { translateVideoContent } = await loadGeminiService();
-              const fallback = await translateVideoContent(videoFile, lang, settings);
-              setDubScript(fallback);
-              showToast('Used fallback transcription path.', 'info');
-              patchDubbingUiState({
-                  phase: 'done',
-                  progress: 100,
-                  stage: 'Fallback transcription complete',
-                  error: '',
-              });
-          } catch (fallbackError: any) {
-              const message = fallbackError?.message || e?.message || 'Video processing failed.';
-              patchDubbingUiState({
-                  phase: 'error',
-                  progress: 100,
-                  stage: 'Transcription failed',
-                  error: message,
-              });
-              showToast(fallbackError?.message || e?.message || 'Video processing failed.', 'error');
-          }
-      } finally {
-          setIsProcessingVideo(false);
-      }
-  };
-
-  const handleDubbingEditorTool = (mode: 'clean' | 'speakerize' | 'dedupe' | 'compact') => {
-      const nextValue = runDubbingEditorTool(dubScript, mode);
-      if (!nextValue) {
-          showToast('Editor tool produced empty output. Script unchanged.', 'info');
-          return;
-      }
-      setDubScript(nextValue);
-      const labels: Record<typeof mode, string> = {
-          clean: 'Cleaned script spacing and punctuation.',
-          speakerize: 'Applied "[Speaker Name]:" tags to dialogue lines.',
-          dedupe: 'Removed duplicate consecutive lines.',
-          compact: 'Compacted script to non-empty lines.',
-      };
-      showToast(labels[mode], 'success');
-  };
-
-  const handleGenerateDub = async () => {
-      if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
-      const activeEngineForDubbing = managedActiveEngine || settings.engine;
-      if (isWalletBlocked && !canRunVectorWithoutWallet) {
-          showToast(`Insufficient ${getEngineDisplayName(activeEngineForDubbing)} VF balance. Open Billing to top up or upgrade.`, 'error');
-          openBillingCenter();
-          return;
-      }
-
-      if (generationAbortController.current) generationAbortController.current.abort();
-      const controller = new AbortController();
-      generationAbortController.current = controller;
-      activeDubbingJobIdRef.current = '';
-      if (dubbingJobResultUrl) {
-          URL.revokeObjectURL(dubbingJobResultUrl);
-          setDubbingJobResultUrl(null);
-      }
-      if (dubbingReportUrl) {
-          URL.revokeObjectURL(dubbingReportUrl);
-          setDubbingReportUrl(null);
-      }
-      if (renderedDubVideoUrl) {
-          URL.revokeObjectURL(renderedDubVideoUrl);
-          setRenderedDubVideoUrl(null);
-      }
-      if (dubAudioUrl) {
-          URL.revokeObjectURL(dubAudioUrl);
-          setDubAudioUrl(null);
-      }
-
-      const phaseLabels: Record<string, string> = {
-          acoustic_isolation: 'Phase 1/6: Acoustic isolation',
-          speaker_segmentation: 'Phase 2/6: Speaker segmentation',
-          translation: 'Phase 3/6: Segment translation',
-          tts: 'Phase 4/6: PRIME TTS',
-          voice_transfer: 'Phase 5/6: Voice transfer',
-          video_lipsync: 'Phase 6/6: Video lip-sync',
-          preflight: 'Preflight checks',
-          queued: 'Queued',
-      };
-      const {
-        transcribeVideoWithBackend,
-        createDubbingJobV2,
-        getDubbingJob,
-        downloadDubbingChunk,
-        downloadDubbingResult,
-        downloadDubbingReport,
-      } = await loadMediaBackendService();
-
-      resetDubbingLivePlayback();
-      const generationNotificationKey = `async-job:${activeEngineForDubbing}`;
-      startSimulation(26, 'Submitting backend async job...', 'live');
-      patchDubbingUiState({
-          phase: 'running',
-          progress: 6,
-          stage: 'Queue started (CPU sequential mode)',
-          error: '',
-      });
-      emit('generation.started', {
-          title: 'Generation Started',
-          message: 'Generation started for async queue workflow.',
-          entityKey: generationNotificationKey,
-          dedupeKey: `generation-started-async:${activeEngineForDubbing}`,
-          channel: 'inbox',
-      });
-
-      const queue = dubbingClips.filter((clip) => clip.status !== 'completed');
-      if (queue.length <= 0) {
-          patchDubbingUiState({
-              phase: 'done',
-              progress: 100,
-              stage: 'All clips already completed',
-              error: '',
-          });
-          stopSimulation();
-          generationAbortController.current = null;
-          return;
-      }
-
-      try {
-          const targetLanguageHint =
-              targetLang === 'Hinglish'
-                  ? 'hi'
-                  : (String(targetLang || settings.language || 'auto').toLowerCase() || 'auto');
-          let completedCount = 0;
-          for (let index = 0; index < queue.length; index += 1) {
-              if (controller.signal.aborted) break;
-              const clip = queue[index];
-              if (!clip) continue;
-              try {
-                  setSelectedDubbingClipId(clip.id);
-                  setDubbingClips((current) =>
-                      current.map((item) => (item.id === clip.id ? { ...item, status: 'running', error: '' } : item))
-                  );
-                  patchDubbingUiState({
-                      phase: 'running',
-                      progress: Math.max(8, Math.round((index / Math.max(1, queue.length)) * 92)),
-                      stage: `Processing clip ${index + 1}/${queue.length}: ${clip.file.name}`,
-                      error: '',
-                  });
-
-                  let resolvedScript = String(clip.script || '').trim();
-                  if (!resolvedScript) {
-                      setDubbingClips((current) =>
-                          current.map((item) => (item.id === clip.id ? { ...item, status: 'transcribing', error: '' } : item))
-                      );
-                      const transcribeResult = await transcribeVideoWithBackend(mediaBackendUrl, clip.file, {
-                          language: settings.dubbingSourceLanguage || 'auto',
-                          task: 'transcribe',
-                          captureEmotions: true,
-                          speakerLabel: 'Speaker 1',
-                      });
-                      resolvedScript = String(transcribeResult.script || '').trim();
-                      setDubbingClips((current) =>
-                          current.map((item) =>
-                              item.id === clip.id ? { ...item, script: resolvedScript, status: 'queued', error: '' } : item
-                          )
-                      );
-                      if (selectedDubbingClipId === clip.id) setDubScript(resolvedScript);
-                  }
-                  if (!resolvedScript) {
-                      throw new Error(`Clip ${clip.file.name} has empty script after transcription.`);
-                  }
-
-                  const advancedPayload: Record<string, unknown> = {
-                      processing_profile: dubbingCpuProfile,
-                      tts_route: 'gem_only',
-                      engine_policy: 'auto_reliable',
-                      multispeaker_policy: 'hybrid_auto',
-                      voice_binding_policy: 'stable_fallback',
-                      qos_policy: 'adaptive_hq_first',
-                      hardware_policy: 'gpu_preferred',
-                      timeout_policy: 'adaptive',
-                      source_language_mode: 'auto_per_segment',
-                      language_coverage_profile: 'core12',
-                      live_play_mode: 'progressive_audio',
-                      live_chunk_target_ms: 3000,
-                      live_include_chunk_audio: false,
-                      max_speaker_count: 8,
-                      segment_failure_policy: 'hard_fail',
-                      clone_scope: 'job_only',
-                      transcript_override: resolvedScript,
-                      clip_window: { start_ms: Math.max(0, clip.trimInMs), end_ms: Math.max(clip.trimInMs + 240, clip.trimOutMs) },
-                      voice_map: settings.speakerMapping || {},
-                      preserve_voice_tone: Boolean(settings.preserveDubVoiceTone),
-                  };
-                  advancedPayload.voice_model = settings.voiceModel;
-
-                  const created = await createDubbingJobV2(mediaBackendUrl, clip.file, {
-                      targetLanguage: targetLanguageHint,
-                      mode: 'strict_full',
-                      output: 'audio+video',
-                      advanced: advancedPayload,
-                  });
-                  const jobId = String(created.job_id || '').trim();
-                  if (!jobId) throw new Error('Backend did not return an async job id.');
-                  activeDubbingJobIdRef.current = jobId;
-                  setDubbingClips((current) =>
-                      current.map((item) => (item.id === clip.id ? { ...item, status: 'running', jobId, error: '' } : item))
-                  );
-                  dubbingLiveChunkCursorRef.current = 0;
-                  dubbingLiveSeenChunkKeysRef.current = new Set();
-
-                  while (!controller.signal.aborted) {
-                      const statusPayload = await getDubbingJob(mediaBackendUrl, jobId, {
-                          includeChunks: true,
-                          chunkCursor: Math.max(0, Math.floor(Number(dubbingLiveChunkCursorRef.current || 0))),
-                          chunkLimit: 4,
-                          includeChunkAudio: false,
-                      });
-                      const job = statusPayload?.job || {};
-                      const jobStatus = String(job.status || '').toLowerCase();
-                      const stageKey = String(job.stage || '').trim();
-                      const progressPct = Math.max(0, Math.min(100, Number(job.progress || 0)));
-                      const stageLabel = phaseLabels[stageKey] || (stageKey ? stageKey.replace(/_/g, ' ') : 'Running backend pipeline');
-                      const chunks = Array.isArray((job as any).chunks) ? (job as any).chunks : [];
-                      const speakerStats = ((job as any).speakerStats && typeof (job as any).speakerStats === 'object')
-                          ? (job as any).speakerStats as Record<string, unknown>
-                          : {};
-                      const qosState = ((job as any).qosState && typeof (job as any).qosState === 'object')
-                          ? (job as any).qosState as Record<string, unknown>
-                          : {};
-                      const detectedSpeakers = Number(speakerStats.detectedSpeakers || 0);
-                      const selectedProfile = String(qosState.selectedProfile || '').trim();
-
-                      for (const chunk of chunks) {
-                          if (!chunk || typeof chunk !== 'object') continue;
-                          const chunkIndex = Number((chunk as any).index);
-                          if (!Number.isFinite(chunkIndex) || chunkIndex < 0) continue;
-                          const safeIndex = Math.round(chunkIndex);
-                          const chunkKey = `${jobId}:${safeIndex}`;
-                          if (dubbingLiveSeenChunkKeysRef.current.has(chunkKey)) continue;
-
-                          try {
-                              const chunkBlob = await downloadDubbingChunk(mediaBackendUrl, jobId, safeIndex);
-                              if (chunkBlob.size > 0) {
-                                  enqueueDubbingLiveChunk(chunkBlob);
-                                  dubbingLiveSeenChunkKeysRef.current.add(chunkKey);
-                              }
-                          } catch {
-                              const inlineBase64 = String((chunk as any).audioBase64 || '').trim();
-                              if (!inlineBase64) continue;
-                              try {
-                                  const binary = atob(inlineBase64);
-                                  const bytes = new Uint8Array(binary.length);
-                                  for (let i = 0; i < binary.length; i += 1) {
-                                      bytes[i] = binary.charCodeAt(i);
-                                  }
-                                  const blob = new Blob([bytes], { type: String((chunk as any).contentType || 'audio/wav') });
-                                  enqueueDubbingLiveChunk(blob);
-                                  dubbingLiveSeenChunkKeysRef.current.add(chunkKey);
-                              } catch {
-                                  // ignore malformed inline chunk payload
-                              }
-                          }
-                      }
-
-                      const responseChunkCursorNext = Number((job as any).chunkCursorNext || ((job as any).live || {}).chunkCursorNext || 0);
-                      if (Number.isFinite(responseChunkCursorNext) && responseChunkCursorNext >= 0) {
-                          dubbingLiveChunkCursorRef.current = Math.max(dubbingLiveChunkCursorRef.current, Math.round(responseChunkCursorNext));
-                      } else if (chunks.length > 0) {
-                          const maxChunkIndex = chunks.reduce((max: number, item: any) => {
-                              const idx = Number(item?.index);
-                              if (!Number.isFinite(idx)) return max;
-                              return Math.max(max, Math.round(idx));
-                          }, -1);
-                          if (maxChunkIndex >= 0) {
-                              dubbingLiveChunkCursorRef.current = Math.max(dubbingLiveChunkCursorRef.current, maxChunkIndex + 1);
-                          }
-                      }
-
-                      if (jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'cancelling') {
-                          const safeProgress = Math.max(10, Math.min(97, progressPct || 10));
-                          setLiveProgress(safeProgress, stageLabel);
-                          const speakerToken = detectedSpeakers > 0 ? `spk:${detectedSpeakers}` : 'spk:-';
-                          const qosToken = selectedProfile ? `qos:${selectedProfile}` : 'qos:auto';
-                          patchDubbingUiState({
-                              phase: 'running',
-                              progress: safeProgress,
-                              stage: joinUiFragments([`${stageLabel} (${index + 1}/${queue.length})`, speakerToken, qosToken]),
-                              error: '',
-                          });
-                      }
-
-                      if (jobStatus === 'completed') {
-                          const [resultBlob, reportBlob] = await Promise.all([
-                              downloadDubbingResult(mediaBackendUrl, jobId),
-                              downloadDubbingReport(mediaBackendUrl, jobId).catch(() => null),
-                          ]);
-                          const resultUrl = URL.createObjectURL(resultBlob);
-                          const reportUrl = reportBlob ? URL.createObjectURL(reportBlob) : null;
-                          setDubbingClips((current) =>
-                              current.map((item) =>
-                                  item.id === clip.id
-                                      ? { ...item, status: 'completed', jobId, resultUrl, reportUrl, error: '' }
-                                      : item
-                              )
-                          );
-                          setDubbingJobResultUrl(resultUrl);
-                          setDubbingReportUrl(reportUrl);
-                          const outputFiles = job.outputFiles as Record<string, any> | undefined;
-                          const hasVideoOutput =
-                              String(resultBlob.type || '').toLowerCase().includes('video') || Boolean(outputFiles?.video?.path);
-                          if (hasVideoOutput) {
-                              setRenderedDubVideoUrl(resultUrl);
-                          } else {
-                              setDubAudioUrl(resultUrl);
-                          }
-                          completedCount += 1;
-                          break;
-                      }
-
-                      if (jobStatus === 'failed') {
-                          throw new Error(String(job.error || job.errorCode || 'Dubbing job failed.'));
-                      }
-                      if (jobStatus === 'cancelled') {
-                          throw new DOMException('Dubbing cancelled', 'AbortError');
-                      }
-
-                      await new Promise((resolve) => setTimeout(resolve, 1600));
-                  }
-              } catch (clipError: any) {
-                  if (clipError?.name === 'AbortError') {
-                      throw clipError;
-                  }
-                  const clipErrorMessage = formatFrontendError(clipError, {
-                      fallback: 'Clip async generation failed.',
-                      context: 'generation',
-                      isAdmin: hasAdminConsoleAccess,
-                  }).publicMessage;
-                  setDubbingClips((current) =>
-                      current.map((item) =>
-                          item.id === clip.id
-                              ? { ...item, status: 'failed', error: clipErrorMessage || 'Clip async generation failed' }
-                              : item
-                      )
-                  );
-                  continue;
-              }
-          }
-          generationFailureBurstRef.current = 0;
-          patchDubbingUiState({
-              phase: completedCount > 0 ? 'done' : 'idle',
-              progress: completedCount > 0 ? 100 : 0,
-              stage: completedCount > 0
-                  ? `AI Dub completed for ${completedCount}/${queue.length} clips`
-                  : 'AI Dub queue finished',
-              error: '',
-          });
-          showToast(`AI Dub completed for ${completedCount}/${queue.length} clips.`, completedCount > 0 ? 'success' : 'info');
-      } catch (e: any) {
-          if (e?.name === 'AbortError') {
-              patchDubbingUiState({
-                  phase: 'idle',
-                  progress: 0,
-                  stage: 'Dubbing cancelled',
-                  error: '',
-              });
-              showToast('Dubbing cancelled.', 'info');
-          } else {
-              syncRuntimeBlockedStateFromError(activeEngineForDubbing, e);
-              generationFailureBurstRef.current += 1;
-              const dubbingFailureMessage = formatFrontendError(e, {
-                  fallback: 'Generation failed. Check backend health and retry.',
-                  context: 'generation',
-                  isAdmin: hasAdminConsoleAccess,
-              }).publicMessage;
-              emit('generation.failed', {
-                  title: 'Generation Failure',
-                  message: dubbingFailureMessage,
-                  entityKey: generationNotificationKey,
-                  dedupeKey: `generation-failed-async:${activeEngineForDubbing}`,
-                  action: {
-                      label: 'Open Settings',
-                      onClick: () => setShowSettings(true),
-                  },
-              });
-              patchDubbingUiState({
-                  phase: 'error',
-                  progress: 100,
-                  stage: 'Dubbing failed',
-                  error: dubbingFailureMessage || 'Unknown async job error',
-              });
-              showToast(dubbingFailureMessage || 'Dubbing failed.', 'error');
-          }
-      } finally {
-          activeDubbingJobIdRef.current = '';
-          resetDubbingLivePlayback();
-          stopSimulation();
-          generationAbortController.current = null;
-      }
-  };
-
-  const toggleDubPlayback = () => {
-      const video = videoRef.current;
-      const audio = dubAudioRef.current;
-      if (!video) return;
-
-      if (isPlayingDub) {
-          video.pause();
-          if (audio) audio.pause();
-          setIsPlayingDub(false);
-      } else {
-          video.play();
-          if (audio) audio.play();
-          setIsPlayingDub(true);
-      }
-  };
 
   const isGuestSession =
     !user.email ||
     user.email.toLowerCase() === 'guest@v-flow-ai.com' ||
     user.email.toLowerCase() === 'guest@voiceflow.ai' ||
     user.googleId === 'guest_mode';
+
+  const presentStudioBudgetBlock = useCallback((input: {
+    scopeLabel: string;
+    engine: GenerationSettings['engine'];
+    estimatedCost: number;
+    shortfall: number;
+  }) => {
+    const engineLabel = getEngineDisplayName(input.engine);
+    const spendableLabel = formatStudioVfAmount(currentEngineSpendable);
+    const estimatedLabel = formatStudioVfAmount(input.estimatedCost);
+    const shortfallLabel = formatStudioVfAmount(input.shortfall);
+    showToast(
+      `${input.scopeLabel} needs ${estimatedLabel} VF on ${engineLabel}. Available now: ${spendableLabel} VF. Short by ${shortfallLabel} VF. Opening Billing...`,
+      'error'
+    );
+    if (hasSessionIdentity && !isGuestSession) {
+      setIsMobileMenuOpen(false);
+      router.push(APP_ROUTE_PATHS.billing);
+      return;
+    }
+    writeStorageString(STORAGE_KEYS.authIntent, 'login');
+    setIsMobileMenuOpen(false);
+    router.push(resolveLoginPath('login', APP_ROUTE_PATHS.billing));
+  }, [currentEngineSpendable, formatStudioVfAmount, hasSessionIdentity, isGuestSession, router, showToast]);
 
   // --- AI Tools (Shared) ---
 
@@ -7860,8 +6225,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- PROOFREADER ---
   const handleProofread = async (mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow') => {
       if (!requireSignedInForAiTool(mode === 'grammar' ? 'Grammar' : mode === 'novel' ? 'Audio Novel' : 'Flow')) return;
-      const currentText = false ? dubScript : text;
-      const setFn = false ? setDubScript : setText;
+      const currentText = text;
+      const setFn = setText;
       
       if (!currentText || !currentText.trim()) return showToast("Enter text to proofread", "info");
       
@@ -7886,53 +6251,51 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleDirectorAI = async (targetText: string) => {
       if (!requireSignedInForAiTool('AI Director')) return;
       const safeInput = String(targetText || '');
-      if (!safeInput.trim()) return showToast('Enter text first', 'info');
+      if (!safeInput.trim()) {
+          showToast('Enter text first', 'info');
+          return;
+      }
       const activeDirectorModes = describeStudioDirectorModeState(studioDirectorModeState);
-      const directorOptions = studioDirectorModeState.expressiveEmotion || studioDirectorModeState.autoRewrite
-        ? {
-            style: 'natural' as const,
-            tone: studioDirectorModeState.expressiveEmotion ? 'dramatic' as const : 'neutral' as const,
-            expressiveEmotion: studioDirectorModeState.expressiveEmotion,
-            autoRewrite: studioDirectorModeState.autoRewrite,
-          }
-        : undefined;
+      const directorOptions =
+          studioDirectorModeState.expressiveEmotion || studioDirectorModeState.autoRewrite
+              ? {
+                    style: 'natural' as const,
+                    tone: studioDirectorModeState.expressiveEmotion ? ('dramatic' as const) : ('neutral' as const),
+                    expressiveEmotion: studioDirectorModeState.expressiveEmotion,
+                    autoRewrite: studioDirectorModeState.autoRewrite,
+                }
+              : undefined;
       setIsAiWriting(true);
       try {
           const { autoDirectStudioScript } = await loadGeminiService();
-          const { mood, cast, directedText } = await autoDirectStudioScript(safeInput, settings, directorOptions, characterLibrary);
+          const { mood, cast, directedText } = await autoDirectStudioScript(
+              safeInput,
+              settings,
+              directorOptions,
+              characterLibrary
+          );
           const tagInjection = injectDirectorTagsPreservingFormat(safeInput, directedText || safeInput);
-          const previewText = String(tagInjection.text || directedText || safeInput);
-          const castNames = cast
+          const appliedText = String(tagInjection.text || directedText || safeInput);
+          const castNames = (cast || [])
               .map((entry) => String(entry.name || '').trim())
               .filter((name) => name.length > 0);
-          const hasPreviewChange = normalizeDirectorPreviewComparisonText(previewText) !== normalizeDirectorPreviewComparisonText(safeInput);
 
-          if (hasPreviewChange) {
-              const previewMood = String(mood || '').trim();
-              setStudioDirectorPreview({
-                  sourceText: safeInput,
-                  previewText,
-                  castNames,
-                  modeLabel: activeDirectorModes,
-                  patchedLineCount: tagInjection.patchedLineCount,
-                  ...(previewMood ? { mood: previewMood } : {}),
-              });
-              showToast(
-                  `AI Director (${activeDirectorModes}) preview ready${castNames.length > 0 ? ` with ${castNames.length} speaker${castNames.length === 1 ? '' : 's'}` : ''}.`,
-                  'success'
-              );
-              return;
-          }
+          // Apply immediately (legacy behaviour from the first shipped build)
+          setStudioDirectorPreview(null);
+          setStudioEditorMode('raw');
+          setText(appliedText);
 
           if (castNames.length > 0) {
-              startTransition(() => {
-                  setDetectedSpeakers(castNames);
-              });
-              showToast(`AI Director (${activeDirectorModes}) identified ${castNames.length} speaker${castNames.length === 1 ? '' : 's'}.`, 'success');
-          } else {
-              showToast(`No preview-worthy changes found. Mode: ${activeDirectorModes}. Mood: ${mood || 'Neutral'}`, 'info');
+              startTransition(() => setDetectedSpeakers(castNames));
+              syncCast(cast as any);
           }
 
+          const moodLabel = String(mood || '').trim() || 'Neutral';
+          const speakerNote =
+              castNames.length > 0
+                  ? `${castNames.length} speaker${castNames.length === 1 ? '' : 's'} detected.`
+                  : 'No new speakers detected.';
+          showToast(`AI Director applied (${activeDirectorModes}). Mood: ${moodLabel}. ${speakerNote}`, 'success');
       } catch (e: any) {
           syncRuntimeBlockedStateFromError(settings.engine, e);
           showToast(e.message, "error");
@@ -7948,7 +6311,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       try {
           const settled = await Promise.allSettled(
               files.map(async (file) => {
-                  const extracted = await extractNovelTextFromFile(mediaBackendUrl, file, 'auto');
+                  const extracted = await extractNovelTextFromFile(file, 'auto');
                   return { file, extracted };
               })
           );
@@ -8000,7 +6363,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } finally {
           setIsStudioImporting(false);
       }
-  }, [mediaBackendUrl, showToast, toUserFriendlySystemMessage]);
+  }, [showToast, toUserFriendlySystemMessage]);
 
   const handleCustomMusicTrackInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
       const selectedFile = event.target.files?.[0] || null;
@@ -8060,9 +6423,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   
   const handleTranslate = async () => {
       if (!requireSignedInForAiTool('Translate')) return;
-      const isDubbing = false;
-      const currentText = isDubbing ? dubScript : text;
-      const setFn = isDubbing ? setDubScript : setText;
+      const currentText = text;
+      const setFn = setText;
       
       if(!currentText) return showToast("Enter text first", "info");
       
@@ -8118,7 +6480,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setChatHistory((prev) => [...prev, { role: 'user', text: historyText }]);
       setIsChatLoading(true);
 
-      const context = false ? dubScript : text;
+      const context = text;
 
       try {
           const { generateTextContent } = await loadGeminiService();
@@ -8159,7 +6521,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       settings,
       showToast,
       text,
-      dubScript,
   ]);
 
   const assistantQuickActions = useMemo<AssistantQuickAction[]>(() => ([
@@ -8595,17 +6956,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
   const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
-  const contentMaxWidthClass = activeTab === Tab.NOVEL || isStudioWorkspaceTab
+  const contentMaxWidthClass = isLibraryWorkspaceTab || isStudioWorkspaceTab
       ? 'max-w-[1480px]'
-      : activeTab === Tab.READER || activeTab === Tab.VOICE_CLONING
+      : activeTab === Tab.VOICE_CLONING
         ? 'max-w-[1360px]'
         : 'max-w-5xl';
-  const normalizedPathname = String(pathname || '').trim().toLowerCase();
-  const isStandaloneReaderRoute = (
-      normalizedPathname.startsWith('/reader')
-      || normalizedPathname === '/app/reader'
-      || normalizedPathname.startsWith('/app/reader/')
-  );
 
   useEffect(() => {
       const nextTab = resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO;
@@ -8628,8 +6983,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       if (!hasWorkspaceInteracted) return undefined;
       const nextTab = resolveWorkspaceNextPreloadTab(workspaceTabs, activeTab, {
-        allowReaderPreload: ENABLE_STUDIO_READER_PRELOAD,
-        allowNextPreloadFromStudio: ENABLE_STUDIO_READER_PRELOAD,
+        allowNextPreloadFromStudio: false,
       });
       const preloadNext = nextTab ? TAB_PRELOADERS[nextTab] : undefined;
       if (!preloadNext) return undefined;
@@ -8832,6 +7186,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             }`}>
               Sign in to buy token packs or redeem coupons.
             </div>
+          ) : isBillingCheckoutLocked() ? (
+            <div className={`mt-3 rounded-xl border px-3 py-2 text-[11px] ${
+              isDarkUi
+                ? 'border-amber-400/25 bg-amber-500/10 text-amber-100'
+                : 'border-amber-200 bg-amber-50 text-amber-700'
+            }`}>
+              {BILLING_CHECKOUT_LOCK_MESSAGE}
+            </div>
           ) : null}
 
           <div className="mt-3 grid grid-cols-2 gap-2">
@@ -8856,7 +7218,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }`}
             >
               {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-              Buy {selectedTokenPackMeta.label}
+              {isBillingCheckoutLocked() ? 'Checkout paused' : `Buy ${selectedTokenPackMeta.label}`}
             </button>
           </div>
           <div className="mt-2">
@@ -8866,6 +7228,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <select
               value={selectedTokenPack}
               onChange={(event) => setSelectedTokenPack(event.target.value as TokenPackKey)}
+              aria-label="Token pack"
+              title="Token pack"
               className={`h-8 w-full rounded-lg border px-2 text-[11px] font-semibold outline-none transition-colors ${
                 isDarkUi
                   ? 'border-slate-700 bg-slate-950/70 text-slate-100 focus:border-cyan-400'
@@ -8917,8 +7281,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const Sidebar = () => {
     const isDesktopCompact = isDesktop && sidebarMode === 'compact';
     const primaryWorkspaceTabs = workspaceTabs.filter((item) => item.id !== Tab.ADMIN);
-    const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create');
-    const libraryWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'library');
+    const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create' && item.id !== Tab.LIBRARY);
     const accountWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'account');
     const adminWorkspaceTab = workspaceTabs.find((item) => item.id === Tab.ADMIN);
     const getSidebarButtonClassName = (isActive: boolean) => `flex w-full items-center rounded-xl text-sm font-semibold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
@@ -8962,35 +7325,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.create}</p>
               )}
               {createWorkspaceTabs.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    router.push(item.route);
-                  }}
-                  aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
-                  aria-label={item.label}
-                  title={item.label}
-                  className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
-                >
-                  <span className="shrink-0">{item.icon}</span>
-                  {!isDesktopCompact && <span className="truncate">{item.label}</span>}
-                  {isDesktopCompact && (
-                    <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-                      {item.label}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {libraryWorkspaceTabs.length > 0 ? (
-            <div className="space-y-1">
-              {!isDesktopCompact && (
-                <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.library}</p>
-              )}
-              {libraryWorkspaceTabs.map((item) => (
                 <button
                   key={item.id}
                   type="button"
@@ -9089,10 +7423,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <LogIn size={13} />
                     </button>
                     <button
-                      onClick={() => openAuthScreen('signup')}
+                      onClick={() => { if (typeof window !== 'undefined') window.location.assign('/landing'); }}
                       className={`inline-flex items-center justify-center rounded-lg border py-2 ${isDarkUi ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700'}`}
-                      title="Sign up"
-                      aria-label="Sign up"
+                      title="Launch soon"
+                      aria-label="Launch soon"
                     >
                       <UserPlus size={13} />
                     </button>
@@ -9123,7 +7457,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
                       : 'border border-white bg-cyan-100 text-cyan-700'
                   }`}>
-                    {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+                    <OptimizedAvatar
+                      src={user.avatarUrl}
+                      alt={`${user.name} avatar`}
+                      width={40}
+                      height={40}
+                      containerClassName="h-full w-full"
+                      className="h-full w-full rounded-full"
+                      fallback={user.name?.[0]}
+                      quality={85}
+                      sizes="(max-width: 640px) 32px, (max-width: 1024px) 40px, 48px"
+                    />
                   </div>
                 </button>
               </div>
@@ -9142,14 +7486,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <LogIn size={12} /> Login
                     </button>
                     <button
-                      onClick={() => openAuthScreen('signup')}
+                      onClick={() => { if (typeof window !== 'undefined') window.location.assign('/landing'); }}
                       className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
                         isDarkUi
                           ? 'border-cyan-400/40 bg-cyan-500 text-slate-950 hover:bg-cyan-400'
                           : 'border-cyan-600 bg-cyan-600 text-white hover:bg-cyan-700'
                       }`}
                     >
-                      <UserPlus size={12} /> Sign Up
+                      <UserPlus size={12} /> Launch Soon
                     </button>
                   </div>
                 )}
@@ -9180,7 +7524,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
                       : 'border border-white bg-cyan-100 text-cyan-700'
                   }`}>
-                    {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+                    <OptimizedAvatar
+                      src={user.avatarUrl}
+                      alt={`${user.name} avatar`}
+                      width={36}
+                      height={36}
+                      containerClassName="h-full w-full"
+                      className="h-full w-full rounded-full"
+                      fallback={user.name?.[0]}
+                      quality={85}
+                      sizes="(max-width: 640px) 32px, (max-width: 1024px) 36px, 44px"
+                    />
                   </div>
                   <div className="flex-1 overflow-hidden">
                     <div className={`truncate text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>{user.name}</div>
@@ -9199,11 +7553,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const renderSettingsPanel = () => {
       const settingsCardClass = isDarkUi
-        ? 'space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-3.5'
-        : 'space-y-3 rounded-xl border border-slate-200 bg-white p-3.5';
+        ? 'space-y-2.5 rounded-xl border border-slate-700 bg-slate-900/70 p-3'
+        : 'space-y-2.5 rounded-xl border border-slate-200 bg-white p-3';
       const settingsLabelClass = isDarkUi
-        ? 'mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400'
-        : 'mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500';
+        ? 'mb-1.5 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400'
+        : 'mb-1.5 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500';
 
       return (
       <div
@@ -9214,7 +7568,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           aria-label="Configuration panel"
       >
           <div
-              className={`h-full w-full max-w-[29rem] shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col ${
+              className={`h-full w-full max-w-[26.5rem] shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col overflow-hidden ${
                 isDarkUi
                   ? 'bg-slate-950/95 border-l border-slate-700/70'
                   : 'bg-slate-50/95 border-l border-slate-200'
@@ -9223,27 +7577,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               ref={settingsPanelRef}
               tabIndex={-1}
           >
-              <div className={`p-4 border-b z-10 ${
-                isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'
+              <div className={`p-3 border-b z-10 ${
+                isDarkUi ? 'border-slate-800 bg-slate-950/95' : 'border-slate-200 bg-slate-50/95'
               }`}>
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-2.5">
                       <div>
-                          <h2 className={`text-base font-bold flex items-center gap-2 ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                              <Settings size={16} className="text-indigo-500" />
+                          <h2 className={`flex items-center gap-2 text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                              <Settings size={15} className="text-indigo-500" />
                               Workspace Settings
                           </h2>
                       </div>
                       <button
                         onClick={() => setShowSettings(false)}
-                        className={`p-2 rounded-full transition-colors ${isDarkUi ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-700'}`}
+                        className={`rounded-full p-1.5 transition-colors ${isDarkUi ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-700'}`}
                         aria-label="Close settings panel"
                       >
-                        <X size={18}/>
+                        <X size={17}/>
                       </button>
                   </div>
               </div>
 
-              <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${isDarkUi ? 'bg-slate-950/90' : 'bg-slate-100/60'}`}>
+              <div className={`flex-1 overflow-y-auto p-3 space-y-3 ${isDarkUi ? 'bg-slate-950/90' : 'bg-slate-100/60'}`}>
                   {/* Appearance */}
                   <section>
                       <label className={settingsLabelClass}>Appearance</label>
@@ -9252,85 +7606,62 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               <div className="hidden">
                                   {/* Light/Dark theme selector removed per request. Forced to dark. */}
                               </div>
-                              <div className="mt-4">
+                              <div className="mt-3">
                                   <div className={`mb-2 flex items-center gap-1 text-[10px] font-bold uppercase ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
                                       <Sparkles size={12} /> Brand palette
                                   </div>
-                                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                  <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
                                       {UI_BRAND_THEME_ORDER.map((brandId) => {
                                           const theme = UI_BRAND_THEME_CONFIGS[brandId];
                                           const active = uiBrandTheme === brandId;
-                                                  return (
-                                                  <button
-                                                          key={brandId}
-                                                          type="button"
-                                                          onClick={() => setUiBrandTheme(brandId)}
-                                                  className={`vf-brand-chip flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[11px] font-semibold transition-colors ${
-                                                      active
-                                                        ? 'text-white border-transparent'
-                                                        : 'bg-[color:var(--vf-surface-soft)] text-[color:var(--vf-text-muted)] border-[color:var(--vf-border)] hover:bg-[color:var(--vf-surface-muted)]'
-                                                  }`}
-                                                  aria-pressed={active}
-                                                  data-active={active}
+                                            if (active) {
+                                              return (
+                                                <button
+                                                  key={brandId}
+                                                  type="button"
+                                                  onClick={() => setUiBrandTheme(brandId)}
+                                                  className="vf-brand-chip flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-left text-[11px] font-semibold text-white transition-colors"
+                                                  aria-pressed="true"
+                                                  data-active={true}
                                                   data-brand-theme={brandId}
-                                                  >
-                                                      <span
-                                                      className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
-                                                      style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 55%, ${theme.accent3} 100%)` }}
-                                                      aria-hidden="true"
+                                                >
+                                                  <span
+                                                    className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
+                                                    data-brand-swatch={brandId}
+                                                    aria-hidden="true"
                                                   />
                                                   <span className="min-w-0">
-                                                      <span className="block truncate">{theme.label}</span>
-                                                      <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
+                                                    <span className="block truncate">{theme.label}</span>
+                                                    <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
                                                   </span>
+                                                </button>
+                                              );
+                                            }
+                                            return (
+                                              <button
+                                                key={brandId}
+                                                type="button"
+                                                onClick={() => setUiBrandTheme(brandId)}
+                                                className="vf-brand-chip flex items-center gap-2 rounded-lg border border-[color:var(--vf-border)] bg-[color:var(--vf-surface-soft)] px-2.5 py-2 text-left text-[11px] font-semibold text-[color:var(--vf-text-muted)] transition-colors hover:bg-[color:var(--vf-surface-muted)]"
+                                                aria-pressed="false"
+                                                data-active={false}
+                                                data-brand-theme={brandId}
+                                              >
+                                                <span
+                                                  className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
+                                                  data-brand-swatch={brandId}
+                                                  aria-hidden="true"
+                                                />
+                                                <span className="min-w-0">
+                                                  <span className="block truncate">{theme.label}</span>
+                                                  <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
+                                                </span>
                                               </button>
-                                          );
+                                            );
                                       })}
                                   </div>
                               </div>
-                              <div className="mt-2 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
-                          </div>
-
-                          <div className={`flex items-center justify-between p-2.5 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
-                              <span className={`text-[11px] font-semibold flex items-center gap-1.5 ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>
-                                  {uiDensity === 'compact' ? <Minimize2 size={11} /> : <Maximize2 size={11} />} Compact Density
-                              </span>
-                              <button
-                                  type="button"
-                                  onClick={() => setUiDensity(d => d === 'compact' ? 'comfortable' : 'compact')}
-                                  className={`relative h-5 w-9 rounded-full transition-colors ${uiDensity === 'compact' ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                  aria-label="Toggle interface density"
-                                  aria-pressed={uiDensity === 'compact'}
-                              >
-                                  <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${uiDensity === 'compact' ? 'translate-x-4' : ''}`}></span>
-                              </button>
-                          </div>
-
-                          <div className={`p-2.5 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
-                              <div className={`text-[11px] font-semibold mb-2 ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>Motion</div>
-                              <div className="grid grid-cols-3 gap-2">
-                                  {(['off', 'balanced', 'rich'] as const).map((level) => {
-                                      const active = uiMotionLevel === level;
-                                      return (
-                                          <button
-                                              key={level}
-                                              type="button"
-                                              onClick={() => setUiMotionLevel(level)}
-                                              className={`rounded-lg border px-2 py-1.5 text-[10px] font-semibold capitalize transition-colors ${
-                                                  active
-                                                    ? isDarkUi
-                                                      ? 'border-indigo-400/70 bg-indigo-500/20 text-indigo-300'
-                                                      : 'border-indigo-300 bg-indigo-50 text-indigo-700'
-                                                    : isDarkUi
-                                                      ? 'border-slate-600 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                                                      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100'
-                                              }`}
-                                          >
-                                              {level}
-                                          </button>
-                                      );
-                                  })}
-                              </div>
+                              <div className="mt-1.5 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
                           </div>
 
                           <div>
@@ -9349,7 +7680,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   <section>
                       <label className={settingsLabelClass}>Audio Engine</label>
                       <div className={settingsCardClass}>
-                        <div className="grid grid-cols-1 gap-2">
+                        <div className="grid grid-cols-1 gap-1.5">
                           {ENGINE_ORDER.map(engine => {
                               const isActive = (managedActiveEngine || settings.engine) === engine;
                               const status = ttsRuntimeStatus[engine];
@@ -9374,7 +7705,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       }
                                       void activateTtsEngine(engine);
                                   }}
-                                      className={`p-2.5 rounded-xl border transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] flex items-center gap-2.5 ${
+                                      className={`rounded-xl border p-2.5 transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] flex items-center gap-2 ${
                                         isActive
                                           ? isDarkUi
                                             ? 'border-indigo-400/70 bg-indigo-500/20'
@@ -9387,12 +7718,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       {engine === 'PRIME' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       {engine === 'VECTOR' && <Zap size={18} className={`shrink-0 ${isActive ? 'text-amber-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       <div className="flex-1 min-w-0">
-                                          <div className={`font-semibold text-xs ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
+                                          <div className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
                                           <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{getEngineSubLabel(engine)}</div>
-                                          <div className={`mt-1 text-[10px] leading-4 ${isDarkUi ? 'text-slate-300' : 'text-slate-600'}`}>
+                                          <div className={`mt-0.5 text-[10px] leading-[1rem] ${isDarkUi ? 'text-slate-300' : 'text-slate-600'}`}>
                                               {getEngineDescription(engine)}
                                           </div>
-                                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                          <div className="mt-1 flex flex-wrap items-center gap-1">
                                               <span
                                                 className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
                                                   isDarkUi ? 'border-slate-600 bg-slate-800/80 text-slate-200' : 'border-slate-200 bg-slate-100 text-slate-700'
@@ -9409,7 +7740,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                               </span>
                                             </div>
                                           {connectedServer ? (
-                                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                              <div className="mt-1 flex flex-wrap items-center gap-1">
                                                   <span
                                                     className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
                                                       isDarkUi ? 'border-cyan-500/30 bg-cyan-500/12 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-700'
@@ -9442,8 +7773,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
               </div>
 
-              <div className={`p-4 border-t flex justify-end ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
-                  <Button className="px-6" size="sm" onClick={() => setShowSettings(false)}>Save Changes</Button>
+              <div className={`p-3 border-t flex justify-end ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
+                  <Button className="px-5" size="sm" onClick={() => setShowSettings(false)}>Save Changes</Button>
               </div>
           </div>
       </div>
@@ -9451,7 +7782,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   const usesFloatingStudioDock = isStudioWorkspaceTab;
-  const shouldHideAssistantForReader = activeTab === Tab.READER;
+  const shouldHideAssistantInWorkspace = false;
   const isStudioCastPanelOpen = !isPhone || studioMobilePanels.cast;
   const studioMainSpacingClass = isPhone
     ? isShortPhone
@@ -9513,7 +7844,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
-  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForReader && !isStudioWorkspaceTab;
+  const showTopbarAssistantButton = isPhone && !shouldHideAssistantInWorkspace && !isStudioWorkspaceTab;
   const assistantPanelSizeClass = isPhone
     ? 'w-[min(23rem,calc(100vw-0.75rem))] h-[min(30rem,calc(100vh-10.5rem))]'
     : 'w-[min(23rem,calc(100vw-1.5rem))] h-[min(30rem,calc(100vh-8rem))]';
@@ -9525,11 +7856,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = !shouldHideAssistantForReader && isChatOpen;
+  const shouldRenderFloatingAssistant = !shouldHideAssistantInWorkspace && isChatOpen;
 
   return (
     <div className={`relative h-[100dvh] min-h-screen overflow-hidden vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
-      <div className={`vf-app-shell flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent font-sans text-gray-900 xl:grid xl:grid-cols-[auto_minmax(0,1fr)] xl:gap-4 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
+      <div className="vf-app-shell flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent font-sans text-gray-900 xl:grid xl:grid-cols-[auto_minmax(0,1fr)] xl:gap-4">
         {/* Mobile Overlay */}
         {isMobileMenuOpen && (
           <button
@@ -9596,9 +7927,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                        resolvedTheme={resolvedTheme}
                        onActivate={activateTtsEngine}
                      />
-                  </div>
+                 </div>
 
                   <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
+                     {isStudioWorkspaceTab ? (
+                       <button
+                        type="button"
+                        onClick={() => router.push(APP_ROUTE_PATHS.library)}
+                        aria-label="Open Readers"
+                        className={`inline-flex h-[40px] items-center gap-2 rounded-full border px-3.5 text-[10px] font-black uppercase tracking-[0.22em] shadow-[0_12px_28px_rgba(8,145,178,0.16)] transition-colors ${
+                          resolvedTheme === 'dark'
+                            ? 'border-cyan-400/30 bg-[linear-gradient(180deg,rgba(9,26,43,0.96),rgba(8,18,32,0.92))] text-cyan-100 hover:border-cyan-300/45 hover:bg-[linear-gradient(180deg,rgba(10,34,56,0.98),rgba(8,24,40,0.95))] hover:text-white'
+                            : 'border-cyan-200 bg-[linear-gradient(180deg,rgba(240,249,255,0.98),rgba(226,244,255,0.94))] text-cyan-800 hover:border-cyan-300 hover:bg-cyan-100'
+                        }`}
+                       >
+                        <BookOpen size={13} />
+                        <span className={isPhone ? 'sr-only' : ''}>Readers</span>
+                       </button>
+                     ) : null}
                      <button
                         type="button"
                         ref={creditsSurfaceTriggerRef}
@@ -9693,10 +8039,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <div className={`mx-auto w-full ${workspaceContentStackClass} ${contentMaxWidthClass}`}>
                 
                 {isStudioWorkspaceTab && (
-                    <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
-                    <div className={`vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] ${isPhone ? 'gap-3' : 'gap-4 xl:gap-5'} animate-in fade-in duration-300`}>
-                        {/* Editor Section */}
-                        <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
+                  <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
+                  <div className={`vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] ${isPhone ? 'gap-3' : 'gap-4 xl:gap-5'} animate-in fade-in duration-300`}>
+                      {/* Editor Section */}
+                      <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
                             {/* Reduced Height Editor */}
                             {isStudioEditorFullscreen && (
                                 <button
@@ -9745,6 +8091,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         type="file"
                                         className="hidden"
                                         multiple
+                                      aria-label="Import studio files"
+                                      title="Import studio files"
                                         onChange={handleStudioImportInputChange}
                                     />
                                 </div>
@@ -9774,8 +8122,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           assistantActionLabel={isPhone ? 'Assist' : 'Assistant'}
                                           assistantActionTitle="Open creative assistant"
                                           onAssistantAction={() => setIsChatOpen(true)}
-                                          directorActionLabel={studioDirectorPreview ? 'Refresh Preview' : 'AI Director'}
-                                          directorActionTitle={`${studioDirectorPreview ? 'Refresh' : 'Analyze'} the current text and review an AI Director pass before applying. Current mode: ${describeStudioDirectorModeState(studioDirectorModeState)}.`}
+                                          directorActionLabel="AI Director"
+                                          directorActionTitle={`Analyze the current text and apply an AI Director pass. Current mode: ${describeStudioDirectorModeState(studioDirectorModeState)}.`}
                                           onDirectorAction={() => handleDirectorAI(text)}
                                           directorActionBusy={isAiWriting}
                                           onOverflow={({ maxChars }) => {
@@ -9860,7 +8208,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Users size={12} />
                                             Multi-Speaker {isStudioMultiSpeakerEnabled ? 'On' : 'Off'}
                                         </button>
-                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex shrink-0 snap-start items-center gap-1 whitespace-nowrap"><Save size={11}/> Save Draft</button>
                                     </div>
                                 </div>
                             </SectionCard>
@@ -9909,16 +8256,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     <Suspense fallback={<div className={`rounded-3xl border px-4 py-4 text-sm ${isDarkUi ? 'border-slate-800 bg-slate-950 text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>Loading audio player...</div>}>
                                       <AudioPlayer
                                         audioUrl={generatedAudioUrl}
+                                        playbackSessionKey={audioPlayerSessionKey}
                                         isGenerating={isGenerating}
                                         liveChunks={liveAudioChunks}
                                         isLiveStreaming={isGenerating || liveAudioChunks.length > 0}
                                         autoPlayOnFirstChunk={settings.autoPlayGeneratedAudio !== false}
+                                        autoPlayGeneratedAudio={settings.autoPlayGeneratedAudio !== false}
+                                        autoplayNonce={audioPlayerAutoplayNonce}
                                         onReset={() => {
                                           setGeneratedAudioUrlManaged(null);
                                           setLiveAudioChunks([]);
                                           seenLiveChunkKeysRef.current.clear();
-                                          activeGatewayRequestIdRef.current = '';
-                                          activeGatewayJobIdRef.current = '';
+                                          syncActiveGatewayIds('', '');
                                         }}
                                       />
                                     </Suspense>
@@ -9961,6 +8310,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            max="2.0"
 	                                            step="0.1"
 	                                            value={settings.speed}
+                                              aria-label="Speech speed"
+                                              title="Speech speed"
 	                                            onChange={(e) => setSettings(s => ({ ...s, speed: parseFloat(e.target.value) }))}
 	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
 	                                        />
@@ -9969,6 +8320,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">TTS Output Language</div>
 	                                        <select
 	                                            value={settings.language}
+                                              aria-label="TTS output language"
+                                              title="TTS output language"
 	                                            onChange={(e) => setSettings(s => ({ ...s, language: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -9980,6 +8333,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">Background Music Track</div>
 	                                        <select
 	                                            value={settings.musicTrackId}
+                                              aria-label="Background music track"
+                                              title="Background music track"
 	                                            onChange={(e) => setSettings(s => ({ ...s, musicTrackId: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -10012,6 +8367,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            type="file"
 	                                            accept={STUDIO_CUSTOM_MUSIC_FILE_ACCEPT}
 	                                            className="hidden"
+                                              aria-label="Upload background music track"
+                                              title="Upload background music track"
 	                                            onChange={handleCustomMusicTrackInputChange}
 	                                        />
 	                                        <div className="mt-1 text-[10px] font-medium text-gray-500">
@@ -10310,6 +8667,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            max="2.0"
 	                                            step="0.1"
 	                                            value={settings.speed}
+                                              aria-label="Speech speed"
+                                              title="Speech speed"
 	                                            onChange={(e) => setSettings(s => ({ ...s, speed: parseFloat(e.target.value) }))}
 	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
 	                                        />
@@ -10318,6 +8677,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">TTS Output Language</div>
 	                                        <select
 	                                            value={settings.language}
+                                              aria-label="TTS output language"
+                                              title="TTS output language"
 	                                            onChange={(e) => setSettings(s => ({ ...s, language: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -10329,6 +8690,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="text-xs mb-1 font-bold text-gray-700">Background Music Track</div>
 	                                        <select
 	                                            value={settings.musicTrackId}
+                                              aria-label="Background music track"
+                                              title="Background music track"
 	                                            onChange={(e) => setSettings(s => ({ ...s, musicTrackId: e.target.value }))}
 	                                            className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
 	                                        >
@@ -10361,6 +8724,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            type="file"
 	                                            accept={STUDIO_CUSTOM_MUSIC_FILE_ACCEPT}
 	                                            className="hidden"
+                                              aria-label="Upload background music track"
+                                              title="Upload background music track"
 	                                            onChange={handleCustomMusicTrackInputChange}
 	                                        />
 	                                        <div className="mt-1 text-[10px] font-medium text-gray-500">
@@ -10426,36 +8791,69 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     {isPhone ? (
                                         <div className="mb-3 flex flex-col gap-2">
                                             <div className="flex items-start justify-between gap-3">
+                                              {isStudioCastPanelOpen ? (
                                                 <button
-                                                    type="button"
-                                                    onClick={() => toggleStudioMobilePanel('cast')}
-                                                    className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
-                                                    aria-expanded={isStudioCastPanelOpen}
-                                                    aria-controls="studio-cast-panel"
+                                                  type="button"
+                                                  onClick={() => toggleStudioMobilePanel('cast')}
+                                                  className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
+                                                  aria-expanded="true"
+                                                  aria-controls="studio-cast-panel"
                                                 >
-                                                    <div className="min-w-0">
-                                                        <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
-                                                            isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
-                                                        }`}><Bot size={14}/> Cast &amp; Crew</h3>
-                                                        <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                                            {isStudioMultiSpeakerEnabled
-                                                              ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
-                                                              : 'Disabled'}
-                                                        </p>
-                                                    </div>
-                                                    <div className="flex items-center gap-1.5">
-                                                        {studioCrewTags.length > 0 && (
-                                                            <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
-                                                                isDarkUi
-                                                                  ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
-                                                                  : 'border-cyan-100 bg-white text-cyan-600'
-                                                            }`}>
-                                                                {studioCrewTags.length} crew
-                                                            </span>
-                                                        )}
-                                                        {isStudioCastPanelOpen ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-                                                    </div>
+                                                  <div className="min-w-0">
+                                                    <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
+                                                      isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                                    }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                    <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                      {isStudioMultiSpeakerEnabled
+                                                        ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
+                                                        : 'Disabled'}
+                                                    </p>
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5">
+                                                    {studioCrewTags.length > 0 && (
+                                                      <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
+                                                        isDarkUi
+                                                          ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
+                                                          : 'border-cyan-100 bg-white text-cyan-600'
+                                                      }`}>
+                                                        {studioCrewTags.length} crew
+                                                      </span>
+                                                    )}
+                                                    <ChevronUp size={16} className="text-gray-500" />
+                                                  </div>
                                                 </button>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => toggleStudioMobilePanel('cast')}
+                                                  className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
+                                                  aria-expanded="false"
+                                                  aria-controls="studio-cast-panel"
+                                                >
+                                                  <div className="min-w-0">
+                                                    <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
+                                                      isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                                    }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                    <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                      {isStudioMultiSpeakerEnabled
+                                                        ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
+                                                        : 'Disabled'}
+                                                    </p>
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5">
+                                                    {studioCrewTags.length > 0 && (
+                                                      <span className={`vf-studio-chip shrink-0 border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${
+                                                        isDarkUi
+                                                          ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
+                                                          : 'border-cyan-100 bg-white text-cyan-600'
+                                                      }`}>
+                                                        {studioCrewTags.length} crew
+                                                      </span>
+                                                    )}
+                                                    <ChevronDown size={16} className="text-gray-500" />
+                                                  </div>
+                                                </button>
+                                              )}
                                                 <button
                                                     type="button"
                                                     onClick={autoAssignCastVoices}
@@ -10793,7 +9191,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       isOpen={isVoiceCloneModalOpen}
                       onClose={closeVoiceCloneModal}
                       onCloneCreated={handleVoiceCloneCreated}
-                      backendBaseUrl={mediaBackendUrl}
                       sourceVoiceId={voiceCloneTarget.voiceId}
                       sourceVoiceLabel={voiceCloneTarget.sourceVoiceLabel}
                       sourceVoiceEngine={voiceCloneTarget.sourceVoiceEngine || settings.engine}
@@ -10931,51 +9328,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                 </div>
                               );
                             })}
-                        </div>
-                    </div>
+                      </div>
+                  </div>
                 )}
-                
-                {mountedWorkspaceTabs[Tab.NOVEL] && (
+
+                {mountedWorkspaceTabs[Tab.LIBRARY] && (
                   <div
-                    hidden={activeTab !== Tab.NOVEL}
-                    aria-hidden={activeTab !== Tab.NOVEL}
-                    className={activeTab === Tab.NOVEL ? '' : 'hidden'}
+                    hidden={activeTab !== Tab.LIBRARY}
+                    aria-hidden={activeTab !== Tab.LIBRARY}
+                    className={activeTab === Tab.LIBRARY ? '' : 'hidden'}
                   >
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading novel workspace...</SectionCard>}>
-                      <NovelTabContent
+                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading writing workspace...</SectionCard>}>
+                      <LibraryTabContent
                         settings={settings}
-                        mediaBackendUrl={mediaBackendUrl}
                         onToast={showToast}
                         onSendToStudio={(content: string) => {
                           if (!content.trim()) return;
                           setText(content);
-                          setActiveTab(Tab.STUDIO);
-                          showToast("Sent to Studio for Audio Generation", "success");
+                          void router.push(resolveWorkspaceRoutePath(Tab.STUDIO));
+                          showToast('Sent to Studio for Audio Generation', 'success');
                         }}
                       />
                     </Suspense>
                   </div>
                 )}
-
-                {mountedWorkspaceTabs[Tab.READER] && (
-                  <div
-                    hidden={activeTab !== Tab.READER}
-                    aria-hidden={activeTab !== Tab.READER}
-                    className={activeTab === Tab.READER ? '' : 'hidden'}
-                  >
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader workspace...</SectionCard>}>
-                      <ReaderTabContent
-                        settings={settings}
-                        mediaBackendUrl={mediaBackendUrl}
-                        resolvedTheme={resolvedTheme}
-                        onToast={showToast}
-                        syncLocation={isStandaloneReaderRoute && activeTab === Tab.READER}
-                        isActive={activeTab === Tab.READER}
-                      />
-                    </Suspense>
-                  </div>
-                )}
-
+                
                 {mountedWorkspaceTabs[Tab.VOICE_CLONING] && (
                   <div
                     hidden={activeTab !== Tab.VOICE_CLONING}
@@ -10984,7 +9361,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading voice cloning workspace...</SectionCard>}>
                       <VoiceCloningTabContent
-                        backendBaseUrl={mediaBackendUrl}
                         selectedEngine={settings.engine}
                         voiceLibraryVoices={getEngineVoiceCatalog(settings.engine)}
                         voicePreviewState={previewState}
@@ -11003,7 +9379,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading admin controls...</SectionCard>}>
                       <AdminTabContent
-                        mediaBackendUrl={mediaBackendUrl}
+                        adminApiBaseUrl={adminApiBaseUrl}
                         onToast={showToast}
                         onRefreshEntitlements={refreshEntitlements}
                         initialOpsTab={initialAdminOpsTab}
@@ -11040,7 +9416,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
-      {!shouldHideAssistantForReader && isChatOpen && (
+      {!shouldHideAssistantInWorkspace && isChatOpen && (
         <button
           type="button"
           className="fixed inset-0 z-[49] bg-transparent"
@@ -11215,8 +9591,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {/* Resource Monitor */}
       {ENABLE_RESOURCE_MONITOR ? (
         <ResourceMonitor
-          isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading}
-          hidden={shouldHideAssistantForReader}
+          isWorking={isGenerating || isAiWriting || isChatLoading}
+          hidden={shouldHideAssistantInWorkspace}
         />
       ) : null}
 
@@ -11226,4 +9602,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     </div>
   );
 };
+
+
 

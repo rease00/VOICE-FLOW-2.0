@@ -1,8 +1,10 @@
-import { GenerationSettings, UserStats, UserWalletStats, VfEngineUsage, VfUsageStats, VfUsageWindow } from '../types';
+import { ActiveTtsEngineKey, GenerationSettings, UserStats, UserWalletStats, VfEngineUsage, VfUsageStats, VfUsageWindow } from '../types';
 
 export const VF_UNIT = 'VF' as const;
-export const VF_ENGINE_RATES: Record<GenerationSettings['engine'], number> = {
-  DUNO: 0.5,
+const normalizeActiveEngine = (engine: GenerationSettings['engine']): ActiveTtsEngineKey =>
+  engine === 'PRIME' ? 'PRIME' : 'VECTOR';
+
+export const VF_ENGINE_RATES: Record<ActiveTtsEngineKey, number> = {
   VECTOR: 1.2,
   PRIME: 1.5,
 };
@@ -11,8 +13,7 @@ const sanitizeEngineRate = (value: unknown, fallback: number): number => (
   Number.isFinite(value) ? Math.max(0, Number(value)) : fallback
 );
 
-const sanitizeRateMap = (value: any): Record<GenerationSettings['engine'], number> => ({
-  DUNO: sanitizeEngineRate(value?.DUNO, VF_ENGINE_RATES.DUNO),
+const sanitizeRateMap = (value: any): Record<ActiveTtsEngineKey, number> => ({
   VECTOR: sanitizeEngineRate(value?.VECTOR, VF_ENGINE_RATES.VECTOR),
   PRIME: sanitizeEngineRate(value?.PRIME, VF_ENGINE_RATES.PRIME),
 });
@@ -24,7 +25,6 @@ const createWindow = (key: string): VfUsageWindow => ({
   totalChars: 0,
   totalVf: 0,
   byEngine: {
-    DUNO: createEngineUsage(),
     VECTOR: createEngineUsage(),
     PRIME: createEngineUsage(),
   },
@@ -57,12 +57,16 @@ export const createEmptyWalletStats = (): UserWalletStats => ({
   monthlyFreeLimit: 0,
   vffBalance: 0,
   paidVfBalance: 0,
+  vcFreeBalance: 0,
+  vcGrantedBalance: 0,
+  vcPaidBalance: 0,
+  vcSpendableBalance: 0,
   spendableNowByEngine: {
-    DUNO: 0,
     VECTOR: 0,
     PRIME: 0,
   },
   vffMonthKey: undefined,
+  vcMonthKey: undefined,
 });
 
 const addEngineUsage = (left: VfEngineUsage, right: VfEngineUsage): VfEngineUsage => ({
@@ -80,7 +84,6 @@ const sanitizeWindow = (value: any, key: string): VfUsageWindow => ({
   totalChars: Number.isFinite(value?.totalChars) ? Math.max(0, Math.floor(value.totalChars)) : 0,
   totalVf: Number.isFinite(value?.totalVf) ? Math.max(0, Number(value.totalVf)) : 0,
   byEngine: {
-    DUNO: sanitizeEngineUsage(value?.byEngine?.DUNO),
     VECTOR: sanitizeEngineUsage(value?.byEngine?.VECTOR),
     PRIME: sanitizeEngineUsage(value?.byEngine?.PRIME),
   },
@@ -112,14 +115,15 @@ const applyWindowDelta = (
   chars: number,
   vf: number
 ): VfUsageWindow => {
-  const engineUsage = window.byEngine[engine] || createEngineUsage();
+  const canonicalEngine = normalizeActiveEngine(engine);
+  const engineUsage = window.byEngine[canonicalEngine] || createEngineUsage();
   return {
     ...window,
     totalChars: window.totalChars + chars,
     totalVf: window.totalVf + vf,
     byEngine: {
       ...window.byEngine,
-      [engine]: {
+      [canonicalEngine]: {
         chars: engineUsage.chars + chars,
         vf: engineUsage.vf + vf,
       },

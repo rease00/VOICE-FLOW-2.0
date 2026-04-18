@@ -9,6 +9,9 @@ import {
   GoogleAuthProvider,
   RecaptchaVerifier,
   createUserWithEmailAndPassword,
+  deleteUser,
+  getAdditionalUserInfo,
+  onIdTokenChanged,
   onAuthStateChanged,
   sendEmailVerification,
   sendPasswordResetEmail,
@@ -23,15 +26,15 @@ import {
   deleteDoc,
   doc,
   getDoc,
-  onSnapshot,
+  getDocs,
   setDoc,
   writeBatch,
-} from 'firebase/firestore';
+} from 'firebase/firestore/lite';
 import {
   CharacterProfile,
   ClonedVoice,
-  Draft,
   HistoryItem,
+  ActiveTtsEngineKey,
   GenerationSettings,
   UserContextType,
   UserProfile,
@@ -44,11 +47,11 @@ import {
   facebookProvider,
   firebaseConfigIssue,
   firebaseAuth,
-  firestoreDb,
   googleProvider,
   isAdminIdentity,
   isFirebaseConfigured,
 } from '../services/firebaseClient';
+import { firestoreDb } from '../services/firebaseFirestoreClient';
 import { resolveAdminProvisioningHint } from '../src/shared/auth/adminProvisioning';
 import {
   AccountEntitlements,
@@ -61,9 +64,9 @@ import {
 import { fetchAdminActor } from '../services/adminService';
 import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { clearDriveTokenCache, warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
-import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { readEnvBoolean, readEnvValue } from '../src/shared/runtime/env';
 import { shouldBootstrapAccountDataForPath } from '../src/app/navigation';
+import { SIGNUP_DISABLED_API_MESSAGE, isSignupTemporarilyDisabled } from '../src/shared/auth/signupLock';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
@@ -73,10 +76,13 @@ import {
   getSessionClonedVoices,
   setSessionClonedVoices,
 } from '../services/clonedVoiceSessionStore';
+import { clearFirebaseSession, syncFirebaseSession } from '../services/authSessionService';
+import { authFetch } from '../services/authHttpClient';
 
 interface ExtendedUserContextType extends Omit<UserContextType, 'deleteAccount'> {
   syncCast: (cast: string[] | CharacterProfile[]) => void;
   isSyncing: boolean;
+  sessionCookieReady: boolean;
   refreshEntitlements: () => Promise<void>;
   deleteAccount: () => Promise<void>;
 }
@@ -177,19 +183,13 @@ const BLANK_USER: UserProfile = {
   adminActor: null,
 };
 
-const readSettingsBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
+const CANONICAL_API_BASE = '/api/v1';
 
 const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
 const DEFAULT_DEV_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/app/login';
 
 const resolveEmailVerificationContinueUrl = (): string => {
-  const configured = readEnvValue(
-    process.env.NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL,
-    process.env.VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL
-  );
+  const configured = readEnvValue(process.env.NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL);
   if (configured) return configured;
   const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
   if (isProductionRuntime) return '';
@@ -222,6 +222,11 @@ export const buildUnverifiedEmailSignInResult = (message: string = unverifiedEma
   error: message,
   requiresEmailVerification: true,
   canResendVerification: true,
+});
+
+const buildSignupDisabledResult = () => ({
+  ok: false,
+  error: SIGNUP_DISABLED_API_MESSAGE,
 });
 
 const isContinueUrlVerificationError = (error: any): boolean => {
@@ -315,21 +320,23 @@ const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
 const isPaidPlanName = (planName: UserStats['planName']): boolean =>
   planName === 'Launcher' || planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
 
-const normalizeAllowedEngines = (input: unknown): GenerationSettings['engine'][] => {
-  if (!Array.isArray(input)) return ['DUNO', 'VECTOR'];
-  const allowed = new Set<GenerationSettings['engine']>();
+const normalizeActiveEngine = (value: unknown): ActiveTtsEngineKey => {
+  const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return token === 'PRIME' ? 'PRIME' : 'VECTOR';
+};
+
+const normalizeAllowedEngines = (input: unknown): ActiveTtsEngineKey[] => {
+  if (!Array.isArray(input)) return ['VECTOR'];
+  const allowed = new Set<ActiveTtsEngineKey>();
   for (const value of input) {
-    const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    if (token === 'DUNO' || token === 'VECTOR' || token === 'PRIME') {
-      allowed.add(token);
-    }
+    allowed.add(normalizeActiveEngine(value));
   }
-  return allowed.size > 0 ? Array.from(allowed) : ['DUNO', 'VECTOR'];
+  return allowed.size > 0 ? Array.from(allowed) : ['VECTOR'];
 };
 
 const readCanonicalEngineBucket = (
   bucket: Record<string, { chars: number; vf: number }> | undefined,
-  engine: GenerationSettings['engine']
+  engine: ActiveTtsEngineKey
 ): { chars: number; vf: number } => ({
   chars: Math.max(0, Number(bucket?.[engine]?.chars || 0)),
   vf: Math.max(0, Number(bucket?.[engine]?.vf || 0)),
@@ -344,20 +351,31 @@ const normalizeStoredStats = (stored: any): UserStats => {
     generationsUsed: Number.isFinite(stored?.generationsUsed) ? Math.max(0, Math.floor(stored.generationsUsed)) : INITIAL_STATS.generationsUsed,
     isPremium: Boolean(stored?.isPremium) || isPaidPlanName(planName),
     planName,
+    billingCountry: typeof stored?.billingCountry === 'string' ? stored.billingCountry : undefined,
     lastResetDate: typeof stored?.lastResetDate === 'string' ? stored.lastResetDate : undefined,
     vfUsage: ensureVfUsageStats(stored?.vfUsage),
     wallet: {
       ...walletFallback,
       ...(stored?.wallet || {}),
+      vcFreeBalance: Math.max(0, Number(stored?.wallet?.vcFreeBalance ?? walletFallback.vcFreeBalance ?? 0)),
+      vcGrantedBalance: Math.max(0, Number(stored?.wallet?.vcGrantedBalance ?? walletFallback.vcGrantedBalance ?? 0)),
+      vcPaidBalance: Math.max(0, Number(stored?.wallet?.vcPaidBalance ?? walletFallback.vcPaidBalance ?? 0)),
+      vcSpendableBalance: Math.max(0, Number(stored?.wallet?.vcSpendableBalance ?? walletFallback.vcSpendableBalance ?? 0)),
       spendableNowByEngine: {
-        DUNO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.DUNO ?? walletFallback.spendableNowByEngine.DUNO)),
         VECTOR: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.VECTOR ?? walletFallback.spendableNowByEngine.VECTOR)),
         PRIME: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.PRIME ?? walletFallback.spendableNowByEngine.PRIME)),
       },
+      vcMonthKey: typeof stored?.wallet?.vcMonthKey === 'string' ? stored.wallet.vcMonthKey : walletFallback.vcMonthKey,
     },
     limits: {
       maxCharsPerGeneration: Math.max(1, Number(stored?.limits?.maxCharsPerGeneration || INITIAL_STATS.limits?.maxCharsPerGeneration || 8000)),
       allowedEngines: normalizeAllowedEngines(stored?.limits?.allowedEngines || INITIAL_STATS.limits?.allowedEngines),
+      tokenPackDiscountPercent: Number.isFinite(stored?.limits?.tokenPackDiscountPercent)
+        ? Math.max(0, Number(stored.limits.tokenPackDiscountPercent))
+        : undefined,
+      vcTokenPackDiscountPercent: Number.isFinite(stored?.limits?.vcTokenPackDiscountPercent)
+        ? Math.max(0, Number(stored.limits.vcTokenPackDiscountPercent))
+        : undefined,
     },
     features: {
       earlyAccess: Boolean(stored?.features?.earlyAccess),
@@ -372,7 +390,6 @@ const mapEntitlementRatesToUsage = (
 ): UserStats['vfUsage']['rates'] => {
   const vfRates = (entitlements?.limits?.vfRates || {}) as Record<string, unknown>;
   return {
-    DUNO: Number.isFinite(vfRates.DUNO) ? Math.max(0, Number(vfRates.DUNO)) : fallback.DUNO,
     VECTOR: Number.isFinite(vfRates.VECTOR) ? Math.max(0, Number(vfRates.VECTOR)) : fallback.VECTOR,
     PRIME: Number.isFinite(vfRates.PRIME) ? Math.max(0, Number(vfRates.PRIME)) : fallback.PRIME,
   };
@@ -387,24 +404,23 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   const planName = normalizePlanNameForStats(entitlements.plan);
 
   const dailyUsage = {
-    DUNO: readCanonicalEngineBucket(dailyByEngine, 'DUNO'),
     VECTOR: readCanonicalEngineBucket(dailyByEngine, 'VECTOR'),
     PRIME: readCanonicalEngineBucket(dailyByEngine, 'PRIME'),
   };
   const monthlyUsage = {
-    DUNO: readCanonicalEngineBucket(monthlyByEngine, 'DUNO'),
     VECTOR: readCanonicalEngineBucket(monthlyByEngine, 'VECTOR'),
     PRIME: readCanonicalEngineBucket(monthlyByEngine, 'PRIME'),
   };
 
-  const dailyTotalChars = dailyUsage.DUNO.chars + dailyUsage.VECTOR.chars + dailyUsage.PRIME.chars;
-  const monthlyTotalChars = monthlyUsage.DUNO.chars + monthlyUsage.VECTOR.chars + monthlyUsage.PRIME.chars;
+  const dailyTotalChars = dailyUsage.VECTOR.chars + dailyUsage.PRIME.chars;
+  const monthlyTotalChars = monthlyUsage.VECTOR.chars + monthlyUsage.PRIME.chars;
 
   return ensureStatsUsageWindows({
     ...prev,
     generationsUsed: Math.max(0, Number(entitlements.daily?.generationUsed || 0)),
     isPremium: isPaidPlanName(planName),
     planName,
+    billingCountry: String(entitlements.billing?.billingCountry || prev.billingCountry || '').trim() || undefined,
     lastResetDate: entitlements.daily?.periodKey,
     vfUsage: {
       ...usage,
@@ -416,7 +432,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.daily?.vfUsed || 0)),
         byEngine: {
           ...usage.daily.byEngine,
-          DUNO: dailyUsage.DUNO,
           VECTOR: dailyUsage.VECTOR,
           PRIME: dailyUsage.PRIME,
         },
@@ -428,7 +443,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.monthly?.vfUsed || 0)),
         byEngine: {
           ...usage.monthly.byEngine,
-          DUNO: monthlyUsage.DUNO,
           VECTOR: monthlyUsage.VECTOR,
           PRIME: monthlyUsage.PRIME,
         },
@@ -439,16 +453,26 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       monthlyFreeLimit: Math.max(0, Number(wallet.monthlyFreeLimit || 0)),
       vffBalance: Math.max(0, Number(wallet.vffBalance || 0)),
       paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
+      vcFreeBalance: Math.max(0, Number(wallet.vcFreeBalance || 0)),
+      vcGrantedBalance: Math.max(0, Number(wallet.vcGrantedBalance || 0)),
+      vcPaidBalance: Math.max(0, Number(wallet.vcPaidBalance || 0)),
+      vcSpendableBalance: Math.max(0, Number(wallet.vcSpendableBalance || 0)),
       spendableNowByEngine: {
-        DUNO: Math.max(0, Number(wallet.spendableNowByEngine?.DUNO || 0)),
         VECTOR: Math.max(0, Number(wallet.spendableNowByEngine?.VECTOR || 0)),
         PRIME: Math.max(0, Number(wallet.spendableNowByEngine?.PRIME || 0)),
       },
       vffMonthKey: wallet.vffMonthKey,
+      vcMonthKey: wallet.vcMonthKey,
     },
     limits: {
       maxCharsPerGeneration: Math.max(1, Number(entitlements?.limits?.maxCharsPerGeneration || prev.limits?.maxCharsPerGeneration || 8000)),
       allowedEngines: normalizeAllowedEngines(entitlements?.limits?.allowedEngines || prev.limits?.allowedEngines),
+      tokenPackDiscountPercent: Number.isFinite(entitlements?.limits?.tokenPackDiscountPercent)
+        ? Math.max(0, Number(entitlements.limits.tokenPackDiscountPercent))
+        : prev.limits?.tokenPackDiscountPercent,
+      vcTokenPackDiscountPercent: Number.isFinite(entitlements?.limits?.vcTokenPackDiscountPercent)
+        ? Math.max(0, Number(entitlements.limits.vcTokenPackDiscountPercent))
+        : prev.limits?.vcTokenPackDiscountPercent,
     },
     features: {
       earlyAccess: Boolean(entitlements?.features?.earlyAccess),
@@ -478,10 +502,7 @@ const hasFirestoreAdminRole = (data: Record<string, unknown> | null | undefined)
 };
 
 export const shouldAllowFirestoreAdminRoleFallback = (): boolean => {
-  const configured = readEnvBoolean(
-    process.env.NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE,
-    process.env.VITE_ALLOW_FIRESTORE_ADMIN_ROLE
-  );
+  const configured = readEnvBoolean(process.env.NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE);
   if (configured !== undefined) return configured;
   const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
   return !isProductionRuntime;
@@ -530,7 +551,7 @@ export const mapFirebaseUserToProfile = async (firebaseUserOverride?: typeof fir
 
 const resolveFirebaseConfigIssue = (): string =>
   String(firebaseConfigIssue || '').trim() ||
-  'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart the frontend server.';
+  'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart the frontend server.';
 
 const requireFirebaseConfigForAuth = (): string | null => {
   if (isFirebaseConfigured) return null;
@@ -596,6 +617,14 @@ const mapFirebaseAuthError = (error: any, context: 'signin' | 'signup' = 'signin
     : 'Sign-in failed. Please check your details and try again.';
 };
 
+const mapSessionSyncFailureMessage = (error: unknown): string => {
+  const detail = String((error as { message?: unknown } | null)?.message || '').trim().toLowerCase();
+  if (detail.includes('status 401')) {
+    return 'Signed in, but the secure app session could not be started. Please try again in a few seconds.';
+  }
+  return 'Signed in, but the app could not finish starting your secure session. Please try again.';
+};
+
 const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
   const textPreview = String((item as any).textPreview || item.text || '').trim();
   const voiceId = String((item as any).voiceId || (item as any).voice_id || '').trim();
@@ -619,11 +648,11 @@ const MAX_IN_MEMORY_HISTORY_ITEMS = 30;
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const pathname = usePathname();
   const [authReady, setAuthReady] = useState(false);
+  const [sessionCookieReady, setSessionCookieReady] = useState(false);
   const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
   const [user, setUser] = useState<UserProfile>(BLANK_USER);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [clonedVoices, setClonedVoices] = useState<ClonedVoice[]>([]);
-  const [drafts, setDrafts] = useState<Draft[]>([]);
   const [characterLibrary, setCharacterLibrary] = useState<CharacterProfile[]>(DEFAULT_CHARACTERS);
   const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
   const [isSyncing] = useState(false);
@@ -631,6 +660,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
   const charactersUnsubscribeRef = useRef<(() => void) | null>(null);
   const hasHydratedStatsRef = useRef(false);
+  const lastSessionTokenRef = useRef('');
   const shouldBootstrapAccountData = useMemo(
     () => shouldBootstrapAccountDataForPath(pathname),
     [pathname]
@@ -671,7 +701,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     try {
-      const entitlements = await fetchAccountEntitlements(readSettingsBackendUrl());
+      const entitlements = await fetchAccountEntitlements();
       setStats((prev) => mapEntitlementsToStats(entitlements, prev));
     } catch {
       // Keep the current stats if backend is not reachable.
@@ -686,7 +716,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     try {
-      const actor = await fetchAdminActor(readSettingsBackendUrl());
+      const actor = await fetchAdminActor(CANONICAL_API_BASE);
       const actorPayload = {
         uid: String(actor.uid || '').trim() || currentUid,
         role: String(actor.role || 'super_admin'),
@@ -722,7 +752,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     try {
-      const rows = await fetchGenerationHistory(readSettingsBackendUrl(), limit);
+      const rows = await fetchGenerationHistory(undefined, limit);
       const normalized = Array.isArray(rows)
         ? rows.map((item) => normalizeHistoryItem(item)).sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
         : [];
@@ -734,7 +764,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const clearHistoryRemote = async () => {
     try {
-      await clearGenerationHistory(readSettingsBackendUrl());
+      await clearGenerationHistory();
     } catch {
       // Keep client behavior deterministic even when backend clear fails.
     } finally {
@@ -742,39 +772,36 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const bootstrapCharacterSync = (uid: string) => {
+  const bootstrapCharacterSync = async (uid: string) => {
     if (charactersUnsubscribeRef.current) {
       charactersUnsubscribeRef.current();
       charactersUnsubscribeRef.current = null;
     }
     const charactersRef = collection(firestoreDb, 'users', uid, 'characters');
-    charactersUnsubscribeRef.current = onSnapshot(
-      charactersRef,
-      async (snapshot) => {
-        if (snapshot.empty) {
-          const localCharacters = readStorageJson<CharacterProfile[]>(STORAGE_KEYS.characterLibrary);
-          if (Array.isArray(localCharacters) && localCharacters.length > 0) {
-            const batch = writeBatch(firestoreDb);
-            localCharacters.forEach((character) => {
-              const id = character.id || crypto.randomUUID();
-              batch.set(doc(firestoreDb, 'users', uid, 'characters', id), { ...character, id });
-            });
-            await batch.commit();
-            removeStorageKey(STORAGE_KEYS.characterLibrary);
-            return;
-          }
-          setCharacterLibrary(DEFAULT_CHARACTERS);
+    try {
+      const snapshot = await getDocs(charactersRef);
+      if (snapshot.empty) {
+        const localCharacters = readStorageJson<CharacterProfile[]>(STORAGE_KEYS.characterLibrary);
+        if (Array.isArray(localCharacters) && localCharacters.length > 0) {
+          const batch = writeBatch(firestoreDb);
+          localCharacters.forEach((character) => {
+            const id = character.id || crypto.randomUUID();
+            batch.set(doc(firestoreDb, 'users', uid, 'characters', id), { ...character, id });
+          });
+          await batch.commit();
+          removeStorageKey(STORAGE_KEYS.characterLibrary);
           return;
         }
-        const next = snapshot.docs
-          .map((entry) => entry.data() as CharacterProfile)
-          .filter((item) => item && item.name && item.voiceId);
-        setCharacterLibrary(next.length > 0 ? next : DEFAULT_CHARACTERS);
-      },
-      () => {
         setCharacterLibrary(DEFAULT_CHARACTERS);
+        return;
       }
-    );
+      const next = snapshot.docs
+        .map((entry) => entry.data() as CharacterProfile)
+        .filter((item) => item && item.name && item.voiceId);
+      setCharacterLibrary(next.length > 0 ? next : DEFAULT_CHARACTERS);
+    } catch {
+      setCharacterLibrary(DEFAULT_CHARACTERS);
+    }
   };
 
   useEffect(() => {
@@ -791,6 +818,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
       try {
         if (!firebaseUser) {
+          setSessionCookieReady(false);
           if (charactersUnsubscribeRef.current) {
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
@@ -811,6 +839,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
           }
+          setSessionCookieReady(false);
           await signOut(firebaseAuth).catch(() => undefined);
           clearDriveTokenCache();
           removeStorageKey(STORAGE_KEYS.settings);
@@ -822,7 +851,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         const profile = await mapFirebaseUserToProfile(firebaseUser);
         setUser(profile);
-        bootstrapCharacterSync(firebaseUser.uid);
+        void bootstrapCharacterSync(firebaseUser.uid);
       } finally {
         markAuthReady();
       }
@@ -838,6 +867,37 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [refreshAdminActor, refreshEntitlements]);
 
   useEffect(() => {
+    const unsubscribe = onIdTokenChanged(firebaseAuth, async (firebaseUser) => {
+      try {
+        if (!firebaseUser) {
+          setSessionCookieReady(false);
+          lastSessionTokenRef.current = '';
+          await clearFirebaseSession();
+          return;
+        }
+
+        const idToken = await firebaseUser.getIdToken();
+        if (!idToken || lastSessionTokenRef.current === idToken) {
+          setSessionCookieReady(Boolean(idToken));
+          return;
+        }
+
+        await syncFirebaseSession(idToken);
+        lastSessionTokenRef.current = idToken;
+        setSessionCookieReady(true);
+      } catch (error) {
+        setSessionCookieReady(false);
+        lastSessionTokenRef.current = '';
+        console.warn('[UserContext] session sync failed', error);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     const safeUid = String(user.uid || '').trim();
     if (!safeUid) {
       if (user.adminActor) {
@@ -846,16 +906,47 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     if (!shouldBootstrapAccountData) return;
+    if (!user.isAdmin) {
+      if (user.adminActor) {
+        setUser((prev) => ({ ...prev, adminActor: null }));
+      }
+      return;
+    }
     void refreshAdminActor();
   // user.adminActor intentionally excluded to avoid a fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshAdminActor, shouldBootstrapAccountData, user.uid]);
+  }, [refreshAdminActor, shouldBootstrapAccountData, user.isAdmin, user.uid]);
 
   useEffect(() => {
     const safeUid = String(user.uid || '').trim();
     if (!safeUid || !shouldBootstrapAccountData) return;
     void Promise.allSettled([refreshEntitlements(), loadHistory()]);
   }, [loadHistory, refreshEntitlements, shouldBootstrapAccountData, user.uid]);
+
+  const finalizeFirebaseSignIn = useCallback(async (
+    firebaseUser: { getIdToken: (forceRefresh?: boolean) => Promise<string> }
+  ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      setSessionCookieReady(false);
+      const idToken = await firebaseUser.getIdToken();
+      if (!idToken) {
+        throw new Error('Missing Firebase ID token.');
+      }
+      await syncFirebaseSession(idToken);
+      lastSessionTokenRef.current = idToken;
+      setSessionCookieReady(true);
+      return { ok: true };
+    } catch (error) {
+      setSessionCookieReady(false);
+      lastSessionTokenRef.current = '';
+      await clearFirebaseSession().catch(() => undefined);
+      await signOut(firebaseAuth).catch(() => undefined);
+      return {
+        ok: false,
+        error: mapSessionSyncFailureMessage(error),
+      };
+    }
+  }, []);
 
   const signInWithEmail = useCallback<UserContextType['signInWithEmail']>(async (email, password) => {
     const rawEmail = String(email || '').trim();
@@ -879,6 +970,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         await signOut(firebaseAuth).catch(() => undefined);
         return buildUnverifiedEmailSignInResult();
       }
+      const sessionResult = await finalizeFirebaseSignIn(credential.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
+      }
       return { ok: true };
     } catch (error: any) {
       const errorCode = String(error?.code || '').trim().toLowerCase();
@@ -889,9 +984,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         ...(provisioningHint ? { provisioningHint } : {}),
       };
     }
-  }, []);
+  }, [finalizeFirebaseSignIn]);
 
   const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName) => {
+    if (isSignupTemporarilyDisabled()) {
+      return buildSignupDisabledResult();
+    }
+
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
@@ -1000,6 +1099,12 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     try {
       const result = await signInWithPopup(firebaseAuth, googleProvider);
+      const providerUserInfo = getAdditionalUserInfo(result);
+      if (providerUserInfo?.isNewUser && isSignupTemporarilyDisabled()) {
+        await deleteUser(result.user).catch(() => undefined);
+        await signOut(firebaseAuth).catch(() => undefined);
+        return buildSignupDisabledResult();
+      }
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (requiresEmailVerificationForUser(result.user)) {
         await waitForAuthUserReload(result.user);
@@ -1011,6 +1116,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: unverifiedEmailAuthMessage,
           requiresEmailVerification: true,
         };
+      }
+      const sessionResult = await finalizeFirebaseSignIn(result.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
       }
       warmDriveTokenFromGoogleSignIn(credential);
       return { ok: true };
@@ -1026,7 +1135,17 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     try {
-      await signInWithPopup(firebaseAuth, facebookProvider);
+      const result = await signInWithPopup(firebaseAuth, facebookProvider);
+      const providerUserInfo = getAdditionalUserInfo(result);
+      if (providerUserInfo?.isNewUser && isSignupTemporarilyDisabled()) {
+        await deleteUser(result.user).catch(() => undefined);
+        await signOut(firebaseAuth).catch(() => undefined);
+        return buildSignupDisabledResult();
+      }
+      const sessionResult = await finalizeFirebaseSignIn(result.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1061,8 +1180,12 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (!confirmationRef.current) {
         return { ok: false, error: 'No phone verification session found.' };
       }
-      await confirmationRef.current.confirm(code);
+      const credential = await confirmationRef.current.confirm(code);
       confirmationRef.current = null;
+      const sessionResult = await finalizeFirebaseSignIn(credential.user);
+      if (!sessionResult.ok) {
+        return sessionResult;
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1074,11 +1197,24 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       charactersUnsubscribeRef.current();
       charactersUnsubscribeRef.current = null;
     }
+    setSessionCookieReady(false);
+    await clearFirebaseSession().catch(() => undefined);
+    lastSessionTokenRef.current = '';
     if (firebaseAuth.currentUser) {
       await signOut(firebaseAuth).catch(() => undefined);
     }
     clearDriveTokenCache();
     removeStorageKey(STORAGE_KEYS.settings);
+    removeStorageKey(STORAGE_KEYS.stats);
+    removeStorageKey(STORAGE_KEYS.studioSidebarMode);
+    removeStorageKey(STORAGE_KEYS.studioEditorMode);
+    removeStorageKey(STORAGE_KEYS.studioDraftText);
+    removeStorageKey(STORAGE_KEYS.studioDraftHistory);
+    removeStorageKey(STORAGE_KEYS.workspaceActiveTab);
+    removeStorageKey(STORAGE_KEYS.studioRailTab);
+    removeStorageKey(STORAGE_KEYS.studioQueue);
+    removeStorageKey(STORAGE_KEYS.studioSingleInflightGeneration);
+    removeStorageKey(STORAGE_KEYS.studioSpeakerVcReferences);
     setUser(BLANK_USER);
     setCharacterLibrary(DEFAULT_CHARACTERS);
     setStats(INITIAL_STATS);
@@ -1153,6 +1289,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const contextValue = useMemo<ExtendedUserContextType>(() => ({
     user,
     authReady,
+    sessionCookieReady,
     updateUser: (partial) => setUser((prev) => ({ ...prev, ...partial })),
     stats,
     updateStats: (partial) =>
@@ -1173,24 +1310,41 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       ),
     history,
     loadHistory,
-    addToHistory: (item) => setHistory((prev) => {
+    addToHistory: (item) => {
       const normalizedItem = normalizeHistoryItem(item);
-      const normalizedId = String(normalizedItem.id || '');
-      const withoutDuplicate = normalizedId
-        ? prev.filter((entry) => String(entry.id || '') !== normalizedId)
-        : prev;
-      return [normalizedItem, ...withoutDuplicate].slice(0, MAX_IN_MEMORY_HISTORY_ITEMS);
-    }),
+      setHistory((prev) => {
+        const normalizedId = String(normalizedItem.id || '');
+        const withoutDuplicate = normalizedId
+          ? prev.filter((entry) => String(entry.id || '') !== normalizedId)
+          : prev;
+        return [normalizedItem, ...withoutDuplicate].slice(0, MAX_IN_MEMORY_HISTORY_ITEMS);
+      });
+      // Persist generation to the backend to fix the tech debt!
+      const persistHistory = async () => {
+        try {
+          await authFetch('/api/v1/account/generation-history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item: normalizedItem }),
+          }, { requireAuth: true });
+        } catch (err) {
+          console.warn('Failed to persist history item', err);
+        }
+      };
+      // Fire and forget
+      if (normalizedItem.audioUrl) {
+        persistHistory();
+      }
+    },
     clearHistory: async () => {
       await clearHistoryRemote();
     },
     deleteAccount: async () => {
-      await deleteAccountRequest(readSettingsBackendUrl(), ACCOUNT_DELETE_CONFIRM_PHRASE);
+      await deleteAccountRequest(undefined, ACCOUNT_DELETE_CONFIRM_PHRASE);
       await signOutUser();
       setHistory([]);
       setClonedVoices([]);
       clearSessionClonedVoices();
-      setDrafts([]);
       setCharacterLibrary(DEFAULT_CHARACTERS);
     },
     clonedVoices,
@@ -1198,10 +1352,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       addSessionClonedVoice(voice);
       setClonedVoices((prev) => [voice, ...prev.filter((item) => item.id !== voice.id)]);
     },
-    drafts,
-    saveDraft: (name, text, settings) =>
-      setDrafts((prev) => [{ id: Date.now().toString(), name, text, settings, lastModified: Date.now() }, ...prev]),
-    deleteDraft: (id) => setDrafts((prev) => prev.filter((item) => item.id !== id)),
     showSubscriptionModal,
     setShowSubscriptionModal: (show) => setShowSubscriptionModal(show),
     recordTtsUsage: () => {
@@ -1232,13 +1382,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     characterLibrary,
     clonedVoices,
     deleteCharacter,
-    drafts,
     hasUnlimitedAccess,
     history,
     isAdmin,
     isAuthenticated,
     isSyncing,
     authReady,
+    sessionCookieReady,
     refreshAdminActor,
     refreshEntitlements,
     signInWithEmail,

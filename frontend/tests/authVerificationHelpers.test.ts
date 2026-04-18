@@ -20,7 +20,7 @@ describe('auth verification helpers', () => {
 
   it('respects configured continue URL for Firebase email verification', () => {
     const configuredUrl = 'https://app.voiceflow.example/auth/complete?vf-screen=login';
-    vi.stubEnv('VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL', configuredUrl);
+    vi.stubEnv('NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL', configuredUrl);
     const settings = buildEmailVerificationActionSettings();
     expect(settings?.url).toBe(configuredUrl);
     expect(settings?.handleCodeInApp).toBe(false);
@@ -29,7 +29,6 @@ describe('auth verification helpers', () => {
   it('requires explicit continue URL configuration in production', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL', '');
-    vi.stubEnv('VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL', '');
     const settings = buildEmailVerificationActionSettings();
     expect(settings).toBeUndefined();
   });
@@ -37,7 +36,6 @@ describe('auth verification helpers', () => {
   it('rejects insecure http continue URLs in production', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL', 'http://app.voiceflow.example/auth/complete');
-    vi.stubEnv('VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL', '');
     const settings = buildEmailVerificationActionSettings();
     expect(settings).toBeUndefined();
   });
@@ -45,7 +43,6 @@ describe('auth verification helpers', () => {
   it('falls back to current host login route in development', () => {
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv('NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL', '');
-    vi.stubEnv('VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL', '');
     const settings = buildEmailVerificationActionSettings();
     expect(settings?.url).toContain('/app/login');
     expect(settings?.url.startsWith('http://') || settings?.url.startsWith('https://')).toBe(true);
@@ -54,7 +51,6 @@ describe('auth verification helpers', () => {
   it('disables Firestore admin-role fallback in production unless explicitly enabled', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', '');
-    vi.stubEnv('VITE_ALLOW_FIRESTORE_ADMIN_ROLE', '');
     expect(shouldAllowFirestoreAdminRoleFallback()).toBe(false);
 
     vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', 'true');
@@ -64,10 +60,9 @@ describe('auth verification helpers', () => {
   it('enables Firestore admin-role fallback in non-production unless explicitly disabled', () => {
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', '');
-    vi.stubEnv('VITE_ALLOW_FIRESTORE_ADMIN_ROLE', '');
     expect(shouldAllowFirestoreAdminRoleFallback()).toBe(true);
 
-    vi.stubEnv('VITE_ALLOW_FIRESTORE_ADMIN_ROLE', 'false');
+    vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', 'false');
     expect(shouldAllowFirestoreAdminRoleFallback()).toBe(false);
   });
 });

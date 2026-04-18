@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Reader Demo Poster</title>
+  <desc id="desc">Voice Flow Reader review sample poster with stage title and timing marker.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071329" />
+      <stop offset="52%" stop-color="#0b1f3f" />
+      <stop offset="100%" stop-color="#120f26" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38e8d0" />
+      <stop offset="55%" stop-color="#4f7cff" />
+      <stop offset="100%" stop-color="#ffb76b" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)" rx="28" ry="28" />
+  <g opacity="0.22">
+    <circle cx="170" cy="120" r="140" fill="#38e8d0" />
+    <circle cx="1090" cy="86" r="160" fill="#4f7cff" />
+    <circle cx="1160" cy="630" r="180" fill="#ffb76b" />
+  </g>
+
+  <rect x="88" y="92" width="1104" height="536" rx="24" ry="24" fill="rgba(8,18,36,0.66)" stroke="rgba(255,255,255,0.16)" />
+  <rect x="88" y="92" width="1104" height="8" fill="url(#accent)" rx="4" ry="4" />
+
+  <text x="146" y="164" fill="#7ee8dc" font-size="28" font-family="Segoe UI, Arial, sans-serif" letter-spacing="4" font-weight="700">VOICE FLOW READER</text>
+  <text x="146" y="236" fill="#f8fbff" font-size="62" font-family="Segoe UI, Arial, sans-serif" font-weight="800">Final Listening Pass</text>
+  <text x="146" y="292" fill="#c7d5ea" font-size="30" font-family="Segoe UI, Arial, sans-serif">30-second sample for pacing and approval checks</text>
+
+  <rect x="146" y="356" width="988" height="12" rx="6" ry="6" fill="rgba(255,255,255,0.16)" />
+  <rect x="146" y="356" width="540" height="12" rx="6" ry="6" fill="url(#accent)" />
+
+  <g transform="translate(146,430)">
+    <rect width="220" height="120" rx="16" ry="16" fill="rgba(56,232,208,0.12)" stroke="rgba(56,232,208,0.42)" />
+    <text x="24" y="52" fill="#f8fbff" font-size="24" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Scene 03</text>
+    <text x="24" y="86" fill="#9eb4d5" font-size="20" font-family="Segoe UI, Arial, sans-serif">Reader approval</text>
+  </g>
+
+  <g transform="translate(424,430)">
+    <rect width="710" height="120" rx="16" ry="16" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.16)" />
+    <text x="28" y="50" fill="#f8fbff" font-size="24" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Narration is steady and clean.</text>
+    <text x="28" y="86" fill="#9eb4d5" font-size="20" font-family="Segoe UI, Arial, sans-serif">Use this reference before opening the in-app reader workflow.</text>
+  </g>
+
+  <text x="1038" y="588" fill="#7ee8dc" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">00:30</text>
+</svg>

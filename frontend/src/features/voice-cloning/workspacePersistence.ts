@@ -20,7 +20,7 @@ export interface PersistedVoiceCloneResult {
   downloadUrl: string;
   fileName: string;
   response: VoiceCloneRenderResponse;
-  cloneMode: 'modal_vc';
+  cloneMode: 'seed_vc' | 'modal_vc';
 }
 
 export interface PersistedVoiceCloneActiveJob {
@@ -102,7 +102,7 @@ const normalizePersistedResult = (value: unknown): PersistedVoiceCloneResult | n
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
   const cloneMode = String(source.cloneMode || '').trim();
-  if (cloneMode !== 'modal_vc') return null;
+  if (cloneMode !== 'modal_vc' && cloneMode !== 'seed_vc') return null;
   return {
     previewUrl: String(source.previewUrl || '').trim(),
     downloadUrl: String(source.downloadUrl || '').trim(),

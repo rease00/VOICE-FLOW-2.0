@@ -27,10 +27,7 @@ const getAudioCatalog = async (): Promise<AudioCatalogPayload | null> => {
 };
 
 const resolveAssetPath = (entry: AudioCatalogEntry | null | undefined, fallbackUrl: string): string => {
-  const cdnBase = readEnvValue(
-    process.env.NEXT_PUBLIC_AUDIO_CDN_BASE_URL,
-    process.env.VITE_AUDIO_CDN_BASE_URL
-  ).replace(/\/+$/, '');
+  const cdnBase = readEnvValue(process.env.NEXT_PUBLIC_AUDIO_CDN_BASE_URL).replace(/\/+$/, '');
   const explicitAssetUrl = String(entry?.assetUrl || '').trim();
   if (explicitAssetUrl) return explicitAssetUrl;
   const assetPath = String(entry?.assetPath || '').trim() || String(fallbackUrl || '').trim();

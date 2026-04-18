@@ -13,6 +13,8 @@ export const BillingCenter: React.FC = () => {
   const monthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const paidBalance = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
   const spendableVf = Math.max(0, monthlyFree + paidBalance);
+  const tokenPackDiscountPercent = Math.max(0, Number(stats.limits?.tokenPackDiscountPercent || 0));
+  const vcTokenPackDiscountPercent = Math.max(0, Number(stats.limits?.vcTokenPackDiscountPercent || 0));
 
   const walletSummary = useMemo(
     () => ({
@@ -31,9 +33,12 @@ export const BillingCenter: React.FC = () => {
       appBuyUrl={APP_ROUTE_PATHS.billing}
       authMode="login"
       isAuthenticated={Boolean(String(user.uid || user.email || '').trim())}
+      billingCountry={stats.billingCountry || null}
       onBackToWorkspace={() => router.push(APP_ROUTE_PATHS.main)}
       onRefreshEntitlements={refreshEntitlements}
       walletSummary={walletSummary}
+      tokenPackDiscountPercent={tokenPackDiscountPercent}
+      vcTokenPackDiscountPercent={vcTokenPackDiscountPercent}
     />
   );
 };

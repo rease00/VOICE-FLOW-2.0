@@ -2,10 +2,10 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'V FLOW AI Reader',
-    short_name: 'VF Reader',
-    description: 'Install Reader for compact playback and offline saved audio.',
-    start_url: '/app/reader',
+    name: 'V FLOW AI Studio',
+    short_name: 'VF Studio',
+    description: 'Install V FLOW AI for studio and writing workspace access.',
+    start_url: '/app/writing',
     scope: '/',
     display: 'standalone',
     orientation: 'portrait',

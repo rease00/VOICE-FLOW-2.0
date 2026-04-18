@@ -44,29 +44,6 @@ export const VOICES: VoiceOption[] = [
 ];
 
 // ============================================================================
-// OPENAI COMPATIBLE VOICES
-// Standard voices often supported by local OpenAI-compatible backends
-// ============================================================================
-export const OPENAI_VOICES: VoiceOption[] = [
-  { id: 'alloy', name: 'Alloy', gender: 'Unknown', accent: 'Neutral', geminiVoiceName: 'alloy' },
-  { id: 'echo', name: 'Echo', gender: 'Male', accent: 'Neutral', geminiVoiceName: 'echo' },
-  { id: 'fable', name: 'Fable', gender: 'Unknown', accent: 'British', geminiVoiceName: 'fable' },
-  { id: 'onyx', name: 'Onyx', gender: 'Male', accent: 'Deep', geminiVoiceName: 'onyx' },
-  { id: 'nova', name: 'Nova', gender: 'Female', accent: 'Energetic', geminiVoiceName: 'nova' },
-  { id: 'shimmer', name: 'Shimmer', gender: 'Female', accent: 'Clear', geminiVoiceName: 'shimmer' }
-];
-
-// ============================================================================
-// F5-TTS PRESETS
-// Base voices for the F5 model
-// ============================================================================
-export const F5_VOICES: VoiceOption[] = [
-  { id: 'f5_base_m', name: 'F5 Male (Base)', gender: 'Male', accent: 'Neutral', geminiVoiceName: 'f5_male' },
-  { id: 'f5_base_f', name: 'F5 Female (Base)', gender: 'Female', accent: 'Neutral', geminiVoiceName: 'f5_female' },
-];
-
-
-// ============================================================================
 // LANGUAGES - 80+ Languages with native names and RTL support
 // ============================================================================
 

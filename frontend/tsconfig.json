@@ -13,7 +13,6 @@
     "types": [
       "node"
     ],
-    "baseUrl": ".",
     "moduleResolution": "bundler",
     "isolatedModules": true,
     "moduleDetection": "force",
@@ -33,6 +32,7 @@
     "noEmit": true,
     "incremental": true,
     "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "plugins": [
       {
@@ -43,17 +43,20 @@
   "include": [
     "src",
     "app",
+    "components",
+    "contexts",
+    "services",
+    "types.ts",
+    "constants.ts",
+    "audio.dom.d.ts",
     "next-env.d.ts",
-    ".next*/types/**/*.ts",
-    ".next*/dev/types/**/*.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    ".next-playwright/types/**/*.ts",
-    ".next-playwright/dev/types/**/*.ts",
-    ".next-audit/types/**/*.ts",
-    ".next-audit/dev/types/**/*.ts"
+    ".next_probe/types/**/*.ts",
+    ".next_probe/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".next/dev/**/*"
   ]
 }

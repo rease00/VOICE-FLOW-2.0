@@ -3,7 +3,7 @@ import { ASSISTANT_PROVIDER_UI_LABELS, joinUiFragments, sanitizeUiText } from '.
 
 describe('sanitizeUiText', () => {
   it('keeps assistant-provider copy neutral while productizing engine names', () => {
-    expect(sanitizeUiText('Gemini failed; DUNO offline.')).toBe('Primary AI failed; Duno offline.');
+    expect(sanitizeUiText('Gemini failed; VECTOR offline.')).toBe('Primary AI failed; Vector offline.');
     expect(sanitizeUiText('VECTOR fallback engaged.')).toBe('Vector fallback engaged.');
     expect(sanitizeUiText('PRIME ready.')).toBe('Prime ready.');
   });
@@ -11,13 +11,11 @@ describe('sanitizeUiText', () => {
   it('replaces runtime and slot-set phrases', () => {
     expect(sanitizeUiText('Gemini runtime slot set is empty.')).toBe('Primary AI runtime slot set is empty.');
     expect(sanitizeUiText('Loading Gemini pool status...')).toBe('Loading Primary AI slot set status...');
-    expect(sanitizeUiText('DUNO Runtime ready')).toBe('Duno Runtime ready');
     expect(sanitizeUiText('VECTOR runtime online')).toBe('Vector Runtime online');
   });
 
   it('is case-insensitive for supported provider phrases', () => {
     expect(sanitizeUiText('GEMINI API KEY missing')).toBe('Primary AI API key missing');
-    expect(sanitizeUiText('DUNO RUNTIME')).toBe('Duno Runtime');
   });
 
   it('keeps unrelated text unchanged', () => {
@@ -34,6 +32,6 @@ describe('ASSISTANT_PROVIDER_UI_LABELS', () => {
 describe('joinUiFragments', () => {
   it('joins truthy fragments with a normalized separator', () => {
     expect(joinUiFragments(['Ready', '', '32% complete'])).toBe('Ready | 32% complete');
-    expect(joinUiFragments(['Gemini ready', null, 'DUNO offline'])).toBe('Primary AI ready | Duno offline');
+    expect(joinUiFragments(['Gemini ready', null, 'VECTOR offline'])).toBe('Primary AI ready | Vector offline');
   });
 });

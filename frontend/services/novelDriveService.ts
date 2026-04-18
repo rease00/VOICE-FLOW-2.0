@@ -283,10 +283,15 @@ export const createChapter = async (
   token: string,
   projectFolderId: string,
   title: string,
-  initialText: string
+  initialText: string,
+  nextIndexHint?: number
 ): Promise<NovelChapter> => {
-  const existing = await listChapters(token, projectFolderId);
-  const nextIndex = Math.max(1, ...existing.map((chapter) => chapter.index + 1));
+  const existing = typeof nextIndexHint === 'number' && Number.isFinite(nextIndexHint) && nextIndexHint > 0
+    ? []
+    : await listChapters(token, projectFolderId);
+  const nextIndex = typeof nextIndexHint === 'number' && Number.isFinite(nextIndexHint) && nextIndexHint > 0
+    ? Math.max(1, Math.floor(nextIndexHint))
+    : Math.max(1, ...existing.map((chapter) => chapter.index + 1));
   const safeTitle = sanitizeName(title, `Chapter ${nextIndex}`);
   const chapterName = `Chapter ${String(nextIndex).padStart(3, '0')} - ${safeTitle}`;
 
@@ -401,4 +406,3 @@ export const saveExportFile = async (
     mimeType || 'application/octet-stream'
   );
 };
-

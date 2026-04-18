@@ -1,9 +1,13 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
+import openVoiceManifestJson from '../../../public/audio/openvoice-demo/manifest.json';
+import readerDemoManifestJson from '../../../public/audio/reader-demo/manifest.json';
+import vectorDemoManifestJson from '../../../public/audio/vector-demo/manifest.json';
+import vectorMultiDemoManifestJson from '../../../public/audio/vector-multi-demo/manifest.json';
 import { buildStudioLiveMultiSpeakerPrompt } from '../../shared/prompts/liveMultiSpeakerPrompt';
 
 interface VectorDemoSample {
   slug: string;
+  title?: string;
+  summary?: string;
   language: string;
   country: string;
   file: string;
@@ -28,6 +32,7 @@ interface MultiSpeakerManifestCast {
 
 interface MultiSpeakerManifestEntry {
   id: string;
+  title?: string;
   language: string;
   market: string;
   useCase: string;
@@ -55,6 +60,48 @@ interface VoiceCloneManifestFile {
 interface VoiceCloneManifest {
   engine: string;
   files: VoiceCloneManifestFile[];
+}
+
+interface ReaderDemoManifestSample {
+  id: string;
+  title: string;
+  summary: string;
+  language: string;
+  locale: string;
+  audioSrc: string;
+  posterSrc: string;
+  cue: string;
+  durationSec: number;
+  script: string;
+}
+
+interface ReaderDemoManifestVirtualBook {
+  id: string;
+  title: string;
+  author: string;
+  language: string;
+  locale: string;
+  description: string;
+  coverSrc: string;
+  totalChapters: number;
+}
+
+interface ReaderDemoManifestChapter {
+  id: string;
+  order: number;
+  title: string;
+  summary: string;
+  cue: string;
+  audioSrc: string;
+  durationSec: number;
+  script: string;
+}
+
+interface ReaderDemoManifest {
+  engine: string;
+  sample: ReaderDemoManifestSample;
+  virtualBook?: ReaderDemoManifestVirtualBook;
+  chapters?: ReaderDemoManifestChapter[];
 }
 
 export interface LandingSingleSpeakerDemo {
@@ -125,6 +172,40 @@ export interface LandingReaderUnit {
   body: string;
 }
 
+export interface LandingReaderSample {
+  id: string;
+  title: string;
+  summary: string;
+  language: string;
+  locale: string;
+  audioSrc: string;
+  posterSrc: string;
+  cue: string;
+  durationSec: number;
+}
+
+export interface LandingReaderChapter {
+  id: string;
+  order: number;
+  title: string;
+  summary: string;
+  cue: string;
+  audioSrc: string;
+  durationSec: number;
+}
+
+export interface LandingReaderVirtualBook {
+  id: string;
+  title: string;
+  author: string;
+  language: string;
+  locale: string;
+  description: string;
+  coverSrc: string;
+  totalChapters: number;
+  chapters: LandingReaderChapter[];
+}
+
 export interface LandingReaderProof {
   title: string;
   summary: string;
@@ -133,75 +214,40 @@ export interface LandingReaderProof {
   progressLabel: string;
   activeTitle: string;
   activeStatus: string;
+  sample: LandingReaderSample;
+  virtualBook: LandingReaderVirtualBook;
   units: LandingReaderUnit[];
 }
 
-const SINGLE_SPEAKER_COPY: Record<
-  string,
-  {
-    title: string;
-    summary: string;
-    cue: string;
+const asVectorDemoManifest = vectorDemoManifestJson as VectorDemoManifest;
+const asMultiSpeakerManifest = vectorMultiDemoManifestJson as MultiSpeakerManifest;
+const asVoiceCloneManifest = openVoiceManifestJson as VoiceCloneManifest;
+const asReaderDemoManifest = readerDemoManifestJson as ReaderDemoManifest;
+
+const resolveSingleDemoTitle = (sample: VectorDemoSample, index: number): string => {
+  const explicitTitle = String(sample.title || '').trim();
+  if (explicitTitle) return explicitTitle;
+  return `Single Voice Demo ${index + 1}`;
+};
+
+const buildSpeakerAliasMap = (entry: MultiSpeakerManifestEntry): Map<string, string> => {
+  const orderedSpeakers = [
+    ...entry.cast.map((member) => String(member.speaker || '').trim()),
+    ...entry.lines.map((line) => String(line.speaker || '').trim()),
+  ].filter(Boolean);
+
+  const unique = Array.from(new Set(orderedSpeakers));
+  return new Map(unique.map((speaker, index) => [speaker, `Voice ${index + 1}`]));
+};
+
+const buildVoiceCastLabels = (entry: MultiSpeakerManifestEntry, aliasMap: Map<string, string>): string[] => {
+  const aliasLabels = Array.from(aliasMap.values());
+  if (aliasLabels.length > 0) {
+    return aliasLabels;
   }
-> = {
-  'en-us': {
-    title: 'Daily assistant check-in',
-    summary: 'Smart-home weather, schedule, and a playful reminder in one pass.',
-    cue: 'Bright, friendly, warm.',
-  },
-  hi: {
-    title: 'Hindi support response',
-    summary: 'Support reply built around reassurance and clear next steps.',
-    cue: 'Calm, steady, reassuring.',
-  },
-  es: {
-    title: 'Spanish delivery update',
-    summary: 'Delivery status with light urgency and practical guidance.',
-    cue: 'Upbeat, practical, crisp.',
-  },
-  ja: {
-    title: 'Japanese meeting reminder',
-    summary: 'Business reminder with composed pre-meeting pacing.',
-    cue: 'Measured, professional, supportive.',
-  },
-  fr: {
-    title: 'French lifestyle narrative',
-    summary: 'Dreamy travel-style narration with a soft finish.',
-    cue: 'Airy, warm, gentle.',
-  },
+  const fallbackCount = Math.max(0, entry.cast.length);
+  return Array.from({ length: fallbackCount }, (_, index) => `Voice ${index + 1}`);
 };
-
-const MULTI_SPEAKER_SUMMARY_COPY: Record<string, string> = {
-  'en-weekend-plan': 'Three friends pitch a blockbuster, an indie drama, and a playful middle ground.',
-  'hi-family-dinner': 'A family dinner scene that balances warmth, teasing, and gentle authority.',
-  'es-boutique-shop': 'A retail exchange that moves from polite ask to confident close.',
-  'ja-office-deadline': 'An office handoff scene with tired focus and professional restraint.',
-  'fr-city-tour': 'A guide and tourist move through a romantic city recommendation.',
-};
-
-const MULTI_SPEAKER_TITLE_COPY: Record<string, string> = {
-  'en-weekend-plan': 'The weekend plan',
-  'hi-family-dinner': 'Family dinner',
-  'es-boutique-shop': 'The boutique shop',
-  'ja-office-deadline': 'The office deadline',
-  'fr-city-tour': 'The city tour',
-};
-
-const MULTI_SPEAKER_CUE_COPY: Record<string, string> = {
-  'en-weekend-plan': 'Fast turns with crisp character contrast.',
-  'hi-family-dinner': 'Warm family timing with teasing authority.',
-  'es-boutique-shop': 'Helpful retail pacing with a bright finish.',
-  'ja-office-deadline': 'Tired but professional handoff energy.',
-  'fr-city-tour': 'Elegant guide pacing with a romantic finish.',
-};
-
-const readJsonWithBom = <T,>(...segments: string[]): T => (
-  JSON.parse(readFileSync(path.join('public', ...segments), 'utf8').replace(/^\uFEFF/, '')) as T
-);
-
-const asVectorDemoManifest = readJsonWithBom<VectorDemoManifest>('audio', 'vector-demo', 'manifest.json');
-const asMultiSpeakerManifest = readJsonWithBom<MultiSpeakerManifest>('audio', 'vector-multi-demo', 'manifest.json');
-const asVoiceCloneManifest = readJsonWithBom<VoiceCloneManifest>('audio', 'openvoice-demo', 'manifest.json');
 
 const requireSingleSample = (slug: string) => {
   const sample = asVectorDemoManifest.samples.find((entry) => entry.slug === slug);
@@ -227,51 +273,120 @@ const requireCloneFile = (role: string) => {
   return file;
 };
 
-const FEATURED_SINGLE_SPEAKER_IDS = ['en-us', 'hi', 'es', 'ja', 'fr'] as const;
-const FEATURED_MULTI_SPEAKER_IDS = [
-  'en-weekend-plan',
-  'hi-family-dinner',
-  'es-boutique-shop',
-  'ja-office-deadline',
-  'fr-city-tour',
-] as const;
+const requireReaderSample = () => {
+  const sample = asReaderDemoManifest.sample;
+  if (!sample) {
+    throw new Error('Reader landing proof is missing the sample payload.');
+  }
 
-export const LANDING_SINGLE_SPEAKER_DEMOS: readonly LandingSingleSpeakerDemo[] = FEATURED_SINGLE_SPEAKER_IDS.map((slug) => {
-  const sample = requireSingleSample(slug);
-  const copy = SINGLE_SPEAKER_COPY[slug];
-  if (!copy) {
-    throw new Error(`Landing single-speaker copy for "${slug}" is missing.`);
+  if (!String(sample.audioSrc || '').trim().startsWith('/audio/reader-demo/')) {
+    throw new Error('Reader landing proof has an invalid audio source path.');
+  }
+
+  if (!String(sample.posterSrc || '').trim().startsWith('/images/')) {
+    throw new Error('Reader landing proof has an invalid poster source path.');
+  }
+
+  return sample;
+};
+
+const requireReaderVirtualBook = () => {
+  const virtualBook = asReaderDemoManifest.virtualBook;
+  if (!virtualBook) {
+    throw new Error('Reader landing proof is missing the virtual book payload.');
+  }
+
+  const chapters = Array.isArray(asReaderDemoManifest.chapters) ? asReaderDemoManifest.chapters : [];
+  if (chapters.length < 2) {
+    throw new Error('Reader landing proof requires at least two virtual book chapters.');
+  }
+
+  if (!String(virtualBook.coverSrc || '').trim().startsWith('/images/')) {
+    throw new Error('Reader landing proof has an invalid virtual book cover path.');
+  }
+
+  const normalizedChapters = chapters
+    .map((chapter) => ({
+      ...chapter,
+      order: Number(chapter.order || 0),
+      durationSec: Number(chapter.durationSec || 0),
+    }))
+    .sort((a, b) => a.order - b.order);
+
+  const seen = new Set<string>();
+  for (const chapter of normalizedChapters) {
+    const chapterId = String(chapter.id || '').trim();
+    if (!chapterId) {
+      throw new Error('Reader landing proof includes a chapter without an id.');
+    }
+    if (seen.has(chapterId)) {
+      throw new Error(`Reader landing proof includes a duplicate chapter id: ${chapterId}`);
+    }
+    seen.add(chapterId);
+
+    if (!String(chapter.audioSrc || '').trim().startsWith('/audio/reader-demo/')) {
+      throw new Error(`Reader landing proof has an invalid chapter audio path for ${chapterId}.`);
+    }
+
+    if (!(chapter.durationSec > 0)) {
+      throw new Error(`Reader landing proof has an invalid chapter duration for ${chapterId}.`);
+    }
   }
 
   return {
+    virtualBook,
+    chapters: normalizedChapters,
+  };
+};
+
+const FEATURED_SINGLE_SPEAKER_IDS: readonly string[] = asVectorDemoManifest.samples
+  .map((sample) => sample.slug)
+  .slice(0, 6);
+
+const FEATURED_MULTI_SPEAKER_IDS: readonly string[] = (
+  asMultiSpeakerManifest.featuredIds.length > 0
+    ? asMultiSpeakerManifest.featuredIds
+    : asMultiSpeakerManifest.entries.map((entry) => entry.id)
+).slice(0, 6);
+
+export const LANDING_SINGLE_SPEAKER_DEMOS: readonly LandingSingleSpeakerDemo[] = FEATURED_SINGLE_SPEAKER_IDS.map((slug, index) => {
+  const sample = requireSingleSample(slug);
+  const market = String(sample.country || '').trim() || 'Global';
+  const runtimeLabel = String(asVectorDemoManifest.engine || 'runtime').trim();
+  const explicitSummary = String(sample.summary || '').trim();
+
+  return {
     id: slug,
-    title: copy.title,
-    summary: copy.summary,
+    title: resolveSingleDemoTitle(sample, index),
+    summary: explicitSummary || `Generated in the app and published for fast ${sample.language} voice checks.`,
     language: sample.language,
-    market: sample.country,
+    market,
     audioSrc: sample.file,
-    cue: copy.cue,
+    cue: `${runtimeLabel} render`,
   };
 });
 
 export const LANDING_MULTI_SPEAKER_DEMOS: readonly LandingMultiSpeakerDemo[] = FEATURED_MULTI_SPEAKER_IDS.map((id) => {
   const entry = requireMultiSpeakerEntry(id);
+  const aliasMap = buildSpeakerAliasMap(entry);
+  const voiceCast = buildVoiceCastLabels(entry, aliasMap);
+  const explicitTitle = String(entry.title || '').trim();
 
   return {
     id,
-    title: MULTI_SPEAKER_TITLE_COPY[id] || entry.scenario,
-    summary: MULTI_SPEAKER_SUMMARY_COPY[id] || entry.summary,
+    title: explicitTitle || entry.scenario,
+    summary: entry.summary,
     scene: entry.scenario,
     market: entry.market,
     useCase: entry.useCase,
     direction: entry.direction,
     translation: entry.translation,
-    cue: MULTI_SPEAKER_CUE_COPY[id] || entry.direction,
+    cue: entry.direction,
     audioSrc: entry.audioSrc,
-    cast: entry.cast.map((member) => member.displayName),
+    cast: voiceCast,
     lines: entry.lines.map((line) => ({
-      speaker: line.speaker,
-      role: line.role,
+      speaker: aliasMap.get(line.speaker) || 'Voice',
+      role: aliasMap.get(line.speaker) || 'Voice',
       text: line.text,
     })),
     ...(entry.rtl ? { rtl: true } : {}),
@@ -292,11 +407,12 @@ const LANDING_DIRECTOR_PROMPT_BUNDLE = buildStudioLiveMultiSpeakerPrompt({
 
 const referenceFile = requireCloneFile('reference');
 const renderedFile = requireCloneFile('rendered');
+const readerSample = requireReaderSample();
+const readerVirtualBook = requireReaderVirtualBook();
 
 export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
   title: 'Voice Clone proof',
-  summary:
-    'Compare the reference clip against the rendered clone before opening the studio.',
+  summary: 'Compare the reference clip against the rendered clone before opening the studio.',
   source: {
     label: 'Reference take',
     name: 'reference.wav',
@@ -311,8 +427,7 @@ export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
 
 export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
   title: 'AI Director lane',
-  summary:
-    'Use the same prompt contract as the studio to tighten emphasis and pacing before render.',
+  summary: 'Use the same prompt contract as the studio to tighten emphasis and pacing before render.',
   prompt: LANDING_DIRECTOR_PROMPT_BUNDLE.systemPrompt.split('\n').slice(0, 8).join('\n'),
   before: 'Flat pacing with weak contrast between the three voices.',
   after: 'Clearer handoffs, cleaner skepticism, warmer resolution.',
@@ -325,31 +440,46 @@ export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
 
 export const LANDING_READER_PROOF: LandingReaderProof = {
   title: 'Reader playback',
-  summary:
-    'The reader closes the loop between script review and final listening.',
+  summary: 'The reader closes the loop between script review and final listening.',
   modeLabel: 'Reader review',
   coverLabel: 'Approval surface',
-  progressLabel: '4 scenes locked',
-  activeTitle: 'Episode 03 - Final listening pass',
+  progressLabel: `${readerVirtualBook.chapters.length} chapters ready`,
+  activeTitle: readerVirtualBook.chapters[0]?.title || 'Chapter playback',
   activeStatus: 'Reviewing',
-  units: [
-    {
-      id: 'scene-1',
-      title: 'Scene 01 - Cold open',
-      status: 'Locked',
-      body: 'Lead with the promise, then move straight into proof.',
-    },
-    {
-      id: 'scene-2',
-      title: 'Scene 02 - Prime cast reel',
-      status: 'Live',
-      body: 'Keep the cast reel easy to compare while the team reviews handoffs.',
-    },
-    {
-      id: 'scene-3',
-      title: 'Scene 03 - Clone approval',
-      status: 'Ready',
-      body: 'Keep reference and clone takes together for fast approval.',
-    },
-  ],
+  sample: {
+    id: readerSample.id,
+    title: readerSample.title,
+    summary: readerSample.summary,
+    language: readerSample.language,
+    locale: readerSample.locale,
+    audioSrc: readerSample.audioSrc,
+    posterSrc: readerSample.posterSrc,
+    cue: readerSample.cue,
+    durationSec: Number(readerSample.durationSec || 0),
+  },
+  virtualBook: {
+    id: readerVirtualBook.virtualBook.id,
+    title: readerVirtualBook.virtualBook.title,
+    author: readerVirtualBook.virtualBook.author,
+    language: readerVirtualBook.virtualBook.language,
+    locale: readerVirtualBook.virtualBook.locale,
+    description: readerVirtualBook.virtualBook.description,
+    coverSrc: readerVirtualBook.virtualBook.coverSrc,
+    totalChapters: Number(readerVirtualBook.virtualBook.totalChapters || readerVirtualBook.chapters.length),
+    chapters: readerVirtualBook.chapters.map((chapter) => ({
+      id: chapter.id,
+      order: Number(chapter.order || 0),
+      title: chapter.title,
+      summary: chapter.summary,
+      cue: chapter.cue,
+      audioSrc: chapter.audioSrc,
+      durationSec: Number(chapter.durationSec || 0),
+    })),
+  },
+  units: readerVirtualBook.chapters.map((chapter) => ({
+    id: chapter.id,
+    title: chapter.title,
+    status: chapter.order === 1 ? 'Live' : 'Ready',
+    body: chapter.summary,
+  })),
 };

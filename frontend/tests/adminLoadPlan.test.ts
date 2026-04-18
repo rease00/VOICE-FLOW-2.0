@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+
 import {
   ADMIN_REFRESH_ALL_SECTIONS,
   getAdminSectionsToLoad,
@@ -7,36 +8,27 @@ import {
 import { resolveAdminOpsTabFromUrl } from '../src/app/workspace/mainAppHelpers';
 
 describe('admin load plan', () => {
-  it('loads only the users section for the default admin tab', () => {
-    expect(resolveAdminSectionsForView('users', 'usage')).toEqual(['users']);
+  it('loads only the users section for the users tab by default', () => {
+    expect(resolveAdminSectionsForView('users', 'usage')).toEqual(['users', 'userTimeline']);
   });
 
-  it('loads a tab once and avoids refetching already-loaded sections', () => {
-    const loadedSections = new Set<'users' | 'supportConversations' | 'supportAiPolicy' | 'adminNotices' | 'adminUnlockStatus'>(['users']);
-
-    expect(
-      getAdminSectionsToLoad(loadedSections, resolveAdminSectionsForView('messages', 'usage'))
-    ).toEqual(['supportConversations', 'supportAiPolicy', 'adminNotices', 'adminUnlockStatus']);
-
-    loadedSections.add('supportConversations');
-    loadedSections.add('supportAiPolicy');
-    loadedSections.add('adminNotices');
-    loadedSections.add('adminUnlockStatus');
-
-    expect(
-      getAdminSectionsToLoad(loadedSections, resolveAdminSectionsForView('messages', 'usage'))
-    ).toEqual([]);
-  });
-
-  it('forces a full refresh and keeps audit/audio metadata grouped under the audit ops tab', () => {
-    expect(resolveAdminSectionsForView('ops', 'audit')).toEqual(['audit', 'audioMetadata']);
-    expect(resolveAdminSectionsForView('ops', 'accounting')).toEqual(['accounting']);
-    expect(resolveAdminSectionsForView('messages', 'usage')).toEqual([
-      'supportConversations',
-      'supportAiPolicy',
-      'adminNotices',
-      'adminUnlockStatus',
+  it('keeps money overview fast and loads heavy accounting sections only for the accounting subview', () => {
+    expect(resolveAdminSectionsForView('money', 'accounting', { moneyView: 'overview' })).toEqual(['moneySummary']);
+    expect(resolveAdminSectionsForView('money', 'accounting', { moneyView: 'accounting' })).toEqual([
+      'moneySummary',
+      'analytics',
+      'accounting',
+      'dailyReset',
     ]);
+  });
+
+  it('avoids refetching already-loaded sections unless force refresh is requested', () => {
+    const loadedSections = new Set(['moneySummary', 'analytics']);
+
+    expect(
+      getAdminSectionsToLoad(loadedSections, resolveAdminSectionsForView('money', 'accounting', { moneyView: 'accounting' }))
+    ).toEqual(['accounting', 'dailyReset']);
+
     expect(getAdminSectionsToLoad(['users'], ADMIN_REFRESH_ALL_SECTIONS, true)).toEqual(
       [...ADMIN_REFRESH_ALL_SECTIONS]
     );

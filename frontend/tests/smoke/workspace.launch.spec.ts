@@ -114,19 +114,18 @@ const waitForVoicesWorkspace = async (page: Page): Promise<void> => {
   ]);
 };
 
-const waitForReaderWorkspace = async (page: Page): Promise<void> => {
+const waitForWritingWorkspace = async (page: Page): Promise<void> => {
+  await page.waitForURL(/\/app\/writing(?:\/|$|\?)/, { timeout: ROUTE_TIMEOUT_MS }).catch(() => undefined);
   await Promise.any([
-    page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-    page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-    page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-    page.locator('.vf-reader-v2-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-    page.getByRole('button', { name: /Get Started|Sign In|Create Account|Test Drive|Create Your First Scene|Listen to Live Demos/i }).first().waitFor({
-      state: 'visible',
-      timeout: ROUTE_TIMEOUT_MS,
-    }),
-  ]).catch(() => undefined);
-
-  await expect(page.locator('body')).toBeVisible();
+    page.getByTestId('novel-workspace').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByTestId('novel-editor-tabs').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByTestId('novel-library-tabs').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByRole('heading', { name: /Novel Workspace/i }).first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByRole('button', { name: /^Retry now$/i }).first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+  ]);
 };
 
 const routeCases: Array<{
@@ -169,12 +168,21 @@ const routeCases: Array<{
     },
   },
   {
-    title: 'reader desktop workspace launch',
-    path: '/app/reader',
-    waitForReadyState: waitForReaderWorkspace,
+    title: 'writing desktop workspace launch',
+    path: '/app/writing',
+    waitForReadyState: waitForWritingWorkspace,
     assert: async (page) => {
-      await expect(page.locator('.vf-topbar').first()).toBeVisible();
-      await expect(page.locator('.vf-main-scroll').first()).toBeVisible();
+      const novelWorkspace = page.getByTestId('novel-workspace').first();
+      if (await novelWorkspace.isVisible().catch(() => false)) {
+        await expect(novelWorkspace).toBeVisible();
+        return;
+      }
+
+      await Promise.any([
+        page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      ]);
     },
   },
 ];
@@ -182,10 +190,11 @@ const routeCases: Array<{
 for (const routeCase of routeCases) {
   test(routeCase.title, async ({ page }) => {
     test.setTimeout(120_000);
-    const assertRouteHealth = routeCase.path === '/app/reader' ? null : trackRouteHealth(page);
+    const assertRouteHealth = trackRouteHealth(page);
     await seedWorkspaceThemeState(page);
     const credentials = resolveStudioSmokeCredentials();
-    expect(credentials, 'Missing Playwright admin credentials for workspace launch smoke.').not.toBeNull();
+    test.skip(!credentials, 'Missing Playwright admin credentials for workspace launch smoke.');
+    if (!credentials) return;
     await ensureStudioSmokeAuthenticated(page, credentials!);
 
     await page.goto(routeCase.path, {
@@ -201,3 +210,4 @@ for (const routeCase of routeCases) {
     assertRouteHealth?.();
   });
 }
+

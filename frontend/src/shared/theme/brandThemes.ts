@@ -32,10 +32,10 @@ export const UI_BRAND_THEME_CONFIGS: Record<UiBrandThemeId, UiBrandThemeConfig> 
     accent3: '#ec4899',
     modes: {
       dark: {
-        glow: 'rgba(34, 211, 238, 0.36)',
-        backdrop: 'linear-gradient(180deg, #040913 0%, #081423 48%, #03060d 100%)',
-        surface: 'rgba(8, 14, 28, 0.86)',
-        surfaceStrong: 'rgba(10, 20, 37, 0.94)',
+        glow: 'rgba(34, 211, 238, 0.45)',
+        backdrop: 'linear-gradient(180deg, #02040a 0%, #050b14 48%, #010204 100%)',
+        surface: 'rgba(5, 10, 20, 0.65)',
+        surfaceStrong: 'rgba(8, 16, 30, 0.85)',
       },
       light: {
         glow: 'rgba(34, 211, 238, 0.28)',
@@ -54,10 +54,10 @@ export const UI_BRAND_THEME_CONFIGS: Record<UiBrandThemeId, UiBrandThemeConfig> 
     accent3: '#ffb76b',
     modes: {
       dark: {
-        glow: 'rgba(56, 232, 208, 0.34)',
-        backdrop: 'linear-gradient(165deg, #03131d 0%, #072349 38%, #101d40 68%, #231523 100%)',
-        surface: 'rgba(7, 22, 41, 0.84)',
-        surfaceStrong: 'rgba(8, 26, 46, 0.92)',
+        glow: 'rgba(56, 232, 208, 0.5)',
+        backdrop: 'linear-gradient(165deg, #010609 0%, #04101e 38%, #0a1128 68%, #140b14 100%)',
+        surface: 'rgba(10, 15, 30, 0.55)',
+        surfaceStrong: 'rgba(15, 23, 42, 0.75)',
       },
       light: {
         glow: 'rgba(79, 124, 255, 0.28)',

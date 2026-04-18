@@ -150,7 +150,7 @@ describe('pollTtsGatewayJobForAudio', () => {
         ok: true,
         jobId: 'job-2',
         status: 'queued',
-        chunks: [{ index: 0, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
+        chunks: [{ index: 0, status: 'ready', contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
         chunkCursorNext: 1,
       })
       .mockResolvedValueOnce({
@@ -201,14 +201,14 @@ describe('pollTtsGatewayJobForAudio', () => {
         ok: true,
         jobId: 'job-2b',
         status: 'queued',
-        chunks: [{ index: 0, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
+        chunks: [{ index: 0, status: 'ready', contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
         chunkCursorNext: 1,
       })
       .mockResolvedValueOnce({
         ok: true,
         jobId: 'job-2b',
         status: 'running',
-        chunks: [{ index: 1, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
+        chunks: [{ index: 1, status: 'ready', contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
         chunkCursorNext: 2,
       })
       .mockResolvedValueOnce({

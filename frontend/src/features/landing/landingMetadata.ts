@@ -1,19 +1,20 @@
 import type { Metadata } from 'next';
+import type { LandingPageVariant } from './landingTabs';
+import { getLandingTabDefinition } from './landingTabs';
 
 const landingPath = '/landing';
 
 export const landingMetadata: Metadata = {
-  title: 'Premium AI Voice Studio for Prime Cast Scenes, Direction, and Voice Cloning',
+  title: 'Voice Flow | Audition voices, direct scenes, and approve the final take',
   description:
-    'V FLOW AI combines Prime multi-speaker scenes, live voice direction, voice cloning, and reader-ready approvals in one premium production studio.',
+    'Voice Flow helps teams audition voices, review multi-speaker scenes, direct delivery, and approve reader-ready audio.',
   keywords: [
-    'ai voice studio',
-    'voice cloning',
-    'prime multi-speaker voice',
-    'ai narration',
-    'production audio',
-    'reader audio',
     'voice workflow',
+    'single voice audition',
+    'multi-speaker scenes',
+    'ai direction',
+    'reader review',
+    'production audio',
   ],
   alternates: {
     canonical: landingPath,
@@ -25,9 +26,9 @@ export const landingMetadata: Metadata = {
   openGraph: {
     type: 'website',
     url: landingPath,
-    title: 'V FLOW AI | Premium AI Voice Studio',
+    title: 'Voice Flow | Voice production workflow',
     description:
-      'Hear Prime cast scenes, direct performances, compare voice clones, and publish from a single premium AI studio.',
+      'Audition voices, review scenes, direct delivery, and move into the full Voice Flow studio.',
     siteName: 'V FLOW AI',
     images: [
       {
@@ -40,9 +41,36 @@ export const landingMetadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'V FLOW AI | Premium AI Voice Studio',
+    title: 'Voice Flow | Voice production workflow',
     description:
-      'Hear Prime cast scenes, direct performances, compare voice clones, and publish from a single premium AI studio.',
+      'Audition voices, review scenes, direct delivery, and move into the full Voice Flow studio.',
     images: ['/brand-logo.svg'],
   },
+};
+
+export const buildLandingMetadata = (page: LandingPageVariant): Metadata => {
+  if (page === 'overview') {
+    return landingMetadata;
+  }
+
+  const tab = getLandingTabDefinition(page);
+  return {
+    ...landingMetadata,
+    title: `${tab.title} | Voice Flow`,
+    description: tab.description,
+    alternates: {
+      canonical: tab.href,
+    },
+    openGraph: {
+      ...landingMetadata.openGraph,
+      url: tab.href,
+      title: `${tab.title} | Voice Flow`,
+      description: tab.description,
+    },
+    twitter: {
+      ...landingMetadata.twitter,
+      title: `${tab.title} | Voice Flow`,
+      description: tab.description,
+    },
+  };
 };

@@ -1,10 +1,12 @@
 import React from 'react';
 import { LEGAL_LINKS } from './legalContent';
+import type { LegalLink } from './legalContent';
 
 interface LegalLinksProps {
   className?: string;
   linkClassName?: string;
   activePath?: string;
+  extraLinks?: LegalLink[];
 }
 
 const joinClasses = (...tokens: Array<string | undefined>): string =>
@@ -14,10 +16,13 @@ export const LegalLinks: React.FC<LegalLinksProps> = ({
   className,
   linkClassName,
   activePath,
+  extraLinks = [],
 }) => {
+  const links = [...LEGAL_LINKS, ...extraLinks];
+
   return (
     <nav className={joinClasses('flex flex-wrap items-center gap-3', className)} aria-label="Legal links">
-      {LEGAL_LINKS.map((link) => {
+      {links.map((link) => {
         const isActive = activePath === link.path;
         return (
           <a

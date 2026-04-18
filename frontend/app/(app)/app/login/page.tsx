@@ -1,32 +1,40 @@
-import { LoginRouteClient } from './LoginRouteClient';
+import { redirect } from 'next/navigation';
+
 import { resolveSafeInternalNextPath, type AuthRouteMode } from '../../../../src/app/navigation';
+import { normalizeLoginRouteMode } from '../../../../src/shared/auth/signupLock';
 
-type LoginSearchParams = Record<string, string | string[] | undefined>;
+const readFirstSearchParam = (value: string | null | undefined): string | null =>
+  String(value || '').trim() || null;
 
-interface AppLoginPageProps {
-  searchParams?: Promise<LoginSearchParams>;
-}
-
-const readFirstSearchParam = (value: string | string[] | undefined): string | null => {
-  if (Array.isArray(value)) {
-    return String(value[0] || '').trim() || null;
-  }
-  return String(value || '').trim() || null;
+type AppLoginSearchParams = {
+  mode?: string | string[];
+  next?: string | string[];
 };
 
-export const dynamic = 'force-dynamic';
+const toSingleValue = (value: string | string[] | undefined): string | null => {
+  if (Array.isArray(value)) {
+    return readFirstSearchParam(value[0]);
+  }
+  return readFirstSearchParam(value);
+};
 
-export default async function AppLoginPage({ searchParams }: AppLoginPageProps) {
-  const resolvedSearchParams = await searchParams;
-  const requestedMode = readFirstSearchParam(resolvedSearchParams?.mode);
-  const requestedNext = resolveSafeInternalNextPath(readFirstSearchParam(resolvedSearchParams?.next), null);
-  const initialMode: AuthRouteMode | undefined =
-    requestedMode === 'signup' || requestedMode === 'login' ? requestedMode : undefined;
+export default function AppLoginPage({
+  searchParams,
+}: {
+  searchParams?: AppLoginSearchParams;
+}) {
+  const requestedMode = toSingleValue(searchParams?.mode);
+  const requestedNext = resolveSafeInternalNextPath(toSingleValue(searchParams?.next), null);
+  const initialMode = normalizeLoginRouteMode(requestedMode) as AuthRouteMode | undefined;
 
-  return (
-    <LoginRouteClient
-      {...(requestedNext ? { nextPath: requestedNext } : {})}
-      {...(initialMode ? { initialMode } : {})}
-    />
-  );
+  const params = new URLSearchParams();
+  if (initialMode) {
+    params.set('mode', initialMode);
+  }
+  if (requestedNext) {
+    params.set('next', requestedNext);
+  }
+
+  const suffix = params.toString();
+  redirect(suffix ? `/login?${suffix}` : '/login');
 }

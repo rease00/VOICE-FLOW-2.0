@@ -1,5 +1,10 @@
 # Reliability Runbook
 
+Note:
+- This workspace contains the Next.js control plane and native `/api/v1/*` handlers that have already been migrated.
+- References below to `backend/` or Python runtime internals describe the external compatibility backend used by still-proxied launch surfaces.
+- Do not treat those backend paths as buildable from this checkout unless the missing backend sources have been restored.
+
 ## Admin Coupons and Ops
 
 1. Coupon policy matrix:
@@ -250,13 +255,13 @@
    - Symptom: unexpected `x-vf-post-tts-conversion` value or stale history voice labels.
    - Check first:
    - Job payload from `GET /tts/jobs/{job_id}` and response headers.
-   - Expected header values: `disabled` (PRIME/VECTOR) or `disabled_for_duno` (DUNO).
+   - Expected header value: `disabled` for PRIME/VECTOR because post-TTS conversion is not applied there.
    - `GET /account/generation-history` returns canonical `voiceId` and human `voiceName`.
 
 ## Recovery Procedure
 
 1. Attempt idempotent engine switch:
-   - `POST /tts/engines/switch` with `{ "engine": "DUNO" | "PRIME", "gpu": false }`
+   - `POST /tts/engines/switch` with `{ "engine": "VECTOR" | "PRIME", "gpu": false }`
 2. If still unhealthy, restart services:
    - `npm run services:down`
    - `npm run services:bootstrap`
@@ -270,7 +275,7 @@
    - Scale managed Redis tier.
    - Tune:
      - `VF_TTS_ENGINE_CONCURRENCY_GEM`
-     - `VF_TTS_ENGINE_CONCURRENCY_DUNO`
+     - `VF_TTS_ENGINE_CONCURRENCY_VECTOR`
      - `VF_TTS_QUEUE_JOB_TTL_MS`
      - `VF_TTS_QUEUE_SYNC_WAIT_MS`
 

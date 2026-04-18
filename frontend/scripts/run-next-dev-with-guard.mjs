@@ -2,19 +2,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { ensureLoopbackPortAvailable, resolveGuardPort } from './frontend-startup-guard.mjs';
+import { createRuntimeEnv } from './load-runtime-env.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(scriptDir, '..');
-const nextBin = path.join(frontendRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
 const devArgs = process.argv.slice(2);
+const customServerScript = path.join(frontendRoot, 'scripts', 'custom-next-server.ts');
+const runtimeEnv = createRuntimeEnv(process.env, frontendRoot);
 
 const start = async () => {
   const port = resolveGuardPort(devArgs, 3000);
   await ensureLoopbackPortAvailable('next dev', port);
 
-  const child = spawn(process.execPath, [nextBin, 'dev', ...devArgs], {
+  const child = spawn(process.execPath, ['--experimental-strip-types', customServerScript, '--dev'], {
     cwd: frontendRoot,
-    env: process.env,
+    env: { ...runtimeEnv, PORT: String(port) },
     stdio: 'inherit',
   });
 
@@ -32,4 +34,3 @@ start().catch((error) => {
   console.error(detail);
   process.exit(1);
 });
-

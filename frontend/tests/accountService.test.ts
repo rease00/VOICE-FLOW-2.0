@@ -41,6 +41,11 @@ describe('billing checkout idempotency headers', () => {
     await createCheckoutSession('pro', 'https://backend.example.test', { couponCode: 'SAVE10' });
 
     expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    expect(requestJsonMock.mock.calls[0]?.[0]).toBe('/billing/checkout-session');
+    expect(requestJsonMock.mock.calls[0]?.[2]).toMatchObject({
+      baseUrl: 'https://backend.example.test',
+      requireAuth: true,
+    });
     const firstInit = requestJsonMock.mock.calls[0]?.[1] as RequestInit;
     const secondInit = requestJsonMock.mock.calls[1]?.[1] as RequestInit;
     const firstHeaders = new Headers(firstInit?.headers);
@@ -60,9 +65,19 @@ describe('billing checkout idempotency headers', () => {
     const { createTokenPackCheckoutSession, startVcTokenPackCheckout } = await import('../services/accountService');
 
     await createTokenPackCheckoutSession('standard', 'https://backend.example.test');
-    await startVcTokenPackCheckout('gold', 'https://backend.example.test');
+    await startVcTokenPackCheckout('scale', 'https://backend.example.test');
 
     expect(requestJsonMock).toHaveBeenCalledTimes(2);
+    expect(requestJsonMock.mock.calls[0]?.[0]).toBe('/billing/token-pack/checkout-session');
+    expect(requestJsonMock.mock.calls[0]?.[2]).toMatchObject({
+      baseUrl: 'https://backend.example.test',
+      requireAuth: true,
+    });
+    expect(requestJsonMock.mock.calls[1]?.[0]).toBe('/billing/vc-token-pack/checkout-session');
+    expect(requestJsonMock.mock.calls[1]?.[2]).toMatchObject({
+      baseUrl: 'https://backend.example.test',
+      requireAuth: true,
+    });
 
     const tokenPackHeaders = new Headers((requestJsonMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
     const vcPackHeaders = new Headers((requestJsonMock.mock.calls[1]?.[1] as RequestInit | undefined)?.headers);
@@ -70,7 +85,30 @@ describe('billing checkout idempotency headers', () => {
     expect(tokenPackHeaders.get('Idempotency-Key')).toContain('token-pack');
     expect(tokenPackHeaders.get('Idempotency-Key')).toContain('standard');
     expect(vcPackHeaders.get('Idempotency-Key')).toContain('vc-token-pack');
-    expect(vcPackHeaders.get('Idempotency-Key')).toContain('gold');
+    expect(vcPackHeaders.get('Idempotency-Key')).toContain('scale');
+  });
+
+  it('expands the VC pack union for billing checkout helpers', async () => {
+    requestJsonMock.mockResolvedValueOnce({
+      ok: true,
+      provider: 'razorpay',
+      kind: 'checkout',
+      sessionId: 'vc-session-scale',
+      packKey: 'scale',
+      packVc: 2600,
+      standardAmountInr: 5000,
+      finalAmountInr: 4750,
+      discountPercent: 5,
+    });
+
+    const { startVcTokenPackCheckout } = await import('../services/accountService');
+    const launch = await startVcTokenPackCheckout('scale', 'https://backend.example.test');
+
+    expect(launch.packKey).toBe('scale');
+    expect(launch.packVc).toBe(2600);
+    expect(launch.standardAmountInr).toBe(5000);
+    expect(launch.finalAmountInr).toBe(4750);
+    expect(launch.discountPercent).toBe(5);
   });
 
   it('creates a billing portal session for self-serve billing management', async () => {
@@ -101,6 +139,32 @@ describe('billing checkout idempotency headers', () => {
     expect(session.url).toBe('https://billing.example.test/manage');
   });
 
+  it('reuses a stable Idempotency-Key for wallet VF to VC conversion retries', async () => {
+    authFetchMock.mockResolvedValue({ ok: true });
+    readJsonOrThrowMock
+      .mockResolvedValueOnce({ entitlements: { uid: 'uid-1', plan: 'Free' } })
+      .mockResolvedValueOnce({ entitlements: { uid: 'uid-1', plan: 'Free' } });
+
+    const { convertVfToVc } = await import('../services/accountService');
+
+    await convertVfToVc(250, 'https://backend.example.test');
+    await convertVfToVc(250, 'https://backend.example.test');
+
+    expect(authFetchMock).toHaveBeenCalledTimes(2);
+    const firstInit = authFetchMock.mock.calls[0]?.[1] as RequestInit;
+    const secondInit = authFetchMock.mock.calls[1]?.[1] as RequestInit;
+    const firstHeaders = new Headers(firstInit?.headers);
+    const secondHeaders = new Headers(secondInit?.headers);
+    const firstBody = JSON.parse(String(firstInit.body || '{}')) as Record<string, unknown>;
+    const secondBody = JSON.parse(String(secondInit.body || '{}')) as Record<string, unknown>;
+
+    expect(firstHeaders.get('Idempotency-Key')).toBeTruthy();
+    expect(firstHeaders.get('Idempotency-Key')).toBe(secondHeaders.get('Idempotency-Key'));
+    expect(String(firstBody.idempotencyKey || '')).toBe(String(secondBody.idempotencyKey || ''));
+    expect(String(firstBody.requestId || '')).toBe(String(secondBody.requestId || ''));
+    expect(firstBody.vfAmount).toBe(250);
+  });
+
   it('primes backend routing after bootstrapping an account profile', async () => {
     authFetchMock.mockResolvedValueOnce({ ok: true });
     readJsonOrThrowMock.mockResolvedValueOnce({
@@ -112,15 +176,20 @@ describe('billing checkout idempotency headers', () => {
     primeLoginRoutingAfterAccountBootstrapMock.mockResolvedValue({
       applied: true,
       reason: 'switched',
-      baseUrl: 'https://backend.example.test',
+      baseUrl: '/api/v1',
     });
 
     const { bootstrapAccountProfile } = await import('../services/accountService');
-    const profile = await bootstrapAccountProfile('https://backend.example.test');
+    const profile = await bootstrapAccountProfile();
 
     expect(profile.userId).toBe('user-1');
+    expect(authFetchMock).toHaveBeenCalledWith(
+      '/api/v1/account/profile/bootstrap',
+      { method: 'POST' },
+      { requireAuth: true }
+    );
     expect(primeLoginRoutingAfterAccountBootstrapMock).toHaveBeenCalledWith({
-      baseUrl: 'https://backend.example.test',
+      baseUrl: '/api/v1',
     });
   });
 });

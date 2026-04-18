@@ -2,24 +2,29 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  BookOpen,
   CheckCircle2,
+  Coins,
   ExternalLink,
+  History as HistoryIcon,
   Loader2,
   LogOut,
+  Mic,
+  PenSquare,
   RefreshCcw,
   Sparkles,
 } from 'lucide-react';
 import { AppScreen, GenerationSettings, HistoryItem } from '../../types';
 import { BrandLogo } from '../BrandLogo';
 import { EngineLogo } from '../EngineLogo';
+import { OptimizedAvatar } from '../ui/OptimizedAvatar';
 import { useUser } from '../../contexts/UserContext';
 import { APP_ROUTE_PATHS } from '../../src/app/navigation';
 import { useBillingActions } from '../../src/features/billing/hooks/useBillingActions';
 import { useNotifications } from '../../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../src/shared/notifications/deepLink';
-import { resolveApiBaseUrl } from '../../src/shared/api/config';
-import { STORAGE_KEYS } from '../../src/shared/storage/keys';
 import { readStorageJson, readStorageString, writeStorageString } from '../../src/shared/storage/localStore';
+import { STORAGE_KEYS } from '../../src/shared/storage/keys';
 import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } from '../../src/shared/theme/brandThemes';
 import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../../src/shared/theme/themeDom';
 import { useManagedTabs } from '../../src/shared/ui/tabs';
@@ -54,9 +59,9 @@ import {
   type AccountTabKey,
 } from './accountCenterTabs';
 import { consumeBillingReturnState } from './billingReturnState';
-import { READER_USAGE_UPDATED_EVENT } from '../../src/features/reader/model/offlineLibrary';
 import {
   ACCOUNT_TAB_ICONS,
+  AccountSummaryStrip,
   InfoRow,
   MetricCard,
   PreferenceToggle,
@@ -91,13 +96,25 @@ type ThemeChoice = 'light' | 'dark' | 'system';
 type SupportLoadState = 'idle' | 'loading' | 'ready' | 'forbidden' | 'error';
 type SupportLoadOptions = { force?: boolean };
 type BillingProfileSaveState = 'idle' | 'saving' | 'saved' | 'error';
+type ReadersWorkspaceSnapshot = {
+  favoritesCount: number;
+  lastPlayedTitle: string;
+  selectedProjectId: string;
+  selectedChapterId: string;
+};
 
 const EAGER_ACCOUNT_TABS: AccountTabKey[] = ['account'];
+const EMPTY_READERS_WORKSPACE_SNAPSHOT: ReadersWorkspaceSnapshot = {
+  favoritesCount: 0,
+  lastPlayedTitle: '',
+  selectedProjectId: '',
+  selectedChapterId: '',
+};
 
 const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }> = {
   account: {
     title: 'Account',
-    detail: 'Identity, access, membership, and synced entitlements.',
+    detail: 'Identity plus platform access across Studio and Readers.',
   },
   billing: {
     title: 'Billing',
@@ -121,10 +138,7 @@ const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }>
   },
 };
 
-const readSettingsBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
+const ACCOUNT_BILLING_API_BASE = '/api/v1';
 
 const readSavedUiTheme = (): ThemeChoice => {
   const token = String(readStorageString(STORAGE_KEYS.uiTheme) || '').trim().toLowerCase();
@@ -136,11 +150,6 @@ const readSavedUiBrandTheme = (): UiBrandThemeId => {
   const token = String(readStorageString(STORAGE_KEYS.uiBrandTheme) || '').trim().toLowerCase();
   if (token === 'aurora' || token === 'sunset' || token === 'emerald' || token === 'neon') return token;
   return 'aurora';
-};
-
-const readReaderUsageVfRecord = (): number => {
-  const raw = readStorageJson<{ readerEstimatedTotalVf?: number }>(STORAGE_KEYS.readerUsageRecord);
-  return Math.max(0, Number(raw?.readerEstimatedTotalVf || 0));
 };
 
 const resolveThemeChoice = (themeChoice: ThemeChoice): boolean => {
@@ -215,6 +224,21 @@ const buildFallbackBillingSummary = (
   const planKey = normalizePlanKey(stats.planName);
   const planName = toPlanName(planKey);
   const isPaidPlan = planKey !== 'free';
+  const normalizeActiveEngine = (value: unknown): TtsEngineKey => {
+    const token = String(value || '').trim().toUpperCase();
+    return token === 'PRIME' ? 'PRIME' : 'VECTOR';
+  };
+  const normalizeAllowedEngines = (value: unknown): TtsEngineKey[] => {
+    if (!Array.isArray(value)) return [];
+    const result: TtsEngineKey[] = [];
+    for (const entry of value) {
+      const normalized = normalizeActiveEngine(entry);
+      if (!result.includes(normalized)) {
+        result.push(normalized);
+      }
+    }
+    return result;
+  };
   return {
     profile: {
       uid: String(user.uid || '').trim(),
@@ -237,9 +261,9 @@ const buildFallbackBillingSummary = (
         Number(accountEntitlements?.limits?.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)
       ),
       allowedEngines: Array.isArray(accountEntitlements?.limits?.allowedEngines)
-        ? accountEntitlements.limits.allowedEngines
+        ? normalizeAllowedEngines(accountEntitlements.limits.allowedEngines)
         : Array.isArray(stats.limits?.allowedEngines)
-          ? stats.limits.allowedEngines
+          ? normalizeAllowedEngines(stats.limits.allowedEngines)
           : [],
       earlyAccess: Boolean(accountEntitlements?.features?.earlyAccess || stats.features?.earlyAccess),
       pricing: {
@@ -288,7 +312,7 @@ const normalizeHistoryEngine = (value?: HistoryItem['engine'] | string): Generat
   return normalizeEngineToken(value, 'PRIME');
 };
 
-const ENGINE_RATE_ORDER: TtsEngineKey[] = ['DUNO', 'VECTOR', 'PRIME'];
+const ENGINE_RATE_ORDER: TtsEngineKey[] = ['VECTOR', 'PRIME'];
 const DECIMAL_FORMATTER_CACHE = new Map<string, Intl.NumberFormat>();
 
 const getDecimalFormatter = (minimumFractionDigits: number, maximumFractionDigits: number): Intl.NumberFormat => {
@@ -394,14 +418,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   } = useUser();
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const { emit, prefs, setPrefs } = useNotifications();
-  const baseUrl = useMemo(() => readSettingsBackendUrl(), []);
+  const baseUrl = useMemo(() => ACCOUNT_BILLING_API_BASE, []);
   const billingActions = useBillingActions({ baseUrl, returnPath: APP_ROUTE_PATHS.billing });
 
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>('system');
   const [brandThemeChoice, setBrandThemeChoice] = useState<UiBrandThemeId>('aurora');
   const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
   const [hasMounted, setHasMounted] = useState(false);
-  const [readerUsageVf, setReaderUsageVf] = useState<number>(() => readReaderUsageVfRecord());
   const hasAppliedThemeRef = useRef(false);
   const [accountProfile, setAccountProfile] = useState<AccountUserProfile | null>(null);
   const [accountEntitlements, setAccountEntitlements] = useState<AccountEntitlements | null>(null);
@@ -425,6 +448,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const [billingProfileSaveState, setBillingProfileSaveState] = useState<BillingProfileSaveState>('idle');
   const [billingProfileSaveError, setBillingProfileSaveError] = useState('');
   const [activeTab, setActiveTab] = useState<AccountTabKey>(DEFAULT_ACCOUNT_TAB);
+  const [readersSnapshot, setReadersSnapshot] = useState<ReadersWorkspaceSnapshot>(EMPTY_READERS_WORKSPACE_SNAPSHOT);
   const [hasResolvedInitialSearchState, setHasResolvedInitialSearchState] = useState(false);
   const [loadedTabs, setLoadedTabs] = useState<Set<AccountTabKey>>(() => new Set(EAGER_ACCOUNT_TABS));
   const [highlightedConversationId, setHighlightedConversationId] = useState<string>('');
@@ -481,24 +505,28 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     if (typeof window === 'undefined') return undefined;
     setThemeChoice(readSavedUiTheme());
     setBrandThemeChoice(readSavedUiBrandTheme());
-    setReaderUsageVf(readReaderUsageVfRecord());
     setHasMounted(true);
   }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const syncReaderUsage = () => setReaderUsageVf(readReaderUsageVfRecord());
-    syncReaderUsage();
-    window.addEventListener('focus', syncReaderUsage);
-    window.addEventListener('storage', syncReaderUsage);
-    window.addEventListener(READER_USAGE_UPDATED_EVENT, syncReaderUsage as EventListener);
-    document.addEventListener('visibilitychange', syncReaderUsage);
-    return () => {
-      window.removeEventListener('focus', syncReaderUsage);
-      window.removeEventListener('storage', syncReaderUsage);
-      window.removeEventListener(READER_USAGE_UPDATED_EVENT, syncReaderUsage as EventListener);
-      document.removeEventListener('visibilitychange', syncReaderUsage);
-    };
+    try {
+      const favoriteIds = JSON.parse(window.localStorage.getItem('vf-library-favorites') || '[]');
+      const lastPlayed = JSON.parse(window.localStorage.getItem('vf-library-last-played') || 'null');
+      const workspaceMeta = readStorageJson<{
+        selectedProjectId?: string;
+        selectedChapterId?: string;
+      }>(STORAGE_KEYS.novelWorkspaceMeta);
+      setReadersSnapshot({
+        favoritesCount: Array.isArray(favoriteIds) ? favoriteIds.length : 0,
+        lastPlayedTitle: sanitizeUiText(String(lastPlayed?.title || '').trim()),
+        selectedProjectId: String(workspaceMeta?.selectedProjectId || '').trim(),
+        selectedChapterId: String(workspaceMeta?.selectedChapterId || '').trim(),
+      });
+    } catch {
+      setReadersSnapshot(EMPTY_READERS_WORKSPACE_SNAPSHOT);
+    }
+    return undefined;
   }, []);
 
   useEffect(() => {
@@ -557,9 +585,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
     const [refreshResult, profileResult, entitlementsResult, billingResult] = await Promise.allSettled([
       refreshEntitlementsRef.current(),
-      fetchAccountProfile(baseUrl),
-      fetchAccountEntitlements(baseUrl),
-      fetchAccountBillingSummary(baseUrl),
+      fetchAccountProfile(),
+      fetchAccountEntitlements(),
+      fetchAccountBillingSummary(),
     ]);
 
     let hadSuccess = refreshResult.status === 'fulfilled';
@@ -611,7 +639,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     setSupportLoadError('');
     setIsLoadingSupport(true);
     try {
-      const rows = await fetchMySupportConversations(baseUrl, 40);
+      const rows = await fetchMySupportConversations(undefined, 40);
       setSupportConversations(rows);
       setSupportLoadState('ready');
       markTabLoaded('support');
@@ -832,7 +860,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     if (!text) return;
     setIsSendingSupport(true);
     try {
-      await postSupportMessage({ text }, baseUrl);
+      await postSupportMessage({ text });
       setSupportText('');
       await loadSupportData(false, { force: true });
       setActiveTab('support');
@@ -854,7 +882,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
   const handleMarkUnresolved = useCallback(async (conversationId: string) => {
     try {
-      await markSupportConversationUnresolved(conversationId, baseUrl);
+      await markSupportConversationUnresolved(conversationId);
       setHighlightedConversationId(conversationId);
       await loadSupportData(false, { force: true });
       emit('support.conversation.unresolved', {
@@ -916,7 +944,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     setBillingProfileSaveError('');
     setIsOpeningBillingPortal(true);
     try {
-      const session = await createBillingPortalSession(baseUrl, { returnUrl: window.location.href });
+      const session = await createBillingPortalSession(undefined, { returnUrl: window.location.href });
       window.location.href = session.url;
     } catch (error) {
       emit('custom.message', {
@@ -948,8 +976,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         {
           ...(accountProfile?.displayName?.trim() ? { displayName: accountProfile.displayName.trim() } : user.name?.trim() ? { displayName: user.name.trim() } : {}),
           billingProfile: toBillingProfilePayload(draft),
-        },
-        baseUrl
+        }
       );
       if (billingProfileSaveSequenceRef.current !== saveSequence) return;
       const nextDraft = normalizeBillingProfileDraft(
@@ -1188,6 +1215,52 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 : 'No support conversations yet.',
     [activeSupportConversationCount, isLoadingSupport, loadedTabs, supportConversations.length, supportLoadError, supportLoadState]
   );
+  const readersFavoritesSummary = readersSnapshot.favoritesCount > 0
+    ? `${formatNumber(readersSnapshot.favoritesCount)} saved title${readersSnapshot.favoritesCount === 1 ? '' : 's'}`
+    : 'No saved titles yet';
+  const readersProgressSummary = readersSnapshot.lastPlayedTitle
+    ? `Continue ${readersSnapshot.lastPlayedTitle}`
+    : 'No reader resume point saved yet';
+  const writerWorkspaceSummary = readersSnapshot.selectedProjectId
+    ? readersSnapshot.selectedChapterId
+      ? 'Project and chapter progress are saved locally'
+      : 'Project selected and ready for chapter drafting'
+    : 'No active writer project yet';
+  const accountOverviewItems = useMemo(() => ([
+    {
+      id: 'current-plan',
+      label: 'Current plan',
+      value: planName,
+      detail: renewalHeadline,
+    },
+    {
+      id: 'studio-access',
+      label: 'Studio access',
+      value: allowedEngineSummary,
+      detail: hasUnlimitedAccess ? 'Unlimited generation access is active.' : 'Generation engines and runtime access stay in Studio.',
+    },
+    {
+      id: 'readers',
+      label: 'Readers',
+      value: readersFavoritesSummary,
+      detail: readersProgressSummary,
+    },
+    {
+      id: 'writer',
+      label: 'Writer',
+      value: readersSnapshot.selectedProjectId ? 'Draft in progress' : 'Writer ready',
+      detail: writerWorkspaceSummary,
+    },
+  ]), [
+    allowedEngineSummary,
+    hasUnlimitedAccess,
+    planName,
+    readersFavoritesSummary,
+    readersProgressSummary,
+    readersSnapshot.selectedProjectId,
+    renewalHeadline,
+    writerWorkspaceSummary,
+  ]);
   const supportConversationCards = useMemo(
     () => supportConversations.map((conversation) => {
       const statusToken = String(conversation.status || '').trim().toLowerCase();
@@ -1222,7 +1295,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     [recentActivity]
   );
   const navItems = useMemo(() => ([
-    { key: 'account' as AccountTabKey, label: 'Account', summary: `${planName} plan | Member since ${memberSinceLabel}` },
+    { key: 'account' as AccountTabKey, label: 'Account', summary: `${planName} plan | Studio and Readers overview` },
     { key: 'billing' as AccountTabKey, label: 'Billing', summary: canManageBilling ? `${paymentMethodLabel} | ${renewalHeadline}` : 'Billing management and invoices stay here.' },
     { key: 'usage' as AccountTabKey, label: 'Usage', summary: hasUnlimitedAccess ? `Unlimited access | ${formatNumber(monthlyUsed)} VF used this month` : `${formatNumber(monthlyUsed)} of ${formatNumber(monthlyLimit)} VF used this month` },
     { key: 'preferences' as AccountTabKey, label: 'Preferences', summary: `${activeThemeSummary} theme | ${enabledPreferenceCount}/${totalPreferenceCount} toggles enabled` },
@@ -1241,6 +1314,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     supportSummaryText,
     totalPreferenceCount,
   ]);
+  const openWorkspacePath = useCallback((path: string) => {
+    if (typeof window === 'undefined') return;
+    window.location.assign(path);
+  }, []);
 
   const setTab = (tab: AccountTabKey): void => {
     setActiveTab(tab);
@@ -1298,6 +1375,198 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.accountStatus} value={accountStatus} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.authProviders} value={providerSummary} />
           <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.memberSince} value={memberSinceLabel} />
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Platform overview</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              One account, with distinct Studio and Readers capabilities.
+            </div>
+            <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>
+              Studio focuses on generation, voices, runs, and billing. Readers focuses on bookshelves, favorites, reading progress, writing, and novel management.
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <StatusBadge isDarkUi={isDarkUi} tone={summary.subscription.active ? 'success' : 'neutral'} label={planName} />
+            <StatusBadge isDarkUi={isDarkUi} tone={hasUnlimitedAccess ? 'success' : 'neutral'} label={hasUnlimitedAccess ? 'Unlimited access' : 'Metered access'} />
+            <StatusBadge isDarkUi={isDarkUi} tone={readersSnapshot.selectedProjectId ? 'success' : 'neutral'} label={readersSnapshot.selectedProjectId ? 'Writer active' : 'Writer ready'} />
+          </div>
+        </div>
+        <div className="mt-4">
+          <AccountSummaryStrip isDarkUi={isDarkUi} items={accountOverviewItems} />
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Studio platform</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              Audio generation and runtime controls live here.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => openWorkspacePath(APP_ROUTE_PATHS.studio)}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100'
+            }`}
+          >
+            Open Studio
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              id: 'studio-generate',
+              icon: <Mic size={16} />,
+              eyebrow: 'Studio',
+              title: 'Generation access',
+              detail: `${allowedEngineSummary}. ${renewalHeadline}.`,
+              href: APP_ROUTE_PATHS.studio,
+              action: 'Open Studio',
+            },
+            {
+              id: 'studio-voices',
+              icon: <Sparkles size={16} />,
+              eyebrow: 'Voices',
+              title: 'Voice and clone controls',
+              detail: summary.plan.earlyAccess ? 'Early access voice tooling is enabled for this account.' : 'Manage cast presets, reusable voices, and clone workflows.',
+              href: APP_ROUTE_PATHS.voices,
+              action: 'Open Voices',
+            },
+            {
+              id: 'studio-runs',
+              icon: <HistoryIcon size={16} />,
+              eyebrow: 'Runs',
+              title: recentActivity.length > 0 ? `${recentActivity.length} recent generation item${recentActivity.length === 1 ? '' : 's'}` : 'Generation history',
+              detail: recentActivity.length > 0 ? 'Inspect recent output runs, recovery status, and activity history.' : 'Runs, queue recovery, and output history appear here once you generate.',
+              href: APP_ROUTE_PATHS.runs,
+              action: 'Open Runs',
+            },
+            {
+              id: 'studio-billing',
+              icon: <Coins size={16} />,
+              eyebrow: 'Billing',
+              title: paymentMethodLabel,
+              detail: canManageBilling ? `Billing is active. ${renewalHeadline}.` : 'Billing is still available here even if no payment method is on file.',
+              href: APP_ROUTE_PATHS.billing,
+              action: 'Open Billing',
+            },
+          ].map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => openWorkspacePath(item.href)}
+              className={`rounded-[1.05rem] border p-3 text-left transition ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'hover:bg-white/[0.07]' : 'hover:bg-white'}`}
+            >
+              <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>
+                {item.icon}
+              </div>
+              <p className={labelClass(isDarkUi)}>{item.eyebrow}</p>
+              <div className={`mt-1 text-[14px] font-semibold leading-5 ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{item.title}</div>
+              <div className={`mt-1.5 text-[12px] leading-5 sm:text-[13px] ${subduedClass(isDarkUi)}`}>{item.detail}</div>
+              <div className={`mt-3 text-[12px] font-semibold ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{item.action}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={labelClass(isDarkUi)}>Readers platform</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              Bookshelves, favorites, reading flow, writer access, and novel management belong here.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => openWorkspacePath(APP_ROUTE_PATHS.library)}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100'
+            }`}
+          >
+            Open Readers
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              id: 'readers-bookshelf',
+              icon: <BookOpen size={16} />,
+              eyebrow: 'Bookshelf',
+              title: readersFavoritesSummary,
+              detail: readersProgressSummary,
+              href: APP_ROUTE_PATHS.library,
+              action: 'Open Readers',
+            },
+            {
+              id: 'readers-writer',
+              icon: <PenSquare size={16} />,
+              eyebrow: 'Writer',
+              title: readersSnapshot.selectedProjectId ? 'Novel workspace in progress' : 'Open the embedded Writer tab',
+              detail: writerWorkspaceSummary,
+              href: APP_ROUTE_PATHS.library,
+              action: 'Open Writer in Readers',
+            },
+            {
+              id: 'readers-management',
+              icon: <Sparkles size={16} />,
+              eyebrow: 'Novel management',
+              title: readersSnapshot.selectedChapterId ? 'Chapter organization is active' : 'Project organization and chapter editing',
+              detail: 'Use the writing workspace for chapter structure, adaptation passes, publishing prep, and Studio handoff.',
+              href: APP_ROUTE_PATHS.writing,
+              action: 'Open Writing workspace',
+            },
+            {
+              id: 'readers-history',
+              icon: <HistoryIcon size={16} />,
+              eyebrow: 'Reader tools',
+              title: readersSnapshot.lastPlayedTitle ? 'Continue reading is ready' : 'Reader preferences and bookmarks',
+              detail: 'Reading progress, favorites, saved items, and handoff from bookshelf to playback stay tied to Readers.',
+              href: APP_ROUTE_PATHS.library,
+              action: 'Open reader tools',
+            },
+          ].map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => openWorkspacePath(item.href)}
+              className={`rounded-[1.05rem] border p-3 text-left transition ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'hover:bg-white/[0.07]' : 'hover:bg-white'}`}
+            >
+              <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>
+                {item.icon}
+              </div>
+              <p className={labelClass(isDarkUi)}>{item.eyebrow}</p>
+              <div className={`mt-1 text-[14px] font-semibold leading-5 ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{item.title}</div>
+              <div className={`mt-1.5 text-[12px] leading-5 sm:text-[13px] ${subduedClass(isDarkUi)}`}>{item.detail}</div>
+              <div className={`mt-3 text-[12px] font-semibold ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{item.action}</div>
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setTab('preferences')}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-white/10 bg-white/[0.05] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+            }`}
+          >
+            Preferences
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('support')}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+              isDarkUi ? 'border-white/10 bg-white/[0.05] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+            }`}
+          >
+            Support
+          </button>
         </div>
       </div>
 
@@ -1631,7 +1900,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.balance} eyebrow="Monthly used" title={`${formatNumber(monthlyUsed)} VF`} detail={hasUnlimitedAccess ? 'Unlimited access is active.' : `${formatNumber(monthlyLimit)} VF monthly cap.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.spendable} eyebrow="Spendable now" title={formatVfValue(availableBalance)} detail={`${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF available right now.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.currentPlan} eyebrow="Max chars" title={formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} detail="Maximum characters allowed per generation request." />
-        <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.usage} eyebrow="Reader consumed" title={`${formatNumber(readerUsageVf)} VF`} detail="Reader total tracked locally from reading sessions and offline saves." />
+        <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.usage} eyebrow="Total usage" title={`${formatNumber(Number(stats.vfUsage.lifetime?.totalVf || 0))} VF`} detail="Lifetime VF usage tracked by your account." />
       </div>
 
       <div className="grid gap-3 sm:gap-4 xl:grid-cols-3">
@@ -1740,11 +2009,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                         : 'border-slate-200 text-slate-700 hover:bg-white'
                   }`}
                   data-active={active}
-                  aria-pressed={active}
                   >
                   <span
                     className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/40"
-                    style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 55%, ${theme.accent3} 100%)` }}
+                    data-brand-swatch={themeId}
                     aria-hidden="true"
                   />
                   <span className="min-w-0">
@@ -2067,7 +2335,17 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
               <div className={`flex min-w-0 items-center gap-2 rounded-[1rem] border px-2.5 py-2 sm:px-3 sm:py-2.5 lg:justify-self-end ${cardInsetClass(isDarkUi)}`}>
                 <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border text-sm font-black sm:h-10 sm:w-10 sm:text-base ${isDarkUi ? 'border-white/10 bg-white/[0.06] text-white' : 'border-slate-200 bg-white text-slate-900'}`}>
-                  {user.avatarUrl ? <img src={user.avatarUrl} alt={`${userDisplayName} avatar`} className="h-full w-full rounded-xl object-cover" /> : userDisplayName.slice(0, 1).toUpperCase()}
+                  <OptimizedAvatar
+                    src={user.avatarUrl}
+                    alt={`${userDisplayName} avatar`}
+                    width={40}
+                    height={40}
+                    containerClassName="h-full w-full"
+                    className="h-full w-full rounded-xl"
+                    fallback={userDisplayName.slice(0, 1).toUpperCase()}
+                    quality={85}
+                    sizes="(max-width: 640px) 36px, (max-width: 1024px) 40px, 48px"
+                  />
                 </div>
                 <div className="min-w-0">
                   <div className={`truncate text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{userDisplayName}</div>

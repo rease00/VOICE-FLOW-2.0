@@ -5,8 +5,6 @@ param(
     [string]$Profile = "",
     [string]$Tag = "",
     [string]$RedisUrl = $env:VF_REDIS_URL,
-    [string]$KokoroRuntimeUrl = $env:VF_KOKORO_RUNTIME_URL,
-    [string]$KokoroRuntimeToken = $env:VF_KOKORO_RUNTIME_TOKEN,
     [string]$VoiceCloneRuntimeUrl = $env:VF_VOICE_CLONE_MODAL_RUNTIME_URL,
     [string]$VoiceCloneRuntimeToken = $env:VF_VOICE_CLONE_RUNTIME_TOKEN,
     [string]$VoiceCloneArtifactSecret = $env:VF_VOICE_CLONE_ARTIFACT_SECRET,
@@ -20,6 +18,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
+$backendPath = Join-Path $repoRoot "backend"
+
+if (-not (Test-Path $backendPath)) {
+    throw "Compatibility backend sources were not found in this checkout. infra/cloudrun still depends on backend/ for API and runtime images. Use Cloudflare Workers/OpenNext for the public frontend from this repo, and build Cloud Run services from the separate compatibility-backend source tree until migration is complete."
+}
 
 if (-not $OpenVoiceRuntimeUrl) {
     $OpenVoiceRuntimeUrl = [string]$env:VF_OPENVOICE_RUNTIME_URL
@@ -64,30 +70,6 @@ function Invoke-Gcloud {
         throw "Command failed: $display"
     }
     return $null
-}
-
-function Get-ExistingServiceUrl {
-    param(
-        [Parameter(Mandatory = $true)][string]$ServiceName
-    )
-    $safeServiceName = [string]$ServiceName
-    if (-not $safeServiceName) {
-        return ""
-    }
-    if ($DryRun) {
-        return "https://$safeServiceName.a.run.app"
-    }
-    try {
-        return [string](Invoke-Gcloud -Capture -Arguments @(
-            "run", "services", "describe", $safeServiceName,
-            "--project", $ProjectId,
-            "--region", $Region,
-            "--format", "value(status.url)"
-        ))
-    }
-    catch {
-        return ""
-    }
 }
 
 function Convert-ObjectToMap {
@@ -174,34 +156,6 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
-            "__VOICEFLOW_WORKER_URL__" {
-                $runtimeUrl = [string]$RuntimeUrls["voiceflow-worker"]
-                if (-not $runtimeUrl) {
-                    $runtimeUrl = Get-ExistingServiceUrl -ServiceName "voiceflow-worker"
-                }
-                if (-not $runtimeUrl) {
-                    if ($DryRun) {
-                        $resolved[$key] = "https://voiceflow-worker.a.run.app"
-                        break
-                    }
-                    if ([string]$CurrentServiceName -eq "voiceflow-worker") {
-                        $resolved[$key] = ""
-                        break
-                    }
-                    throw "Worker runtime URL is not available yet."
-                }
-                $resolved[$key] = $runtimeUrl
-            }
-            "__KOKORO_RUNTIME_URL__" {
-                if (-not $KokoroRuntimeUrl) {
-                    if ($DryRun) {
-                        $resolved[$key] = "https://modal-kokoro-runtime.example"
-                        break
-                    }
-                    throw "Modal Kokoro runtime URL is required. Pass -KokoroRuntimeUrl or set VF_KOKORO_RUNTIME_URL."
-                }
-                $resolved[$key] = [string]$KokoroRuntimeUrl
-            }
             "__VOICE_CLONE_RUNTIME_URL__" {
                 if (-not $VoiceCloneRuntimeUrl) {
                     if ($DryRun) {
@@ -252,13 +206,6 @@ function Resolve-EnvMap {
             "__VOICE_CLONE_MODAL_RUNTIME_TOKEN__" {
                 if ($VoiceCloneRuntimeToken) {
                     $resolved[$key] = [string]$VoiceCloneRuntimeToken
-                    break
-                }
-                $resolved[$key] = ""
-            }
-            "__KOKORO_RUNTIME_TOKEN__" {
-                if ($KokoroRuntimeToken) {
-                    $resolved[$key] = [string]$KokoroRuntimeToken
                     break
                 }
                 $resolved[$key] = ""
@@ -438,35 +385,6 @@ if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "
                 throw "Profile contract mismatch for $serviceName.$field (expected '$expected', found '$actual')."
             }
         }
-    }
-}
-
-$drainQueueName = ""
-$drainQueueLocation = ""
-foreach ($svc in $services) {
-    $envMap = Convert-ObjectToMap -InputObject $svc.env
-    if (-not $drainQueueName -and ($envMap.ContainsKey("VF_TTS_DRAIN_QUEUE_NAME"))) {
-        $drainQueueName = [string]$envMap["VF_TTS_DRAIN_QUEUE_NAME"]
-    }
-    if (-not $drainQueueLocation -and ($envMap.ContainsKey("VF_TTS_DRAIN_QUEUE_LOCATION"))) {
-        $drainQueueLocation = [string]$envMap["VF_TTS_DRAIN_QUEUE_LOCATION"]
-    }
-}
-if ($drainQueueName -and $drainQueueLocation) {
-    try {
-        Invoke-Gcloud -Arguments @(
-            "tasks", "queues", "describe", $drainQueueName,
-            "--project", $ProjectId,
-            "--location", $drainQueueLocation
-        ) | Out-Null
-    }
-    catch {
-        Write-Host "Cloud Tasks queue '$drainQueueName' not found in $drainQueueLocation. Creating..."
-        Invoke-Gcloud -Arguments @(
-            "tasks", "queues", "create", $drainQueueName,
-            "--project", $ProjectId,
-            "--location", $drainQueueLocation
-        ) | Out-Null
     }
 }
 
@@ -735,15 +653,6 @@ foreach ($svc in $deployOrder) {
     if ($url) {
         Write-Host "Service URL: $name => $url"
         $runtimeUrls[$name] = $url
-        if ($name -eq "voiceflow-worker" -and $envMap.ContainsKey("VF_TTS_DRAIN_WORKER_URL") -and [string]$envMap["VF_TTS_DRAIN_WORKER_URL"] -eq "__VOICEFLOW_WORKER_URL__") {
-            Write-Host "Updating worker drain URL to the deployed Cloud Run URL..."
-            Invoke-Gcloud -Arguments @(
-                "run", "services", "update", $name,
-                "--project", $ProjectId,
-                "--region", $Region,
-                "--update-env-vars", "VF_TTS_DRAIN_WORKER_URL=$url"
-            ) | Out-Null
-        }
     }
 }
 

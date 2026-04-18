@@ -29,6 +29,13 @@ describe('buildBillingReturnUrl', () => {
     expect(url.searchParams.get('tab')).toBe('subscription');
     expect(url.searchParams.get('billing')).toBeNull();
   });
+
+  it('routes VN pack returns back to the novel token tab', () => {
+    const url = new URL(buildBillingReturnUrl('success', location, '/billing', 'vn'));
+    expect(url.pathname).toBe('/billing');
+    expect(url.searchParams.get('tab')).toBe('vn-packs');
+    expect(url.searchParams.get('billing')).toBe('success');
+  });
 });
 
 describe('consumeBillingReturnState', () => {

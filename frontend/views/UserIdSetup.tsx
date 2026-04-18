@@ -3,18 +3,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
 import { AppScreen } from '../types';
 import { useUser } from '../contexts/UserContext';
-import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageJson, removeStorageKey } from '../src/shared/storage/localStore';
+import { removeStorageKey } from '../src/shared/storage/localStore';
 import { BrandLogo } from '../components/BrandLogo';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 import { bootstrapAccountProfile, fetchAccountProfile } from '../services/accountService';
-
-const readSettingsBackendUrl = (): string => {
-  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
-};
 
 const toSafeMessage = (raw: unknown): string => {
   const source = sanitizeUiText(String(raw || '').trim());
@@ -42,11 +36,10 @@ export const UserIdSetup: React.FC<{ setScreen: (screen: AppScreen) => void }> =
     setIsWorking(true);
     setErrorMsg('');
     try {
-      const baseUrl = readSettingsBackendUrl();
-      const existing = await fetchAccountProfile(baseUrl);
+      const existing = await fetchAccountProfile();
       let resolvedUserId = String(existing.profile?.userId || '').trim().toLowerCase();
       if (!resolvedUserId) {
-        const bootstrapped = await bootstrapAccountProfile(baseUrl);
+        const bootstrapped = await bootstrapAccountProfile();
         resolvedUserId = String(bootstrapped?.userId || '').trim().toLowerCase();
       }
       if (!resolvedUserId) {
@@ -144,4 +137,3 @@ export const UserIdSetup: React.FC<{ setScreen: (screen: AppScreen) => void }> =
     </div>
   );
 };
-

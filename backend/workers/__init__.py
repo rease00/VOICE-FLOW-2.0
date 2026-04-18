@@ -1,2 +1,0 @@
-"""Background worker entrypoints."""
-

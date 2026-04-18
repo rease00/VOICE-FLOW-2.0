@@ -33,6 +33,8 @@ export const SFX_REGEX = new RegExp(
   'iu'
 );
 
+const BREAK_TAG_REGEX = /^<break\s+time\s*=\s*["']?\s*(\d+(?:\.\d+)?)\s*(ms|s)?\s*["']?\s*\/?>$/iu;
+
 const SPEAKER_IGNORE_PREFIXES = [
   'chapter',
   'scene',
@@ -288,9 +290,6 @@ export const normalizeSpeakerHeaderScript = (text: string): string => (
   String(text || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => normalizeLegacySpeakerHeaderLine(line))
-    .join('\n')
 );
 
 const parseSpeakerLine = (line: string): ParsedSpeakerLine | null => {
@@ -406,6 +405,7 @@ export const parseScriptToSegments = (text: string): {
   speaker: string;
   text: string;
   emotion?: string | undefined;
+  pauseMs?: number | undefined;
   crewTags?: string[] | undefined;
   emotionTags?: string[] | undefined;
 }[] => {
@@ -416,6 +416,7 @@ export const parseScriptToSegments = (text: string): {
     speaker: string;
     text: string;
     emotion?: string | undefined;
+    pauseMs?: number | undefined;
     crewTags?: string[] | undefined;
     emotionTags?: string[] | undefined;
   }[] = [];
@@ -461,6 +462,27 @@ export const parseScriptToSegments = (text: string): {
     }
 
     if (!working) return;
+
+    const breakTagMatch = working.match(BREAK_TAG_REGEX);
+    if (breakTagMatch) {
+      const numeric = Number.parseFloat(String(breakTagMatch[1] || '0'));
+      const unit = String(breakTagMatch[2] || 'ms').toLowerCase();
+      const durationMs = Math.max(0, Math.floor(unit === 's' ? numeric * 1000 : numeric));
+      if (durationMs <= 0) return;
+
+      const start = explicitStart ?? fallbackCursor;
+      const durationSeconds = durationMs / 1000;
+      segments.push({
+        startTime: start,
+        endTime: explicitEnd,
+        speaker: '__pause__',
+        text: '',
+        emotion: 'Neutral',
+        pauseMs: durationMs,
+      });
+      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + durationSeconds;
+      return;
+    }
 
     const sfxMatch = working.match(SFX_REGEX);
     if (sfxMatch) {
@@ -614,6 +636,47 @@ const normalizeDirectedTitleMeta = (sourceText: string, directedScript: string):
   return lines.join('\n');
 };
 
+const normalizeDirectedTitleMetaStrict = (sourceText: string, directedScript: string): string => {
+  const lines = String(directedScript || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n');
+  const firstIndex = lines.findIndex((line) => String(line || '').trim().length > 0);
+  if (firstIndex < 0) return directedScript;
+
+  const firstLine = String(lines[firstIndex] || '').trim();
+  const sourceFirstLine = String(sourceText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => String(line || '').trim())
+    .find((line) => line.length > 0) || '';
+
+  const normalizedFirst = normalizeScriptTextLine(firstLine).toLowerCase();
+  const normalizedSourceFirst = normalizeScriptTextLine(sourceFirstLine).toLowerCase();
+  const sourceLooksLikeSpeaker = Boolean(
+    sourceFirstLine &&
+    (parseSpeakerLine(sourceFirstLine) || SFX_REGEX.test(sourceFirstLine))
+  );
+  const looksLikeTitle =
+    !sourceLooksLikeSpeaker &&
+    normalizedFirst.length > 0 &&
+    normalizedFirst.length <= 120 &&
+    (
+      normalizedFirst === normalizedSourceFirst ||
+      /\b(title|story|chapter)\b/i.test(normalizedFirst) ||
+      /(?:\u0915\u0939\u093e\u0928\u0940|\u0936\u0940\u0930\u094d\u0937\u0915|\u0905\u0927\u094d\u092f\u093e\u092f)/u.test(firstLine)
+    );
+  if (!looksLikeTitle) return directedScript;
+
+  lines[firstIndex] = formatCanonicalSpeakerLine(
+    'Narrator',
+    firstLine.replace(/^(?:["'\u2018\u2019\u201C\u201D])+|(?:["'\u2018\u2019\u201C\u201D])+$/gu, '').trim(),
+    'Neutral'
+  );
+  return lines.join('\n');
+};
+
 const SPEAKER_HEADER_PATCH_REGEX = new RegExp(
   String.raw`^${SPEAKER_LINE_PREFIX_PATTERN}(?:\*+)?(?:\(\s*(${SPEAKER_NAME_PATTERN})\s*\)|\[\s*(${SPEAKER_NAME_PATTERN})\s*\]|(${SPEAKER_NAME_PATTERN}))(?:\s*[\(\[]([^\)\]]{1,120})[\)\]])?((?:\*+)?\s*[:：]\s*)(.*)$`,
   'su'
@@ -723,7 +786,8 @@ export const injectDirectorTagsPreservingFormat = (
   if (!sourceRaw.trim()) return { text: sourceRaw, patchedLineCount: 0 };
 
   const sourceLines = sourceRaw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  const directedLines = directedRaw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const normalizedDirectedRaw = normalizeDirectedTitleMetaStrict(sourceText, directedText);
+  const directedLines = normalizedDirectedRaw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   const lineEnding = sourceRaw.includes('\r\n') ? '\r\n' : '\n';
 
   const directedCandidatesBySpeaker = new Map<string, DirectorTagCandidate[]>();

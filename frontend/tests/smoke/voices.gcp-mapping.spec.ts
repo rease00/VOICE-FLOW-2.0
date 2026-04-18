@@ -45,7 +45,7 @@ test('PRIME speaker catalog keeps official GCP voice gender mapping', async ({ p
     await expect(page.getByRole('heading', { name: /voice cloning/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
   }
 
-  const response = await page.request.get('/api/backend/tts/engines/voices?engine=PRIME', { timeout: 12_000 });
+  const response = await page.request.get('/api/v1/tts/engines/voices?engine=PRIME', { timeout: 12_000 });
   const responseStatus = response.status();
   const isAuthGatedFallback = responseStatus === 401 || responseStatus === 403;
   const isProxyBackendFallback = responseStatus === 502 || responseStatus === 503 || responseStatus === 504;

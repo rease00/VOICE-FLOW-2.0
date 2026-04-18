@@ -61,6 +61,15 @@ const expectBackdropState = async (page: Page, preferences: StoredBackdropPrefer
   await expectBackdropAnimation(page, expectedAnimation);
 };
 
+const waitForLoginSurface = async (page: Page): Promise<void> => {
+  await Promise.any([
+    page.locator('[data-testid="auth-shell"]').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.locator('[data-testid="auth-card"]').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByRole('heading', { name: /Welcome back/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByRole('heading', { name: /Workspace handoff/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+  ]);
+};
+
 test('workspace backdrop animates with stored theme state', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await seedBackdropPreferences(page, {
@@ -91,7 +100,7 @@ test('login backdrop respects motion-off storage', async ({ page }) => {
   });
 
   await page.goto('/app/login', { waitUntil: 'domcontentloaded', timeout: ROUTE_TIMEOUT_MS });
-  await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await waitForLoginSurface(page);
 
   await expectBackdropState(page, {
     theme: 'dark',
@@ -109,7 +118,7 @@ test('login backdrop disables animation when the OS requests reduced motion', as
   });
 
   await page.goto('/app/login', { waitUntil: 'domcontentloaded', timeout: ROUTE_TIMEOUT_MS });
-  await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await waitForLoginSurface(page);
 
   await expectBackdropState(page, {
     theme: 'light',

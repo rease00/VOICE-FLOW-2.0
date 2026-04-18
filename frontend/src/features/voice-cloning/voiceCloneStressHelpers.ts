@@ -99,7 +99,7 @@ export const getStressRuntimeDeviceLabel = (
 
   const target = normalizeVoiceCloneStressTarget(benchmarkTarget);
   return target === 'VOICE_CLONE_L4_VC'
-    ? 'Modal VC (configured target)'
+    ? 'Seed VC (configured target)'
     : 'Gemini Flash (configured target)';
 };
 
@@ -123,8 +123,8 @@ export const getStressValidationMessage = (
 
   const target = normalizeVoiceCloneStressTarget(benchmarkTarget);
   if (target === 'VOICE_CLONE_L4_VC') {
-    if (!referenceAudio) return 'Reference audio is required for the Modal VC benchmark.';
-    if (!targetAudio) return 'Target audio is required for the Modal VC benchmark.';
+    if (!referenceAudio) return 'Reference audio is required for the Seed VC benchmark.';
+    if (!targetAudio) return 'Target audio is required for the Seed VC benchmark.';
     return '';
   }
 

@@ -44,6 +44,11 @@ import {
   shouldPollVoiceCloneStressStatus,
 } from './voiceCloneStressHelpers';
 import {
+  formatVoiceCloneStatusRetryDelayLabel,
+  resolveVoiceCloneStatusRetryDelayMs,
+  VOICE_CLONE_STATUS_RETRY_INTERVAL_MS,
+} from './voiceCloneStatusRetry';
+import {
   cancelVoiceCloneJob,
   cancelVoiceCloneStressTest,
   fetchVoiceCloneStatus,
@@ -96,13 +101,14 @@ interface VoiceCloningTabContentProps {
 }
 
 type VoiceCloneResponse = VoiceCloneRenderResponse;
+type SeedVcVersion = 'v1' | 'v2';
 
 interface CloningResultState {
   previewUrl: string;
   downloadUrl: string;
   fileName: string;
   response: VoiceCloneResponse;
-  cloneMode: 'modal_vc';
+  cloneMode: 'seed_vc' | 'modal_vc';
 }
 
 interface StemExtractionResultState {
@@ -134,6 +140,8 @@ interface TrimmedSourceMixState {
   endSec: number;
 }
 
+const PAID_VOICE_CLONE_PLANS = new Set(['Launcher', 'Starter', 'Creator', 'Pro', 'Scale', 'Enterprise']);
+
 type VoiceUtilityTab = 'clone' | 'separate' | 'library';
 type VoiceCloneTaskKind = 'clone' | 'separate';
 
@@ -153,13 +161,12 @@ interface VoiceCloneJobRuntimeState extends PersistedVoiceCloneActiveJob {
 
 const VOICE_UTILITY_TAB_ITEMS: Array<{ id: VoiceUtilityTab }> = [
   { id: 'clone' },
-  { id: 'separate' },
   { id: 'library' },
 ];
 
 const TRIM_DURATION_EPSILON = 0.001;
 const MAX_STEM_EXTRACTION_SOURCE_BYTES = getVoiceCloneStemExtractionMaxBytes();
-const VOICE_CLONE_STATUS_RETRY_INTERVAL_MS = 15_000;
+const VOICE_CLONE_STATUS_EVENT_REFRESH_COOLDOWN_MS = 5_000;
 const VOICE_CLONE_CONSENT_STORAGE_KEY = 'vf_voice_clone_consent_v1';
 const VOICE_CLONE_JOB_POLL_INTERVAL_MS = 2_500;
 const VOICE_LIBRARY_CARD_RENDER_STYLE: React.CSSProperties = {
@@ -1342,12 +1349,16 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   diagnosticsExpanded,
   onDiagnosticsExpandedChange,
 }) => {
-  const { user, clonedVoices } = useUser();
+  const { user, clonedVoices, stats, refreshEntitlements } = useUser();
   const isWorkspaceLayout = layout === 'workspace';
   const shouldShowWorkspaceRail = isWorkspaceLayout && showRail;
+  const isAdminVoiceCloneUser = Boolean(user?.isAdmin || user?.adminActor);
+  const isPaidVoiceClonePlan = PAID_VOICE_CLONE_PLANS.has(String(stats?.planName || '').trim());
+  const vcSpendableBalance = Math.max(0, Number(stats?.wallet?.vcSpendableBalance || 0));
   const [activeToolTab, setActiveToolTab] = useState<VoiceUtilityTab>('clone');
   const [referenceAudio, setReferenceAudio] = useState<File | null>(null);
   const [targetAudio, setTargetAudio] = useState<File | null>(null);
+  const [seedVcVersion, setSeedVcVersion] = useState<SeedVcVersion>('v2');
   const [isCloning, setIsCloning] = useState(false);
   const [voiceCloneTask, setVoiceCloneTask] = useState<VoiceCloneTaskState | null>(null);
   const [isVoiceCloneCancelling, setIsVoiceCloneCancelling] = useState(false);
@@ -1385,15 +1396,19 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const [openVoiceStatus, setOpenVoiceStatus] = useState<VoiceCloneBenchmarkStatusResponse | null>(null);
   const [isLoadingOpenVoiceStatus, setIsLoadingOpenVoiceStatus] = useState(false);
   const [openVoiceStatusError, setOpenVoiceStatusError] = useState('');
+  const [openVoiceStatusRetryDelayMs, setOpenVoiceStatusRetryDelayMs] = useState(VOICE_CLONE_STATUS_RETRY_INTERVAL_MS);
   const [cloneConsentAccepted, setCloneConsentAccepted] = useState(false);
   const [cloneSafetyAccepted, setCloneSafetyAccepted] = useState(false);
   const [isCloneConsentPersisted, setIsCloneConsentPersisted] = useState(false);
   const [localRuntimeDiagnosticsExpanded, setLocalRuntimeDiagnosticsExpanded] = useState(false);
   const [voiceLibrarySearch, setVoiceLibrarySearch] = useState('');
   const voiceCloneTaskControllerRef = useRef<AbortController | null>(null);
+  const openVoiceStatusLastRefreshAtRef = useRef(Date.now());
+  const openVoiceStatusRequestInFlightRef = useRef(false);
   const mountedRef = useRef(true);
   const cloneWorkspaceHydratingRef = useRef(false);
   const cloneJobRecoveryInFlightRef = useRef(false);
+  const cloneRecoveryRestartedRequestsRef = useRef<Set<string>>(new Set());
   const cloneSubmitLockRef = useRef(false);
   const handledTerminalCloneRequestRef = useRef('');
   const stemExtractionInFlightRef = useRef<Set<string>>(new Set());
@@ -1410,15 +1425,27 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   const showRuntimeDiagnostics = diagnosticsExpanded ?? localRuntimeDiagnosticsExpanded;
   const setRuntimeDiagnosticsExpanded = onDiagnosticsExpandedChange || setLocalRuntimeDiagnosticsExpanded;
   const showRuntimeDiagnosticsUi = false;
+  const getVoiceCloneAccessBlockMessage = useCallback((): string => {
+    if (isAdminVoiceCloneUser) return '';
+    if (!isPaidVoiceClonePlan) {
+      return 'Seed VC requires an active paid plan.';
+    }
+    if (vcSpendableBalance <= 0) {
+      return 'VC balance is required before running Seed VC.';
+    }
+    return '';
+  }, [isAdminVoiceCloneUser, isPaidVoiceClonePlan, vcSpendableBalance]);
 
   useEffect(() => {
+    const cloneRecoveryRestartedRequests = cloneRecoveryRestartedRequestsRef;
+    const stemExtractionInFlight = stemExtractionInFlightRef;
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       cloneSubmitLockRef.current = false;
       voiceCloneTaskControllerRef.current?.abort();
       voiceCloneTaskControllerRef.current = null;
-      const stemExtractionInFlight = stemExtractionInFlightRef;
+      cloneRecoveryRestartedRequests.current.clear();
       stemExtractionInFlight.current.clear();
     };
   }, []);
@@ -1569,13 +1596,18 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   );
   const stressBackendLabel = useMemo(() => {
     const directBaseUrl = String(backendBaseUrl || '').trim();
-    return directBaseUrl || 'Default API proxy (/api/backend)';
+    return directBaseUrl || 'Default Next.js API (/api/v1)';
   }, [backendBaseUrl]);
   const stressStatusToken = String(stressStatus?.status || '').trim().toLowerCase();
   const isStressRunning = isVoiceCloneStressActiveStatus(stressStatusToken);
   const isStressTerminal = isVoiceCloneStressTerminalStatus(stressStatusToken);
   const canSeeStressControls = useMemo(() => canViewVoiceCloneStressControls(user), [user]);
   const refreshVoiceCloneStatus = useCallback(async (showLoading = true): Promise<void> => {
+    if (openVoiceStatusRequestInFlightRef.current) {
+      return;
+    }
+    openVoiceStatusLastRefreshAtRef.current = Date.now();
+    openVoiceStatusRequestInFlightRef.current = true;
     if (showLoading) {
       setIsLoadingOpenVoiceStatus(true);
     }
@@ -1583,14 +1615,25 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       const status = await fetchVoiceCloneStatus(
         backendBaseUrl ? { baseUrl: backendBaseUrl } : undefined
       );
+      if (!mountedRef.current) {
+        return;
+      }
       setOpenVoiceStatus(status);
       setOpenVoiceStatusError('');
+      setOpenVoiceStatusRetryDelayMs(resolveVoiceCloneStatusRetryDelayMs(status));
     } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
       setOpenVoiceStatus(null);
       setOpenVoiceStatusError(getErrorMessage(error));
+      setOpenVoiceStatusRetryDelayMs(resolveVoiceCloneStatusRetryDelayMs(null, error));
     } finally {
+      openVoiceStatusRequestInFlightRef.current = false;
       if (showLoading) {
-        setIsLoadingOpenVoiceStatus(false);
+        if (mountedRef.current) {
+          setIsLoadingOpenVoiceStatus(false);
+        }
       }
     }
   }, [backendBaseUrl]);
@@ -1901,14 +1944,15 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       downloadUrl: resolvedUrl,
       fileName: targetAudio?.name || 'voice-clone.wav',
       response,
-      cloneMode: 'modal_vc',
+      cloneMode: 'seed_vc',
     });
+    await refreshEntitlements().catch(() => undefined);
 
     setErrorMessage('');
     setIsCloning(false);
     clearVoiceCloneTask();
     setActiveCloneJob(null);
-  }, [backendBaseUrl, clearVoiceCloneTask, referenceAudio, targetAudio]);
+  }, [backendBaseUrl, clearVoiceCloneTask, referenceAudio, refreshEntitlements, targetAudio]);
 
   const submitCloneJob = useCallback(async (
     requestId: string,
@@ -1932,11 +1976,13 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       : (signal ? { signal } : undefined);
     return await startVoiceCloneRenderJob(
       {
+        mode: 'vc',
+        seedVcVersion,
         durationSec,
         language: 'EN',
         text: '',
         sourceVoiceId: '',
-        sourceVoiceName: 'Voice cloning tab',
+        sourceVoiceName: `Seed VC ${seedVcVersion.toUpperCase()}`,
         sourceVoiceEngine: '',
         referenceAudioBase64,
         referenceAudioName: referenceAudio.name || 'reference-audio.wav',
@@ -1950,12 +1996,12 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         requestId,
         traceId: requestId,
         regionHint: '',
-        regionSource: 'frontend',
+        regionSource: `frontend_seed_vc_${seedVcVersion}`,
         costMultiplier: 1,
       },
       requestOptions
     );
-  }, [backendBaseUrl, referenceAudio, targetAudio]);
+  }, [backendBaseUrl, referenceAudio, seedVcVersion, targetAudio]);
 
   useEffect(() => {
     if (!activeCloneJob) return;
@@ -1971,6 +2017,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     if (!activeCloneJob || !isVoiceCloneJobTerminalStatus(activeCloneJob.status)) return;
     if (handledTerminalCloneRequestRef.current === activeCloneJob.requestId) return;
     handledTerminalCloneRequestRef.current = activeCloneJob.requestId;
+    cloneRecoveryRestartedRequestsRef.current.delete(String(activeCloneJob.requestId || '').trim());
     if (String(activeCloneJob.status || '').trim().toLowerCase() === 'completed') {
       void finalizeCloneJobSuccess(activeCloneJob).catch((error) => {
         if (!mountedRef.current) return;
@@ -2053,26 +2100,13 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
               return;
             }
           }
-          try {
-            const restartedJob = await submitCloneJob(requestId, controller.signal);
-            if (cancelled) return;
-            setErrorMessage('');
-            setActiveCloneJob((current) => mergeVoiceCloneRuntimeJobState(restartedJob, current || activeCloneJob));
-            return;
-          } catch (restartError) {
-            if (cancelled || isAbortError(restartError)) {
-              return;
-            }
-            if (isRetryableVoiceCloneConnectionError(restartError)) {
-              setErrorMessage('Connection interrupted. Your cached clone request will retry automatically.');
-              return;
-            }
-            setIsCloning(false);
-            clearVoiceCloneTask();
-            setActiveCloneJob(null);
-            setErrorMessage(getErrorMessage(restartError));
+          if (cloneRecoveryRestartedRequestsRef.current.has(requestId)) {
+            setErrorMessage('Clone recovery is in progress. Waiting for provider status without creating duplicate jobs.');
             return;
           }
+          cloneRecoveryRestartedRequestsRef.current.add(requestId);
+          setErrorMessage('Clone recovery is waiting for the existing provider job to reappear. No duplicate render will be created.');
+          return;
         }
         if (isRetryableVoiceCloneConnectionError(error)) {
           setErrorMessage('Connection interrupted. Your cached clone request will retry automatically.');
@@ -2157,7 +2191,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
 
       if (normalizeVoiceCloneStressTarget(stressBenchmarkTarget) === 'VOICE_CLONE_L4_VC') {
         if (!referenceAudio || !targetAudio) {
-          throw new Error('Both reference and target audio are required for the Modal VC stress benchmark.');
+          throw new Error('Both reference and target audio are required for the Seed VC stress benchmark.');
         }
         const targetAudioFile = targetAudio;
         const [referenceAudioBase64, sourceAudioBase64] = await Promise.all([
@@ -2262,13 +2296,51 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     if (isVoiceCloneRuntimeReady) {
       return undefined;
     }
+    if (openVoiceStatusRetryDelayMs <= 0) {
+      return undefined;
+    }
     const timer = window.setInterval(() => {
+      if (openVoiceStatusRequestInFlightRef.current) return;
+      if (Date.now() - openVoiceStatusLastRefreshAtRef.current < openVoiceStatusRetryDelayMs) return;
       void refreshVoiceCloneStatus(false);
-    }, VOICE_CLONE_STATUS_RETRY_INTERVAL_MS);
+    }, openVoiceStatusRetryDelayMs);
     return () => {
       window.clearInterval(timer);
     };
-  }, [isVoiceCloneRuntimeReady, refreshVoiceCloneStatus]);
+  }, [isVoiceCloneRuntimeReady, openVoiceStatusRetryDelayMs, refreshVoiceCloneStatus]);
+
+  useEffect(() => {
+    if (isVoiceCloneRuntimeReady) {
+      return undefined;
+    }
+
+    const refreshOnVisibilityOrFocus = (): void => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return;
+      }
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      const eventRefreshCooldownMs = Math.max(openVoiceStatusRetryDelayMs, VOICE_CLONE_STATUS_EVENT_REFRESH_COOLDOWN_MS);
+      if (Date.now() - openVoiceStatusLastRefreshAtRef.current < eventRefreshCooldownMs) {
+        return;
+      }
+      if (openVoiceStatusRequestInFlightRef.current) {
+        return;
+      }
+      void refreshVoiceCloneStatus(false);
+    };
+
+    window.addEventListener('focus', refreshOnVisibilityOrFocus);
+    window.addEventListener('online', refreshOnVisibilityOrFocus);
+    document.addEventListener('visibilitychange', refreshOnVisibilityOrFocus);
+
+    return () => {
+      window.removeEventListener('focus', refreshOnVisibilityOrFocus);
+      window.removeEventListener('online', refreshOnVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', refreshOnVisibilityOrFocus);
+    };
+  }, [isVoiceCloneRuntimeReady, openVoiceStatusRetryDelayMs, refreshVoiceCloneStatus]);
 
   useEffect(() => {
     const stressJobId = String(stressStatus?.jobId || '').trim();
@@ -2394,6 +2466,12 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       cloneSubmitLockRef.current = false;
       return;
     }
+    const accessBlockMessage = getVoiceCloneAccessBlockMessage();
+    if (accessBlockMessage) {
+      setErrorMessage(accessBlockMessage);
+      cloneSubmitLockRef.current = false;
+      return;
+    }
 
     const requestId = makeRequestId();
     handledTerminalCloneRequestRef.current = '';
@@ -2459,6 +2537,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     clearVoiceCloneTask,
     cloneConsentAccepted,
     cloneSafetyAccepted,
+    getVoiceCloneAccessBlockMessage,
     isVoiceCloneRuntimeReady,
     isVoiceCloneActionBusy,
     referenceAudio,
@@ -2548,6 +2627,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       );
       if (hasExplicitSourceTrim && !matchesAppliedTrim) {
         setStemErrorMessage('Click "Apply source trim" before extraction to use this source trim range.');
+        return;
+      }
+      const accessBlockMessage = getVoiceCloneAccessBlockMessage();
+      if (accessBlockMessage) {
+        setStemErrorMessage(accessBlockMessage);
         return;
       }
 
@@ -2662,7 +2746,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         Number(response.consumedVcUnits ?? response.vcBilling?.consumedUnits ?? 0)
       );
       const runtimeRateVcPerMin = Math.max(0.000001, Number(response.vcBilling?.rateVcUnitsPerMin || 1));
-      const runtimeRateInrPerMin = Math.max(0, Number(response.vcBilling?.rateInrPerMin || 1.2));
+      const runtimeRateInrPerMin = Math.max(0, Number(response.vcBilling?.rateInrPerMin || 1));
       const inferredChargedInr = consumedVcUnits > 0
         ? (consumedVcUnits / runtimeRateVcPerMin) * runtimeRateInrPerMin
         : 0;
@@ -2695,6 +2779,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         chargedInr,
       });
       setTrimmedStemResult(null);
+      void refreshEntitlements().catch(() => undefined);
     } catch (error) {
       if (!mountedRef.current) return;
       if (extractionRunId > 0 && extractionRunId !== stemExtractionRunIdRef.current) {
@@ -2718,7 +2803,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
   }, [
     backendBaseUrl,
     clearVoiceCloneTask,
+    getVoiceCloneAccessBlockMessage,
     isVoiceCloneActionBusy,
+    refreshEntitlements,
     sourceMixAudio,
     sourceMixDurationSec,
     sourceTrimEndInput,
@@ -2815,7 +2902,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
       if (!result) {
         return {
           title: 'Waiting for source files',
-          detail: 'Upload reference and target audio to create a converted preview.',
+          detail: seedVcVersion === 'v2'
+            ? 'Upload reference and target audio to run Seed VC v2 voice and accent conversion.'
+            : 'Upload reference and target audio to run Seed VC voice conversion.',
           status: openVoiceProviderStatus.readyLabel,
         };
       }
@@ -2843,6 +2932,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
     activeToolTab,
     openVoiceProviderStatus.readyLabel,
     result,
+    seedVcVersion,
     selectedEngine,
     stemResult,
     voiceCloneTask,
@@ -2856,11 +2946,6 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         ? 'usable'
         : 'ready';
 
-  const separateTabStatusTone: VoiceUtilityTabStatusTone =
-    canExtractStems
-      ? 'usable'
-      : 'ready';
-
   return (
     <div
       className={`${isWorkspaceLayout ? `vf-voice-clone-layout ${shouldShowWorkspaceRail ? '' : 'vf-voice-clone-layout--single'}`.trim() : 'space-y-2.5 sm:space-y-3'} vf-voice-clone-shell`.trim()}
@@ -2872,19 +2957,23 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(99,102,241,0.28)] ring-1 ring-white/10 sm:h-10 sm:w-10 sm:rounded-[1rem]">
             {activeToolTab === 'clone'
               ? <Mic2 size={17} />
-              : activeToolTab === 'separate'
-                ? <Music2 size={17} />
-                : <LibraryBig size={17} />}
+              : <LibraryBig size={17} />}
           </div>
           <div className="min-w-0">
             <h2 className="text-[14px] font-semibold text-slate-900 sm:text-[15px]">
               {activeToolTab === 'clone'
-                ? 'Voice Cloning'
+                ? 'Seed VC'
                 : activeToolTab === 'separate'
-                  ? 'Extract Voice + BG Music'
+                  ? 'Hidden'
                   : 'Voice Libraries'}
             </h2>
-            {activeToolTab === 'separate' ? (
+            {activeToolTab === 'clone' ? (
+              <p className="mt-0.5 max-w-2xl text-[10px] leading-4 text-slate-600 sm:text-[11px] sm:leading-5">
+                {seedVcVersion === 'v2'
+                  ? 'Seed VC v2 keeps the same two-file workflow and is tuned for stronger source-trait suppression with better accent transfer.'
+                  : 'Seed VC converts the target recording toward the uploaded reference voice.'}
+              </p>
+            ) : activeToolTab === 'separate' ? (
               <p className="mt-0.5 max-w-2xl text-[10px] leading-4 text-slate-600 sm:text-[11px] sm:leading-5">
                 Upload one mixed track to split out a speech-focused voice stem and a background-music stem.
               </p>
@@ -2897,7 +2986,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
         </div>
 
         <div className={`rounded-xl border border-slate-200 bg-slate-50 p-0.5 sm:rounded-2xl ${denseTabs ? 'mt-1.5 sm:mt-2' : 'mt-2 sm:mt-2.5 sm:p-1'}`}>
-          <div className={denseTabs ? 'vf-scrollbar-invisible flex flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'grid grid-cols-3 gap-0.5 sm:gap-1'} {...voiceUtilityTabs.listProps}>
+          <div className={denseTabs ? 'vf-scrollbar-invisible flex flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'grid grid-cols-2 gap-0.5 sm:gap-1'} {...voiceUtilityTabs.listProps}>
             <button
               type="button"
               {...voiceUtilityTabs.getTabProps('clone')}
@@ -2909,29 +2998,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
             >
               <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} inline-flex items-center gap-1.5 font-semibold`}>
                 <span className={`h-1.5 w-1.5 rounded-full ${getVoiceUtilityTabDotClass(cloneTabStatusTone)}`} aria-hidden="true" />
-                <span>Voice Cloning</span>
+                <span>Seed VC</span>
                 <span className="sr-only">{getVoiceUtilityTabStatusLabel(cloneTabStatusTone)}</span>
               </span>
               <span className={`${denseTabs ? 'hidden' : 'mt-0.5 block text-[10px] text-slate-500 sm:text-[11px]'}`}>
                 Reference + target conversion
-              </span>
-            </button>
-            <button
-              type="button"
-              {...voiceUtilityTabs.getTabProps('separate')}
-              className={`${denseTabs ? 'shrink-0 min-w-[8.6rem] rounded-lg px-2 py-1.5' : 'rounded-lg px-2 py-1.5 sm:rounded-xl sm:px-3 sm:py-2'} text-left transition ${
-                activeToolTab === 'separate'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
-              }`}
-            >
-              <span className={`${denseTabs ? 'text-[11px]' : 'text-[12px] sm:text-sm'} inline-flex items-center gap-1.5 font-semibold`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${getVoiceUtilityTabDotClass(separateTabStatusTone)}`} aria-hidden="true" />
-                <span>Extract Voice + BG</span>
-                <span className="sr-only">{getVoiceUtilityTabStatusLabel(separateTabStatusTone)}</span>
-              </span>
-              <span className={`${denseTabs ? 'hidden' : 'mt-0.5 block text-[10px] text-slate-500 sm:text-[11px]'}`}>
-                Split vocals and background
               </span>
             </button>
             <button
@@ -2956,12 +3027,41 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
           className={`mt-2.5 space-y-2.5 sm:mt-3 sm:space-y-3 ${isWorkspaceLayout ? 'pb-28 sm:pb-32' : ''}`}
           {...voiceUtilityTabs.getPanelProps('clone')}
         >
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-1 sm:rounded-2xl sm:p-1.5">
+            <div className="grid grid-cols-2 gap-1">
+              {([
+                { id: 'v1', label: 'Seed VC', detail: 'Classic voice conversion' },
+                { id: 'v2', label: 'Seed VC v2', detail: 'Voice + accent conversion' },
+              ] as const).map((option) => {
+                const isActive = seedVcVersion === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setSeedVcVersion(option.id)}
+                    className={`rounded-xl border px-3 py-2 text-left transition ${
+                      isActive
+                        ? 'border-indigo-300 bg-white text-slate-900 shadow-sm'
+                        : 'border-transparent bg-transparent text-slate-600 hover:border-slate-200 hover:bg-white/80 hover:text-slate-900'
+                    }`}
+                    aria-pressed={isActive}
+                  >
+                    <div className="text-[11px] font-semibold sm:text-[12px]">{option.label}</div>
+                    <div className="mt-0.5 text-[10px] leading-4 text-slate-500">{option.detail}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="grid gap-1.5 sm:gap-2 lg:grid-cols-2">
               <UploadDropzone
                 accept="audio/*"
                 file={referenceAudio}
                 label="Drop reference audio"
-                hint="This voice will be used as the cloning reference."
+                hint={seedVcVersion === 'v2'
+                  ? 'Reference voice used by Seed VC v2 for the converted tone and accent target.'
+                  : 'Reference voice used by Seed VC for the converted tone target.'}
               className="px-2 py-2 sm:px-3 sm:py-3"
               disabled={isVoiceCloneActionBusy}
               onFilesSelected={handleReferenceChange}
@@ -2970,7 +3070,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
               accept="audio/*"
               file={targetAudio}
               label="Drop target audio"
-              hint="This clip will be converted to match the reference voice."
+              hint={seedVcVersion === 'v2'
+                ? 'Source clip that Seed VC v2 will convert while preserving the content.'
+                : 'Source clip that Seed VC will convert to match the reference voice.'}
               className="px-2 py-2 sm:px-3 sm:py-3"
               disabled={isVoiceCloneActionBusy}
               onFilesSelected={handleTargetChange}
@@ -3049,7 +3151,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   </Button>
                   {!isVoiceCloneRuntimeReady ? (
                     <span className="text-[10px] text-slate-500 sm:text-[11px]">
-                      Availability checks auto-retry every {Math.round(VOICE_CLONE_STATUS_RETRY_INTERVAL_MS / 1000)}s while the provider is not ready.
+                      Availability checks auto-retry every {formatVoiceCloneStatusRetryDelayLabel(openVoiceStatusRetryDelayMs)} while the provider is not ready.
                     </span>
                   ) : null}
                 </div>
@@ -3150,7 +3252,9 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
 
           <form className={`flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 sm:rounded-2xl sm:px-3.5 sm:py-3 sm:flex-row sm:items-center sm:justify-between ${isWorkspaceLayout ? 'vf-voice-clone-actionbar' : ''}`} onSubmit={handleSubmit}>
             <div className="text-[10px] leading-4 text-slate-500 sm:text-[11px] sm:leading-5">
-              Modal VC requests are billed by the backend and require runtime readiness.
+              {seedVcVersion === 'v2'
+                ? 'Seed VC v2 is billed by the backend and uses the same two-file conversion flow with upgraded conversion behavior.'
+                : 'Seed VC requests are billed by the backend and require runtime readiness.'}
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {!isWorkspaceLayout && canSeeStressControls ? (
@@ -3160,7 +3264,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   icon={<Gauge size={14} />}
                   onClick={openStressModal}
                 >
-                  Stress Test (Modal VC)
+                  Stress Test (Seed VC)
                 </Button>
               ) : null}
               <Button
@@ -3171,7 +3275,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                 type="submit"
                 variant="primary"
               >
-                Start Cloning
+                {seedVcVersion === 'v2' ? 'Start Seed VC v2' : 'Start Seed VC'}
               </Button>
             </div>
           </form>

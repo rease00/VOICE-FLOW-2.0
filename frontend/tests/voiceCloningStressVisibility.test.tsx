@@ -22,7 +22,7 @@ describe('Voice cloning stress control visibility', () => {
     });
 
     const html = renderToStaticMarkup(<VoiceCloningTabContent />);
-    expect(html).not.toContain('Stress Test (Modal VC)');
+    expect(html).not.toContain('Stress Test (Seed VC)');
   });
 
   it('shows stress controls for admin users', () => {
@@ -31,7 +31,7 @@ describe('Voice cloning stress control visibility', () => {
     });
 
     const html = renderToStaticMarkup(<VoiceCloningTabContent />);
-    expect(html).toContain('Stress Test (Modal VC)');
+    expect(html).toContain('Stress Test (Seed VC)');
   });
 
   it('emits workspace layout marker when requested', () => {
@@ -51,5 +51,15 @@ describe('Voice cloning stress control visibility', () => {
     const html = renderToStaticMarkup(<VoiceCloningTabContent layout="workspace" showRail={false} />);
     expect(html).toContain('data-voice-clone-layout=\"workspace\"');
     expect(html).not.toContain('Session status');
+  });
+
+  it('shows Seed VC v2 and removes the legacy extraction tab from the primary nav', () => {
+    useUserMock.mockReturnValue({
+      user: { isAdmin: false, adminActor: null },
+    });
+
+    const html = renderToStaticMarkup(<VoiceCloningTabContent />);
+    expect(html).toContain('Seed VC v2');
+    expect(html).not.toContain('Extract Voice + BG</span>');
   });
 });

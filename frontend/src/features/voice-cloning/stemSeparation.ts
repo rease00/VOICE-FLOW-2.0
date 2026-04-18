@@ -24,8 +24,6 @@ export const getVoiceCloneStemExtractionMaxBytes = (): number => {
   const raw = String(
     process.env.NEXT_PUBLIC_VOICE_CLONE_MAX_AUDIO_BYTES
       || process.env.NEXT_PUBLIC_OPENVOICE_MAX_AUDIO_BYTES
-      || process.env.VITE_VOICE_CLONE_MAX_AUDIO_BYTES
-      || process.env.VITE_OPENVOICE_MAX_AUDIO_BYTES
       || ''
   ).trim();
   const parsed = Number(raw);

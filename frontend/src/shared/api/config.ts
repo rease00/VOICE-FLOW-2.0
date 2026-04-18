@@ -1,6 +1,6 @@
 import { readEnvValue } from '../runtime/env';
 
-const FALLBACK_MEDIA_BACKEND_URL = '/api/backend';
+const FALLBACK_API_BASE_URL = '/api/v1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const LEADING_SCHEME_TYPO_PATTERN = /^((?:https?):\/\/)!+/i;
 
@@ -64,20 +64,20 @@ const isHostedBrowserRuntime = (): boolean => {
 };
 
 const resolveHostedReplacementBaseUrl = (fallbackValue?: string): string => {
-  const normalizedFallback = trimTrailingSlashes(String(fallbackValue || '').trim()) || FALLBACK_MEDIA_BACKEND_URL;
+  const normalizedFallback = trimTrailingSlashes(String(fallbackValue || '').trim()) || FALLBACK_API_BASE_URL;
   if (isHostedBrowserRuntime() && isAbsoluteHttpUrl(normalizedFallback)) {
-    return FALLBACK_MEDIA_BACKEND_URL;
+    return FALLBACK_API_BASE_URL;
   }
   if (normalizedFallback && !isLocalHttpUrl(normalizedFallback)) {
     return normalizedFallback;
   }
-  return FALLBACK_MEDIA_BACKEND_URL;
+  return FALLBACK_API_BASE_URL;
 };
 
 const normalizeConfiguredApiBaseUrl = (input: string | undefined, fallbackValue: string): SanitizedApiBaseUrlResult => {
   const raw = String(input || '').trim();
   const normalizedFallback = trimTrailingSlashes(
-    String(fallbackValue || FALLBACK_MEDIA_BACKEND_URL).trim() || FALLBACK_MEDIA_BACKEND_URL
+    String(fallbackValue || FALLBACK_API_BASE_URL).trim() || FALLBACK_API_BASE_URL
   );
   const fallback = resolveHostedReplacementBaseUrl(normalizedFallback);
 
@@ -151,14 +151,13 @@ export const sanitizeConfiguredApiBaseUrl = (
 };
 
 const readConfiguredApiBaseUrl = (): string => readEnvValue(
-  process.env.NEXT_PUBLIC_API_BASE_URL,
-  process.env.VITE_API_BASE_URL
+  process.env.NEXT_PUBLIC_API_BASE_URL
 );
 
 export const getDefaultApiBaseUrl = (): string => {
   const fromEnv = readConfiguredApiBaseUrl();
-  if (fromEnv) return normalizeConfiguredApiBaseUrl(fromEnv, FALLBACK_MEDIA_BACKEND_URL).value;
-  return FALLBACK_MEDIA_BACKEND_URL;
+  if (fromEnv) return normalizeConfiguredApiBaseUrl(fromEnv, FALLBACK_API_BASE_URL).value;
+  return FALLBACK_API_BASE_URL;
 };
 
 export const resolveApiBaseUrl = (override?: string): string => {

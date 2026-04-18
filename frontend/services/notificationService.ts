@@ -3,37 +3,46 @@ import { readJsonOrThrow } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import type { NotificationActionTarget, NotificationEventCode, NotificationPrefs } from '../src/shared/notifications/types';
 
-const toBaseUrl = (input?: string): string => resolveApiBaseUrl(input);
+const ACCOUNT_BILLING_API_BASE = '/api/v1';
+
+const toBaseUrl = (input?: string): string => (
+  typeof input === 'string' && input.trim()
+    ? resolveApiBaseUrl(input)
+    : ACCOUNT_BILLING_API_BASE
+);
 
 export interface NotificationWireAction {
-  label?: string;
-  target?: NotificationActionTarget;
+  label?: string | undefined;
+  target?: NotificationActionTarget | undefined;
 }
 
 export interface NotificationWireItem {
   id: string;
   eventCode: NotificationEventCode | string;
-  entityKey?: string | null;
-  title?: string;
-  message?: string;
-  details?: string | null;
-  severity?: string;
-  category?: string;
-  audience?: string;
-  channel?: string;
-  status?: string;
-  resolvedAt?: string | null;
-  resolvedBy?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-  expiresAt?: string | null;
-  readAt?: string | null;
-  dismissedAt?: string | null;
-  sticky?: boolean;
-  dedupeKey?: string | null;
-  requiredPermission?: string | null;
-  emailEligible?: boolean;
-  action?: NotificationWireAction | null;
+  entityKey?: string | null | undefined;
+  title?: string | undefined;
+  message?: string | undefined;
+  userMessage?: string | null | undefined;
+  details?: string | null | undefined;
+  adminDetail?: string | null | undefined;
+  severity?: string | undefined;
+  category?: string | undefined;
+  audience?: string | undefined;
+  roleScope?: string | null | undefined;
+  channel?: string | undefined;
+  status?: string | undefined;
+  resolvedAt?: string | null | undefined;
+  resolvedBy?: string | null | undefined;
+  createdAt?: string | null | undefined;
+  updatedAt?: string | null | undefined;
+  expiresAt?: string | null | undefined;
+  readAt?: string | null | undefined;
+  dismissedAt?: string | null | undefined;
+  sticky?: boolean | undefined;
+  dedupeKey?: string | null | undefined;
+  requiredPermission?: string | null | undefined;
+  emailEligible?: boolean | undefined;
+  action?: NotificationWireAction | null | undefined;
 }
 
 export interface NotificationPreferencesResponse {

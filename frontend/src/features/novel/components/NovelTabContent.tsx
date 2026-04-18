@@ -1,26 +1,26 @@
 import React from 'react';
 import type { GenerationSettings } from '../../../../types';
-import { NovelWorkspaceV2 } from '../../../../components/NovelWorkspaceV2';
+import { NovelBookPlatform } from './NovelBookPlatform';
 
 interface NovelTabContentProps {
   settings: GenerationSettings;
-  mediaBackendUrl: string;
   onToast: (message: string, type?: 'success' | 'error' | 'info') => void;
-  onSendToStudio?: (content: string) => void;
+  onSendToStudio?: ((content: string, title?: string) => void) | undefined;
+  embeddedMode?: boolean;
 }
 
 export const NovelTabContent: React.FC<NovelTabContentProps> = ({
   settings,
-  mediaBackendUrl,
   onToast,
   onSendToStudio,
+  embeddedMode = false,
 }) => {
   return (
-    <NovelWorkspaceV2
+    <NovelBookPlatform
       settings={settings}
-      mediaBackendUrl={mediaBackendUrl}
       onToast={onToast}
-      onSendToStudio={onSendToStudio || (() => {})}
+      onSwitchToStudio={onSendToStudio}
+      embeddedMode={embeddedMode}
     />
   );
 };

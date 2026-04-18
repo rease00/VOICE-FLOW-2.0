@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Bell, CheckCircle2, ChevronDown, ChevronUp, Info, TriangleAlert, X } from 'lucide-react';
 import { toCompactToastCopy } from './format';
 import type { AppNotification } from './types';
-import { useNotifications } from './NotificationProvider';
+import { combineNotificationFeeds, useNotifications } from './NotificationProvider';
 import { getToastAutoHideMs } from './toastTiming';
 
 const severityTone = (severity: AppNotification['severity'], isDarkUi: boolean): string => {
@@ -234,6 +234,10 @@ export const NotificationUI: React.FC = () => {
     setCenterOpen,
     clearAll,
   } = useNotifications();
+  const notificationFeed = useMemo(
+    () => combineNotificationFeeds(notifications, toastNotifications),
+    [notifications, toastNotifications]
+  );
 
   useEffect(() => {
     setIsMounted(true);
@@ -253,12 +257,12 @@ export const NotificationUI: React.FC = () => {
   }, []);
 
   const centerItems = useMemo(() => {
-    if (filter === 'active') return notifications.filter((item) => item.status === 'active');
-    if (filter === 'unread') return notifications.filter((item) => !item.readAt);
-    if (filter === 'critical') return notifications.filter((item) => item.severity === 'critical' || item.sticky);
-    if (filter === 'resolved') return notifications.filter((item) => item.status === 'resolved');
-    return notifications;
-  }, [filter, notifications]);
+    if (filter === 'active') return notificationFeed.filter((item) => item.status === 'active');
+    if (filter === 'unread') return notificationFeed.filter((item) => !item.readAt);
+    if (filter === 'critical') return notificationFeed.filter((item) => item.severity === 'critical' || item.sticky);
+    if (filter === 'resolved') return notificationFeed.filter((item) => item.status === 'resolved');
+    return notificationFeed;
+  }, [filter, notificationFeed]);
 
   const toastItems = useMemo(
     () =>
@@ -301,10 +305,10 @@ export const NotificationUI: React.FC = () => {
   }, [isCenterOpen]);
 
   useEffect(() => {
-    if (!isCenterOpen || notifications.length === 0) {
+    if (!isCenterOpen || notificationFeed.length === 0) {
       setIsClearAllConfirmOpen(false);
     }
-  }, [isCenterOpen, notifications.length]);
+  }, [isCenterOpen, notificationFeed.length]);
 
   useEffect(() => {
     if (!isCenterOpen) return;
@@ -417,10 +421,10 @@ export const NotificationUI: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  if (notifications.length === 0) return;
+                  if (notificationFeed.length === 0) return;
                   setIsClearAllConfirmOpen(true);
                 }}
-                disabled={notifications.length === 0}
+                disabled={notificationFeed.length === 0}
                 className={`rounded-md border px-2 py-1 text-[11px] font-semibold transition-colors disabled:opacity-45 ${isDarkUi ? 'border-rose-500/45 text-rose-200 hover:bg-rose-500/20' : 'border-rose-300 text-rose-700 hover:bg-rose-50'}`}
               >
                 Clear all

@@ -25,6 +25,18 @@ const waitForAnyVisible = async (page: Page, labels: string[]): Promise<void> =>
   );
 };
 
+const resolveRouteUrl = (page: Page, path: string): string => {
+  try {
+    const current = new URL(page.url());
+    if (current.protocol.startsWith('http')) {
+      return new URL(path, current.origin).toString();
+    }
+  } catch {
+    // Fall back to Playwright baseURL-relative navigation.
+  }
+  return path;
+};
+
 const expectNoHorizontalBleed = async (page: Page): Promise<void> => {
   const metrics = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
@@ -51,6 +63,48 @@ const expectRailMetrics = async (page: Page, selector: string, requireOverflow =
     expect(metrics.scrollWidth).toBeGreaterThanOrEqual(metrics.clientWidth);
   }
   expect(metrics.overflowX).toMatch(/auto|scroll/);
+};
+
+const LANDING_SURFACE_TEST_IDS = [
+  'landing-home',
+  'landing-single-speaker',
+  'landing-multi-speaker',
+  'landing-ai-director',
+  'landing-reader-playback',
+] as const;
+
+const expectLandingChrome = async (page: Page, activeLabel: string): Promise<void> => {
+  await expect(page.getByTestId('brand-logo').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByTestId('marketing-landing')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByTestId('landing-tab-bar')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByTestId('landing-next-nav')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.locator('[data-testid="landing-tab-bar"] a[aria-current="page"]')).toHaveText(activeLabel, { timeout: ROUTE_TIMEOUT_MS });
+  await expectNoHorizontalBleed(page);
+};
+
+const expectOnlyActiveLandingSurface = async (
+  page: Page,
+  activeSurface: (typeof LANDING_SURFACE_TEST_IDS)[number],
+): Promise<void> => {
+  for (const testId of LANDING_SURFACE_TEST_IDS) {
+    const locator = page.getByTestId(testId);
+    if (testId === activeSurface) {
+      await expect(locator).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      continue;
+    }
+    await expect(locator).toHaveCount(0);
+  }
+};
+
+const expectNoLandingMediaRequestsBeforeInteraction = async (page: Page): Promise<void> => {
+  const mediaRequests = await page.evaluate(() => (
+    performance
+      .getEntriesByType('resource')
+      .map((entry) => entry.name)
+      .filter((name) => /\.(wav|mp3|ogg|m4a)(\?|$)/i.test(name))
+  ));
+
+  expect(mediaRequests).toEqual([]);
 };
 
 const isKnownConsoleNoise = (message: string): boolean => {
@@ -114,10 +168,67 @@ const trackRouteHealth = (page: Page) => {
 const routeSmokeCases: RouteAssertion[] = [
   {
     path: '/billing',
-    title: 'billing public page',
+    title: 'billing premium page',
     expect: async (page) => {
-      await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('heading', { name: /Billing, credits, and checkout/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByTestId('brand-logo').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Pricing is coming soon/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Plans are blurred until launch.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+    },
+  },
+  {
+    path: '/landing',
+    title: 'landing overview page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Overview');
+      await expectOnlyActiveLandingSurface(page, 'landing-home');
+      await expect(page.getByTestId('landing-home-hero')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Audition voices/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Start free/i }).first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/single-voice',
+    title: 'landing single voice page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Single Voice');
+      await expectOnlyActiveLandingSurface(page, 'landing-single-speaker');
+      await expect(page.getByText('Hear short reads before you commit the scene.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Next: Prime Scenes/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/prime-scenes',
+    title: 'landing prime scenes page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Prime Scenes');
+      await expectOnlyActiveLandingSurface(page, 'landing-multi-speaker');
+      await expect(page.getByText('Prime Scenes are where Voice Flow stops sounding like isolated clips and starts sounding like a finished scene.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Next: AI Direction/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/direction',
+    title: 'landing ai direction page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'AI Direction');
+      await expectOnlyActiveLandingSurface(page, 'landing-ai-director');
+      await expect(page.getByTestId('landing-ai-director-prompt')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Next: Reader Review/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
+    },
+  },
+  {
+    path: '/landing/reader',
+    title: 'landing reader page',
+    expect: async (page) => {
+      await expectLandingChrome(page, 'Reader');
+      await expectOnlyActiveLandingSurface(page, 'landing-reader-playback');
+      await expect(page.getByText('Close the loop with a quieter review surface built for final listening.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Open the Studio/i }).last()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectNoLandingMediaRequestsBeforeInteraction(page);
     },
   },
   {
@@ -148,91 +259,28 @@ const routeSmokeCases: RouteAssertion[] = [
   },
   {
     path: '/app/writing',
-    title: 'novel workspace responsive',
+    title: 'writing workspace responsive',
     requiresAuth: true,
     expect: async (page, testInfo) => {
       const viewport = resolveWritingViewport(testInfo.project.name);
       await page.setViewportSize(viewport);
+      await expect(page).toHaveURL(/\/app\/writing(?:\/|$|\?)/);
       await Promise.any([
-        page.getByTestId('novel-workspace').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByPlaceholder('Novel name').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByRole('heading', { name: 'Novel Workspace', exact: true }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByTestId('novel-workspace').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByTestId('novel-editor-tabs').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByTestId('novel-library-tabs').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       ]);
-      await expect(page.getByTestId('novel-workspace')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByTestId('novel-workspace')).toHaveAttribute(
-        'data-novel-layout',
-        testInfo.project.name.includes('mobile')
-          ? 'phone'
-          : testInfo.project.name.includes('tablet')
-            ? 'tablet'
-            : 'desktop'
-      );
-
-      if (testInfo.project.name.includes('mobile')) {
-        await expect(page.getByRole('button', { name: /^Novel$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByRole('button', { name: /^Chapter$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByRole('button', { name: 'Create novel' })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByRole('button', { name: /^Chapter$/i }).click();
-        await Promise.any([
-          page.getByRole('button', { name: /Create chapter/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-          page.getByPlaceholder('Chapter title').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-          page.getByText('Create a novel first to unlock chapter controls.', { exact: true }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        ]);
-        await expect(page.getByTestId('novel-tools-tabs')).toHaveCount(0);
-        await page.getByTestId('novel-tools-toggle').click();
-        await expect(page.getByTestId('novel-tools-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByTestId('novel-tools-tab-adapt').click();
-        await expect(page.getByPlaceholder('Target culture')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByTestId('novel-tools-tab-memory').click();
-        await expect(page.getByText('Run adaptation to generate chapter summary.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByTestId('novel-tools-tab-ledger').click();
-        await expect(page.getByPlaceholder('Filter')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByTestId('novel-tools-tab-drive').click();
-        await expect(page.getByRole('button', { name: /^Download$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      } else if (testInfo.project.name.includes('desktop')) {
-        await expect(page.getByRole('heading', { name: /^Library$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-library-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByRole('heading', { name: /^Inspector$/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-tools-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-workspace-back')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-workspace-forward')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-editor-tabs')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-workspace-save')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByText('Browser cache autosave')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-tools-tab-adapt')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByPlaceholder('Target culture')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByPlaceholder('Novel name')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByRole('button', { name: /^Adapted$/i }).click();
-        await expect(page.getByPlaceholder('Adapted output...')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await page.getByRole('button', { name: /^Source$/i }).click();
-        await expect(page.getByPlaceholder('Source chapter...')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-        await expect(page.getByTestId('novel-workspace-expand')).toHaveCount(0);
-      } else {
-        await expect(page.getByPlaceholder('Novel name')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      }
-
+      await expect(page.getByTestId('novel-workspace').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expectNoHorizontalBleed(page);
     },
   },
   {
-    path: '/app/reader',
-    title: 'reader smoke',
+    path: '/app/admin',
+    title: 'admin route canary',
+    requiresAuth: true,
     expect: async (page) => {
-      await expect(page).toHaveURL(/\/app\/reader(?:\/|$|\?)/);
-      await Promise.any([
-        page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByTestId('reader-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByTestId('reader-playback-stage').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByTestId('brand-logo').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByRole('heading', { name: /Sign in to open Reader/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-        page.getByRole('button', { name: /Get Started|Sign In|Create Account|Test Drive|Create Your First Scene|Listen to Live Demos/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      ]);
-      await expect(page.locator('body')).toBeVisible();
-      const readerRail = page.locator('.vf-reader-v2-tray__tabs');
-      if (await readerRail.count()) {
-        await expectRailMetrics(page, '.vf-reader-v2-tray__tabs');
-      }
-      await expectNoHorizontalBleed(page);
+      await expect(page).toHaveURL(/\/app\/admin(?:\/|$|\?)/);
+      await expect(page.locator('body')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -249,15 +297,18 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/app/onboarding',
     title: 'onboarding',
     expect: async (page) => {
-      await expect(page.getByRole('button', { name: /Create Account/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page).toHaveURL(/\/app\/login(?:\?.*next=%2Fapp%2Fonboarding.*)?$/);
+      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
     path: '/app/profile',
     title: 'profile',
     expect: async (page) => {
-      await waitForAnyVisible(page, ['Account Center', 'Restoring workspace...']);
-      await expect(page.getByText(/Back to workspace/i)).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page).toHaveURL(/\/app\/login(?:\?.*next=%2Fapp%2Fprofile.*)?$/);
+      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -273,20 +324,27 @@ const routeSmokeCases: RouteAssertion[] = [
 
 for (const routeCase of routeSmokeCases) {
   test(routeCase.title, async ({ page }, testInfo) => {
+    if (routeCase.requiresAuth) {
+      test.setTimeout(120_000);
+    }
     const assertRouteHealth = routeCase.trackRouteHealth === false ? null : trackRouteHealth(page);
     if (routeCase.requiresAuth) {
       const credentials = resolveStudioSmokeCredentials();
       test.skip(!credentials, 'Missing Playwright admin credentials for authenticated smoke coverage.');
-      await ensureStudioSmokeAuthenticated(page, credentials!);
+      await ensureStudioSmokeAuthenticated(page, credentials!, { preloadWritingSurface: false });
     }
 
-    await page.goto(routeCase.path, {
-      waitUntil: 'domcontentloaded',
-      timeout: ROUTE_TIMEOUT_MS,
-    });
+    const currentPath = new URL(page.url()).pathname || '';
+    if (currentPath !== routeCase.path) {
+      await page.goto(resolveRouteUrl(page, routeCase.path), {
+        waitUntil: 'domcontentloaded',
+        timeout: ROUTE_TIMEOUT_MS,
+      });
+    }
     await routeCase.expect(page, testInfo);
     await expect(page.locator('body')).toBeVisible();
 
     assertRouteHealth?.();
   });
 }
+

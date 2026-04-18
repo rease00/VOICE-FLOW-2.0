@@ -1,23 +1,18 @@
 'use client';
-import React, { Suspense, lazy } from 'react';
-import { UserProvider } from '../../features/auth/context/UserContext';
-import { NotificationProvider } from '../../shared/notifications/NotificationProvider';
-import { ReaderPwaBootstrap } from './ReaderPwaBootstrap';
 
-const NotificationUI = lazy(async () =>
-  import('../../shared/notifications/NotificationUI').then((module) => ({ default: module.NotificationUI }))
-);
+import React from 'react';
+import { usePathname } from 'next/navigation';
+import { FullAppProviders } from './FullAppProviders';
+
+const AUTH_SURFACE_PATHS = new Set(['/app/login']);
 
 export const AppProviders: React.FC<React.PropsWithChildren> = ({ children }) => {
-  return (
-    <UserProvider>
-      <NotificationProvider>
-        <ReaderPwaBootstrap />
-        {children}
-        <Suspense fallback={null}>
-          <NotificationUI />
-        </Suspense>
-      </NotificationProvider>
-    </UserProvider>
-  );
+  const pathname = usePathname();
+  const safePath = String(pathname || '').trim();
+
+  if (AUTH_SURFACE_PATHS.has(safePath)) {
+    return <>{children}</>;
+  }
+
+  return <FullAppProviders>{children}</FullAppProviders>;
 };

@@ -2,10 +2,17 @@
 import { AccountEntitlements } from './accountService';
 import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
-import type { ReaderCatalogItem, ReaderOwnershipBasis } from '../types';
+
+const normalizeAdminApiRoot = (value: string): string => {
+  const normalized = String(value || '').trim().replace(/\/+$/, '');
+  if (!normalized) return '/api/v1';
+  return normalized
+    .replace(/\/api\/backend(?:\/(?:admin|ops))?$/i, '/api/v1')
+    .replace(/\/api\/v1\/(?:admin|ops)$/i, '/api/v1');
+};
 
 const toBaseUrl = (input?: string): string => {
-  return resolveApiBaseUrl(input);
+  return normalizeAdminApiRoot(resolveApiBaseUrl(input));
 };
 
 export const ADMIN_READ_TIMEOUT_MS = 12000;
@@ -80,10 +87,36 @@ export interface AdminUserSummary {
   wallet: {
     paidVfBalance: number;
     vffBalance: number;
+    vcFreeBalance?: number;
+    vcGrantedBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
   };
   usage: {
     monthlyVfUsed: number;
     dailyGenerationUsed: number;
+  };
+}
+
+export interface AdminUserVcGrantRecord {
+  id: string;
+  amount: number;
+  createdAt?: string;
+  note?: string;
+  requestId?: string;
+  actorUid?: string;
+  actorUserId?: string;
+  before?: {
+    vcFreeBalance?: number;
+    vcGrantedBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
+  };
+  after?: {
+    vcFreeBalance?: number;
+    vcGrantedBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
   };
 }
 
@@ -806,6 +839,41 @@ export const patchAdminUser = async (
     { requireAuth: true }
   ));
   return payload?.entitlements as AccountEntitlements;
+};
+
+export const fetchAdminUserVcGrants = async (
+  uid: string,
+  options?: { limit?: number },
+  baseUrl?: string
+): Promise<AdminUserVcGrantRecord[]> => {
+  const query = new URLSearchParams();
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: AdminUserVcGrantRecord[] }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/billing/users/${encodeURIComponent(uid)}/vc-grants${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const grantAdminUserVc = async (
+  uid: string,
+  input: { amount: number; note?: string; requestId?: string },
+  baseUrl?: string
+): Promise<{ entitlements: AccountEntitlements; items: AdminUserVcGrantRecord[] }> => {
+  const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements; items?: AdminUserVcGrantRecord[] }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/billing/users/${encodeURIComponent(uid)}/vc-grants`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return {
+    entitlements: payload.entitlements as AccountEntitlements,
+    items: Array.isArray(payload?.items) ? payload.items : [],
+  };
 };
 
 export const forceAdminUserIdChange = async (
@@ -1933,109 +2001,553 @@ export const fetchAdminNotices = fetchAdminBroadcastNotices;
 export const createAdminNotice = createAdminBroadcastNotice;
 export const deleteAdminNotice = deleteAdminBroadcastNotice;
 
-export interface AdminReaderCatalogItem extends ReaderCatalogItem {
-  publishState?: 'published' | 'draft' | string;
-  publishedAt?: string;
+export interface AdminSpendAnomaly {
+  id: string;
+  type: string;
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  detail: string;
+  metricValue?: number;
+  threshold?: number;
+  detectedAt?: string;
 }
 
-export const fetchAdminReaderCatalogItems = async (baseUrl?: string): Promise<AdminReaderCatalogItem[]> => {
-  const payload = await readJsonOrThrow<{ items?: AdminReaderCatalogItem[] }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items`,
-    undefined,
-    { requireAuth: true }
-  ));
-  return Array.isArray(payload?.items) ? payload.items : [];
+export interface AdminIncident {
+  incidentId: string;
+  title: string;
+  summary?: string;
+  status: 'open' | 'monitoring' | 'resolved' | string;
+  severity: 'info' | 'warning' | 'critical' | string;
+  domains?: string[];
+  linkedConversationIds?: string[];
+  noticeId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  createdBy?: string;
+}
+
+export interface AdminFeatureFlag {
+  key: string;
+  enabled: boolean;
+  scope?: string;
+  description?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AdminAutomationRun {
+  runId: string;
+  feature: string;
+  status: 'completed' | 'failed' | 'skipped' | string;
+  model: string;
+  fingerprint?: string;
+  sourceId?: string;
+  tokenEstimate?: number;
+  result?: Record<string, unknown>;
+  createdAt?: string;
+  expiresAt?: string;
+}
+
+export interface ModerationReport {
+  reportId: string;
+  subjectType: string;
+  subjectId: string;
+  reason: string;
+  details?: string;
+  status: 'open' | 'reviewing' | 'resolved' | string;
+  reporterUid?: string;
+  createdAt?: string;
+  resolvedAt?: string;
+  resolution?: string;
+}
+
+export interface AdminSupportQueueItem {
+  queue: 'critical' | 'blocked' | 'incidentLinked' | 'backlog' | 'autoHandled' | string;
+  count: number;
+  conversations: SupportConversation[];
+}
+
+export interface AdminRuntimeSummary {
+  generatedAt?: string;
+  geminiPool?: Record<string, unknown>;
+  ttsGateway?: Record<string, unknown>;
+  ttsQueue?: Record<string, unknown>;
+  guardian?: Record<string, unknown>;
+  voiceCloneProvider?: Record<string, unknown>;
+  flags?: AdminFeatureFlag[];
+}
+
+export interface AdminProviderCostWindow {
+  todayInr: number;
+  last7dInr: number;
+  monthInr: number;
+  trailing30dInr: number;
+}
+
+export interface AdminProviderSyncStatus {
+  provider: string;
+  displayName: string;
+  source: string;
+  status: string;
+  stale: boolean;
+  currency: string;
+  configured: boolean;
+  supported: boolean;
+  providerCoverage: number;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+  lastProviderSyncAt?: string;
+  detail?: string;
+}
+
+export interface AdminProviderCostSummary extends AdminProviderSyncStatus {
+  actualWindows: AdminProviderCostWindow;
+  estimatedWindows?: AdminProviderCostWindow;
+  estimatedVsActualDelta?: number;
+  series?: Array<{ bucket: string; actualInr: number }>;
+  topDrivers?: Array<{ label: string; amountInr: number; detail?: string }>;
+}
+
+export interface AdminCashAccount {
+  accountId: string;
+  name: string;
+  type: string;
+  balanceInr: number;
+  editable: boolean;
+  source: string;
+  notes?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export interface AdminCashSnapshot {
+  generatedAt?: string;
+  availableCashInr: number;
+  pendingCashInr: number;
+  liabilityInr: number;
+  outstandingWithdrawalsInr: number;
+  fixedMonthlyBurnInr: number;
+  netAvailableCashInr: number;
+  accounts: AdminCashAccount[];
+}
+
+export interface AdminBudget {
+  budgetId: string;
+  name: string;
+  scopeType: string;
+  scopeKey: string;
+  amountInr: number;
+  currency: string;
+  period: string;
+  warningPct: number;
+  criticalPct: number;
+  status?: string;
+  source: string;
+  readOnly?: boolean;
+  enabled: boolean;
+  externalRef?: string;
+  safeActions?: string[];
+  metadata?: Record<string, unknown>;
+  updatedAt?: string;
+  updatedBy?: string;
+  currentSpendInr?: number;
+  remainingInr?: number;
+  warningThresholdInr?: number;
+  criticalThresholdInr?: number;
+  riskState?: string;
+  recommendedActions?: string[];
+}
+
+export interface AdminBudgetThreshold {
+  riskState: string;
+  warningCount: number;
+  criticalCount: number;
+  totalBudgetInr: number;
+  items: AdminBudget[];
+}
+
+export interface AdminRunwaySnapshot {
+  generatedAt?: string;
+  availableCashInr: number;
+  trailing30dProviderSpendInr: number;
+  fixedMonthlyBurnInr: number;
+  monthlyBurnInr: number;
+  dailyBurnInr: number;
+  runwayDays: number;
+  status: string;
+}
+
+export interface AdminMoneySummary {
+  generatedAt?: string;
+  overview?: {
+    availableCashInr: number;
+    monthRevenueInr: number;
+    monthProviderSpendInr: number;
+    monthBurnInr: number;
+    runwayDays: number;
+    budgetRiskState: string;
+    marginInr: number;
+    estimatedProviderSpendInr?: number;
+  };
+  providers?: {
+    generatedAt?: string;
+    items: AdminProviderCostSummary[];
+    staleCount?: number;
+    warningCount?: number;
+    lastSyncedAt?: string;
+  };
+  cash?: AdminCashSnapshot | null;
+  budgets?: AdminBudgetThreshold | null;
+  runway?: AdminRunwaySnapshot | null;
+  accounting?: AccountingSummary | null;
+  couponSummary?: CouponAnalyticsSummary | null;
+  anomalies?: AdminSpendAnomaly[];
+}
+
+export interface AdminDashboardSummary {
+  generatedAt: string;
+  health: {
+    status: 'ok' | 'warning' | 'critical' | string;
+    activeIncidents: number;
+    openAlerts: number;
+    supportBacklog: number;
+    queuePressure: number;
+    guardIssues: number;
+  };
+  failuresByDomain: Record<string, number>;
+  support: {
+    critical: number;
+    blocked: number;
+    incidentLinked: number;
+    backlog: number;
+    autoHandled: number;
+  };
+  spending: {
+    todayInr: number;
+    last7dInr: number;
+    monthInr: number;
+    topCostSurface?: string;
+  };
+  anomalies: AdminSpendAnomaly[];
+  incidents: AdminIncident[];
+  featureFlags: AdminFeatureFlag[];
+  recentRiskyActions: AuditEvent[];
+  runtime: {
+    geminiPoolStatus?: string;
+    ttsGatewayStatus?: string;
+    voiceCloneProvider?: string;
+  };
+}
+
+export interface AdminUserTimeline {
+  uid: string;
+  summary: AdminUserSummary;
+  entitlements: AccountEntitlements | Record<string, unknown>;
+  supportConversations: SupportConversation[];
+  recentAuditEvents: AuditEvent[];
+  recentVcGrants: AdminUserVcGrantRecord[];
+  audioFailures: AudioMetadataRecord[];
+  riskIndicators: string[];
+  snapshot: {
+    openSupport: number;
+    failedAudioJobs: number;
+    vcGrantCount: number;
+    accountStatus?: string;
+  };
+}
+
+export const fetchAdminDashboardSummary = async (baseUrl?: string): Promise<AdminDashboardSummary> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/dashboard/summary`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ summary?: AdminDashboardSummary }>(response);
+  return payload.summary || (payload as unknown as AdminDashboardSummary);
 };
 
-export const fetchAdminReaderCatalogItem = async (
-  itemId: string,
-  baseUrl?: string
-): Promise<AdminReaderCatalogItem> => {
-  const payload = await readJsonOrThrow<{ item: AdminReaderCatalogItem }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items/${encodeURIComponent(itemId)}`,
-    undefined,
-    { requireAuth: true }
-  ));
-  return payload.item;
-};
-
-export const createAdminReaderCatalogItem = async (
-  payload: {
-    files: File[];
-    title: string;
-    author: string;
-    contentType: 'novel' | 'manga';
-    ownershipBasis: ReaderOwnershipBasis;
-    regionId: string;
-    license: string;
-    summary: string;
-    collectionLabel: string;
-    directionOverride: string;
-    publishState: 'published' | 'draft';
-  },
-  baseUrl?: string
-): Promise<AdminReaderCatalogItem> => {
-  const formData = new FormData();
-  payload.files.forEach((file) => formData.append('files', file));
-  formData.append('title', payload.title);
-  formData.append('author', payload.author);
-  formData.append('contentType', payload.contentType);
-  formData.append('ownershipBasis', payload.ownershipBasis);
-  formData.append('regionId', payload.regionId);
-  formData.append('license', payload.license);
-  formData.append('summary', payload.summary);
-  formData.append('collectionLabel', payload.collectionLabel);
-  formData.append('directionOverride', payload.directionOverride);
-  formData.append('publishState', payload.publishState);
+export const fetchAdminUserTimeline = async (uid: string, baseUrl?: string): Promise<AdminUserTimeline> => {
   const response = await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items`,
+    `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(String(uid || '').trim())}/timeline`,
+    undefined,
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ timeline?: AdminUserTimeline }>(response);
+  return payload.timeline || (payload as unknown as AdminUserTimeline);
+};
+
+export const fetchAdminRuntimeSummary = async (baseUrl?: string): Promise<AdminRuntimeSummary> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/runtime/summary`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ summary?: AdminRuntimeSummary }>(response);
+  return payload.summary || (payload as unknown as AdminRuntimeSummary);
+};
+
+export const fetchAdminMoneySummary = async (baseUrl?: string): Promise<AdminMoneySummary> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/money/summary`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ summary?: AdminMoneySummary }>(response);
+  return payload.summary || (payload as unknown as AdminMoneySummary);
+};
+
+const buildAdminMutationHeaders = (idempotencyPrefix?: string, headers?: HeadersInit): HeadersInit => {
+  const next = new Headers(headers || {});
+  if (idempotencyPrefix) {
+    next.set('X-Idempotency-Key', `${idempotencyPrefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
+  }
+  return Object.fromEntries(next.entries());
+};
+
+export const fetchAdminMoneyProviders = async (baseUrl?: string): Promise<{ items: AdminProviderCostSummary[]; providers?: AdminMoneySummary['providers'] }> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/money/providers`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: AdminProviderCostSummary[]; providers?: AdminMoneySummary['providers'] }>(response);
+  return {
+    items: Array.isArray(payload.items) ? payload.items : [],
+    providers: payload.providers,
+  };
+};
+
+export const syncAdminMoneyProviders = async (
+  input?: { provider?: 'gcp' | 'modal' | 'all' | string },
+  baseUrl?: string,
+): Promise<{ ok?: boolean; provider?: string; results?: Array<Record<string, unknown>>; summary?: AdminMoneySummary }> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/money/providers/sync`,
     {
       method: 'POST',
-      body: formData,
+      headers: buildAdminMutationHeaders('money_sync', { 'content-type': 'application/json' }),
+      body: JSON.stringify(input || {}),
     },
     { requireAuth: true }
   );
-  const data = await readJsonOrThrow<{ item: AdminReaderCatalogItem }>(response);
-  return data.item;
+  return readJsonOrThrow<{ ok?: boolean; provider?: string; results?: Array<Record<string, unknown>>; summary?: AdminMoneySummary }>(response);
 };
 
-export const patchAdminReaderCatalogItem = async (
-  itemId: string,
-  patch: Partial<{
-    title: string;
-    author: string;
-    regionId: string;
-    license: string;
-    ownershipBasis: ReaderOwnershipBasis;
-    direction: string;
-    summary: string;
-    collectionLabel: string;
-    publishState: 'published' | 'draft';
-  }>,
-  baseUrl?: string
-): Promise<AdminReaderCatalogItem> => {
-  const payload = await readJsonOrThrow<{ item: AdminReaderCatalogItem }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items/${encodeURIComponent(itemId)}`,
+export const fetchAdminMoneyCash = async (baseUrl?: string): Promise<AdminCashSnapshot | null> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/money/cash`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ cash?: AdminCashSnapshot | null }>(response);
+  return payload.cash || null;
+};
+
+export const patchAdminMoneyCash = async (
+  input: { accounts: Array<Partial<AdminCashAccount> & { accountId: string }> },
+  baseUrl?: string,
+): Promise<{ cash?: AdminCashSnapshot | null; updatedAccounts?: AdminCashAccount[] }> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/money/cash`,
     {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    },
-    { requireAuth: true }
-  ));
-  return payload.item;
-};
-
-export const deleteAdminReaderCatalogItem = async (itemId: string, baseUrl?: string): Promise<void> => {
-  const response = await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/reader/catalog/items/${encodeURIComponent(itemId)}`,
-    {
-      method: 'DELETE',
+      headers: buildAdminMutationHeaders('money_cash_patch', { 'content-type': 'application/json' }),
+      body: JSON.stringify(input || {}),
     },
     { requireAuth: true }
   );
-  if (!response.ok) {
-    throw await parseResponseError(response);
-  }
+  return readJsonOrThrow<{ cash?: AdminCashSnapshot | null; updatedAccounts?: AdminCashAccount[] }>(response);
 };
 
+export const fetchAdminMoneyBudgets = async (baseUrl?: string): Promise<AdminBudgetThreshold | null> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/money/budgets`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ budgets?: AdminBudgetThreshold | null }>(response);
+  return payload.budgets || null;
+};
+
+export const createAdminMoneyBudget = async (
+  input: Partial<AdminBudget> & { name: string; amountInr: number },
+  baseUrl?: string,
+): Promise<{ budget?: AdminBudget; budgets?: AdminBudgetThreshold | null; summary?: AdminMoneySummary }> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/money/budgets`,
+    {
+      method: 'POST',
+      headers: buildAdminMutationHeaders('money_budget_create', { 'content-type': 'application/json' }),
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  return readJsonOrThrow<{ budget?: AdminBudget; budgets?: AdminBudgetThreshold | null; summary?: AdminMoneySummary }>(response);
+};
+
+export const patchAdminMoneyBudget = async (
+  budgetId: string,
+  input: Partial<AdminBudget>,
+  baseUrl?: string,
+): Promise<{ budget?: AdminBudget; budgets?: AdminBudgetThreshold | null; summary?: AdminMoneySummary }> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/money/budgets/${encodeURIComponent(String(budgetId || '').trim())}`,
+    {
+      method: 'PATCH',
+      headers: buildAdminMutationHeaders(`money_budget_patch_${budgetId}`, { 'content-type': 'application/json' }),
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  return readJsonOrThrow<{ budget?: AdminBudget; budgets?: AdminBudgetThreshold | null; summary?: AdminMoneySummary }>(response);
+};
+
+export const fetchAdminMoneyAnomalies = async (baseUrl?: string): Promise<AdminSpendAnomaly[]> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/money/anomalies`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: AdminSpendAnomaly[] }>(response);
+  return Array.isArray(payload.items) ? payload.items : [];
+};
+
+export const fetchAdminMoneyRunway = async (baseUrl?: string): Promise<AdminRunwaySnapshot | null> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/money/runway`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ runway?: AdminRunwaySnapshot | null }>(response);
+  return payload.runway || null;
+};
+
+export const fetchAdminSupportQueues = async (baseUrl?: string): Promise<AdminSupportQueueItem[]> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/support/queues`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: AdminSupportQueueItem[] }>(response);
+  return Array.isArray(payload.items) ? payload.items : [];
+};
+
+export const classifyAdminSupportConversation = async (
+  conversationId: string,
+  baseUrl?: string
+): Promise<SupportConversation> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(String(conversationId || '').trim())}/classify`,
+    { method: 'POST' },
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ conversation?: SupportConversation }>(response);
+  return payload.conversation || (payload as unknown as SupportConversation);
+};
+
+export const draftAdminSupportReply = async (
+  conversationId: string,
+  baseUrl?: string
+): Promise<{ draft: string; run?: AdminAutomationRun }> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(String(conversationId || '').trim())}/draft-reply`,
+    { method: 'POST' },
+    { requireAuth: true }
+  );
+  return readJsonOrThrow<{ draft: string; run?: AdminAutomationRun }>(response);
+};
+
+export const fetchAdminFeatureFlags = async (baseUrl?: string): Promise<AdminFeatureFlag[]> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/feature-flags`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: AdminFeatureFlag[] }>(response);
+  return Array.isArray(payload.items) ? payload.items : [];
+};
+
+export const patchAdminFeatureFlag = async (
+  flagKey: string,
+  input: Partial<Pick<AdminFeatureFlag, 'enabled' | 'scope' | 'description' | 'metadata'>>,
+  baseUrl?: string
+): Promise<AdminFeatureFlag> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/feature-flags/${encodeURIComponent(String(flagKey || '').trim())}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ flag?: AdminFeatureFlag }>(response);
+  return payload.flag || (payload as unknown as AdminFeatureFlag);
+};
+
+export const fetchAdminAutomationRuns = async (baseUrl?: string): Promise<AdminAutomationRun[]> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/automation/runs`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: AdminAutomationRun[] }>(response);
+  return Array.isArray(payload.items) ? payload.items : [];
+};
+
+export const fetchAdminIncidents = async (baseUrl?: string): Promise<AdminIncident[]> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/incidents`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: AdminIncident[] }>(response);
+  return Array.isArray(payload.items) ? payload.items : [];
+};
+
+export const createAdminIncident = async (
+  input: Partial<AdminIncident> & { title: string },
+  baseUrl?: string
+): Promise<AdminIncident> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/incidents`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ incident?: AdminIncident }>(response);
+  return payload.incident || (payload as unknown as AdminIncident);
+};
+
+export const patchAdminIncident = async (
+  incidentId: string,
+  input: Partial<AdminIncident>,
+  baseUrl?: string
+): Promise<AdminIncident> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/incidents/${encodeURIComponent(String(incidentId || '').trim())}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ incident?: AdminIncident }>(response);
+  return payload.incident || (payload as unknown as AdminIncident);
+};
+
+export const linkAdminIncidentConversations = async (
+  incidentId: string,
+  conversationIds: string[],
+  baseUrl?: string
+): Promise<AdminIncident> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/incidents/${encodeURIComponent(String(incidentId || '').trim())}/link-conversations`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ conversationIds }),
+    },
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ incident?: AdminIncident }>(response);
+  return payload.incident || (payload as unknown as AdminIncident);
+};
+
+export const broadcastAdminIncident = async (
+  incidentId: string,
+  input: { message?: string; details?: string; expiresAt?: string } = {},
+  baseUrl?: string
+): Promise<{ incident: AdminIncident; notice?: AdminNotice }> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/incidents/${encodeURIComponent(String(incidentId || '').trim())}/broadcast`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  return readJsonOrThrow<{ incident: AdminIncident; notice?: AdminNotice }>(response);
+};
+
+export const fetchAdminModerationReports = async (baseUrl?: string): Promise<ModerationReport[]> => {
+  const response = await adminAuthFetch(`${toBaseUrl(baseUrl)}/admin/moderation/reports`, undefined, { requireAuth: true });
+  const payload = await readJsonOrThrow<{ items?: ModerationReport[] }>(response);
+  return Array.isArray(payload.items) ? payload.items : [];
+};
+
+export const resolveAdminModerationReport = async (
+  reportId: string,
+  input: { resolution?: string; status?: string } = {},
+  baseUrl?: string
+): Promise<ModerationReport> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/moderation/reports/${encodeURIComponent(String(reportId || '').trim())}/resolve`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input || {}),
+    },
+    { requireAuth: true }
+  );
+  const payload = await readJsonOrThrow<{ report?: ModerationReport }>(response);
+  return payload.report || (payload as unknown as ModerationReport);
+};

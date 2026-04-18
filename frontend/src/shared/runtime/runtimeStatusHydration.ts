@@ -1,5 +1,5 @@
 import { sanitizeUiText } from '../ui/terminology';
-import type { EngineRuntimeUiStatus } from '../../../services/runtimeStatusMapping';
+import type { EngineRuntimeUiStatus } from './runtimeStatusMapping';
 
 const cleanRuntimeField = (value: unknown): string => String(value || '').trim();
 const pickRuntimeField = (snapshotValue: unknown, baseValue: unknown): string =>

@@ -728,9 +728,41 @@
     letter-spacing: 0.08em;
   }
 
+  .vf-studio-focus-wrap {
+    width: 100%;
+    padding: clamp(0.75rem, 1.2vw, 1.25rem);
+  }
+
+  .vf-studio-grid {
+    align-items: start;
+  }
+
+  @media (min-width: 1024px) {
+    .vf-studio-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(18rem, 23rem) !important;
+    }
+  }
+
   @media (min-width: 1280px) {
     .vf-studio-grid {
-      align-items: start;
+      grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem) !important;
+    }
+  }
+
+  .vf-studio-main {
+    min-width: 0;
+  }
+
+  .vf-studio-rail {
+    min-width: 0;
+  }
+
+  @media (min-width: 1024px) {
+    .vf-studio-rail {
+      max-height: calc(100vh - 8rem);
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
     }
   }
 
@@ -3254,37 +3286,6 @@
     }
   }
 
-  .vf-dub-status {
-    background:
-      linear-gradient(155deg, rgba(255, 255, 255, 0.98) 0%, rgba(244, 248, 255, 0.96) 100%);
-    box-shadow: var(--vf-elev-1), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
-    transition:
-      transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
-      box-shadow 260ms ease,
-      border-color 220ms ease;
-  }
-
-  .vf-dub-status:hover {
-    transform: translateY(-1px);
-  }
-
-  .vf-theme-dark .vf-dub-status {
-    background:
-      linear-gradient(160deg, rgba(8, 20, 40, 0.92) 0%, rgba(10, 26, 52, 0.88) 100%);
-    border-color: rgba(91, 120, 170, 0.38) !important;
-    box-shadow: var(--vf-elev-2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  }
-
-  .vf-dub-status__fill {
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--vf-player-accent) 18%, transparent),
-      0 0 12px color-mix(in srgb, var(--vf-player-accent) 28%, transparent);
-  }
-
-  .vf-dub-status__fill--running {
-    animation: vf-dub-fill-breathe 1.9s ease-in-out infinite;
-  }
-
   .vf-morph-generate {
     isolation: isolate;
     transform: translateZ(0);
@@ -3393,10 +3394,6 @@
     animation-duration: 2.4s;
   }
 
-  .vf-motion-balanced .vf-dub-status__fill--running {
-    animation-duration: 2.6s;
-  }
-
   .vf-motion-balanced .vf-morph-generate__sweep {
     opacity: 0.5;
     animation-duration: 4.8s;
@@ -3408,8 +3405,7 @@
 
   .vf-motion-balanced .vf-runtime-chip:hover:not(:disabled),
   .vf-motion-balanced .vf-live-player:hover,
-  .vf-motion-balanced .vf-live-player__play:not(.vf-live-player__play--disabled):hover,
-  .vf-motion-balanced .vf-dub-status:hover {
+  .vf-motion-balanced .vf-live-player__play:not(.vf-live-player__play--disabled):hover {
     transform: translateY(-0.5px);
   }
 
@@ -3438,7 +3434,6 @@
   .vf-motion-off .vf-live-wallpaper,
   .vf-motion-off .vf-live-wallpaper::before,
   .vf-motion-off .vf-live-wallpaper::after,
-  .vf-motion-off .vf-dub-status__fill--running,
   .vf-motion-off .vf-morph-generate__sweep,
   .vf-motion-off .vf-voice-clone-task__sweep,
   .vf-motion-off .vf-morph-generate__spinner,
@@ -3461,7 +3456,6 @@
   .vf-motion-off .vf-live-player__save,
   .vf-motion-off .vf-live-player__reset,
   .vf-motion-off .vf-runtime-chip,
-  .vf-motion-off .vf-dub-status,
   .vf-motion-off .vf-morph-generate,
   .vf-motion-off .vf-morph-cancel,
   .vf-motion-off .vf-voice-clone-task,
@@ -3489,7 +3483,6 @@
   .vf-motion-off .vf-live-player__step:not(:disabled):hover,
   .vf-motion-off .vf-live-player__save:hover,
   .vf-motion-off .vf-live-player__reset:hover,
-  .vf-motion-off .vf-dub-status:hover,
   .vf-motion-off .vf-morph-cancel:hover {
     transform: none !important;
     filter: none !important;
@@ -3505,7 +3498,6 @@
 
     .vf-live-player__badge-dot,
     .vf-live-player__status-icon,
-    .vf-dub-status__fill--running,
     .vf-morph-generate__sweep,
     .vf-voice-clone-task__sweep,
     .vf-morph-generate__spinner,
@@ -3523,7 +3515,6 @@
     .vf-live-player__save,
     .vf-live-player__reset,
     .vf-runtime-chip,
-    .vf-dub-status,
     .vf-morph-generate,
     .vf-morph-cancel,
     .vf-voice-clone-task,
@@ -3551,7 +3542,6 @@
     .vf-live-player__step:not(:disabled):hover,
     .vf-live-player__save:hover,
     .vf-live-player__reset:hover,
-    .vf-dub-status:hover,
     .vf-morph-cancel:hover {
       transform: none !important;
       filter: none !important;

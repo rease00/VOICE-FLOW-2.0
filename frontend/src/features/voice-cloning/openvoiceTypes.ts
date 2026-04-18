@@ -3,6 +3,7 @@ import type { ClonedVoice } from '../../../types';
 export interface OpenVoiceBenchmarkRequest {
   mode: 'tts' | 'vc' | 'tts_then_vc';
   runKind: 'warm' | 'cold';
+  seedVcVersion?: 'v1' | 'v2';
   durationSec: number;
   language: string;
   text: string;
@@ -82,6 +83,7 @@ export interface OpenVoiceBenchmarkResponse {
   status?: string;
   mode?: 'tts' | 'vc' | 'tts_then_vc' | string;
   runKind?: 'warm' | 'cold' | string;
+  seedVcVersion?: 'v1' | 'v2' | string;
   requestId?: string;
   traceId?: string;
   language?: string;
@@ -103,12 +105,29 @@ export interface OpenVoiceBenchmarkResponse {
   consumedVcUnits?: number;
   vcBilling?: {
     enabled?: boolean;
+    adminBypass?: boolean;
     reservedUnits?: number;
     consumedUnits?: number;
+    chargedInr?: number;
     durationSec?: number;
+    billableDurationSec?: number;
     textChars?: number;
-    charsPerUnit?: number;
+    rateInrPerMin?: number;
+    rateVcUnitsPerMin?: number;
     rule?: string;
+    breakdown?: {
+      vcFree?: number;
+      vcGranted?: number;
+      vcPaid?: number;
+    };
+    remaining?: {
+      vcFreeBalance?: number;
+      vcGrantedBalance?: number;
+      vcPaidBalance?: number;
+      vcSpendableBalance?: number;
+    };
+    idempotentReuse?: boolean;
+    stages?: Record<string, unknown>;
   };
   clonedVoice?: ClonedVoice;
 }

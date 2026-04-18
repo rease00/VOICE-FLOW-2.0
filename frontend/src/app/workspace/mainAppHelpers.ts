@@ -1,32 +1,53 @@
 import { VOICES, EMOTIONS } from '../../../constants';
-import type { DubbingClip, GenerationSettings, VoiceOption } from '../../../types';
-import { getEngineDisplayName } from '../../../services/engineDisplay';
+import type { GenerationSettings, VoiceOption } from '../../../types';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../../shared/api/config';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { readStorageString } from '../../shared/storage/localStore';
 import { WorkspaceTab as Tab } from '../../features/workspace/model/tabs';
 import type { TokenPackKey } from '../../../services/accountService';
 
-export const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
-export const STUDIO_SPEECH_GAIN_MIN = 0.05;
-export const STUDIO_SPEECH_GAIN_MAX = 1.5;
-const STUDIO_MUSIC_GAIN_DEFAULT = 0.3;
-const STUDIO_MUSIC_GAIN_MIN = 0;
-const STUDIO_MUSIC_GAIN_MAX = 1;
+export {
+  STUDIO_MUSIC_GAIN_DEFAULT,
+  STUDIO_MUSIC_GAIN_MAX,
+  STUDIO_MUSIC_GAIN_MIN,
+  STUDIO_SPEECH_GAIN_DEFAULT,
+  STUDIO_SPEECH_GAIN_MAX,
+  STUDIO_SPEECH_GAIN_MIN,
+  resolveStudioMusicGain,
+  resolveStudioSpeechGain,
+} from '../../shared/studio/studioGain';
 
-const clampFiniteNumber = (value: unknown, min: number, max: number, fallback: number): number => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.min(max, Math.max(min, numeric));
-};
+export {
+  PRIME_ACCESS_LOCK_MESSAGE,
+  applyTokenPackDiscount,
+  formatMobileAvailableCreditsPercent,
+  getEngineSelectorCopy,
+  isPrimeAccessUnlocked,
+  normalizeAllowedEngines,
+  normalizeEngineToken,
+  normalizePlanToken,
+  resolveEngineToken,
+  resolvePrimeAllowedEngines,
+  resolveTokenPackDiscountPercent,
+} from '../../shared/workspace/mainAppHelpers';
 
-export const resolveStudioSpeechGain = (value: unknown): number => (
-  clampFiniteNumber(value, STUDIO_SPEECH_GAIN_MIN, STUDIO_SPEECH_GAIN_MAX, STUDIO_SPEECH_GAIN_DEFAULT)
-);
+export type { EngineSelectorCopy } from '../../shared/workspace/mainAppHelpers';
 
-export const resolveStudioMusicGain = (value: unknown): number => (
-  clampFiniteNumber(value, STUDIO_MUSIC_GAIN_MIN, STUDIO_MUSIC_GAIN_MAX, STUDIO_MUSIC_GAIN_DEFAULT)
-);
+interface DubbingClip {
+  id: string;
+  file: File;
+  objectUrl: string;
+  durationMs: number;
+  trimInMs: number;
+  trimOutMs: number;
+  layer: string;
+  script: string;
+  status: string;
+  jobId: string;
+  resultUrl: string | null;
+  reportUrl: string | null;
+  error: string;
+}
 
 export const SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT = 8;
 
@@ -179,7 +200,6 @@ const MAINAPP_SPEAKER_LINE_REGEX_V2 = new RegExp(
   String.raw`^\s*(?:\[(.+?)\]|\((.+?)\)|(${MAINAPP_SPEAKER_NAME_PATTERN_V2}))(?:\s*[\(\[]([^\)\]]{1,120})[\)\]])?\s*[:\uFF1A]\s*(.*)$`,
   'u'
 );
-
 const MAINAPP_SFX_REGEX = /^(?:\[|\()(?:SFX|sfx|Sound|SOUND|Music|MUSIC)\b/i;
 const MAINAPP_SPEAKER_LINE_REGEX = MAINAPP_SPEAKER_LINE_REGEX_V2;
 const MAINAPP_CANONICAL_HEADER_ONLY_REGEX = /^\s*\[[^\]\n]{1,80}\](?:\s*\([^\)\n]{1,120}\))?\s*[:\uFF1A]\s*$/u;
@@ -218,57 +238,65 @@ export const resolveSpeakerMappedVoiceId = (
   return '';
 };
 
+const normalizeScriptTextLine = (line: string): string => (
+  String(line || '')
+    .replace(/[\u2018\u2019\u201C\u201D"]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const logAiDirectorDebug = (message: string, details?: Record<string, unknown>): void => {
+  if (typeof console === 'undefined' || typeof console.debug !== 'function') return;
+  if (details) {
+    console.debug(`[ai-director] ${message}`, details);
+    return;
+  }
+  console.debug(`[ai-director] ${message}`);
+};
+
+const normalizeDirectedTitleMetaStrict = (sourceText: string, directedText: string): string => {
+  const lines = String(directedText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n');
+  const firstIndex = lines.findIndex((line) => String(line || '').trim().length > 0);
+  if (firstIndex < 0) return directedText;
+
+  const firstLine = String(lines[firstIndex] || '').trim();
+  const sourceFirstLine = String(sourceText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => String(line || '').trim())
+    .find((line) => line.length > 0) || '';
+  const normalizedFirst = normalizeScriptTextLine(firstLine).toLowerCase();
+  const normalizedSourceFirst = normalizeScriptTextLine(sourceFirstLine).toLowerCase();
+  const sourceLooksLikeSpeaker = Boolean(
+    sourceFirstLine &&
+    (String(sourceFirstLine).trim().match(MAINAPP_SPEAKER_LINE_REGEX) || MAINAPP_SFX_REGEX.test(sourceFirstLine))
+  );
+  const looksLikeTitle =
+    !sourceLooksLikeSpeaker &&
+    normalizedFirst.length > 0 &&
+    normalizedFirst.length <= 120 &&
+    (
+      normalizedFirst === normalizedSourceFirst ||
+      /\b(title|story|chapter)\b/i.test(normalizedFirst) ||
+      /(?:\u0915\u0939\u093e\u0928\u0940|\u0936\u0940\u0930\u094d\u0937\u0915|\u0905\u0927\u094d\u092f\u093e\u092f)/u.test(firstLine)
+    );
+  if (!looksLikeTitle) return directedText;
+
+  lines[firstIndex] = `Narrator (Neutral): ${firstLine.replace(/^(?:["'\u2018\u2019\u201C\u201D])+|(?:["'\u2018\u2019\u201C\u201D])+$/gu, '').trim()}`;
+  logAiDirectorDebug('normalized title-like first line to Narrator.', {
+    title: normalizedFirst.slice(0, 80),
+  });
+  return lines.join('\n');
+};
+
 export const normalizeSpeakerHeaderScript = (text: string): string => (
-  (() => {
-    const normalizedLines = String(text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .split('\n')
-      .map((line) => {
-        const match = String(line || '').match(MAINAPP_SPEAKER_LINE_REGEX);
-        if (!match) return line;
-        const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
-        if (!speaker) return line;
-        const rawTagBlock = String(match[4] || '').trim();
-        const dialogue = String(match[5] || '').trim();
-        const tagBlock = rawTagBlock ? ` (${rawTagBlock})` : '';
-        return dialogue ? `[${speaker}]${tagBlock}: ${dialogue}` : `[${speaker}]${tagBlock}:`;
-      });
-
-    // Remove duplicate orphan headers and merge orphan headers with following plain dialogue lines.
-    const compacted: string[] = [];
-    for (let index = 0; index < normalizedLines.length; index += 1) {
-      const rawLine = String(normalizedLines[index] || '');
-      const trimmed = rawLine.trim();
-      if (!trimmed) {
-        compacted.push(rawLine);
-        continue;
-      }
-      if (!MAINAPP_CANONICAL_HEADER_ONLY_REGEX.test(trimmed)) {
-        compacted.push(rawLine);
-        continue;
-      }
-
-      const previous = String(compacted[compacted.length - 1] || '').trim();
-      if (previous === trimmed) continue;
-
-      const nextRaw = String(normalizedLines[index + 1] || '');
-      const nextTrimmed = nextRaw.trim();
-      if (
-        nextTrimmed &&
-        !MAINAPP_SFX_REGEX.test(nextTrimmed) &&
-        !MAINAPP_SPEAKER_LINE_REGEX.test(nextTrimmed)
-      ) {
-        compacted.push(`${trimmed} ${nextTrimmed}`);
-        index += 1;
-        continue;
-      }
-
-      compacted.push(trimmed);
-    }
-
-    return compacted.join('\n');
-  })()
+  String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
 );
 
 export const parseMultiSpeakerScript = (text: string): { isMultiSpeaker: boolean; speakersList: string[]; crewTagsList: string[] } => {
@@ -347,12 +375,17 @@ const composeHeaderTagBlock = (primaryEmotion: string, cueTags: readonly string[
 
 export const injectDirectorTagsPreservingFormat = (sourceText: string, directedText: string): { text: string; patchedLineCount: number } => {
   const sourceLines = String(sourceText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  const directedHeaders = String(directedText || '')
+  const normalizedDirectedText = normalizeDirectedTitleMetaStrict(sourceText, directedText);
+  const directedHeaders = String(normalizedDirectedText || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .split('\n')
     .map((line) => parseDirectorHeaderTokensFromLine(line))
     .filter((header): header is DirectorHeaderTokens => Boolean(header));
+
+  if (String(directedText || '').trim() && directedHeaders.length <= 0) {
+    logAiDirectorDebug('no parseable speaker headers found in directed text; using source fallback.');
+  }
 
   if (sourceLines.length <= 0) {
     return { text: '', patchedLineCount: 0 };
@@ -398,7 +431,7 @@ export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): Vo
   VOICES.map((voice) => ({ ...voice, engine }))
 );
 
-export const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'mediaBackendUrl'>): string => (
+export const resolveMediaBackendUrl = (settings: { mediaBackendUrl?: string | undefined }): string => (
   sanitizeConfiguredApiBaseUrl(settings.mediaBackendUrl, getDefaultApiBaseUrl()).value
 );
 
@@ -426,10 +459,9 @@ export const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number
 };
 
 export const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
+  [Tab.LIBRARY]: 'Write novels, manage chapters, adapt stories, and generate audiobooks',
   [Tab.STUDIO]: 'Write, direct, and preview your next scene',
-  [Tab.READER]: 'Listen, import titles, and continue in progress sessions',
   [Tab.VOICE_CLONING]: 'Manage voices, cloning, and cast-ready voice assets',
-  [Tab.NOVEL]: 'Draft longer-form writing and story work',
   [Tab.HISTORY]: 'Rendered previews, exports, and runs history',
   [Tab.BILLING]: 'Manage plans, credits, and billing',
   [Tab.ADMIN]: 'Staff controls, moderation, and audits',
@@ -445,10 +477,10 @@ export const formatInr = (amount: number): string =>
 export type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 
 const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
+  { prefix: '/app/library', tab: Tab.LIBRARY },
+  { prefix: '/app/writing', tab: Tab.LIBRARY },
   { prefix: '/app/studio', tab: Tab.STUDIO },
-  { prefix: '/app/reader', tab: Tab.READER },
   { prefix: '/app/voices', tab: Tab.VOICE_CLONING },
-  { prefix: '/app/writing', tab: Tab.NOVEL },
   { prefix: '/app/runs', tab: Tab.HISTORY },
   { prefix: '/app/billing', tab: Tab.BILLING },
   { prefix: '/app/admin', tab: Tab.ADMIN },
@@ -457,9 +489,6 @@ const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
 export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | undefined): Tab | null => {
   const pathname = String(pathnameInput || '').trim().toLowerCase();
   if (!pathname) return null;
-  if (pathname === '/reader' || pathname.startsWith('/reader/')) {
-    return Tab.READER;
-  }
   for (const entry of WORKSPACE_PATH_TO_TAB) {
     if (pathname === entry.prefix || pathname.startsWith(`${entry.prefix}/`)) {
       return entry.tab;
@@ -471,12 +500,10 @@ export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | u
 
 export const resolveWorkspaceRoutePath = (tab: Tab): string => {
   switch (tab) {
-    case Tab.READER:
-      return '/app/reader';
+    case Tab.LIBRARY:
+      return '/app/library';
     case Tab.VOICE_CLONING:
       return '/app/voices';
-    case Tab.NOVEL:
-      return '/app/writing';
     case Tab.HISTORY:
       return '/app/runs';
     case Tab.BILLING:
@@ -529,6 +556,7 @@ export const resolveWorkspaceTabFromUrl = (): Tab | null => {
 
 export const resolveWorkspaceTabFromStorage = (): Tab | null => {
   const persisted = String(readStorageString(STORAGE_KEYS.workspaceActiveTab) || '').trim().toUpperCase();
+  if (persisted === 'NOVEL' || persisted === 'WRITING') return Tab.LIBRARY;
   return Object.values(Tab).includes(persisted as Tab) ? (persisted as Tab) : null;
 };
 
@@ -549,137 +577,6 @@ export const resolveAdminOpsTabFromUrl = (): AdminOpsTab => {
     ? (token as AdminOpsTab)
     : 'usage';
 };
-
-export const normalizePlanToken = (planName: unknown): 'free' | 'launcher' | 'starter' | 'creator' | 'pro' | 'scale' => {
-  const token = String(planName || '').trim().toLowerCase();
-  if (token === 'launch' || token === 'launcher') return 'launcher';
-  if (token === 'starter') return 'starter';
-  if (token === 'creator') return 'creator';
-  if (token === 'pro') return 'pro';
-  if (token === 'scale' || token === 'plus' || token === 'pro_plus' || token === 'pro-plus') return 'scale';
-  return 'free';
-};
-
-export const resolveTokenPackDiscountPercent = (
-  planToken: ReturnType<typeof normalizePlanToken>,
-  entitlementDiscount: number
-): number => {
-  if (Number.isFinite(entitlementDiscount) && entitlementDiscount > 0) {
-    return Math.max(0, Math.round(entitlementDiscount));
-  }
-  if (planToken === 'launcher') return 0;
-  if (planToken === 'starter') return 5;
-  if (planToken === 'creator') return 5;
-  if (planToken === 'pro') return 10;
-  if (planToken === 'scale') return 15;
-  return 0;
-};
-
-export const applyTokenPackDiscount = (baseAmountInr: number, discountPercent: number): number =>
-  Math.max(1, Math.round(Math.max(0, Number(baseAmountInr || 0)) * (1 - (Math.max(0, Number(discountPercent || 0)) / 100))));
-
-export const formatMobileAvailableCreditsPercent = (input: {
-  hasUnlimitedAccess: boolean;
-  monthlyFreeRemaining: number;
-  monthlyFreeLimit: number;
-  paidVfBalance?: number;
-}): string => {
-  if (input.hasUnlimitedAccess) return '100%';
-  const freeRemaining = Math.max(0, Number(input.monthlyFreeRemaining || 0));
-  const freeLimit = Math.max(0, Number(input.monthlyFreeLimit || 0));
-  const paidBalance = Math.max(0, Number(input.paidVfBalance || 0));
-  const available = Math.max(0, freeRemaining + paidBalance);
-  const totalCapacity = Math.max(available, freeLimit + paidBalance);
-  if (totalCapacity <= 0) return '0%';
-  const percent = Math.max(0, Math.min(100, Math.round((available / totalCapacity) * 100)));
-  return `${percent}%`;
-};
-
-const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['VECTOR', 'PRIME']);
-const LEGACY_ENGINE_TOKEN_MAP: Record<string, GenerationSettings['engine']> = {
-  KOKORO: 'VECTOR',
-  KOKORO_RUNTIME: 'VECTOR',
-  BASIC: 'VECTOR',
-  GEMINI: 'PRIME',
-  GEMINI_RUNTIME: 'PRIME',
-  GEMINI_PRO: 'PRIME',
-  GEMINI_V2: 'PRIME',
-};
-
-const normalizeEngineTokenKey = (value: unknown): string => (
-  String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-);
-
-export const resolveEngineToken = (value: unknown): string => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const canonical = normalizeEngineTokenKey(raw);
-  const legacy = LEGACY_ENGINE_TOKEN_MAP[canonical];
-  if (legacy) return legacy;
-  return CANONICAL_ENGINE_TOKENS.has(canonical as GenerationSettings['engine'])
-    ? canonical
-    : raw;
-};
-
-export const normalizeEngineToken = (
-  value: unknown,
-  fallback: GenerationSettings['engine'] = 'PRIME'
-): GenerationSettings['engine'] => {
-  const token = resolveEngineToken(value);
-  if (token === 'VECTOR' || token === 'PRIME') return token;
-  return fallback;
-};
-
-export const normalizeAllowedEngines = (value: unknown): GenerationSettings['engine'][] => {
-  if (!Array.isArray(value)) return [];
-  const out = new Set<GenerationSettings['engine']>();
-  value.forEach((item) => {
-    const normalized = resolveEngineToken(item);
-    if (normalized === 'VECTOR' || normalized === 'PRIME') {
-      out.add(normalized);
-    }
-  });
-  return Array.from(out);
-};
-
-export const PRIME_ACCESS_LOCK_MESSAGE = 'Prime is available on paid subscriptions or with paid token balance.';
-
-export const isPrimeAccessUnlocked = (input: {
-  hasUnlimitedAccess?: boolean;
-  isPaidBillingPlan?: boolean;
-  paidVfBalance?: number;
-}): boolean => (
-  Boolean(input.hasUnlimitedAccess) ||
-  Boolean(input.isPaidBillingPlan) ||
-  Math.max(0, Number(input.paidVfBalance || 0)) > 0
-);
-
-export const resolvePrimeAllowedEngines = (input: {
-  hasUnlimitedAccess?: boolean;
-  isPaidBillingPlan?: boolean;
-  paidVfBalance?: number;
-}): GenerationSettings['engine'][] => (
-  isPrimeAccessUnlocked(input) ? ['VECTOR', 'PRIME'] : ['VECTOR']
-);
-
-export interface EngineSelectorCopy {
-  title: string;
-  description: string;
-}
-
-export const getEngineSelectorCopy = (engine: GenerationSettings['engine']): EngineSelectorCopy =>
-  ({
-    title: getEngineDisplayName(engine),
-    description: engine === 'VECTOR'
-      ? 'Balanced quality with reliable performance.'
-      : engine === 'PRIME'
-        ? 'Premium synthesis for natural, polished output.'
-        : 'Voice engine',
-  } as EngineSelectorCopy);
 
 const cleanDubbingLine = (line: string): string => (
   String(line || '')
@@ -765,4 +662,3 @@ export const createDubbingClip = (file: File, objectUrl: string, durationMs: num
   reportUrl: null,
   error: '',
 });
-

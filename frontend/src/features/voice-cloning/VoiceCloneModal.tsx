@@ -76,6 +76,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const requestIdRef = useRef('');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -84,6 +85,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     if (!isOpen) return;
     previouslyFocusedElementRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    requestIdRef.current = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `modal_clone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setReferenceFile(null);
     setIsSubmitting(false);
     setSubmitError('');
@@ -135,8 +139,8 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     [sourceVoiceId]
   );
   const canSubmit = Boolean(referenceFile) && !isSubmitting;
-  const modalTitle = 'Attach Modal VC Reference';
-  const modalDescription = 'Upload a consented reference clip and bind it to this speaker for Modal voice conversion.';
+  const modalTitle = 'Attach Seed VC Reference';
+  const modalDescription = 'Upload a consented reference clip and bind it to this speaker for Seed VC conversion.';
 
   const handleOverlayClick = () => {
     if (!isSubmitting) onClose();
@@ -251,9 +255,11 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       ]);
 
       const { sourceAudioBase64, sourceAudioName, durationSec } = await resolveSourceSamplePayload();
-      const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `modal_clone_${Date.now()}`;
+      const requestId = String(requestIdRef.current || '').trim() || (
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `modal_clone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      );
       const response = await renderVoiceClone(
         {
           durationSec,
@@ -347,7 +353,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
               <span>{currentSourceLabel}</span>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              This speaker will use Modal voice conversion with the uploaded reference during generation.
+              This speaker will use Seed VC with the uploaded reference during generation.
             </p>
           </div>
 

@@ -1,25 +1,26 @@
-import React from 'react';
+﻿import React from 'react';
 import { AdminPanel } from '../../../../components/AdminPanel';
 
 interface AdminTabContentProps {
-  mediaBackendUrl: string;
+  adminApiBaseUrl: string;
   onToast: (message: string, kind?: 'success' | 'error' | 'info') => void;
   onRefreshEntitlements: () => Promise<void>;
   initialOpsTab?: 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 }
 
 export const AdminTabContent: React.FC<AdminTabContentProps> = ({
-  mediaBackendUrl,
+  adminApiBaseUrl,
   onToast,
   onRefreshEntitlements,
   initialOpsTab,
 }) => {
   return (
     <AdminPanel
-      mediaBackendUrl={mediaBackendUrl}
+      adminApiBaseUrl={adminApiBaseUrl}
       onToast={onToast}
       onRefreshEntitlements={onRefreshEntitlements}
       {...(initialOpsTab ? { initialOpsTab } : {})}
     />
   );
 };
+

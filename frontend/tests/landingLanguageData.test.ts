@@ -25,31 +25,35 @@ describe('landing multilingual data', () => {
     }
   });
 
-  it('keeps the landing page tied to the real demo asset paths and canonical anchors', () => {
-    const html = renderToStaticMarkup(React.createElement(MarketingLanding));
+  it('keeps the landing routes tied to the real demo asset paths', () => {
+    const singleVoiceHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'single-voice' }));
+    const primeScenesHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'prime-scenes' }));
+    const directionHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'direction' }));
+    const readerHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'reader' }));
 
-    expect(html).toContain('id="landing-home"');
-    expect(html).toContain('id="single-speaker"');
-    expect(html).toContain('id="multi-speaker"');
-    expect(html).toContain('id="voice-cloning"');
-    expect(html).toContain('id="ai-director"');
-    expect(html).toContain('id="reader-playback"');
-    expect(html).toContain('/audio/vector-demo/en-us.wav');
-    expect(html).toContain('/audio/vector-multi-demo/en-weekend-plan.wav');
-    expect(html).toContain('/audio/vector-multi-demo/fr-city-tour.wav');
-    expect(html).toContain('/audio/openvoice-demo/reference.wav');
-    expect(html).toContain('/audio/openvoice-demo/rendered.wav');
-    expect(html).toContain('Single-speaker system');
-    expect(html).toContain('Prime multi-speaker scenes');
-    expect(html).toContain('Voice Clone proof');
-    expect(html).toContain('AI Director');
-    expect(html).toContain('Live prompt contract');
-    expect(html).toContain('Reader playback');
-    expect(html).toContain('href="/billing"');
-    expect(html).toContain('data-audio-player="vf-marketing"');
-    expect(html).toContain('vf-marketing-stat-grid--five-up');
-    expect(html).toContain('vf-marketing-audio-grid--five-up');
-    expect(html).toContain('vf-marketing-scene-grid--five-up');
+    expect(singleVoiceHtml).toContain('data-testid="landing-single-speaker"');
+    expect(singleVoiceHtml).toContain('/audio/vector-demo/');
+    expect(singleVoiceHtml).toContain('Single voice');
+    expect(singleVoiceHtml).toContain('data-audio-player="vf-marketing"');
+
+    expect(primeScenesHtml).toContain('data-testid="landing-multi-speaker"');
+    expect(primeScenesHtml).toContain('/audio/vector-multi-demo/');
+    expect(primeScenesHtml).toContain('Prime scene');
+
+    expect(directionHtml).toContain('data-testid="landing-ai-director"');
+    expect(directionHtml).toContain('data-testid="landing-ai-director-prompt"');
+    expect(directionHtml).toContain('Live prompt contract');
+
+    expect(readerHtml).toContain('data-testid="landing-reader-playback"');
+    expect(readerHtml).toContain('data-testid="landing-reader-virtual-book"');
+    expect(readerHtml).toContain('The Lighthouse Ledger');
+    expect(readerHtml).toContain('Chapter 01');
+    expect(readerHtml).toContain('Chapter 02');
+    expect(readerHtml).toContain('/audio/reader-demo/chapter-01-fog-over-meridian-bay.wav');
+    expect(readerHtml).toContain('/audio/reader-demo/chapter-02-the-second-signal.wav');
+    expect(readerHtml).toContain('/audio/reader-demo/');
+    expect(readerHtml).toContain('/images/reader-demo-poster.svg');
+    expect(readerHtml).toContain('Open Reader in App');
   });
 
   it('keeps shared brand theme configuration deterministic', () => {
@@ -72,4 +76,3 @@ describe('landing multilingual data', () => {
     }
   });
 });
-

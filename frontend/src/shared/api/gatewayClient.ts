@@ -1,17 +1,13 @@
 import type { GenerationSettings } from '../../../types';
 import { authFetch } from '../../../services/authHttpClient';
 import type {
-  EngineStatusItem,
   RuntimeLogTailResponse,
   TtsEngineCapabilitiesResponse,
-  TtsEngineStatusResponse,
   TtsJobStatusResponse,
   TtsEngineSwitchResponse,
   TtsVoiceMappingCatalogResponse,
   TtsEngineVoicesResponse,
   VideoTranscriptionResponse,
-  CreateDubbingJobV2Response,
-  DubbingJobStatusResponse,
 } from './contracts';
 import { resolveApiBaseUrl, resolveApiUrl } from './config';
 import { requestBlob, requestJson } from './httpClient';
@@ -19,9 +15,42 @@ import { requestBlob, requestJson } from './httpClient';
 export type RuntimeLogService = 'media-backend' | 'gemini-runtime';
 const TTS_V2_SESSION_HEADER = 'x-vf-tts-session-key';
 const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+const CLIENT_DEDUPE_HEADER = 'X-VF-Client-Request-Dedupe';
 const TTS_V2_SESSION_REFRESH_SKEW_MS = 30_000;
+const TTS_V2_SESSION_IDEMPOTENCY_WINDOW_MS = 5 * 60_000;
+const TTS_V2_CREATE_RECENT_TTL_MS = 60_000;
+const TTS_V2_AUTO_REQUEST_ID_TTL_MS = 24 * 60 * 60 * 1000;
+const TTS_V2_AUTO_REQUEST_ID_STORAGE_PREFIX = 'vf:tts:auto-request-id:v1';
 const TTS_V2_SESSION_CACHE = new Map<string, { sessionKey: string; expiresAtMs: number }>();
 const TTS_V2_SESSION_IN_FLIGHT = new Map<string, Promise<string>>();
+const TTS_V2_CREATE_IN_FLIGHT = new Map<string, Promise<TtsJobStatusResponse>>();
+const TTS_V2_CREATE_RECENT = new Map<string, { response: TtsJobStatusResponse; expiresAtMs: number }>();
+const TTS_V2_AUTO_REQUEST_IDS = new Map<string, { requestId: string; expiresAtMs: number }>();
+const CREATE_TTS_JOB_IDEMPOTENCY_OMIT_FIELDS = new Set([
+  'request_id',
+  'requestId',
+  'idempotency_key',
+  'idempotencyKey',
+]);
+
+type CreateTtsJobDedupeKind = 'recent-cache-hit' | 'in-flight-dedupe' | 'auto-request-id-reuse';
+
+interface CreateTtsJobClientDedupeMarker {
+  kind: CreateTtsJobDedupeKind;
+  requestId: string;
+  baseUrl: string;
+  payloadFingerprint: string;
+}
+
+type CreateTtsJobResponse = TtsJobStatusResponse & {
+  clientDedupe?: CreateTtsJobClientDedupeMarker;
+};
+
+interface AutoRequestIdCacheEntry {
+  requestId: string;
+  expiresAtMs: number;
+  payloadFingerprint: string;
+}
 
 const createAbortError = (): Error => {
   const error = new Error('Operation aborted');
@@ -35,6 +64,159 @@ const removedGatewayFeature = (feature: string): Error =>
 
 const ttsV2SessionCacheKey = (baseUrl?: string): string => {
   return resolveApiBaseUrl(baseUrl) || 'default';
+};
+
+const createTtsV2SessionIdempotencyKey = (requestKey: string, nowMs: number): string => {
+  return `vf:tts:session:${hashText(requestKey)}:${Math.floor(nowMs / TTS_V2_SESSION_IDEMPOTENCY_WINDOW_MS).toString(36)}`;
+};
+
+const createTtsV2SessionCancelIdempotencyKey = (cacheKey: string, sessionKey: string): string => {
+  return `vf:tts:session-cancel:${hashText(`${cacheKey}:${sessionKey}`)}`;
+};
+
+const cloneTtsJobResponse = (response: TtsJobStatusResponse): TtsJobStatusResponse => {
+  try {
+    return JSON.parse(JSON.stringify(response)) as TtsJobStatusResponse;
+  } catch {
+    return response;
+  }
+};
+
+const createClientDedupeMarker = (
+  kind: CreateTtsJobDedupeKind,
+  requestId: string,
+  payloadFingerprint: string,
+  baseUrl?: string
+): CreateTtsJobClientDedupeMarker => ({
+  kind,
+  requestId,
+  baseUrl: ttsV2SessionCacheKey(baseUrl),
+  payloadFingerprint,
+});
+
+const cloneTtsJobResponseWithDedupe = (
+  response: TtsJobStatusResponse,
+  marker?: CreateTtsJobClientDedupeMarker
+): CreateTtsJobResponse => {
+  const cloned = cloneTtsJobResponse(response) as CreateTtsJobResponse;
+  if (marker) {
+    cloned.clientDedupe = marker;
+  }
+  return cloned;
+};
+
+const getPersistentStorage = (): Storage | null => {
+  try {
+    return typeof globalThis.localStorage !== 'undefined' ? globalThis.localStorage : null;
+  } catch {
+    return null;
+  }
+};
+
+const hashText = (value: string): string => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const createAutoRequestIdStorageKey = (payloadFingerprint: string): string => {
+  return `${TTS_V2_AUTO_REQUEST_ID_STORAGE_PREFIX}:${hashText(payloadFingerprint)}`;
+};
+
+const createClientRequestId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `vf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const readAutoRequestIdCacheEntry = (
+  payloadFingerprint: string,
+  nowMs: number
+): AutoRequestIdCacheEntry | null => {
+  const storage = getPersistentStorage();
+  if (!storage) return null;
+  const storageKey = createAutoRequestIdStorageKey(payloadFingerprint);
+  try {
+    const raw = storage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AutoRequestIdCacheEntry>;
+    const requestId = String(parsed.requestId || '').trim();
+    const expiresAtMs = Math.max(0, Math.floor(Number(parsed.expiresAtMs || 0)));
+    const storedFingerprint = String(parsed.payloadFingerprint || '').trim();
+    if (!requestId || storedFingerprint !== payloadFingerprint || expiresAtMs <= nowMs) {
+      storage.removeItem(storageKey);
+      return null;
+    }
+    return {
+      requestId,
+      expiresAtMs,
+      payloadFingerprint: storedFingerprint,
+    };
+  } catch {
+    try {
+      storage.removeItem(storageKey);
+    } catch {
+      // Ignore storage errors in non-browser environments.
+    }
+    return null;
+  }
+};
+
+const writeAutoRequestIdCacheEntry = (entry: AutoRequestIdCacheEntry): void => {
+  const storage = getPersistentStorage();
+  if (!storage) return;
+  const storageKey = createAutoRequestIdStorageKey(entry.payloadFingerprint);
+  try {
+    storage.setItem(storageKey, JSON.stringify({
+      requestId: entry.requestId,
+      expiresAtMs: entry.expiresAtMs,
+      payloadFingerprint: entry.payloadFingerprint,
+    }));
+  } catch {
+    // Ignore storage quota and privacy-mode failures.
+  }
+};
+
+const pruneCreateTtsJobDedupeState = (nowMs: number): void => {
+  for (const [key, value] of TTS_V2_CREATE_RECENT.entries()) {
+    if (Number(value?.expiresAtMs || 0) <= nowMs) {
+      TTS_V2_CREATE_RECENT.delete(key);
+    }
+  }
+  for (const [key, value] of TTS_V2_AUTO_REQUEST_IDS.entries()) {
+    if (Number(value?.expiresAtMs || 0) <= nowMs) {
+      TTS_V2_AUTO_REQUEST_IDS.delete(key);
+    }
+  }
+};
+
+const canonicalizeCreateTtsPayloadValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeCreateTtsPayloadValue(item));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const source = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  const keys = Object.keys(source).sort((a, b) => a.localeCompare(b));
+  for (const key of keys) {
+    if (CREATE_TTS_JOB_IDEMPOTENCY_OMIT_FIELDS.has(key)) continue;
+    const candidate = source[key];
+    if (typeof candidate === 'undefined') continue;
+    out[key] = canonicalizeCreateTtsPayloadValue(candidate);
+  }
+  return out;
+};
+
+const createTtsJobPayloadFingerprint = (payload: Record<string, unknown>, baseUrl?: string): string => {
+  const scope = ttsV2SessionCacheKey(baseUrl);
+  const canonical = canonicalizeCreateTtsPayloadValue(payload);
+  return `${scope}:${JSON.stringify(canonical)}`;
 };
 
 export const clearTtsV2SessionKeyCache = (baseUrl?: string): void => {
@@ -83,6 +265,7 @@ export const issueTtsV2SessionKey = async (options?: {
     probeAllSlotRegions: options?.probeAllSlotRegions === true,
   };
   const requestKey = `${cacheKey}:${JSON.stringify(requestBody)}`;
+  const idempotencyKey = createTtsV2SessionIdempotencyKey(requestKey, now);
   const inFlight = TTS_V2_SESSION_IN_FLIGHT.get(requestKey);
   if (inFlight) {
     return inFlight;
@@ -93,7 +276,10 @@ export const issueTtsV2SessionKey = async (options?: {
       '/tts/v2/sessions',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+        },
         body: JSON.stringify(requestBody),
         ...(options?.signal ? { signal: options.signal } : {}),
       },
@@ -133,7 +319,12 @@ export const cancelTtsSession = async (options?: {
   try {
     return await requestJson<TtsV2SessionCancelResponse>(
       `/tts/v2/sessions/${encodeURIComponent(sessionKey)}/cancel`,
-      { method: 'POST' },
+      {
+        method: 'POST',
+        headers: {
+          'Idempotency-Key': createTtsV2SessionCancelIdempotencyKey(cacheKey, sessionKey),
+        },
+      },
       { ...withBaseUrl(options?.baseUrl), requireAuth: true }
     );
   } finally {
@@ -316,30 +507,6 @@ interface RoutingRegionsSnapshotResponse {
   regions?: RoutingBackendCandidate[];
   candidates?: RoutingBackendCandidate[];
 }
-
-export interface TtsEngineLatencyResponse extends EngineStatusItem {
-  ok: boolean;
-  engine: GenerationSettings['engine'];
-  gcpPingMs: number;
-  latencyMs: number;
-}
-
-export const fetchTtsEnginesStatus = async (
-  engine?: GenerationSettings['engine'],
-  baseUrl?: string,
-  options?: { timeoutMs?: number | undefined; signal?: AbortSignal | undefined }
-): Promise<TtsEngineStatusResponse> => {
-  const params = new URLSearchParams();
-  if (engine) params.set('engine', engine);
-  const path = `/tts/engines/status${params.toString() ? `?${params.toString()}` : ''}`;
-  return fetchAuthJsonWithTimeout<TtsEngineStatusResponse>(path, {
-    ...(baseUrl ? { baseUrl } : {}),
-    ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
-      ? { timeoutMs: options.timeoutMs }
-      : {}),
-    ...(options?.signal ? { signal: options.signal } : {}),
-  });
-};
 
 export const fetchRoutingBackendCandidates = async (options?: {
   baseUrl?: string;
@@ -562,69 +729,31 @@ export const switchTtsEngine = async (
   );
 };
 
+export const activateTtsEngine = async (
+  engine: GenerationSettings['engine'],
+  options?: { baseUrl?: string }
+): Promise<TtsEngineSwitchResponse> => {
+  const requestId = createClientRequestId();
+  return requestJson<TtsEngineSwitchResponse>(
+    '/tts/engines/activate',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [IDEMPOTENCY_HEADER]: requestId,
+      },
+      body: JSON.stringify({ engine }),
+    },
+    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+  );
+};
+
 export const fetchTtsEngineCapabilities = async (baseUrl?: string): Promise<TtsEngineCapabilitiesResponse> => {
   return requestJson<TtsEngineCapabilitiesResponse>(
     '/tts/engines/capabilities',
     undefined,
     { ...withBaseUrl(baseUrl), requireAuth: true }
   );
-};
-
-export const fetchTtsEngineLatency = async (
-  engine: GenerationSettings['engine'],
-  baseUrl?: string,
-  options?: { timeoutMs?: number; signal?: AbortSignal }
-): Promise<TtsEngineLatencyResponse> => {
-  const params = new URLSearchParams({ engine });
-  const startedAtMs = Date.now();
-  const healthUrl = resolveApiUrl('/health', baseUrl);
-  const runtimeUrl = resolveApiBaseUrl(baseUrl);
-  try {
-    const status = await fetchAuthJsonWithTimeout<TtsEngineStatusResponse>(
-      `/tts/engines/status?${params.toString()}`,
-      {
-        baseUrl,
-        ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
-          ? { timeoutMs: options.timeoutMs }
-          : {}),
-        ...(options?.signal ? { signal: options.signal } : {}),
-      }
-    );
-    const engineItem = status.engines?.[engine];
-    const latencyMs = Math.max(0, Date.now() - startedAtMs);
-    if (!engineItem) {
-      return {
-        ok: false,
-        engine,
-        state: 'offline',
-        detail: 'Runtime status unavailable.',
-        ready: false,
-        healthUrl,
-        runtimeUrl,
-        gcpPingMs: latencyMs,
-        latencyMs,
-      };
-    }
-    return {
-      ok: true,
-      ...engineItem,
-      gcpPingMs: latencyMs,
-      latencyMs,
-    };
-  } catch {
-    const latencyMs = Math.max(0, Date.now() - startedAtMs);
-    return {
-      ok: false,
-      engine,
-      state: 'offline',
-      detail: 'Runtime status unavailable.',
-      ready: false,
-      healthUrl,
-      runtimeUrl,
-      gcpPingMs: latencyMs,
-      latencyMs,
-    };
-  }
 };
 
 export const tailRuntimeLogs = async (
@@ -682,23 +811,6 @@ export const separateStem = async (
   throw removedGatewayFeature('Stem separation');
 };
 
-export const muxDubbedVideo = async (
-  videoFile: File,
-  dubAudioFile: File,
-  options?: {
-    speechGain?: number;
-    backgroundGain?: number;
-    normalize?: boolean;
-    backgroundAudio?: File;
-    baseUrl?: string;
-  }
-): Promise<Blob> => {
-  void videoFile;
-  void dubAudioFile;
-  void options;
-  throw removedGatewayFeature('Video dubbing mux');
-};
-
 export const fetchTtsJobChunkAudio = async (
   jobId: string,
   chunkIndex: number,
@@ -717,12 +829,71 @@ export const fetchTtsJobChunkAudio = async (
 export const createTtsJob = async (
   payload: Record<string, unknown>,
   options?: { baseUrl?: string }
-): Promise<TtsJobStatusResponse> => {
-  const requestId = String(
-    (payload as Record<string, unknown>).request_id ||
-    (payload as Record<string, unknown>).requestId ||
-    ''
-  ).trim();
+): Promise<CreateTtsJobResponse> => {
+  const safePayload: Record<string, unknown> = { ...payload };
+  // Backend schema is strict (extra=forbid), so normalize aliases up-front.
+  delete safePayload.requestId;
+  delete safePayload.idempotencyKey;
+  delete safePayload.idempotency_key;
+  const text = String(safePayload.text || '').trim();
+  if (text.length > 10_000) {
+    throw new Error('text exceeds 10k character queue limit');
+  }
+  const nowMs = Date.now();
+  pruneCreateTtsJobDedupeState(nowMs);
+  const baseCacheKey = ttsV2SessionCacheKey(options?.baseUrl);
+  const payloadFingerprint = createTtsJobPayloadFingerprint(safePayload, options?.baseUrl);
+  let requestId = String(safePayload.request_id || safePayload.requestId || '').trim();
+  let requestIdSource: 'caller-provided' | 'generated' | 'cached-auto-request-id' = 'caller-provided';
+  if (!requestId) {
+    const cachedRequestId = TTS_V2_AUTO_REQUEST_IDS.get(payloadFingerprint);
+    if (cachedRequestId && cachedRequestId.expiresAtMs > nowMs) {
+      requestId = cachedRequestId.requestId;
+      requestIdSource = 'cached-auto-request-id';
+    } else {
+      const persisted = readAutoRequestIdCacheEntry(payloadFingerprint, nowMs);
+      if (persisted) {
+        requestId = persisted.requestId;
+        requestIdSource = 'cached-auto-request-id';
+        TTS_V2_AUTO_REQUEST_IDS.set(payloadFingerprint, {
+          requestId,
+          expiresAtMs: persisted.expiresAtMs,
+        });
+      } else {
+        requestId = crypto.randomUUID();
+        requestIdSource = 'generated';
+        const expiresAtMs = nowMs + TTS_V2_AUTO_REQUEST_ID_TTL_MS;
+        TTS_V2_AUTO_REQUEST_IDS.set(payloadFingerprint, {
+          requestId,
+          expiresAtMs,
+        });
+        writeAutoRequestIdCacheEntry({
+          requestId,
+          expiresAtMs,
+          payloadFingerprint,
+        });
+      }
+    }
+    safePayload.request_id = requestId;
+  }
+  safePayload.request_id = requestId;
+  const dedupeKey = `${baseCacheKey}:${requestId}`;
+  const recent = TTS_V2_CREATE_RECENT.get(dedupeKey);
+  if (recent && recent.expiresAtMs > nowMs) {
+    return cloneTtsJobResponseWithDedupe(
+      recent.response,
+      createClientDedupeMarker('recent-cache-hit', requestId, payloadFingerprint, options?.baseUrl)
+    );
+  }
+  const inFlight = TTS_V2_CREATE_IN_FLIGHT.get(dedupeKey);
+  if (inFlight) {
+    return inFlight.then((response) =>
+      cloneTtsJobResponseWithDedupe(
+        response,
+        createClientDedupeMarker('in-flight-dedupe', requestId, payloadFingerprint, options?.baseUrl)
+      )
+    );
+  }
   const buildHeaders = (sessionKey: string): Record<string, string> => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -730,6 +901,9 @@ export const createTtsJob = async (
     };
     if (requestId) {
       headers[IDEMPOTENCY_HEADER] = requestId;
+    }
+    if (requestIdSource === 'cached-auto-request-id') {
+      headers[CLIENT_DEDUPE_HEADER] = 'auto-request-id-reuse';
     }
     return headers;
   };
@@ -743,28 +917,69 @@ export const createTtsJob = async (
       {
         method: 'POST',
         headers: buildHeaders(sessionKey),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(safePayload),
       },
       { ...withBaseUrl(options?.baseUrl), requireAuth: true }
     );
   };
-  try {
-    return await runCreate(false);
-  } catch (error: unknown) {
-    const detail = String((error as { message?: string; detail?: string })?.detail || (error as { message?: string })?.message || '').trim().toLowerCase();
-    const status = Number((error as { status?: number })?.status || 0);
-    const looksLikeExpiredSession =
-      (status === 401 || status === 403)
-      && (
-        detail.includes('invalid or expired tts session key')
-        || detail.includes('tts session key')
-        || detail.includes('session key')
-      );
-    if (!looksLikeExpiredSession) {
-      throw error;
+  const pending = (async (): Promise<CreateTtsJobResponse> => {
+    try {
+      const created = await runCreate(false);
+      const marker = requestIdSource === 'cached-auto-request-id'
+        ? createClientDedupeMarker('auto-request-id-reuse', requestId, payloadFingerprint, options?.baseUrl)
+        : undefined;
+      return marker
+        ? cloneTtsJobResponseWithDedupe(created, marker)
+        : cloneTtsJobResponseWithDedupe(created);
+    } catch (error: unknown) {
+      const detail = String((error as { message?: string; detail?: string })?.detail || (error as { message?: string })?.message || '').trim().toLowerCase();
+      const status = Number((error as { status?: number })?.status || 0);
+      const looksLikeExpiredSession =
+        (status === 401 || status === 403)
+        && (
+          detail.includes('invalid or expired tts session key')
+          || detail.includes('tts session key')
+          || detail.includes('session key')
+        );
+      const looksLikeAuthBootstrapRace =
+        (status === 401 || status === 403)
+        && (
+          detail.includes('missing bearer token')
+          || detail.includes('unauthorized')
+          || detail.includes('auth token')
+        );
+      if (!looksLikeExpiredSession && !looksLikeAuthBootstrapRace) {
+        throw error;
+      }
+      clearTtsV2SessionKeyCache(options?.baseUrl);
+      if (looksLikeAuthBootstrapRace) {
+        await new Promise<void>((resolve) => {
+          globalThis.setTimeout(resolve, 250);
+        });
+      }
+      const retried = await runCreate(true);
+      const marker = requestIdSource === 'cached-auto-request-id'
+        ? createClientDedupeMarker('auto-request-id-reuse', requestId, payloadFingerprint, options?.baseUrl)
+        : undefined;
+      return marker
+        ? cloneTtsJobResponseWithDedupe(retried, marker)
+        : cloneTtsJobResponseWithDedupe(retried);
     }
-    clearTtsV2SessionKeyCache(options?.baseUrl);
-    return runCreate(true);
+  })();
+  TTS_V2_CREATE_IN_FLIGHT.set(dedupeKey, pending as Promise<TtsJobStatusResponse>);
+  try {
+    const created = await pending;
+    const cachedResponse = cloneTtsJobResponse(created) as CreateTtsJobResponse;
+    delete cachedResponse.clientDedupe;
+    TTS_V2_CREATE_RECENT.set(dedupeKey, {
+      response: cachedResponse,
+      expiresAtMs: Date.now() + TTS_V2_CREATE_RECENT_TTL_MS,
+    });
+    return created;
+  } finally {
+    if (TTS_V2_CREATE_IN_FLIGHT.get(dedupeKey) === pending) {
+      TTS_V2_CREATE_IN_FLIGHT.delete(dedupeKey);
+    }
   }
 };
 
@@ -839,69 +1054,4 @@ export const fetchTtsJobResult = async (
     mediaType: String(blob.type || 'audio/wav'),
     headers,
   };
-};
-
-export const createDubbingJobV2 = async (
-  sourceFile: File,
-  options?: {
-    targetLanguage?: string;
-    mode?: 'strict_full';
-    output?: 'audio' | 'video' | 'audio+video';
-    advanced?: Record<string, unknown>;
-    baseUrl?: string;
-  }
-): Promise<CreateDubbingJobV2Response> => {
-  void sourceFile;
-  void options;
-  throw removedGatewayFeature('Dubbing jobs');
-};
-
-export const getDubbingJob = async (jobId: string, baseUrl?: string): Promise<DubbingJobStatusResponse> => {
-  void jobId;
-  void baseUrl;
-  throw removedGatewayFeature('Dubbing jobs');
-};
-
-export const getDubbingJobWithOptions = async (
-  jobId: string,
-  options?: {
-    includeChunks?: boolean;
-    chunkCursor?: number;
-    chunkLimit?: number;
-    includeChunkAudio?: boolean;
-    baseUrl?: string;
-  }
-): Promise<DubbingJobStatusResponse> => {
-  void jobId;
-  void options;
-  throw removedGatewayFeature('Dubbing jobs');
-};
-
-export const cancelDubbingJob = async (jobId: string, baseUrl?: string): Promise<{ ok: boolean; job_id: string }> => {
-  void jobId;
-  void baseUrl;
-  throw removedGatewayFeature('Dubbing jobs');
-};
-
-export const downloadDubbingReport = async (jobId: string, baseUrl?: string): Promise<Blob> => {
-  void jobId;
-  void baseUrl;
-  throw removedGatewayFeature('Dubbing reports');
-};
-
-export const downloadDubbingResult = async (jobId: string, baseUrl?: string): Promise<Blob> => {
-  void jobId;
-  void baseUrl;
-  throw removedGatewayFeature('Dubbing results');
-};
-
-export const downloadDubbingChunk = async (
-  jobId: string,
-  chunkIndex: number,
-  baseUrl?: string
-): Promise<Blob> => {
-  void jobId;
-  void chunkIndex;
-  void baseUrl;
-  throw removedGatewayFeature('Dubbing chunks');
 };

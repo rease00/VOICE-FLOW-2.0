@@ -2,6 +2,8 @@ import { useCallback, useMemo, useState } from 'react';
 import {
   type AdminUserSummary,
   fetchAdminUsers,
+  fetchAdminUserVcGrants,
+  grantAdminUserVc,
   patchAdminUser,
   resetAdminUserPassword,
   revokeAdminUserSessions,
@@ -41,6 +43,8 @@ export const useAdminUsers = ({ baseUrl }: UseAdminUsersArgs) => {
     isLoadingUsers: isLoading,
     reloadUsers,
     patchAdminUser: (uid: string, patch: Parameters<typeof patchAdminUser>[1]) => patchAdminUser(uid, patch, baseUrl),
+    fetchAdminUserVcGrants: (uid: string, options?: { limit?: number }) => fetchAdminUserVcGrants(uid, options, baseUrl),
+    grantAdminUserVc: (uid: string, input: Parameters<typeof grantAdminUserVc>[1]) => grantAdminUserVc(uid, input, baseUrl),
     resetAdminUserPassword: (uid: string, password: string) => resetAdminUserPassword(uid, password, baseUrl),
     revokeAdminUserSessions: (uid: string) => revokeAdminUserSessions(uid, baseUrl),
     deleteAdminUser: (uid: string) => deleteAdminUser(uid, baseUrl),

@@ -19,8 +19,26 @@ export function AppThemeBootstrap() {
 
     const themeMode = readUiThemeModeFromStorage(readStorageString(STORAGE_KEYS.uiTheme));
     const brandTheme = readUiBrandThemeFromStorage(readStorageString(STORAGE_KEYS.uiBrandTheme));
-    const motionLevel = readUiMotionLevelFromStorage(readStorageString(STORAGE_KEYS.uiMotionLevel));
     const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const motionMedia = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    const storedMotionRaw = readStorageString(STORAGE_KEYS.uiMotionLevel);
+    const hasStoredMotion = typeof storedMotionRaw === 'string' && storedMotionRaw.trim().length > 0;
+    const resolvedStoredMotion = readUiMotionLevelFromStorage(storedMotionRaw);
+    // Migration: if legacy default "off" and user has not explicitly chosen it, upgrade to rich when OS is not reduced.
+    const shouldUpgradeLegacyOff = (!hasStoredMotion || resolvedStoredMotion === 'off') && !motionMedia.matches;
+    const motionLevel = hasStoredMotion
+      ? resolvedStoredMotion
+      : motionMedia.matches
+        ? 'off'
+        : 'rich';
+    if (shouldUpgradeLegacyOff && motionLevel !== resolvedStoredMotion) {
+      try {
+        window.localStorage.setItem(STORAGE_KEYS.uiMotionLevel, motionLevel);
+      } catch {
+        // ignore storage failures
+      }
+    }
 
     const applyResolvedTheme = (resolvedTheme: ResolvedUiThemeMode) =>
       applyThemeModeToDocument(document, themeMode, resolvedTheme);

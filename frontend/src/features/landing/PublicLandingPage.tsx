@@ -1,6 +1,12 @@
-import { MarketingLanding, type LandingTabKey } from './MarketingLanding';
+import { MarketingLanding } from './MarketingLanding';
 import { LandingMotionObserver } from './LandingMotionObserver';
-import { landingMetadata } from './landingMetadata';
+import {
+  LANDING_DIRECTOR_PROOF,
+  LANDING_MULTI_SPEAKER_DEMOS,
+  LANDING_READER_PROOF,
+  LANDING_SINGLE_SPEAKER_DEMOS,
+} from './landingData';
+import type { LandingPageVariant } from './landingTabs';
 
 const landingUrl = 'https://v-flow-ai.com/landing';
 
@@ -12,17 +18,16 @@ const softwareStructuredData = {
   operatingSystem: 'Web',
   url: landingUrl,
   description:
-    'A premium AI voice production studio for Prime multi-speaker scenes, live direction, voice cloning, and reader-ready publishing.',
+    'Voice Flow helps teams audition voices, review multi-speaker scenes, direct delivery, and approve reader-ready audio.',
   brand: {
     '@type': 'Brand',
     name: 'V FLOW AI',
   },
   featureList: [
-    'Prime multi-speaker demo scenes',
-    'Studio voice direction workflows',
-    'Voice cloning and approval checks',
-    'Reader-ready publishing surfaces',
-    'Billing and launch controls',
+    'Single voice auditions',
+    'Prime multi-speaker scene review',
+    'Prompt-based direction workflows',
+    'Reader-ready approval surfaces',
   ],
   audience: {
     '@type': 'Audience',
@@ -36,18 +41,18 @@ const faqStructuredData = {
   mainEntity: [
     {
       '@type': 'Question',
-      name: 'What is V FLOW AI used for?',
+      name: 'What is Voice Flow used for?',
       acceptedAnswer: {
       '@type': 'Answer',
-        text: 'V FLOW AI is a premium AI voice studio for hearing Prime cast scenes, directing voice performances, cloning voices, and reviewing listening flows before release.',
+        text: 'Voice Flow is a web voice production workflow for auditioning voices, reviewing scenes, directing delivery, and approving reader-ready audio.',
       },
     },
     {
       '@type': 'Question',
-      name: 'Can I use Prime multi-speaker scenes and voice cloning in the same workflow?',
+      name: 'Can I review single-voice reads and multi-speaker scenes in the same product?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'Yes. The workspace is designed so Prime scene generation, voice cloning, live direction, and reader review stay in one connected production lane.',
+        text: 'Yes. The public tour shows each lane separately, and the studio brings them back together in one workflow.',
       },
     },
     {
@@ -55,17 +60,17 @@ const faqStructuredData = {
       name: 'Where do I find pricing?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'Pricing and credits live on the dedicated public /billing page before you continue into the secure app buy flow.',
+        text: 'Pricing lives on the dedicated public /billing page before you continue into the secure studio flow.',
       },
     },
   ],
 };
 
 interface PublicLandingPageProps {
-  activeTab?: LandingTabKey;
+  activePage?: LandingPageVariant;
 }
 
-export function PublicLandingPage({ activeTab = 'home' }: PublicLandingPageProps) {
+export function PublicLandingPage({ activePage = 'overview' }: PublicLandingPageProps) {
   return (
     <>
       <LandingMotionObserver />
@@ -77,7 +82,13 @@ export function PublicLandingPage({ activeTab = 'home' }: PublicLandingPageProps
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqStructuredData) }}
       />
-      <MarketingLanding activeTab={activeTab} />
+      <MarketingLanding
+        activePage={activePage}
+        singleSpeakerDemos={LANDING_SINGLE_SPEAKER_DEMOS}
+        multiSpeakerDemos={LANDING_MULTI_SPEAKER_DEMOS}
+        directorProof={LANDING_DIRECTOR_PROOF}
+        readerProof={LANDING_READER_PROOF}
+      />
     </>
   );
 }
