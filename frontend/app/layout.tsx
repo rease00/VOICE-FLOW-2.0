@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import './globals.css';
 import { DevCanonicalHostRedirect } from '../components/DevCanonicalHostRedirect';
+import { ServiceWorkerRegistrar } from '../components/ServiceWorkerRegistrar';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://v-flow-ai.com'),
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
     <html lang="en" data-scroll-behavior="smooth" suppressHydrationWarning>
       <body className="min-h-screen bg-[color:var(--vf-bg)] text-[color:var(--vf-text)] antialiased">
         <DevCanonicalHostRedirect />
+        <ServiceWorkerRegistrar />
         {children}
       </body>
     </html>
