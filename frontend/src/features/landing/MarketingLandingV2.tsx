@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useCallback, useEffect } from 'react';
 import type { CSSProperties } from 'react';
 import {
   ArrowRight,
@@ -8,10 +9,12 @@ import {
   Brain,
   ChevronRight,
   Globe,
+  Menu,
   Mic2,
   Play,
   Sparkles,
   WandSparkles,
+  X,
   Zap,
 } from 'lucide-react';
 import { BrandLogo } from '../../../components/BrandLogo';
@@ -130,6 +133,18 @@ export function MarketingLandingV2({
   const singleDemos = singleSpeakerDemos.slice(0, 3);
   const multiDemos = multiSpeakerDemos.slice(0, 2);
 
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const toggleMobileNav = useCallback(() => setMobileNavOpen((v) => !v), []);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+
+  // Close mobile nav on escape
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMobileNavOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mobileNavOpen]);
+
   return (
     <div
       className="lp-shell"
@@ -162,8 +177,31 @@ export function MarketingLandingV2({
             <a href={loginHref} className="lp-btn-primary" data-testid="hero-primary-cta">
               Open Studio <ArrowRight size={16} />
             </a>
+            <button
+              className="lp-mobile-menu-btn"
+              onClick={toggleMobileNav}
+              aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileNavOpen}
+            >
+              {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
           </div>
         </div>
+
+        {/* Mobile nav drawer */}
+        {mobileNavOpen && (
+          <nav className="lp-mobile-nav" aria-label="Mobile navigation">
+            {NAV_LINKS.map((link) => (
+              <a key={link.href} href={link.href} className="lp-mobile-nav__link" onClick={closeMobileNav}>
+                {link.label}
+              </a>
+            ))}
+            <a href="/billing" className="lp-mobile-nav__link" onClick={closeMobileNav}>Pricing</a>
+            <a href={loginHref} className="lp-btn-primary lp-mobile-nav__cta" onClick={closeMobileNav}>
+              Open Studio <ArrowRight size={16} />
+            </a>
+          </nav>
+        )}
       </header>
 
       <main id="main-content">
@@ -214,7 +252,7 @@ export function MarketingLandingV2({
                       <span
                         key={`m-${i}`}
                         className="lp-stage__meter-bar"
-                        style={{ '--lp-meter-scale': scale, animationDelay: `${i * 160}ms` } as CSSProperties}
+                        style={{ '--lp-meter-scale': scale, '--lp-meter-delay': `${i * 160}ms` } as CSSProperties}
                       />
                     ))}
                   </div>
@@ -399,6 +437,59 @@ export function MarketingLandingV2({
                 </div>
               </div>
             </div>
+
+            {directorProof.prompt && (
+              <div className="lp-direction-block" data-vf-reveal style={d(300)}>
+                <p className="lp-direction-block__label">Live prompt contract</p>
+                <pre className="lp-direction-block__code">{directorProof.prompt}</pre>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ═══════════════ READER ════════════════════ */}
+        <section className="lp-reader-section" id="reader" data-testid="landing-reader">
+          <div className="lp-section">
+            <div className="lp-section-head" data-vf-reveal>
+              <p className="lp-eyebrow"><BookOpen size={13} /> Reader</p>
+              <h2 className="lp-section-title">
+                Listen, review, approve — all in one surface.
+              </h2>
+              <p className="lp-section-sub">
+                After rendering, the Reader gives you chapter-level playback, progress tracking,
+                and a quiet space to listen before you publish.
+              </p>
+            </div>
+            <div className="lp-reader-showcase" data-vf-reveal style={d(140)}>
+              <div className="lp-reader-card">
+                <div className="lp-reader-card__cover">
+                  <BookOpen size={32} />
+                </div>
+                <div className="lp-reader-card__body">
+                  <p className="lp-reader-card__label">{readerProof.modeLabel}</p>
+                  <h3 className="lp-reader-card__title">{readerProof.sample.title}</h3>
+                  <p className="lp-reader-card__summary">{readerProof.sample.summary}</p>
+                  <div className="lp-reader-card__meta">
+                    <span className="lp-reader-card__chip"><Globe size={12} /> {readerProof.sample.language}</span>
+                    <span className="lp-reader-card__chip">{readerProof.progressLabel}</span>
+                  </div>
+                </div>
+              </div>
+              {readerProof.virtualBook.chapters.length > 0 && (
+                <div className="lp-reader-chapters">
+                  <p className="lp-reader-chapters__title">Chapter preview</p>
+                  {readerProof.virtualBook.chapters.slice(0, 3).map((ch, i) => (
+                    <div key={ch.id} className="lp-reader-chapter" data-vf-reveal style={d(200 + i * 80)}>
+                      <span className="lp-reader-chapter__num">{String(ch.order).padStart(2, '0')}</span>
+                      <div className="lp-reader-chapter__info">
+                        <span className="lp-reader-chapter__name">{ch.title}</span>
+                        <span className="lp-reader-chapter__dur">{Math.floor(ch.durationSec / 60)}:{String(Math.floor(ch.durationSec % 60)).padStart(2, '0')}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
@@ -477,10 +568,10 @@ export function MarketingLandingV2({
             </div>
             <div className="lp-faq-grid" data-vf-reveal>
               {FAQ_ITEMS.map((item, i) => (
-                <div key={`faq-${i}`} className="lp-faq-item">
-                  <h3 className="lp-faq-item__q">{item.q}</h3>
+                <details key={`faq-${i}`} className="lp-faq-item">
+                  <summary className="lp-faq-item__q">{item.q}</summary>
                   <p className="lp-faq-item__a">{item.a}</p>
-                </div>
+                </details>
               ))}
             </div>
           </div>
