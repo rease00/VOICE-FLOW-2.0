@@ -100,3 +100,36 @@ export function writeCachedFlag(flag: UiV2Flag): void {
     /* quota or private mode — ignore */
   }
 }
+
+/**
+ * Fetch the `feature_flags/ui_v2` document from Firestore and write it into
+ * the localStorage cache. Returns the fetched flag on success or null when
+ * Firestore is unavailable / the document doesn't exist yet.
+ *
+ * Import is deferred so this never bloats the SSR bundle.
+ */
+export async function fetchUiV2Flag(): Promise<UiV2Flag | null> {
+  try {
+    const { db } = await import("../../lib/firebase");
+    if (!db) return null;
+    const { doc, getDoc } = await import("firebase/firestore");
+    const snap = await getDoc(doc(db, "feature_flags", "ui_v2"));
+    if (!snap.exists()) return null;
+    const data = snap.data() as Partial<UiV2Flag>;
+    const flag: UiV2Flag = {
+      enabled: Boolean(data.enabled),
+      rolloutPct: typeof data.rolloutPct === "number" ? data.rolloutPct : 0,
+      allowedUids: Array.isArray(data.allowedUids) ? data.allowedUids : [],
+      blockedUids: Array.isArray(data.blockedUids) ? data.blockedUids : [],
+      surfaces: {
+        studio: Boolean(data.surfaces?.studio),
+        reader: Boolean(data.surfaces?.reader),
+        library: Boolean(data.surfaces?.library),
+      },
+    };
+    writeCachedFlag(flag);
+    return flag;
+  } catch {
+    return null;
+  }
+}

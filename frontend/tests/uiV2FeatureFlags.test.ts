@@ -5,6 +5,7 @@ import {
   uidBucket,
   readCachedFlag,
   writeCachedFlag,
+  fetchUiV2Flag,
   DEFAULT_UI_V2_FLAG,
   type UiV2Flag,
 } from '../src/features/feature-flags/uiV2';
@@ -178,5 +179,88 @@ describe('readCachedFlag / writeCachedFlag', () => {
   it('returns null when window is undefined (SSR)', () => {
     vi.stubGlobal('window', undefined);
     expect(readCachedFlag()).toBeNull();
+  });
+});
+
+/* ── fetchUiV2Flag ───────────────────────────── */
+
+describe('fetchUiV2Flag', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns null when firebase db is null (stub)', async () => {
+    vi.doMock('../src/lib/firebase', () => ({ db: null }));
+    const result = await fetchUiV2Flag();
+    expect(result).toBeNull();
+  });
+
+  it('returns null when Firestore throws', async () => {
+    vi.doMock('../src/lib/firebase', () => ({
+      db: {},
+    }));
+    vi.doMock('firebase/firestore', () => ({
+      doc: vi.fn(),
+      getDoc: vi.fn().mockRejectedValue(new Error('network error')),
+    }));
+    const result = await fetchUiV2Flag();
+    expect(result).toBeNull();
+  });
+
+  it('returns null when document does not exist', async () => {
+    vi.doMock('../src/lib/firebase', () => ({ db: {} }));
+    vi.doMock('firebase/firestore', () => ({
+      doc: vi.fn(),
+      getDoc: vi.fn().mockResolvedValue({ exists: () => false, data: () => undefined }),
+    }));
+    const result = await fetchUiV2Flag();
+    expect(result).toBeNull();
+  });
+
+  it('parses and returns a valid flag document', async () => {
+    const remoteData = {
+      enabled: true,
+      rolloutPct: 50,
+      allowedUids: ['alice', 'bob'],
+      blockedUids: ['carol'],
+      surfaces: { studio: true, reader: false, library: true },
+    };
+    vi.doMock('../src/lib/firebase', () => ({ db: {} }));
+    vi.doMock('firebase/firestore', () => ({
+      doc: vi.fn(),
+      getDoc: vi.fn().mockResolvedValue({
+        exists: () => true,
+        data: () => remoteData,
+      }),
+    }));
+    const result = await fetchUiV2Flag();
+    expect(result).toEqual({
+      enabled: true,
+      rolloutPct: 50,
+      allowedUids: ['alice', 'bob'],
+      blockedUids: ['carol'],
+      surfaces: { studio: true, reader: false, library: true },
+    });
+  });
+
+  it('defaults missing fields to safe values', async () => {
+    vi.doMock('../src/lib/firebase', () => ({ db: {} }));
+    vi.doMock('firebase/firestore', () => ({
+      doc: vi.fn(),
+      getDoc: vi.fn().mockResolvedValue({
+        exists: () => true,
+        data: () => ({ enabled: true }),
+      }),
+    }));
+    const result = await fetchUiV2Flag();
+    expect(result).not.toBeNull();
+    expect(result!.rolloutPct).toBe(0);
+    expect(result!.allowedUids).toEqual([]);
+    expect(result!.blockedUids).toEqual([]);
+    expect(result!.surfaces.studio).toBe(false);
   });
 });

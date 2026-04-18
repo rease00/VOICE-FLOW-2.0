@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { UiV2FlagProvider } from '../../../src/features/feature-flags/UiV2FlagContext';
 
 // The /app workspace ships with a nonce-based CSP from middleware.ts.
 // Force request-time rendering so Next can stamp matching nonces onto its
@@ -6,5 +7,5 @@ import type { ReactNode } from 'react';
 export const dynamic = 'force-dynamic';
 
 export default function WorkspaceShellLayout({ children }: Readonly<{ children: ReactNode }>) {
-  return <>{children}</>;
+  return <UiV2FlagProvider>{children}</UiV2FlagProvider>;
 }

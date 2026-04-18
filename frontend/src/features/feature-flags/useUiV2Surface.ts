@@ -1,31 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  DEFAULT_UI_V2_FLAG,
-  readCachedFlag,
-  resolveSurface,
-  type UiV2Flag,
-} from "./uiV2";
+import { useUiV2Flag } from "./UiV2FlagContext";
+import type { UiV2Flag } from "./uiV2";
 
 /**
- * Hook returning whether a given v2 surface is enabled for the current user.
- * Reads from localStorage cache (5 min TTL) populated by a separate sync
- * effect — keeps render path off the network.
+ * Returns whether a given v2 surface is enabled for the current user.
+ * Reads from the UiV2FlagProvider context — requires the provider to be
+ * mounted above in the tree (see app/(app)/app/layout.tsx).
  *
- * Server-side renders default to `false` to avoid hydration mismatch; the
- * client effect promotes to the real value on next paint.
+ * Defaults to false on SSR and before the provider hydrates, preventing
+ * hydration mismatches.
  */
 export function useUiV2Surface(
   uid: string | null | undefined,
   surface: keyof UiV2Flag["surfaces"],
 ): boolean {
-  const [flag, setFlag] = useState<UiV2Flag>(DEFAULT_UI_V2_FLAG);
-
-  useEffect(() => {
-    const cached = readCachedFlag();
-    if (cached) setFlag(cached);
-  }, []);
-
-  return resolveSurface(uid ?? null, flag, surface);
+  const { checkSurface } = useUiV2Flag();
+  return checkSurface(uid, surface);
 }
