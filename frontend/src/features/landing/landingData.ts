@@ -1,4 +1,3 @@
-import openVoiceManifestJson from '../../../public/audio/openvoice-demo/manifest.json';
 import readerDemoManifestJson from '../../../public/audio/reader-demo/manifest.json';
 import vectorDemoManifestJson from '../../../public/audio/vector-demo/manifest.json';
 import vectorMultiDemoManifestJson from '../../../public/audio/vector-multi-demo/manifest.json';
@@ -50,16 +49,6 @@ interface MultiSpeakerManifest {
   engine: string;
   featuredIds: string[];
   entries: MultiSpeakerManifestEntry[];
-}
-
-interface VoiceCloneManifestFile {
-  role: string;
-  file: string;
-}
-
-interface VoiceCloneManifest {
-  engine: string;
-  files: VoiceCloneManifestFile[];
 }
 
 interface ReaderDemoManifestSample {
@@ -136,21 +125,6 @@ export interface LandingMultiSpeakerDemo {
   rtl?: boolean;
 }
 
-export interface LandingVoiceCloneProof {
-  title: string;
-  summary: string;
-  source: {
-    label: string;
-    name: string;
-    audioSrc: string;
-  };
-  rendered: {
-    label: string;
-    name: string;
-    audioSrc: string;
-  };
-}
-
 export interface LandingDirectorBullet {
   label: string;
   value: string;
@@ -170,6 +144,13 @@ export interface LandingReaderUnit {
   title: string;
   status: string;
   body: string;
+}
+
+export interface LandingVoiceCloneProof {
+  title: string;
+  summary: string;
+  source: { label: string; name: string; audioSrc: string };
+  rendered: { label: string; name: string; audioSrc: string };
 }
 
 export interface LandingReaderSample {
@@ -221,8 +202,25 @@ export interface LandingReaderProof {
 
 const asVectorDemoManifest = vectorDemoManifestJson as VectorDemoManifest;
 const asMultiSpeakerManifest = vectorMultiDemoManifestJson as MultiSpeakerManifest;
-const asVoiceCloneManifest = openVoiceManifestJson as VoiceCloneManifest;
 const asReaderDemoManifest = readerDemoManifestJson as ReaderDemoManifest;
+
+/**
+ * When NEXT_PUBLIC_DEMO_AUDIO_BASE is set (e.g. an R2 public bucket URL),
+ * rewrite `/audio/…` paths to serve from the CDN instead of the origin.
+ * Falls back to the local public path when the env var is empty.
+ *
+ * Example: NEXT_PUBLIC_DEMO_AUDIO_BASE=https://pub-xxx.r2.dev/demo-audio
+ *   /audio/vector-demo/morning-brief-en.wav
+ *   → https://pub-xxx.r2.dev/demo-audio/vector-demo/morning-brief-en.wav
+ */
+const DEMO_AUDIO_BASE = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_DEMO_AUDIO_BASE || '').replace(/\/+$/, '');
+
+export const resolveDemoAudioSrc = (localPath: string): string => {
+  if (!DEMO_AUDIO_BASE) return localPath;
+  // /audio/vector-demo/file.wav → vector-demo/file.wav
+  const stripped = localPath.replace(/^\/audio\//, '');
+  return `${DEMO_AUDIO_BASE}/${stripped}`;
+};
 
 const resolveSingleDemoTitle = (sample: VectorDemoSample, index: number): string => {
   const explicitTitle = String(sample.title || '').trim();
@@ -263,14 +261,6 @@ const requireMultiSpeakerEntry = (id: string) => {
     throw new Error(`Landing multi-speaker sample "${id}" is missing from the Prime manifest.`);
   }
   return entry;
-};
-
-const requireCloneFile = (role: string) => {
-  const file = asVoiceCloneManifest.files.find((entry) => entry.role === role);
-  if (!file) {
-    throw new Error(`Voice Clone landing proof is missing the "${role}" file.`);
-  }
-  return file;
 };
 
 const requireReaderSample = () => {
@@ -361,7 +351,7 @@ export const LANDING_SINGLE_SPEAKER_DEMOS: readonly LandingSingleSpeakerDemo[] =
     summary: explicitSummary || `Generated in the app and published for fast ${sample.language} voice checks.`,
     language: sample.language,
     market,
-    audioSrc: sample.file,
+    audioSrc: resolveDemoAudioSrc(sample.file),
     cue: `${runtimeLabel} render`,
   };
 });
@@ -382,7 +372,7 @@ export const LANDING_MULTI_SPEAKER_DEMOS: readonly LandingMultiSpeakerDemo[] = F
     direction: entry.direction,
     translation: entry.translation,
     cue: entry.direction,
-    audioSrc: entry.audioSrc,
+    audioSrc: resolveDemoAudioSrc(entry.audioSrc),
     cast: voiceCast,
     lines: entry.lines.map((line) => ({
       speaker: aliasMap.get(line.speaker) || 'Voice',
@@ -405,25 +395,8 @@ const LANDING_DIRECTOR_PROMPT_BUNDLE = buildStudioLiveMultiSpeakerPrompt({
   tone: 'calm and premium',
 });
 
-const referenceFile = requireCloneFile('reference');
-const renderedFile = requireCloneFile('rendered');
 const readerSample = requireReaderSample();
 const readerVirtualBook = requireReaderVirtualBook();
-
-export const LANDING_VOICE_CLONE_PROOF: LandingVoiceCloneProof = {
-  title: 'Voice Clone proof',
-  summary: 'Compare the reference clip against the rendered clone before opening the studio.',
-  source: {
-    label: 'Reference take',
-    name: 'reference.wav',
-    audioSrc: referenceFile.file,
-  },
-  rendered: {
-    label: 'Rendered clone',
-    name: 'rendered.wav',
-    audioSrc: renderedFile.file,
-  },
-};
 
 export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
   title: 'AI Director lane',
@@ -452,7 +425,7 @@ export const LANDING_READER_PROOF: LandingReaderProof = {
     summary: readerSample.summary,
     language: readerSample.language,
     locale: readerSample.locale,
-    audioSrc: readerSample.audioSrc,
+    audioSrc: resolveDemoAudioSrc(readerSample.audioSrc),
     posterSrc: readerSample.posterSrc,
     cue: readerSample.cue,
     durationSec: Number(readerSample.durationSec || 0),
@@ -472,7 +445,7 @@ export const LANDING_READER_PROOF: LandingReaderProof = {
       title: chapter.title,
       summary: chapter.summary,
       cue: chapter.cue,
-      audioSrc: chapter.audioSrc,
+      audioSrc: resolveDemoAudioSrc(chapter.audioSrc),
       durationSec: Number(chapter.durationSec || 0),
     })),
   },

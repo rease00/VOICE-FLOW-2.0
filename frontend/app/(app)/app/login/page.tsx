@@ -18,13 +18,14 @@ const toSingleValue = (value: string | string[] | undefined): string | null => {
   return readFirstSearchParam(value);
 };
 
-export default function AppLoginPage({
+export default async function AppLoginPage({
   searchParams,
 }: {
-  searchParams?: AppLoginSearchParams;
+  searchParams?: Promise<AppLoginSearchParams>;
 }) {
-  const requestedMode = toSingleValue(searchParams?.mode);
-  const requestedNext = resolveSafeInternalNextPath(toSingleValue(searchParams?.next), null);
+  const resolved = (await searchParams) ?? undefined;
+  const requestedMode = toSingleValue(resolved?.mode);
+  const requestedNext = resolveSafeInternalNextPath(toSingleValue(resolved?.next), null);
   const initialMode = normalizeLoginRouteMode(requestedMode) as AuthRouteMode | undefined;
 
   const params = new URLSearchParams();
