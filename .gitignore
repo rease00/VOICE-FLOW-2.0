@@ -70,3 +70,37 @@ voiceflow-*-service-account*.json
 
 # Local media scratch files
 ✨Soul Land EP 260 [MULTI SUB].mp4
+
+# --- Phase 1 cleanup additions (feat/relaunch-aurora) ---
+# Junk one-off patches & discovery dumps (never commit)
+discovery*.json
+optimization.live.md
+pytest_output.txt
+patch*.cjs
+patch*.mjs
+update_script.cjs
+fix_*.py
+fix_*.mjs
+
+# Generated build/wrangler/artifacts (frontend)
+frontend/.artifacts/
+frontend/.wrangler/
+frontend/tmp/
+
+# Local scratch (root tmp)
+tmp/
+
+# Misc per-OS
+**/.DS_Store
+**/Thumbs.db
+
+# Local debug logs
+*.err
+*.out
+audit-artifacts/
+
+# Stale duplicate path (review before re-tracking)
+frontend/frontend/
+
+# Local secrets snapshots
+**/cloudflare.frontend.secrets.json

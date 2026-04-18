@@ -1,16 +1,18 @@
 {
   "name": "cloudrun-2vcpu",
-  "description": "Production capacity contract for a 2 vCPU Cloud Run topology with a single public API region, dedicated runtimes, and no session-affinity dependency.",
+  "description": "Production capacity contract — zero-cost-at-idle (min=0 everywhere) with 2 vCPU Cloud Run services, public API, internal runtimes, no session affinity. Concurrency tuned for I/O-bound Next.js API + dedicated TTS/text runtimes.",
   "services": {
     "voiceflow-api": {
       "cpu": "2",
       "memory": "2Gi",
       "minInstances": 0,
       "maxInstances": 20,
-      "concurrency": 16,
+      "concurrency": 32,
       "allowUnauthenticated": true,
       "ingress": "all",
-      "sessionAffinity": false
+      "sessionAffinity": false,
+      "cpuAlwaysAllocated": false,
+      "executionEnvironment": "gen2"
     },
     "voiceflow-gemini-runtime": {
       "cpu": "2",
@@ -20,7 +22,9 @@
       "concurrency": 2,
       "allowUnauthenticated": false,
       "ingress": "internal",
-      "sessionAffinity": false
+      "sessionAffinity": false,
+      "cpuAlwaysAllocated": false,
+      "executionEnvironment": "gen2"
     },
     "voiceflow-vertex-text-runtime": {
       "cpu": "2",
@@ -30,9 +34,30 @@
       "concurrency": 2,
       "allowUnauthenticated": false,
       "ingress": "internal",
-      "sessionAffinity": false
+      "sessionAffinity": false,
+      "cpuAlwaysAllocated": false,
+      "executionEnvironment": "gen2"
     }
   },
+  "rolloutOrder": [
+    "voiceflow-gemini-runtime",
+    "voiceflow-vertex-text-runtime",
+    "voiceflow-api"
+  ],
+  "canary": {
+    "steps": [10, 50, 100],
+    "soakSeconds": 180,
+    "maxQueueDepth": 60,
+    "maxOldestQueuedAgeMs": 60000
+  },
+  "loadTest": {
+    "concurrency": 12,
+    "requests": 12,
+    "maxQueueDepth": 80,
+    "maxOldestQueuedAgeMs": 60000,
+    "minCompletionRate": 1
+  }
+}
   "rolloutOrder": [
     "voiceflow-gemini-runtime",
     "voiceflow-vertex-text-runtime",

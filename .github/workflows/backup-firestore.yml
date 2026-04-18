@@ -1,0 +1,38 @@
+name: Backup Firestore (nightly)
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Export Firestore to GCS staging bucket
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          gcloud firestore export "gs://${{ secrets.GCP_PROJECT_ID }}-firestore-backups/$DATE" \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --quiet
+
+      - name: Sync staging bucket to R2 (cold archive)
+        if: vars.MIRROR_TO_R2 == 'true'
+        run: |
+          # Optional: rclone copy if R2 mirror configured. Skipped by default
+          # to keep the backup cheap; enable by setting repo variable MIRROR_TO_R2=true.
+          echo "skipped (set MIRROR_TO_R2=true to enable R2 mirror)"

@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      next-react:
+        patterns: ["next", "react", "react-dom"]
+      firebase:
+        patterns: ["firebase", "@firebase/*"]
+      tooling:
+        patterns: ["typescript", "eslint*", "@types/*", "vitest", "playwright*"]
+        update-types: ["minor", "patch"]
+      ui:
+        patterns: ["framer-motion", "lucide-react", "vaul", "sonner", "cmdk", "@radix-ui/*"]
+    commit-message:
+      prefix: "chore(deps)"
+    labels: ["dependencies", "frontend"]
+    ignore:
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+    labels: ["dependencies", "ci"]
+
+  - package-ecosystem: "docker"
+    directory: "/infra/cloudrun/docker"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(docker)"
+    labels: ["dependencies", "infra"]

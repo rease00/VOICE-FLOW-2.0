@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
+echo "[pre-commit] guarding against Windows-reserved & path-shaped names..."
+node scripts/guard-reserved-names.mjs
+
 echo "[pre-commit] scanning staged files for potential secrets..."
 node scripts/scan-staged-secrets.mjs
 
