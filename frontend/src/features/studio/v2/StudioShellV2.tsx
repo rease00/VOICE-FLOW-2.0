@@ -121,7 +121,7 @@ export function StudioShellV2() {
         storeFailGeneration(msg);
       }
     }
-  }, [text, selectedVoiceId, editorMode, status, synthesize,
+  }, [text, selectedVoiceId, status, synthesize,
       storeStartGeneration, storeSetProgress, storeCompleteGeneration,
       storeFailGeneration, storeCancelGeneration]);
 

@@ -91,7 +91,8 @@ export function MiniPlayer() {
       el.pause();
       el.src = "";
     };
-    // Zustand action refs are stable across renders — safe to omit from deps
+    // speed is handled by a dedicated effect below; Zustand actions are stable
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl, setCurrentTime, setDuration, setPlaying]);
 
   /* ── sync speed ──────────────────────────────── */

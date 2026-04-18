@@ -108,6 +108,7 @@ export function UiV2FlagProvider({ children }: UiV2FlagProviderProps) {
 
 /* ── consumer hook ────────────────────────────── */
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useUiV2Flag(): UiV2FlagContextValue {
   return useContext(UiV2FlagContext);
 }
