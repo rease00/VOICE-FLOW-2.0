@@ -17,7 +17,7 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "allowJs": false,
-    "jsx": "react-jsx",
+    "jsx": "preserve",
     "strict": true,
     "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,

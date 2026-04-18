@@ -103,7 +103,7 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
           command: |
             ${{ steps.target.outputs.env == 'production' && 'deploy' || format('versions upload --tag {0}', steps.target.outputs.name) }}

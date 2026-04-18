@@ -41,26 +41,6 @@ const run = (command, args, options = {}) => {
 };
 
 const runNpm = (args, options = {}) => {
-	const isTurbopackNextBuild = useTurbopack && args[0] === 'run' && args[1] === 'build';
-	const isTurbopackOpenNextBuild =
-		useTurbopack && args[0] === 'exec' && args.includes('opennextjs-cloudflare') && args.includes('build');
-	if (nodeMajor >= 24) {
-		if (isTurbopackNextBuild || isTurbopackOpenNextBuild) {
-			run(process.execPath, [npmExecPath, ...args], options);
-			return;
-		}
-
-		const quotedArgs = [npmExecPath, ...args]
-			.map((value) => `"${String(value).replace(/"/g, '\\"')}"`)
-			.join(' ');
-
-		run(`npx -y node@22 ${quotedArgs}`, [], {
-			...options,
-			shell: true,
-		});
-		return;
-	}
-
 	run(process.execPath, [npmExecPath, ...args], options);
 };
 
@@ -68,7 +48,7 @@ const cleanBuildArtifacts = () => {
 	for (const relativePath of ['.next', '.open-next']) {
 		const target = path.join(frontendRoot, relativePath);
 		if (!fs.existsSync(target)) continue;
-		fs.rmSync(target, { recursive: true, force: true });
+		fs.rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
 	}
 };
 
@@ -197,9 +177,18 @@ const patchCloudflareHandlerRuntimeCompatibility = () => {
 const main = () => {
 	patchOpenNextTurbopackPluginForWindows();
 
-	if (nodeMajor >= 24 && !forceTypecheck) {
+	if (nodeMajor >= 24) {
+		console.error(
+			'[cloudflare:build] Node 24+ is not supported due to V8 crashes that cause high CPU/GPU usage.\n' +
+			'[cloudflare:build] Please switch to Node 22 LTS (see .nvmrc).\n' +
+			'[cloudflare:build]   nvm install 22 && nvm use 22'
+		);
+		process.exit(1);
+	}
+
+	if (nodeMajor >= 20 && !forceTypecheck) {
 		console.warn(
-			'[cloudflare:build] Skipping explicit typecheck on Node 24+ due local Node/V8 fatal crashes; run `npm --prefix frontend run typecheck` on Node 20/22 for strict validation.'
+			'[cloudflare:build] Skipping explicit typecheck; run `npm --prefix frontend run typecheck` separately for strict validation.'
 		);
 	} else {
 		runNpm(['run', 'typecheck']);
@@ -219,16 +208,29 @@ const main = () => {
 		const nextBuildEnv = {
 			...process.env,
 			VF_SKIP_NEXT_BUILD_TYPECHECK: '1',
+			VF_SKIP_NEXT_BUILD_LINT: '1',
+			NEXT_DISABLE_SWC_WORKER: '1',
+			NODE_OPTIONS: [
+				process.env.NODE_OPTIONS || '',
+				'--max-old-space-size=4096',
+			].filter(Boolean).join(' '),
 		};
 
 		if (!useTurbopack) {
 			nextBuildEnv.NEXT_DISABLE_WEBPACK_CACHE = '1';
-			nextBuildEnv.NEXT_DISABLE_SWC_WORKER = '1';
 		}
 
 		runNpm(['run', nextBuildScript], {
 			env: nextBuildEnv,
 		});
+	}
+
+	// Turbopack does not emit pages-manifest.json for App Router-only projects.
+	// OpenNext's cache asset builder always tries to read it, so we stub it.
+	const standaloneNextServer = path.join(frontendRoot, '.next', 'standalone', 'frontend', '.next', 'server');
+	fs.mkdirSync(standaloneNextServer, { recursive: true });
+	if (!fs.existsSync(path.join(standaloneNextServer, 'pages-manifest.json'))) {
+		fs.writeFileSync(path.join(standaloneNextServer, 'pages-manifest.json'), '{}');
 	}
 
 	runNpm(['exec', '--', 'opennextjs-cloudflare', 'build', '--skipBuild']);
