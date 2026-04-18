@@ -114,4 +114,9 @@ self.addEventListener("message", (event) => {
       caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))),
     );
   }
+
+  // Allow the client to trigger skipWaiting for SW updates.
+  if (event.data?.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });

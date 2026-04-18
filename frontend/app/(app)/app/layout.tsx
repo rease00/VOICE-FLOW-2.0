@@ -5,6 +5,7 @@ import { MiniPlayer } from '../../../src/features/reader/v2/MiniPlayer';
 import { GenerationIndicator } from '../../../src/features/studio/v2/GenerationIndicator';
 import { CommandPalette } from '../../../src/features/app-chrome/CommandPalette';
 import { AppToaster } from '../../../src/features/app-chrome/AppToaster';
+import { PwaInstallBanner, PwaUpdateToast } from '../../../src/features/pwa/PwaBanners';
 
 // The /app workspace ships with a nonce-based CSP from middleware.ts.
 // Force request-time rendering so Next can stamp matching nonces onto its
@@ -19,6 +20,8 @@ export default function WorkspaceShellLayout({ children }: Readonly<{ children: 
       <MiniPlayer />
       <CommandPalette />
       <AppToaster />
+      <PwaInstallBanner />
+      <PwaUpdateToast />
       <AuroraDevPanel />
     </UiV2FlagProvider>
   );
