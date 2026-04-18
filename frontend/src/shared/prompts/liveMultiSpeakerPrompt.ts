@@ -58,7 +58,7 @@ const buildSharedRules = (): string => [
 export const buildStudioLiveMultiSpeakerPrompt = (options: LiveMultiSpeakerPromptOptions): LiveMultiSpeakerPromptBundle => {
   const castBlock = buildCastBlock(options.castNames, ['Narrator', 'Speaker 1']);
   const systemPrompt = [
-    'You are a Studio AI Director for Gemini native-audio rendering.',
+    'You are a Studio AI Director for Vector native-audio rendering.',
     'Return only a strict render-ready JSON response.',
     buildSharedRules(),
     '',

@@ -1,4 +1,4 @@
-import { MarketingLanding } from './MarketingLanding';
+import { MarketingLandingV2 } from './MarketingLandingV2';
 import { LandingMotionObserver } from './LandingMotionObserver';
 import {
   LANDING_DIRECTOR_PROOF,
@@ -6,7 +6,7 @@ import {
   LANDING_READER_PROOF,
   LANDING_SINGLE_SPEAKER_DEMOS,
 } from './landingData';
-import type { LandingPageVariant } from './landingTabs';
+import './MarketingLandingV2.css';
 
 const landingUrl = 'https://v-flow-ai.com/landing';
 
@@ -18,20 +18,27 @@ const softwareStructuredData = {
   operatingSystem: 'Web',
   url: landingUrl,
   description:
-    'Voice Flow helps teams audition voices, review multi-speaker scenes, direct delivery, and approve reader-ready audio.',
+    'Voice Flow is a web-based voice production workspace. Write scripts, assign AI voices across 30+ languages, direct delivery with prompts, and render final audio in one tool.',
   brand: {
     '@type': 'Brand',
     name: 'V FLOW AI',
   },
   featureList: [
-    'Single voice auditions',
-    'Prime multi-speaker scene review',
-    'Prompt-based direction workflows',
-    'Reader-ready approval surfaces',
+    'Single voice auditions in 30+ languages',
+    'Multi-speaker scene rendering',
+    'AI-powered prompt-based direction',
+    'Reader review and approval surface',
+    'Token-based pay-as-you-go billing',
   ],
   audience: {
     '@type': 'Audience',
-    audienceType: 'Creators, media teams, and production operators',
+    audienceType: 'Content creators, media producers, and indie developers',
+  },
+  offers: {
+    '@type': 'Offer',
+    price: '129',
+    priceCurrency: 'INR',
+    description: 'Launcher plan — 30K VF Credits/month',
   },
 };
 
@@ -41,36 +48,56 @@ const faqStructuredData = {
   mainEntity: [
     {
       '@type': 'Question',
-      name: 'What is Voice Flow used for?',
+      name: 'What is Voice Flow?',
       acceptedAnswer: {
-      '@type': 'Answer',
-        text: 'Voice Flow is a web voice production workflow for auditioning voices, reviewing scenes, directing delivery, and approving reader-ready audio.',
+        '@type': 'Answer',
+        text: 'Voice Flow is a web-based voice production workspace. You write scripts, assign AI voices, direct delivery with prompts, and review rendered audio — all in one tool.',
       },
     },
     {
       '@type': 'Question',
-      name: 'Can I review single-voice reads and multi-speaker scenes in the same product?',
+      name: 'What languages are supported?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'Yes. The public tour shows each lane separately, and the studio brings them back together in one workflow.',
+        text: 'The Vector engine supports 30+ languages including English, Hindi, Spanish, Japanese, Arabic, French, German, and more.',
       },
     },
     {
       '@type': 'Question',
-      name: 'Where do I find pricing?',
+      name: 'How does billing work?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'Pricing lives on the dedicated public /billing page before you continue into the secure studio flow.',
+        text: 'You purchase VF Credits in packs or via a subscription plan. Credits are consumed per generation — no hidden fees, no monthly minimum. You only pay for what you use.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Can I use multiple voices in one scene?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Yes. Multi-speaker mode lets you assign different voices to different speakers in a single script and render the entire scene in one pass.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Is there a free tier?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Pricing plans start at ₹129/month with credits included. Token top-up packs are also available if you need more without committing to a larger plan.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Who builds this?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'V FLOW AI is a solo-built product focused on doing a few things well rather than promising everything. Updates ship frequently based on real usage.',
       },
     },
   ],
 };
 
-interface PublicLandingPageProps {
-  activePage?: LandingPageVariant;
-}
-
-export function PublicLandingPage({ activePage = 'overview' }: PublicLandingPageProps) {
+export function PublicLandingPage() {
   return (
     <>
       <LandingMotionObserver />
@@ -82,8 +109,7 @@ export function PublicLandingPage({ activePage = 'overview' }: PublicLandingPage
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqStructuredData) }}
       />
-      <MarketingLanding
-        activePage={activePage}
+      <MarketingLandingV2
         singleSpeakerDemos={LANDING_SINGLE_SPEAKER_DEMOS}
         multiSpeakerDemos={LANDING_MULTI_SPEAKER_DEMOS}
         directorProof={LANDING_DIRECTOR_PROOF}

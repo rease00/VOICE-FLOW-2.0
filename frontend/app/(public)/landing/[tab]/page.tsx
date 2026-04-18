@@ -108,5 +108,6 @@ export default async function LandingTabPage({ params, searchParams }: LandingTa
 
   const page = resolveLandingPageVariant(rawTab);
   if (!page || page === 'overview') notFound();
-  return <PublicLandingPage activePage={page} />;
+  // All detail tabs now redirect to the single landing page
+  redirect('/landing');
 }

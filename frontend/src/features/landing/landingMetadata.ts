@@ -5,16 +5,20 @@ import { getLandingTabDefinition } from './landingTabs';
 const landingPath = '/landing';
 
 export const landingMetadata: Metadata = {
-  title: 'Voice Flow | Audition voices, direct scenes, and approve the final take',
+  title: 'V FLOW AI — Script to voice. One workspace. No filler.',
   description:
-    'Voice Flow helps teams audition voices, review multi-speaker scenes, direct delivery, and approve reader-ready audio.',
+    'Write scripts, assign AI voices across 30+ languages, direct delivery with prompts, and render final audio — all in one web workspace. Token-based billing, no monthly minimum.',
   keywords: [
-    'voice workflow',
-    'single voice audition',
-    'multi-speaker scenes',
-    'ai direction',
-    'reader review',
-    'production audio',
+    'AI voice generator',
+    'text to speech',
+    'multi-speaker TTS',
+    'AI voice direction',
+    'voice production workflow',
+    'script to audio',
+    'multi-language TTS',
+    'voice over AI',
+    'audio production tool',
+    'V FLOW AI',
   ],
   alternates: {
     canonical: landingPath,
@@ -26,24 +30,24 @@ export const landingMetadata: Metadata = {
   openGraph: {
     type: 'website',
     url: landingPath,
-    title: 'Voice Flow | Voice production workflow',
+    title: 'V FLOW AI — Script to voice. One workspace.',
     description:
-      'Audition voices, review scenes, direct delivery, and move into the full Voice Flow studio.',
+      'Write scripts, pick AI voices across 30+ languages, direct delivery, and render audio. Token-based billing, no monthly minimum.',
     siteName: 'V FLOW AI',
     images: [
       {
         url: '/brand-logo.svg',
         width: 512,
         height: 512,
-        alt: 'V FLOW AI brand mark',
+        alt: 'V FLOW AI — AI voice production workspace',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Voice Flow | Voice production workflow',
+    title: 'V FLOW AI — Script to voice. One workspace.',
     description:
-      'Audition voices, review scenes, direct delivery, and move into the full Voice Flow studio.',
+      'Write scripts, pick AI voices across 30+ languages, direct delivery, and render audio. Token-based billing, no monthly minimum.',
     images: ['/brand-logo.svg'],
   },
 };
