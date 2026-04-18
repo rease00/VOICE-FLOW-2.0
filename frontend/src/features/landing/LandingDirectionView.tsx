@@ -13,10 +13,10 @@ export function LandingDirectionView({ proof }: LandingDirectionViewProps) {
       <section className="lp-page lp-page--detail" data-testid="landing-ai-director">
         <div className="lp-section">
           <div className="lp-section-head lp-page__intro" data-vf-reveal>
-            <p className="lp-eyebrow"><Brain size={13} /> AI Direction</p>
-            <h1 className="lp-section-title">Direction stays readable, so the team can review the change before rerender.</h1>
+            <p className="lp-eyebrow"><Brain size={13} /> AI Director</p>
+            <h1 className="lp-section-title">Write any story. AI Director turns it into a cast-ready script.</h1>
             <p className="lp-section-sub">
-              Voice Flow uses a structured prompt contract so delivery changes are visible, discussable, and easier to approve.
+              Paste a story into the editor, press AI Director, and it detects every speaker, tags emotions line by line, and outputs a directed multi-voice script you can render immediately.
             </p>
           </div>
           <div className="lp-direction-panel">
@@ -26,18 +26,14 @@ export function LandingDirectionView({ proof }: LandingDirectionViewProps) {
               data-vf-reveal
               style={{ '--vf-marketing-delay': '140ms' } as CSSProperties}
             >
-              <p className="lp-direction-block__label">Live prompt contract</p>
-              <pre>{proof.prompt}</pre>
+              <p className="lp-direction-block__label">What you write</p>
+              <pre>{proof.before}</pre>
             </div>
             <div className="lp-direction-block" data-vf-reveal style={{ '--vf-marketing-delay': '220ms' } as CSSProperties}>
-              <p className="lp-direction-block__label">Delivery comparison</p>
+              <p className="lp-direction-block__label">What AI Director outputs</p>
               <div className="lp-before-after">
-                <div className="lp-ba-item">
-                  <p className="lp-ba-label">Before</p>
-                  <p className="lp-ba-text">{proof.before}</p>
-                </div>
-                <div className="lp-ba-item lp-ba-item--after">
-                  <p className="lp-ba-label">After</p>
+              <div className="lp-ba-item lp-ba-item--after">
+                <p className="lp-ba-label">Directed script</p>
                   <p className="lp-ba-text">{proof.after}</p>
                 </div>
               </div>
@@ -59,9 +55,9 @@ export function LandingDirectionView({ proof }: LandingDirectionViewProps) {
       </section>
 
       <LandingCallToAction
-        kicker="Final review"
-        title="After direction is locked, the lighter reader surface takes over."
-        body="The final pass is about continuity, listening, and approval without crowding the screen."
+        kicker="Ready to render"
+        title="After AI Director formats the script, assign voices and render in one click."
+        body="The directed script goes straight into the studio. Pick voices for each speaker, hit render, and listen to the final output."
       />
     </>
   );

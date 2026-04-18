@@ -1077,8 +1077,8 @@
 }
 
 @keyframes ap-card-rise {
-  from { opacity: 0; transform: translateY(18px) scale(0.98); filter: blur(6px); }
-  to   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  from { opacity: 0; transform: translateY(18px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @keyframes ap-glow-pulse {
@@ -1118,17 +1118,19 @@
 
 /* â”€â”€ Aurora orbs â”€â”€ */
 
+/* Aurora orbs: pure radial-gradient — no filter:blur.
+   Large soft gradients are visually identical but cost ~0 GPU
+   vs blur(70px) which forces rasterization on every composite frame.
+   Removed will-change: transform — not needed without blur layers. */
 .ap-aurora {
   border-radius: 999px;
-  filter: blur(70px);
   pointer-events: none;
   position: absolute;
-  will-change: transform;
 }
 
 .ap-aurora--a {
   animation: ap-aurora-drift-a 24s ease-in-out infinite;
-  background: radial-gradient(circle, rgba(6, 182, 212, 0.65) 0%, transparent 68%);
+  background: radial-gradient(circle, rgba(6, 182, 212, 0.18) 0%, rgba(6, 182, 212, 0.06) 45%, transparent 70%);
   height: 36rem;
   left: -10rem;
   top: 2rem;
@@ -1137,7 +1139,7 @@
 
 .ap-aurora--b {
   animation: ap-aurora-drift-b 30s ease-in-out infinite;
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.55) 0%, transparent 68%);
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, rgba(139, 92, 246, 0.05) 45%, transparent 70%);
   height: 42rem;
   right: -12rem;
   top: 6rem;
@@ -1146,7 +1148,7 @@
 
 .ap-aurora--c {
   animation: ap-aurora-drift-c 20s ease-in-out infinite;
-  background: radial-gradient(circle, rgba(244, 63, 94, 0.4) 0%, transparent 68%);
+  background: radial-gradient(circle, rgba(244, 63, 94, 0.12) 0%, rgba(244, 63, 94, 0.04) 45%, transparent 70%);
   bottom: 6rem;
   height: 30rem;
   left: 25%;

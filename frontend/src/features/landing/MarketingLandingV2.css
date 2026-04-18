@@ -77,48 +77,48 @@
 }
 
 /* ── Background effects ───────────────────────────── */
+/* lp-bg-grid: absolute (not fixed) so it doesn't create a
+   full-viewport compositing layer on every scroll repaint. */
 .lp-bg-grid {
-  position: fixed;
+  position: absolute;
   inset: 0;
+  height: 100vh;
   z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
-  background-size: 60px 60px;
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,.6) 0%, transparent 70%);
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.6) 0%, transparent 70%);
+    linear-gradient(rgba(255,255,255,.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.015) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.5) 0%, transparent 60%);
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.5) 0%, transparent 60%);
 }
 
+/* Spotlights: use pure radial-gradient WITHOUT filter:blur.
+   Large soft gradients look identical but cost ~0 GPU vs blur
+   which forces rasterization on every composite frame.
+   position:absolute keeps repaint inside the shell stacking
+   context instead of the viewport root. */
 .lp-spotlight {
-  position: fixed;
+  position: absolute;
   border-radius: 50%;
-  filter: blur(120px);
   pointer-events: none;
   z-index: 0;
-  will-change: transform;
 }
 .lp-spotlight--a {
-  width: 600px; height: 600px;
-  background: radial-gradient(circle, rgba(71,214,202,.12) 0%, transparent 70%);
-  top: -15%; left: -10%;
-  animation: lp-drift-a 20s ease-in-out infinite alternate;
+  width: 900px; height: 900px;
+  background: radial-gradient(circle, rgba(71,214,202,.09) 0%, rgba(71,214,202,.03) 40%, transparent 70%);
+  top: -20%; left: -15%;
 }
 .lp-spotlight--b {
-  width: 500px; height: 500px;
-  background: radial-gradient(circle, rgba(79,124,255,.10) 0%, transparent 70%);
-  top: 30%; right: -15%;
-  animation: lp-drift-b 24s ease-in-out infinite alternate;
+  width: 700px; height: 700px;
+  background: radial-gradient(circle, rgba(79,124,255,.08) 0%, rgba(79,124,255,.02) 45%, transparent 70%);
+  top: 25%; right: -20%;
 }
 .lp-spotlight--c {
-  width: 400px; height: 400px;
-  background: radial-gradient(circle, rgba(243,184,107,.07) 0%, transparent 70%);
-  bottom: 10%; left: 20%;
-  animation: lp-drift-c 18s ease-in-out infinite alternate;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(243,184,107,.06) 0%, rgba(243,184,107,.02) 45%, transparent 70%);
+  bottom: 5%; left: 15%;
 }
-@keyframes lp-drift-a { to { transform: translate(50px, 80px) scale(1.15); } }
-@keyframes lp-drift-b { to { transform: translate(-40px, -60px) scale(1.1); } }
-@keyframes lp-drift-c { to { transform: translate(30px, -40px) scale(1.08); } }
 
 /* ── Reveal system ────────────────────────────────── */
 [data-vf-landing-motion="enabled"] [data-vf-reveal] {
@@ -236,9 +236,11 @@
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(10,14,20,.78);
-  backdrop-filter: blur(16px) saturate(1.6);
-  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  /* Solid background — no backdrop-filter.
+     backdrop-filter forces GPU repaint on every scroll event;
+     a slightly more opaque solid color is visually equivalent
+     on a dark-theme landing page and costs nothing. */
+  background: rgba(10,14,20,.94);
   border-bottom: 1px solid var(--lp-border-subtle);
 }
 
@@ -463,11 +465,9 @@
   background: linear-gradient(to top, var(--lp-accent), rgba(71,214,202,.3));
   border-radius: 2px 2px 0 0;
   transform-origin: bottom;
-  animation: lp-meter 1.8s ease-in-out infinite alternate;
-}
-@keyframes lp-meter {
-  0% { transform: scaleY(var(--lp-meter-scale, .5)); }
-  100% { transform: scaleY(calc(var(--lp-meter-scale, .5) * .4 + .3)); }
+  /* Static height — decorative hero meter needs no animation.
+     Saves 8 concurrent RAF-driven composites on page load. */
+  transform: scaleY(var(--lp-meter-scale, .5));
 }
 
 .lp-stage__body {
@@ -649,6 +649,8 @@
   padding-bottom: var(--lp-section-gap);
   position: relative;
   z-index: 1;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
 }
 
 .lp-demo-section {
@@ -693,6 +695,8 @@
   position: relative;
   z-index: 1;
   background: linear-gradient(to bottom, transparent, rgba(71,214,202,.02) 50%, transparent);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 500px;
 }
 
 .lp-direction-panel {
@@ -799,6 +803,8 @@
   padding-bottom: var(--lp-section-gap);
   position: relative;
   z-index: 1;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 500px;
 }
 
 .lp-steps {
@@ -857,6 +863,8 @@
   padding-bottom: var(--lp-section-gap);
   position: relative;
   z-index: 1;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 500px;
 }
 
 .lp-pricing-grid {
@@ -978,6 +986,8 @@
   padding-bottom: var(--lp-section-gap);
   position: relative;
   z-index: 1;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
 }
 
 .lp-faq-grid {
@@ -1192,11 +1202,10 @@
 
 /* ── Reduced motion ───────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  .lp-spotlight { animation: none !important; }
-  .lp-stage__meter-bar { animation: none !important; transform: scaleY(var(--lp-meter-scale, .5)) !important; }
   .lp-marquee-track { animation: none !important; }
-  .lp-hero__badge-dot { animation: none !important; }
-  .lp-stage__live-dot { animation: none !important; }
+  .lp-hero__badge-dot { animation: none !important; opacity: 1 !important; }
+  .lp-stage__live-dot { animation: none !important; opacity: 1 !important; }
+  [data-vf-reveal] { opacity: 1 !important; transform: none !important; transition: none !important; }
 }
 
 /* ── Print ─────────────────────────────────────────── */

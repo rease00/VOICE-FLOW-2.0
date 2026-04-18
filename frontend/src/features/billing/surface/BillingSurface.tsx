@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, Coins, CreditCard, Sparkles, Wallet } from 'lucide-react';
 import type { BillingPlanKey, TokenPackKey, VnTokenPackKey } from '../../../../services/accountService';
 import { BrandLogo } from '../../../../components/BrandLogo';
@@ -254,12 +253,13 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   const [loadingKey, setLoadingKey] = useState('');
   const [error, setError] = useState('');
   const [banner, setBanner] = useState<BillingSurfaceBanner | null>(null);
-  const [hasFirebaseSession, setHasFirebaseSession] = useState<boolean | null>(() => (firebaseAuth.currentUser ? true : null));
   const [authPrompt, setAuthPrompt] = useState<BillingAuthPromptState | null>(null);
   const resumeAttemptedRef = useRef(false);
 
   const resolvedAuthMode = 'login';
-  const hasActiveAuthSession = Boolean(hasFirebaseSession || isAuthenticated);
+  // isAuthenticated already comes from UserContext via props — no need for a
+  // separate onAuthStateChanged that would open a redundant Firebase connection.
+  const hasActiveAuthSession = Boolean(isAuthenticated || firebaseAuth.currentUser);
   const nativeCurrencyCode = useMemo(() => resolveNativeCurrencyCode(billingCountry), [billingCountry]);
   const billingCheckoutLocked = isBillingCheckoutLocked();
 
@@ -338,13 +338,6 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       cancelled = true;
     };
   }, [onRefreshEntitlements]);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
-      setHasFirebaseSession(Boolean(user));
-    });
-    return () => unsubscribe();
-  }, []);
 
   const resolveResumePath = useCallback((tab: BillingSurfaceTab): string => {
     if (typeof window === 'undefined') return `${returnPath}?resumeCheckout=1`;

@@ -217,12 +217,12 @@ export function LandingDemoTabs({
         className={`lp-tab-panel${activeTab === 'direction' ? ' is-active' : ''}`}
       >
         <div className="lp-demos__intro" data-vf-reveal style={{ '--vf-marketing-delay': '160ms' } as CSSProperties}>
-          <p className="lp-eyebrow"><AudioLines size={13} /> AI Direction</p>
+          <p className="lp-eyebrow"><AudioLines size={13} /> AI Director</p>
           <h2 className="lp-section-title" style={{ fontSize: 'clamp(1.6rem, 2.5vw, 2.4rem)', marginBottom: '0.5rem' }}>
-            Direction that stays scannable.
+            Paste any story. Get a directed script.
           </h2>
           <p className="lp-section-sub" style={{ textAlign: 'left', maxWidth: '36rem' }}>
-            Prompt contract, before and after, and review bullets grouped into one editorial panel.
+            Write your story in the editor, press AI Director, and get a fully directed multi-speaker script with emotion tags and cast metadata.
           </p>
         </div>
         <div className="lp-direction-panel">
@@ -232,18 +232,14 @@ export function LandingDemoTabs({
             data-vf-reveal
             style={{ '--vf-marketing-delay': '220ms' } as CSSProperties}
           >
-            <p className="lp-direction-block__label">Live prompt contract</p>
-            <pre>{directorProof.prompt}</pre>
+            <p className="lp-direction-block__label">What you write</p>
+            <pre>{directorProof.before}</pre>
           </div>
           <div className="lp-direction-block" data-vf-reveal style={{ '--vf-marketing-delay': '320ms' } as CSSProperties}>
-            <p className="lp-direction-block__label">Delivery comparison</p>
+            <p className="lp-direction-block__label">What AI Director outputs</p>
             <div className="lp-before-after">
-              <div className="lp-ba-item">
-                <p className="lp-ba-label">Before</p>
-                <p className="lp-ba-text">{directorProof.before}</p>
-              </div>
               <div className="lp-ba-item lp-ba-item--after">
-                <p className="lp-ba-label">After</p>
+                <p className="lp-ba-label">Directed script</p>
                 <p className="lp-ba-text">{directorProof.after}</p>
               </div>
             </div>

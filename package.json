@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0 <23.0.0"
+  },
   "scripts": {
     "frontend": "npm --prefix frontend run",
     "start:frontend": "npm run frontend -- dev:ui",
@@ -27,9 +30,9 @@
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "dependencies": {
-    "crypto-js": "^4.2.0"
+    "crypto-js": "4.2.0"
   },
   "devDependencies": {
-    "@types/crypto-js": "^4.2.2"
+    "@types/crypto-js": "4.2.2"
   }
 }

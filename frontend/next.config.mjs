@@ -79,6 +79,11 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: skipBuildTypecheck,
   },
+  experimental: {
+    // Disable worker thread for webpack compilation — prevents 0xC0000005
+    // access-violation crashes on Windows when the build worker spawns.
+    webpackBuildWorker: false,
+  },
   turbopack: {
     root: turbopackRoot,
   },

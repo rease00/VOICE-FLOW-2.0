@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useOptionalUser } from '../../../contexts/UserContext';
 import {
   ArrowRight,
   BookOpen,
@@ -18,7 +18,6 @@ import {
   Zap,
 } from 'lucide-react';
 import { BrandLogo } from '../../../components/BrandLogo';
-import { firebaseAuth } from '../../../services/firebaseClient';
 import { useBillingActions } from './hooks/useBillingActions';
 import {
   BILLING_PLAN_ROWS,
@@ -157,24 +156,19 @@ export function PremiumBillingPage() {
     returnPath: BILLING_PATH,
   });
 
+  const userCtx = useOptionalUser();
+
   const [activeTab, setActiveTab] = useState<TabId>('plans');
   const [loadingKey, setLoadingKey] = useState('');
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
-  const [hasFirebaseSession, setHasFirebaseSession] = useState<boolean | null>(() =>
-    typeof window !== 'undefined' && firebaseAuth.currentUser ? true : null,
-  );
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
   const resumeAttemptedRef = useRef(false);
 
-  const hasActiveAuthSession = Boolean(hasFirebaseSession);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
-      setHasFirebaseSession(Boolean(user));
-    });
-    return () => unsubscribe();
-  }, []);
+  // Use auth state from UserContext (already established via onAuthStateChanged
+  // at the app layout level). A separate onAuthStateChanged here would open a
+  // redundant Firebase WebSocket subscription on top of the existing one.
+  const hasActiveAuthSession = Boolean(userCtx?.isAuthenticated);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;

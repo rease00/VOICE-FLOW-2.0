@@ -138,6 +138,9 @@
     z-index: 0;
     pointer-events: none;
     overflow: hidden;
+    /* No filter here — filter on a fixed full-viewport element forces its own
+       GPU compositing layer on every page in the app. Visual difference is
+       imperceptible at these values. */
     background:
       radial-gradient(88% 72% at 8% 4%, color-mix(in srgb, var(--vf-brand-accent-primary) 28%, transparent), transparent 60%),
       radial-gradient(78% 78% at 90% 10%, color-mix(in srgb, var(--vf-brand-accent-secondary) 24%, transparent), transparent 62%),
@@ -148,7 +151,6 @@
         color-mix(in srgb, var(--vf-brand-surface) 90%, rgba(3, 10, 25, 0.94)) 52%,
         rgba(4, 7, 15, 0.96) 100%
       );
-    filter: saturate(1.08) contrast(1.03);
   }
 
   body[data-vf-resolved-theme='dark'] .vf-live-wallpaper,
@@ -159,7 +161,6 @@
       radial-gradient(78% 78% at 92% 10%, color-mix(in srgb, var(--vf-brand-accent-secondary) 22%, transparent), transparent 62%),
       radial-gradient(90% 68% at 52% 96%, color-mix(in srgb, var(--vf-brand-accent-tertiary) 18%, transparent), transparent 70%),
       var(--vf-brand-backdrop);
-    filter: saturate(1.12) contrast(1.04);
   }
 
   body[data-vf-resolved-theme='light'] .vf-live-wallpaper,
@@ -193,14 +194,14 @@
     background-position: center, center;
     background-repeat: no-repeat;
     opacity: 0;
-    filter: saturate(112%) contrast(104%) blur(0.35px);
+    /* Removed filter:blur(0.35px) — even sub-pixel blur promotes this to its
+       own GPU rasterization layer. Removed will-change: same reason. */
     transform: translateZ(0);
     transition: opacity 260ms ease;
   }
 
   .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::before {
     animation: wallpaper-pan 42s ease-in-out infinite alternate;
-    will-change: transform;
     opacity: 0.16;
   }
 
@@ -212,8 +213,7 @@
 
   body[data-vf-resolved-theme='light'] .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::before,
   body.vf-theme-light .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::before {
-    opacity: 0.1;
-    filter: saturate(98%) contrast(99%) blur(0.45px);
+    opacity: 0.08;
   }
 
   .vf-live-wallpaper::after {
@@ -221,19 +221,21 @@
     position: absolute;
     inset: -12%;
     background:
-      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--vf-brand-accent-primary) 32%, transparent), transparent 38%),
-      radial-gradient(circle at 82% 16%, color-mix(in srgb, var(--vf-brand-accent-secondary) 28%, transparent), transparent 42%),
-      radial-gradient(circle at 50% 78%, color-mix(in srgb, var(--vf-brand-accent-tertiary) 24%, transparent), transparent 46%);
-    filter: blur(12px);
-    mix-blend-mode: screen;
+      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--vf-brand-accent-primary) 16%, transparent), transparent 42%),
+      radial-gradient(circle at 82% 16%, color-mix(in srgb, var(--vf-brand-accent-secondary) 14%, transparent), transparent 46%),
+      radial-gradient(circle at 50% 78%, color-mix(in srgb, var(--vf-brand-accent-tertiary) 12%, transparent), transparent 50%);
+    /* Removed filter:blur(12px) — this was the biggest GPU hog in the app:
+       a full-viewport fixed element with blur + mix-blend-mode:screen creates
+       a separate GPU compositing layer that repaints on every frame across
+       ALL app pages. Pure radial-gradient achieves the same soft-glow look
+       at zero GPU cost. Removed mix-blend-mode:screen and will-change. */
     opacity: 0;
     transition: opacity 260ms ease;
   }
 
   .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::after {
     animation: aura-float 54s ease-in-out infinite alternate;
-    will-change: transform;
-    opacity: 0.1;
+    opacity: 0.14;
   }
 
   body[data-vf-resolved-theme='dark'] .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::after,
@@ -244,8 +246,7 @@
 
   body[data-vf-resolved-theme='light'] .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::after,
   body.vf-theme-light .vf-app-layout[data-vf-visual-ready='true'] .vf-live-wallpaper::after {
-    opacity: 0.1;
-    filter: blur(28px);
+    opacity: 0.08;
   }
 
   .vf-app-shell {

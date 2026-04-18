@@ -399,15 +399,15 @@ const readerSample = requireReaderSample();
 const readerVirtualBook = requireReaderVirtualBook();
 
 export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
-  title: 'AI Director lane',
-  summary: 'Use the same prompt contract as the studio to tighten emphasis and pacing before render.',
+  title: 'AI Director',
+  summary: 'Write or paste any story, press AI Director, and get a fully directed multi-speaker script in seconds.',
   prompt: LANDING_DIRECTOR_PROMPT_BUNDLE.systemPrompt.split('\n').slice(0, 8).join('\n'),
-  before: 'Flat pacing with weak contrast between the three voices.',
-  after: 'Clearer handoffs, cleaner skepticism, warmer resolution.',
+  before: 'Riya wiped the rain from her face. "The map says the Sky Cave is behind this waterfall."\nKabir grinned. "Then we climb."\nZane looked at the crashing water below. "Wonderful. I always wanted to risk my life for a rumor."',
+  after: 'Riya (Determined): The map says the Sky Cave is behind this waterfall.\nKabir (Excited): Then we climb.\nZane (Sarcastic, Dry): Wonderful. I always wanted to risk my life for a rumor.\nTara (Calm, Authoritative): It stopped being a rumor when the mountain started glowing.',
   bullets: [
-    { label: 'Prompt contract', value: 'Stable JSON keeps direction usable.' },
-    { label: 'Scene-safe edits', value: 'Delivery changes without rewriting the scene.' },
-    { label: 'Publish speed', value: 'Review, rerender, and keep the scene moving.' },
+    { label: 'Speaker detection', value: 'Identifies every character, assigns gender and age metadata for voice matching.' },
+    { label: 'Emotion tagging', value: 'Tags each line with emotions — Determined, Sarcastic, Anxious — for natural delivery.' },
+    { label: 'One click', value: 'Write your story, press AI Director, and the formatted script is ready to render.' },
   ],
 };
 

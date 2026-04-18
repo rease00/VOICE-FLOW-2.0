@@ -1,7 +1,6 @@
-import { redirect } from 'next/navigation';
-
 import { resolveSafeInternalNextPath, type AuthRouteMode } from '../../../../src/app/navigation';
 import { normalizeLoginRouteMode } from '../../../../src/shared/auth/signupLock';
+import { LoginRouteClient } from './LoginRouteClient';
 
 const readFirstSearchParam = (value: string | null | undefined): string | null =>
   String(value || '').trim() || null;
@@ -28,14 +27,5 @@ export default async function AppLoginPage({
   const requestedNext = resolveSafeInternalNextPath(toSingleValue(resolved?.next), null);
   const initialMode = normalizeLoginRouteMode(requestedMode) as AuthRouteMode | undefined;
 
-  const params = new URLSearchParams();
-  if (initialMode) {
-    params.set('mode', initialMode);
-  }
-  if (requestedNext) {
-    params.set('next', requestedNext);
-  }
-
-  const suffix = params.toString();
-  redirect(suffix ? `/login?${suffix}` : '/login');
+  return <LoginRouteClient {...(initialMode !== undefined ? { initialMode } : {})} nextPath={requestedNext} />;
 }

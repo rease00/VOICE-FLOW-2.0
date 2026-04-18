@@ -44,7 +44,7 @@ const TRUST_ITEMS = [
   'Token-based billing',
   'No monthly minimum',
   'Real-time preview',
-  'Prompt-based direction',
+  'One-click AI Director',
 ] as const;
 
 const NAV_LINKS = [
@@ -63,8 +63,8 @@ const STEPS = [
   },
   {
     num: '02',
-    title: 'Direct the delivery',
-    body: 'Use AI Direction to shape tone, pacing, and emphasis through a readable prompt contract your team can review.',
+    title: 'Press AI Director',
+    body: 'The AI Director detects speakers, tags emotions, and formats your text into a multi-voice script — ready to assign voices and render.',
     icon: Brain,
   },
   {
@@ -278,11 +278,11 @@ export function MarketingLandingV2({
               </div>
               <div className="lp-feature-card" data-vf-reveal style={d(140)}>
                 <div className="lp-feature-icon" style={{ '--lp-card-accent': 'var(--lp-accent3)' } as CSSProperties}><Brain size={20} /></div>
-                <h3 className="lp-feature-title">AI Direction</h3>
+                <h3 className="lp-feature-title">AI Director</h3>
                 <p className="lp-feature-body">
-                  Shape delivery with a prompt contract. Adjust tone, pacing, emphasis — then re-render.
+                  Paste any story, press AI Director — it detects speakers, tags emotions, and formats a multi-voice script.
                 </p>
-                <span className="lp-feature-tag">Prompt control</span>
+                <span className="lp-feature-tag">One-click direction</span>
               </div>
               <div className="lp-feature-card" data-vf-reveal style={d(210)}>
                 <div className="lp-feature-icon" style={{ '--lp-card-accent': '#a78bfa' } as CSSProperties}><BookOpen size={20} /></div>
@@ -367,13 +367,13 @@ export function MarketingLandingV2({
         <section className="lp-direction-section" id="direction" data-testid="landing-ai-director">
           <div className="lp-section">
             <div className="lp-section-head" data-vf-reveal>
-              <p className="lp-eyebrow"><Brain size={13} /> AI Direction</p>
+              <p className="lp-eyebrow"><Brain size={13} /> AI Director</p>
               <h2 className="lp-section-title">
-                Shape delivery without rewriting the script.
+                Paste a story. Get a directed script.
               </h2>
               <p className="lp-section-sub">
-                The AI Director reads your script and applies tone, pacing, and emphasis through
-                a prompt contract — visible and editable before you render.
+                Write or paste any story into the editor and press AI Director. It detects every speaker,
+                tags emotions line by line, and outputs a cast-ready script you can render immediately.
               </p>
             </div>
             <div className="lp-direction-panel">
@@ -383,21 +383,12 @@ export function MarketingLandingV2({
                 data-vf-reveal
                 style={d(140)}
               >
-                <p className="lp-direction-block__label">Live prompt contract</p>
-                <pre>{directorProof.prompt}</pre>
+                <p className="lp-direction-block__label">What you write</p>
+                <pre>{directorProof.before}</pre>
               </div>
               <div className="lp-direction-block" data-vf-reveal style={d(220)}>
-                <p className="lp-direction-block__label">Before → After</p>
-                <div className="lp-before-after">
-                  <div className="lp-ba-item">
-                    <p className="lp-ba-label">Raw script</p>
-                    <pre className="lp-ba-pre">{directorProof.before}</pre>
-                  </div>
-                  <div className="lp-ba-item lp-ba-item--after">
-                    <p className="lp-ba-label">After direction pass</p>
-                    <pre className="lp-ba-pre lp-ba-pre--after">{directorProof.after}</pre>
-                  </div>
-                </div>
+                <p className="lp-direction-block__label">What AI Director outputs</p>
+                <pre className="lp-ba-pre lp-ba-pre--after">{directorProof.after}</pre>
                 <div className="lp-direction-bullets">
                   {directorProof.bullets.map((b, i) => (
                     <div key={`b-${i}`} className="lp-direction-bullet">

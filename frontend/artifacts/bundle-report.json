@@ -1,41 +1,11 @@
 {
-  "generatedAt": "2026-04-06T18:55:27.177Z",
+  "generatedAt": "2026-04-18T17:32:31.443Z",
   "nextDir": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\frontend\\.next",
   "files": [
     {
-      "file": "static/chunks/0djsjovxva91_.js",
-      "manifestPath": "static/chunks/0djsjovxva91_.js",
-      "bytes": 391866,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0ogtg~e6byxbo.js",
-      "manifestPath": "static/chunks/0ogtg~e6byxbo.js",
-      "bytes": 391866,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/07bczh-17.i5i.js",
-      "manifestPath": "static/chunks/07bczh-17.i5i.js",
-      "bytes": 304985,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0aqoev42_h26f.css",
-      "manifestPath": "static/chunks/0aqoev42_h26f.css",
-      "bytes": 275280,
+      "file": "static/css/09c7da46bcad1a56.css",
+      "manifestPath": "static/css/09c7da46bcad1a56.css",
+      "bytes": 284975,
       "type": "css",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -43,19 +13,29 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/12.a92z9qumw5.js",
-      "manifestPath": "static/chunks/12.a92z9qumw5.js",
-      "bytes": 241899,
+      "file": "static/chunks/95247769.48786c9c80984052.js",
+      "manifestPath": "static/chunks/95247769.48786c9c80984052.js",
+      "bytes": 244745,
       "type": "js",
-      "bucket": "eager",
+      "bucket": "lazy",
       "inEagerManifest": false,
-      "inLazyManifest": false,
+      "inLazyManifest": true,
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/16g.ca89g7fib.js",
-      "manifestPath": "static/chunks/16g.ca89g7fib.js",
-      "bytes": 227537,
+      "file": "static/chunks/5310.74e95a445ba7fd96.js",
+      "manifestPath": "static/chunks/5310.74e95a445ba7fd96.js",
+      "bytes": 243864,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/framework-32492dd9c4fc5870.js",
+      "manifestPath": "static/chunks/framework-32492dd9c4fc5870.js",
+      "bytes": 182738,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": true,
@@ -63,19 +43,19 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0i_qwy.rolxm7.js",
-      "manifestPath": "static/chunks/0i_qwy.rolxm7.js",
-      "bytes": 146751,
+      "file": "static/chunks/1859.00ab19f890aa2329.js",
+      "manifestPath": "static/chunks/1859.00ab19f890aa2329.js",
+      "bytes": 174448,
       "type": "js",
-      "bucket": "eager",
+      "bucket": "lazy",
       "inEagerManifest": false,
-      "inLazyManifest": false,
+      "inLazyManifest": true,
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0wyz3fzjhpvhl.js",
-      "manifestPath": "static/chunks/0wyz3fzjhpvhl.js",
-      "bytes": 142937,
+      "file": "static/chunks/4bd1b696-100b9d70ed4e49c1.js",
+      "manifestPath": "static/chunks/4bd1b696-100b9d70ed4e49c1.js",
+      "bytes": 173025,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": true,
@@ -83,9 +63,19 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0m7ln5o0.n6xj.css",
-      "manifestPath": "static/chunks/0m7ln5o0.n6xj.css",
-      "bytes": 140507,
+      "file": "static/chunks/1255-55f5611cfd370a3f.js",
+      "manifestPath": "static/chunks/1255-55f5611cfd370a3f.js",
+      "bytes": 173011,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": true,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/css/0654839044803157.css",
+      "manifestPath": "static/css/0654839044803157.css",
+      "bytes": 142656,
       "type": "css",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -93,8 +83,28 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/03~yq9q893hmn.js",
-      "manifestPath": "static/chunks/03~yq9q893hmn.js",
+      "file": "static/chunks/1432.f70f1f1ce697905d.js",
+      "manifestPath": "static/chunks/1432.f70f1f1ce697905d.js",
+      "bytes": 123588,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/main-2b0bd07057437d15.js",
+      "manifestPath": "static/chunks/main-2b0bd07057437d15.js",
+      "bytes": 121957,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": true,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/polyfills-42372ed130431b0a.js",
+      "manifestPath": "static/chunks/polyfills-42372ed130431b0a.js",
       "bytes": 112594,
       "type": "js",
       "bucket": "eager",
@@ -103,9 +113,59 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/029s8hdwo.l8a.js",
-      "manifestPath": "static/chunks/029s8hdwo.l8a.js",
-      "bytes": 94549,
+      "file": "static/chunks/bc9e92e6-c24b45fa2f075844.js",
+      "manifestPath": "static/chunks/bc9e92e6-c24b45fa2f075844.js",
+      "bytes": 110801,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/1736.af8518ed72227544.js",
+      "manifestPath": "static/chunks/1736.af8518ed72227544.js",
+      "bytes": 107925,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/9851-f7dd94c39c9f6dd2.js",
+      "manifestPath": "static/chunks/9851-f7dd94c39c9f6dd2.js",
+      "bytes": 106235,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/8437.f98ceadabe2c6685.js",
+      "manifestPath": "static/chunks/8437.f98ceadabe2c6685.js",
+      "bytes": 104229,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/7c86ec74-fda836c0f117f14b.js",
+      "manifestPath": "static/chunks/7c86ec74-fda836c0f117f14b.js",
+      "bytes": 97946,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/profile/page-e9deef3f55b99235.js",
+      "manifestPath": "static/chunks/app/(app)/app/profile/page-e9deef3f55b99235.js",
+      "bytes": 90995,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -113,9 +173,39 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0i_d6ns8mp7op.js",
-      "manifestPath": "static/chunks/0i_d6ns8mp7op.js",
-      "bytes": 76783,
+      "file": "static/chunks/7368-4cbdb06b434d1495.js",
+      "manifestPath": "static/chunks/7368-4cbdb06b434d1495.js",
+      "bytes": 73680,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/5602.de6652826c43121e.js",
+      "manifestPath": "static/chunks/5602.de6652826c43121e.js",
+      "bytes": 68403,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/834cb1aa-7b754fc0600f8e60.js",
+      "manifestPath": "static/chunks/834cb1aa-7b754fc0600f8e60.js",
+      "bytes": 65642,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/billing/page-63ec99fe256dec21.js",
+      "manifestPath": "static/chunks/app/(app)/app/billing/page-63ec99fe256dec21.js",
+      "bytes": 55922,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -123,9 +213,29 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0do0h9t2yaiu4.js",
-      "manifestPath": "static/chunks/0do0h9t2yaiu4.js",
-      "bytes": 74885,
+      "file": "static/chunks/7154-65f7d8c8e896b6fb.js",
+      "manifestPath": "static/chunks/7154-65f7d8c8e896b6fb.js",
+      "bytes": 47609,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/2140-23b5fc18bb564a67.js",
+      "manifestPath": "static/chunks/2140-23b5fc18bb564a67.js",
+      "bytes": 33479,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/9311-abbbd35c2fbb6e2a.js",
+      "manifestPath": "static/chunks/9311-abbbd35c2fbb6e2a.js",
+      "bytes": 32092,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -133,9 +243,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0j8.npmk-wim2.js",
-      "manifestPath": "static/chunks/0j8.npmk-wim2.js",
-      "bytes": 69561,
+      "file": "static/chunks/app/(app)/layout-a0986ac362d385aa.js",
+      "manifestPath": "static/chunks/app/(app)/layout-a0986ac362d385aa.js",
+      "bytes": 28437,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -143,9 +253,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0kx3u3u77v4~r.js",
-      "manifestPath": "static/chunks/0kx3u3u77v4~r.js",
-      "bytes": 57909,
+      "file": "static/chunks/3146-ccdd842904c86cef.js",
+      "manifestPath": "static/chunks/3146-ccdd842904c86cef.js",
+      "bytes": 27937,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -153,19 +263,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/02i7dfk78~t~2.js",
-      "manifestPath": "static/chunks/02i7dfk78~t~2.js",
-      "bytes": 53149,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": true,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/09x98ue77dxth.js",
-      "manifestPath": "static/chunks/09x98ue77dxth.js",
-      "bytes": 46835,
+      "file": "static/chunks/app/(app)/app/login/page-c8ea9a6cfe371392.js",
+      "manifestPath": "static/chunks/app/(app)/app/login/page-c8ea9a6cfe371392.js",
+      "bytes": 25184,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -173,299 +273,29 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/07onpz4rw1y_2.js",
-      "manifestPath": "static/chunks/07onpz4rw1y_2.js",
-      "bytes": 46615,
+      "file": "static/chunks/9340.1404d54e60db0406.js",
+      "manifestPath": "static/chunks/9340.1404d54e60db0406.js",
+      "bytes": 22333,
       "type": "js",
-      "bucket": "eager",
+      "bucket": "lazy",
       "inEagerManifest": false,
-      "inLazyManifest": false,
+      "inLazyManifest": true,
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0_6h.zi372_yz.js",
-      "manifestPath": "static/chunks/0_6h.zi372_yz.js",
-      "bytes": 44942,
+      "file": "static/chunks/2348.1a33234fc345f47f.js",
+      "manifestPath": "static/chunks/2348.1a33234fc345f47f.js",
+      "bytes": 19681,
       "type": "js",
-      "bucket": "eager",
+      "bucket": "lazy",
       "inEagerManifest": false,
-      "inLazyManifest": false,
+      "inLazyManifest": true,
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0h7nwovjudc6u.js",
-      "manifestPath": "static/chunks/0h7nwovjudc6u.js",
-      "bytes": 42443,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0w.sszzm.x9z2.js",
-      "manifestPath": "static/chunks/0w.sszzm.x9z2.js",
-      "bytes": 37185,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/15bay7tx3izku.js",
-      "manifestPath": "static/chunks/15bay7tx3izku.js",
-      "bytes": 35235,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0uw22hsafozo~.js",
-      "manifestPath": "static/chunks/0uw22hsafozo~.js",
-      "bytes": 29975,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0h8z5tjf8_y-5.js",
-      "manifestPath": "static/chunks/0h8z5tjf8_y-5.js",
-      "bytes": 26777,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0zrm8rkiq4mtw.js",
-      "manifestPath": "static/chunks/0zrm8rkiq4mtw.js",
-      "bytes": 24117,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/005uksqlk84f3.js",
-      "manifestPath": "static/chunks/005uksqlk84f3.js",
-      "bytes": 21623,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": true,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/05j1fkovukc8e.js",
-      "manifestPath": "static/chunks/05j1fkovukc8e.js",
-      "bytes": 19597,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0cmq~fkp7nrgl.js",
-      "manifestPath": "static/chunks/0cmq~fkp7nrgl.js",
-      "bytes": 19303,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0v7x3q76964p3.js",
-      "manifestPath": "static/chunks/0v7x3q76964p3.js",
-      "bytes": 19151,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0majctg0a3~21.js",
-      "manifestPath": "static/chunks/0majctg0a3~21.js",
-      "bytes": 18462,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0~3_jfah7zxpy.js",
-      "manifestPath": "static/chunks/0~3_jfah7zxpy.js",
-      "bytes": 18156,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0~.lend8xr07c.js",
-      "manifestPath": "static/chunks/0~.lend8xr07c.js",
-      "bytes": 17216,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0xjotb~q8b~mu.js",
-      "manifestPath": "static/chunks/0xjotb~q8b~mu.js",
-      "bytes": 15463,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0scv71jbt6e-3.js",
-      "manifestPath": "static/chunks/0scv71jbt6e-3.js",
-      "bytes": 14570,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0mriv8bfub0bo.js",
-      "manifestPath": "static/chunks/0mriv8bfub0bo.js",
-      "bytes": 14478,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0x42973vyg~0k.js",
-      "manifestPath": "static/chunks/0x42973vyg~0k.js",
-      "bytes": 11981,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/03tb6q6qzj0s..js",
-      "manifestPath": "static/chunks/03tb6q6qzj0s..js",
-      "bytes": 11516,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0awgr_rc0-y_x.js",
-      "manifestPath": "static/chunks/0awgr_rc0-y_x.js",
-      "bytes": 10587,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/turbopack-03hv3087jr~nc.js",
-      "manifestPath": "static/chunks/turbopack-03hv3087jr~nc.js",
-      "bytes": 10508,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": true,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0ips1ljq~_11k.js",
-      "manifestPath": "static/chunks/0ips1ljq~_11k.js",
-      "bytes": 10390,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0w3ap60qyofhu.js",
-      "manifestPath": "static/chunks/0w3ap60qyofhu.js",
-      "bytes": 10374,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/09rn6b2xqy9-p.js",
-      "manifestPath": "static/chunks/09rn6b2xqy9-p.js",
-      "bytes": 10368,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/0hu49r0egs1i2.js",
-      "manifestPath": "static/chunks/0hu49r0egs1i2.js",
-      "bytes": 9616,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/025h494sxisdf.js",
-      "manifestPath": "static/chunks/025h494sxisdf.js",
-      "bytes": 9226,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/00tvj8yjcz57v.js",
-      "manifestPath": "static/chunks/00tvj8yjcz57v.js",
-      "bytes": 8401,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/17r9fqfbymsbn.js",
-      "manifestPath": "static/chunks/17r9fqfbymsbn.js",
-      "bytes": 8105,
-      "type": "js",
-      "bucket": "eager",
-      "inEagerManifest": false,
-      "inLazyManifest": false,
-      "lazyWasmRef": false
-    },
-    {
-      "file": "static/chunks/048plilh9teeu.css",
-      "manifestPath": "static/chunks/048plilh9teeu.css",
-      "bytes": 8052,
+      "file": "static/css/e2499b156c029b95.css",
+      "manifestPath": "static/css/e2499b156c029b95.css",
+      "bytes": 19670,
       "type": "css",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -473,9 +303,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0c.iuvthcjtcr.js",
-      "manifestPath": "static/chunks/0c.iuvthcjtcr.js",
-      "bytes": 7563,
+      "file": "static/chunks/app/(app)/app/onboarding/page-ef957d614dfd2b23.js",
+      "manifestPath": "static/chunks/app/(app)/app/onboarding/page-ef957d614dfd2b23.js",
+      "bytes": 17484,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -483,9 +313,59 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0yi881_u3sf99.js",
-      "manifestPath": "static/chunks/0yi881_u3sf99.js",
-      "bytes": 6219,
+      "file": "static/chunks/2232.ca3c25b21d645ef4.js",
+      "manifestPath": "static/chunks/2232.ca3c25b21d645ef4.js",
+      "bytes": 16227,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/3478-946b726c7f851b7c.js",
+      "manifestPath": "static/chunks/3478-946b726c7f851b7c.js",
+      "bytes": 15393,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/9988.1539c0b8926674e6.js",
+      "manifestPath": "static/chunks/9988.1539c0b8926674e6.js",
+      "bytes": 15264,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/8677-12ecab7dc0e84c1d.js",
+      "manifestPath": "static/chunks/8677-12ecab7dc0e84c1d.js",
+      "bytes": 15159,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/7829.839ea1c328b76a5d.js",
+      "manifestPath": "static/chunks/7829.839ea1c328b76a5d.js",
+      "bytes": 14427,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/3506-6d174eb16c8f70f0.js",
+      "manifestPath": "static/chunks/3506-6d174eb16c8f70f0.js",
+      "bytes": 13748,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -493,9 +373,19 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0.ue.y1.ghoei.js",
-      "manifestPath": "static/chunks/0.ue.y1.ghoei.js",
-      "bytes": 6000,
+      "file": "static/chunks/2196.e069169af1d46697.js",
+      "manifestPath": "static/chunks/2196.e069169af1d46697.js",
+      "bytes": 13320,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/user-id-setup/page-85cba31c0902aec7.js",
+      "manifestPath": "static/chunks/app/(app)/app/user-id-setup/page-85cba31c0902aec7.js",
+      "bytes": 13065,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -503,9 +393,19 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/01m~9pw7vedvg.js",
-      "manifestPath": "static/chunks/01m~9pw7vedvg.js",
-      "bytes": 4849,
+      "file": "static/chunks/5320.930e6b4e550f1bbc.js",
+      "manifestPath": "static/chunks/5320.930e6b4e550f1bbc.js",
+      "bytes": 12347,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/library/[bookId]/read/page-9e418b45db9a8624.js",
+      "manifestPath": "static/chunks/app/(app)/app/library/[bookId]/read/page-9e418b45db9a8624.js",
+      "bytes": 12054,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -513,9 +413,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0w6lq6w-1rhj2.js",
-      "manifestPath": "static/chunks/0w6lq6w-1rhj2.js",
-      "bytes": 3445,
+      "file": "static/chunks/app/(public)/billing/page-dcd08e256c3f221b.js",
+      "manifestPath": "static/chunks/app/(public)/billing/page-dcd08e256c3f221b.js",
+      "bytes": 10508,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -523,9 +423,29 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/09figbg557bcl.js",
-      "manifestPath": "static/chunks/09figbg557bcl.js",
-      "bytes": 2472,
+      "file": "static/chunks/7022.f68adb80444b8526.js",
+      "manifestPath": "static/chunks/7022.f68adb80444b8526.js",
+      "bytes": 10128,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/5481.536eaf544a5855fc.js",
+      "manifestPath": "static/chunks/5481.536eaf544a5855fc.js",
+      "bytes": 10070,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/7281-60075515baf10b1c.js",
+      "manifestPath": "static/chunks/7281-60075515baf10b1c.js",
+      "bytes": 9157,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -533,9 +453,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/09z8sy~hu6lq0.js",
-      "manifestPath": "static/chunks/09z8sy~hu6lq0.js",
-      "bytes": 2425,
+      "file": "static/chunks/app/offline/page-ed927cac14b6f015.js",
+      "manifestPath": "static/chunks/app/offline/page-ed927cac14b6f015.js",
+      "bytes": 9120,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -543,9 +463,29 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0izc18thsu1x4.js",
-      "manifestPath": "static/chunks/0izc18thsu1x4.js",
-      "bytes": 2171,
+      "file": "static/chunks/2531.63e88bc898c6f2a5.js",
+      "manifestPath": "static/chunks/2531.63e88bc898c6f2a5.js",
+      "bytes": 9084,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/5266.2b2008217827b6eb.js",
+      "manifestPath": "static/chunks/5266.2b2008217827b6eb.js",
+      "bytes": 8201,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/9332-934f96cb1498516e.js",
+      "manifestPath": "static/chunks/9332-934f96cb1498516e.js",
+      "bytes": 7969,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -553,9 +493,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/17aw2wafe_90d.js",
-      "manifestPath": "static/chunks/17aw2wafe_90d.js",
-      "bytes": 2044,
+      "file": "static/chunks/4677-182a396508a2538a.js",
+      "manifestPath": "static/chunks/4677-182a396508a2538a.js",
+      "bytes": 7959,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -563,9 +503,9 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/0g8eqr2bt.p81.js",
-      "manifestPath": "static/chunks/0g8eqr2bt.p81.js",
-      "bytes": 1215,
+      "file": "static/chunks/1729-9fadf5145b1e563b.js",
+      "manifestPath": "static/chunks/1729-9fadf5145b1e563b.js",
+      "bytes": 6930,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": false,
@@ -573,19 +513,29 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/chunks/00dv3ces9vvd0.js",
-      "manifestPath": "static/chunks/00dv3ces9vvd0.js",
-      "bytes": 229,
+      "file": "static/chunks/1287.d5dc9f4f49d2267e.js",
+      "manifestPath": "static/chunks/1287.d5dc9f4f49d2267e.js",
+      "bytes": 6875,
       "type": "js",
-      "bucket": "eager",
+      "bucket": "lazy",
       "inEagerManifest": false,
-      "inLazyManifest": false,
+      "inLazyManifest": true,
       "lazyWasmRef": false
     },
     {
-      "file": "static/JDkO_Q0VPgTijdq6ssnU9/_buildManifest.js",
-      "manifestPath": "static/JDkO_Q0VPgTijdq6ssnU9/_buildManifest.js",
-      "bytes": 219,
+      "file": "static/chunks/4699.086799581886780c.js",
+      "manifestPath": "static/chunks/4699.086799581886780c.js",
+      "bytes": 5855,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/pages/_error-6fefe5068ca3060e.js",
+      "manifestPath": "static/chunks/pages/_error-6fefe5068ca3060e.js",
+      "bytes": 5680,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": true,
@@ -593,9 +543,39 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/JDkO_Q0VPgTijdq6ssnU9/_ssgManifest.js",
-      "manifestPath": "static/JDkO_Q0VPgTijdq6ssnU9/_ssgManifest.js",
-      "bytes": 132,
+      "file": "static/chunks/1646.a93085a0445ba909.js",
+      "manifestPath": "static/chunks/1646.a93085a0445ba909.js",
+      "bytes": 5466,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/voices/page-ed5d78a68a99720c.js",
+      "manifestPath": "static/chunks/app/(app)/app/voices/page-ed5d78a68a99720c.js",
+      "bytes": 5302,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/studio/page-cebf533295d48292.js",
+      "manifestPath": "static/chunks/app/(app)/app/studio/page-cebf533295d48292.js",
+      "bytes": 5301,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/FJq68Ucng_fScvThkZh76/_buildManifest.js",
+      "manifestPath": "static/FJq68Ucng_fScvThkZh76/_buildManifest.js",
+      "bytes": 4924,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": true,
@@ -603,9 +583,1259 @@
       "lazyWasmRef": false
     },
     {
-      "file": "static/JDkO_Q0VPgTijdq6ssnU9/_clientMiddlewareManifest.js",
-      "manifestPath": "static/JDkO_Q0VPgTijdq6ssnU9/_clientMiddlewareManifest.js",
-      "bytes": 96,
+      "file": "static/chunks/webpack-df9a011caeff0fc6.js",
+      "manifestPath": "static/chunks/webpack-df9a011caeff0fc6.js",
+      "bytes": 4623,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": true,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/4069.a1b37705e6dc770c.js",
+      "manifestPath": "static/chunks/4069.a1b37705e6dc770c.js",
+      "bytes": 4274,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/7394.9f8ce316ed1cb606.js",
+      "manifestPath": "static/chunks/7394.9f8ce316ed1cb606.js",
+      "bytes": 3735,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/2437.749a99e78ba0477d.js",
+      "manifestPath": "static/chunks/2437.749a99e78ba0477d.js",
+      "bytes": 3542,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/_not-found/page-3d809021e9979bb7.js",
+      "manifestPath": "static/chunks/app/_not-found/page-3d809021e9979bb7.js",
+      "bytes": 2684,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/4259.a2213490001d9258.js",
+      "manifestPath": "static/chunks/4259.a2213490001d9258.js",
+      "bytes": 1884,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/2431.0878b6d90b4fd5a5.js",
+      "manifestPath": "static/chunks/2431.0878b6d90b4fd5a5.js",
+      "bytes": 1657,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/pages/_app-e8b861c87f6f033c.js",
+      "manifestPath": "static/chunks/pages/_app-e8b861c87f6f033c.js",
+      "bytes": 924,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": true,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/layout-66e06bef1a70a00e.js",
+      "manifestPath": "static/chunks/app/layout-66e06bef1a70a00e.js",
+      "bytes": 874,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/5139.e4ff9cc3669129ed.js",
+      "manifestPath": "static/chunks/5139.e4ff9cc3669129ed.js",
+      "bytes": 745,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/account/page-b4ec1325e7618352.js",
+      "manifestPath": "static/chunks/app/(app)/app/account/page-b4ec1325e7618352.js",
+      "bytes": 718,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/sitemap.xml/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/sitemap.xml/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/manifest.webmanifest/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/manifest.webmanifest/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/withdrawal/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/withdrawal/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/voice-clone/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/voice-clone/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/tts/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/tts/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/tts/studio/synthesize/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/tts/studio/synthesize/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/tts/studio/export/drive/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/tts/studio/export/drive/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/tts/novel/jobs/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/tts/novel/jobs/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/tts/novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/tts/novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/translate/modernize/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/translate/modernize/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/synthesize/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/synthesize/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/stream/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/stream/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/novel/jobs/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/novel/jobs/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/long-text/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/long-text/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/export/drive/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/export/drive/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/engines/status/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/engines/status/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/tts/engines/activate/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/tts/engines/activate/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/studio/translate/modernize/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/studio/translate/modernize/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/reader/object/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/reader/object/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/publishing/import/split/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/publishing/import/split/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/publishing/import/extract/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/publishing/import/extract/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/publishing/books/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/publishing/books/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/publishing/books/[bookId]/publish/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/publishing/books/[bookId]/publish/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/publishing/books/[bookId]/chapters/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/publishing/books/[bookId]/chapters/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/publishing/books/[bookId]/chapters/[chapterId]/audio/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/publishing/books/[bookId]/chapters/[chapterId]/audio/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/ops/health/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/ops/health/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/ops/guardian/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/ops/guardian/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/ops/contracts/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/ops/contracts/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/reader/object/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/reader/object/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/books/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/books/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/books/[bookId]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/books/[bookId]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/books/[bookId]/chapters/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/books/[bookId]/chapters/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/books/[bookId]/chapters/[chapterId]/audio/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/books/[bookId]/chapters/[chapterId]/audio/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/audio-novel/ws/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/audio-novel/ws/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/audio-novel/jobs/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/audio-novel/jobs/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/library/audio-novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/library/audio-novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/webhook/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/webhook/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/wallet/vc/convert/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/wallet/vc/convert/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/vn-token-pack/checkout-session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/vn-token-pack/checkout-session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/vc-token-pack/checkout-session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/vc-token-pack/checkout-session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/token-pack/checkout-session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/token-pack/checkout-session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/subscription/resume/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/subscription/resume/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/subscription/cancel/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/subscription/cancel/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/portal-session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/portal-session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/coupons/redeem/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/coupons/redeem/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/checkout-session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/checkout-session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/billing/account-summary/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/billing/account-summary/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/ai/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/ai/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/admin/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/admin/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/withdrawals/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/withdrawals/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/support/messages/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/support/messages/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/support/conversations/[conversationId]/still-unresolved/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/support/conversations/[conversationId]/still-unresolved/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/support/conversations/me/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/support/conversations/me/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/reader/legal-ack/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/reader/legal-ack/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/profile/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/profile/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/profile/bootstrap/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/profile/bootstrap/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/notifications/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/notifications/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/notifications/[notificationId]/read/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/notifications/[notificationId]/read/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/notifications/[notificationId]/dismiss/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/notifications/[notificationId]/dismiss/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/notifications/read-all/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/notifications/read-all/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/notifications/dismiss-all/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/notifications/dismiss-all/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/notification-preferences/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/notification-preferences/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/kyc/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/kyc/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/generation-history/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/generation-history/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/entitlements/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/entitlements/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/delete/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/delete/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/v1/account/bootstrap/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/v1/account/bootstrap/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/tts/synthesize/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/tts/synthesize/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/tts/studio/export/drive/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/tts/studio/export/drive/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/tts/stream/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/tts/stream/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/tts/novel/jobs/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/tts/novel/jobs/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/tts/novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/tts/novel/jobs/[jobId]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/tts/long-text/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/tts/long-text/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/translate/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/translate/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/kyc/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/kyc/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/dev/session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/dev/session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/creator/upload/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/creator/upload/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/books/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/books/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/books/[bookId]/publish/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/books/[bookId]/publish/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/books/[bookId]/chapters/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/books/[bookId]/chapters/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/books/chapters/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/books/chapters/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/books/chapters/generate/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/books/chapters/generate/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/book/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/book/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/backend/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/backend/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/backend/[...path]/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/backend/[...path]/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/auth/session/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/auth/session/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/auth/register/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/auth/register/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/auth/me/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/auth/me/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/auth/login/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/auth/login/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/api/ai-script/route-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/api/ai-script/route-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/layout-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(public)/layout-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/legal/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(public)/legal/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/legal/[slug]/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(public)/legal/[slug]/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/landing/[tab]/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(public)/landing/[tab]/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/reader/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(app)/reader/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/reader/[...slug]/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(app)/reader/[...slug]/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/layout-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(app)/app/layout-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/reader/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(app)/app/reader/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/reader/[...slug]/page-0eb2e4fccd91a83b.js",
+      "manifestPath": "static/chunks/app/(app)/app/reader/[...slug]/page-0eb2e4fccd91a83b.js",
+      "bytes": 644,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/main-app-92fe3e19059a0533.js",
+      "manifestPath": "static/chunks/main-app-92fe3e19059a0533.js",
+      "bytes": 572,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": true,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/6651.97e35870b2e749a9.js",
+      "manifestPath": "static/chunks/6651.97e35870b2e749a9.js",
+      "bytes": 240,
+      "type": "js",
+      "bucket": "lazy",
+      "inEagerManifest": false,
+      "inLazyManifest": true,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/page-a5f4c1f516d0d1c8.js",
+      "manifestPath": "static/chunks/app/(app)/app/page-a5f4c1f516d0d1c8.js",
+      "bytes": 165,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/writing/page-22e1f6da95c03533.js",
+      "manifestPath": "static/chunks/app/(app)/app/writing/page-22e1f6da95c03533.js",
+      "bytes": 165,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/runs/page-75e0372472d30cd9.js",
+      "manifestPath": "static/chunks/app/(app)/app/runs/page-75e0372472d30cd9.js",
+      "bytes": 165,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/admin/page-b8b49208daa44478.js",
+      "manifestPath": "static/chunks/app/(app)/app/admin/page-b8b49208daa44478.js",
+      "bytes": 165,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/page-6046c9a9abd187a3.js",
+      "manifestPath": "static/chunks/app/(public)/page-6046c9a9abd187a3.js",
+      "bytes": 140,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/library/page-fb8e7d0ff86fe53b.js",
+      "manifestPath": "static/chunks/app/(public)/library/page-fb8e7d0ff86fe53b.js",
+      "bytes": 140,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(public)/landing/page-3eb5fe3600cc4504.js",
+      "manifestPath": "static/chunks/app/(public)/landing/page-3eb5fe3600cc4504.js",
+      "bytes": 140,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/chunks/app/(app)/app/library/page-3c5b536a125fd519.js",
+      "manifestPath": "static/chunks/app/(app)/app/library/page-3c5b536a125fd519.js",
+      "bytes": 139,
+      "type": "js",
+      "bucket": "eager",
+      "inEagerManifest": false,
+      "inLazyManifest": false,
+      "lazyWasmRef": false
+    },
+    {
+      "file": "static/FJq68Ucng_fScvThkZh76/_ssgManifest.js",
+      "manifestPath": "static/FJq68Ucng_fScvThkZh76/_ssgManifest.js",
+      "bytes": 80,
       "type": "js",
       "bucket": "eager",
       "inEagerManifest": true,
@@ -614,16 +1844,16 @@
     }
   ],
   "summary": {
-    "totalBytes": 3473404,
-    "jsBytes": 3049565,
-    "cssBytes": 423839,
+    "totalBytes": 3497565,
+    "jsBytes": 3050264,
+    "cssBytes": 447301,
     "wasmBytes": 0,
-    "fileCount": 61,
-    "eagerBytes": 3473404,
-    "eagerFileCount": 61,
-    "lazyBytes": 0,
-    "lazyFileCount": 0,
-    "eagerManifestAssetCount": 9,
-    "lazyManifestAssetCount": 0
+    "fileCount": 184,
+    "eagerBytes": 1679064,
+    "eagerFileCount": 147,
+    "lazyBytes": 1818501,
+    "lazyFileCount": 37,
+    "eagerManifestAssetCount": 11,
+    "lazyManifestAssetCount": 37
   }
 }
