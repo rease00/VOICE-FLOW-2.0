@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
 
-import { proxy } from '../proxy';
+import { middleware as proxy } from '../proxy';
 
 describe('proxy CSP', () => {
   it('allows dev-only eval and local backend access on localhost', () => {

@@ -34,7 +34,7 @@ describe('WorkspaceRouteEntryScreen', () => {
     vi.clearAllMocks();
     pathnameMock.mockReturnValue('/app/studio');
     firebaseAuthMock.currentUser = null;
-    useUserMock.mockReturnValue({ authReady: false, isAuthenticated: false });
+    useUserMock.mockReturnValue({ authReady: false, isAuthenticated: false, sessionCookieReady: true });
   });
 
   it('shows the lightweight handoff shell for cold signed-out sessions', () => {
@@ -71,7 +71,7 @@ describe('WorkspaceRouteEntryScreen', () => {
   });
 
   it('loads the full workspace once auth is ready for an authenticated user', () => {
-    useUserMock.mockReturnValue({ authReady: true, isAuthenticated: true });
+    useUserMock.mockReturnValue({ authReady: true, isAuthenticated: true, sessionCookieReady: true });
 
     const html = renderToStaticMarkup(
       <WorkspaceRouteEntryScreen
@@ -89,7 +89,7 @@ describe('WorkspaceRouteEntryScreen', () => {
 
   it('shows the sign-in gate once auth resolves for a signed-out user', () => {
     pathnameMock.mockReturnValue('/app/voices');
-    useUserMock.mockReturnValue({ authReady: true, isAuthenticated: false });
+    useUserMock.mockReturnValue({ authReady: true, isAuthenticated: false, sessionCookieReady: false });
 
     const html = renderToStaticMarkup(
       <WorkspaceRouteEntryScreen
@@ -103,7 +103,7 @@ describe('WorkspaceRouteEntryScreen', () => {
 
     expect(html).toContain('Sign in to open Voices');
     expect(html).toContain('Open secure sign-in');
-    expect(html).toContain('Create account');
+    expect(html).toContain('Launch soon');
     expect(html).not.toContain('Workspace Main App');
     expect(workspaceMainAppMock).not.toHaveBeenCalled();
   });
