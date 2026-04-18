@@ -8,6 +8,7 @@ import { EditorPane } from "./EditorPane";
 import { VoicePickerDrawer } from "./VoicePickerDrawer";
 import { GenerationDock } from "./GenerationDock";
 import { useStudioGenerate } from "../hooks/useStudioGenerate";
+import { saveStudioDraft } from "../../../../services/studioDraftService";
 import { VOICES } from "../../../../constants";
 import type { StudioEditorMode, GenerationSettings } from "../../../../types";
 
@@ -27,6 +28,7 @@ export function StudioShellV2() {
   const [progress, setProgress] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
+  const [draftSaved, setDraftSaved] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const { synthesize } = useStudioGenerate();
@@ -118,6 +120,12 @@ export function StudioShellV2() {
     setTimeout(() => setPreviewingVoiceId(null), 2000);
   }, []);
 
+  const handleSaveDraft = useCallback(async () => {
+    await saveStudioDraft(text, { voiceId: selectedVoiceId, editorMode });
+    setDraftSaved(true);
+    setTimeout(() => setDraftSaved(false), 2000);
+  }, [text, selectedVoiceId, editorMode]);
+
   return (
     <motion.main
       {...fadeIn}
@@ -133,8 +141,8 @@ export function StudioShellV2() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" size="md" onClick={() => {}}>
-            Save draft
+          <Button variant="secondary" size="md" onClick={handleSaveDraft}>
+            {draftSaved ? "Saved \u2713" : "Save draft"}
           </Button>
           <Button
             variant="aurora"
