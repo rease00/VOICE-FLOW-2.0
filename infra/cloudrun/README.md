@@ -1,19 +1,23 @@
 # Cloud Run Split-Service Deployment
 
+Important:
+- The Dockerfiles in this folder still reference compatibility-backend sources under `backend/`.
+- Those sources are not present in this checkout, so this folder is not currently buildable as a repo-only Cloud Run rollout.
+- Use these assets only if you have restored the missing backend sources in your build context or are building from the external compatibility-backend repository.
+- The launch-default topology from this workspace is Cloudflare Workers/OpenNext for the public frontend plus an external Cloud Run compatibility backend for still-proxied API families.
+
 This folder contains Cloud Run production deployment assets for the split topology:
 
 - `voiceflow-api` (public ingress, unauthenticated at Cloud Run, scale-to-zero, single primary region, no session affinity by default)
-- `voiceflow-worker` (internal ingress, authenticated, drained by Cloud Tasks, regional only)
 - `voiceflow-gemini-runtime` (internal ingress, authenticated, scale-to-zero, regional only)
 - `voiceflow-gemini-runtime` is the dedicated Cloud TTS runtime for speech synthesis.
 - `voiceflow-vertex-text-runtime` is the dedicated Vertex text runtime for text and AI endpoints.
 - Voice Clone, OpenVoice compatibility, and Demucs separation stay Modal-backed in production and are configured through the backend Modal runtime env set.
 
-The API and worker use the same backend image with role-based startup:
+The API uses the shared compatibility backend image with role-based startup:
 
 - `VF_SERVICE_ROLE=api` and `VF_TTS_QUEUE_WORKER_COUNT=0` on API
-- `VF_SERVICE_ROLE=worker` on worker
-- `VF_ENV=production` and `VF_AUTH_ENFORCE=1` on both API and worker
+- `VF_ENV=production` and `VF_AUTH_ENFORCE=1` on API
 
 ## Files
 
@@ -41,7 +45,7 @@ The API and worker use the same backend image with role-based startup:
 4. Optional but recommended:
    - Serverless VPC connector (`-VpcConnector`) for Memorystore access.
    - Memorystore Redis URL (`-RedisUrl`, mapped to `VF_REDIS_URL`).
-   - Cloud Run invoker bindings for the API/worker identities once the service accounts are finalized.
+   - Cloud Run invoker bindings for the API/runtime identities once the service accounts are finalized.
 
 ## Deploy
 
@@ -81,8 +85,7 @@ Deploy without rebuilding images:
 `services.default.json` is preconfigured for a conservative first rollout:
 
 - Default profile: `cloudrun-2vcpu`
-- API: `min=1`, `max=20`, concurrency `16`, single-region default, session affinity disabled
-- Worker: `min=0`, `max=12`, concurrency `1`, CPU throttling enabled
+- API: `min=0`, `max=20`, concurrency `16`, single-region default, session affinity disabled
 - Gemini runtime: `min=0`, `max=10`, concurrency `2`
 - Execution environment: `gen2`
 - Startup CPU boost: enabled
@@ -90,30 +93,13 @@ Deploy without rebuilding images:
 
 Adjust max instances only after the `cloudrun-2vcpu` load profile is green in staging.
 
-## Cloud Tasks Drain
+## TTS Drain Posture
 
-`voiceflow-worker` no longer polls Redis in a loop on Cloud Run. Instead, queued TTS jobs wake the worker through Cloud Tasks and the worker drains a bounded batch, then schedules the next task only if backlog remains.
-
-During deployment, `deploy.ps1` bootstraps `VF_TTS_DRAIN_WORKER_URL` for `voiceflow-worker` after Cloud Run returns the service URL, then uses that URL for API-side wakeups.
-
-The key runtime knobs are:
-
-- `VF_TTS_DRAIN_QUEUE_NAME`
-- `VF_TTS_DRAIN_QUEUE_LOCATION`
-- `VF_TTS_DRAIN_WORKER_URL`
-- `VF_TTS_DRAIN_BATCH_SIZE`
-- `VF_TTS_DRAIN_LOCK_TTL_MS`
-- `VF_TTS_DRAIN_DISPATCH_DEADLINE_SEC`
-
-The worker endpoint is `POST /internal/tts/drain`.
+The launch-default posture retires the dedicated Cloud Run worker and keeps TTS drain disabled in the API config. Do not recreate the legacy drain queue or worker unless the compatibility backend is explicitly reworked to depend on them again.
 
 IAM requirements:
 
-- The service account creating tasks needs `roles/cloudtasks.enqueuer`.
-- The worker service account needs `roles/run.invoker` on `voiceflow-worker`.
-- The backend and worker callers to `voiceflow-gemini-runtime` need `roles/run.invoker` on that service as well.
-
-The code uses Cloud Run ID tokens for Gemini/runtime calls and Cloud Tasks OIDC tokens for the worker drain target. The drain path no longer depends on an app-level shared admin token in the default launch posture.
+- The backend callers to `voiceflow-gemini-runtime` need `roles/run.invoker` on that service.
 
 The public API exposes a routing snapshot so the launch stays predictable while still letting the client pin the nearest healthy region. `GET /routing/regions` and `VF_PUBLIC_API_REGIONS` exist for observability and future expansion, but the default launch stays on one primary region.
 

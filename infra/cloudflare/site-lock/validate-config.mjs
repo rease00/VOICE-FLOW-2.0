@@ -41,10 +41,6 @@ for (const host of protectedHosts) {
 assert(!('SITE_LOCK_USER' in (wranglerConfig.vars ?? {})), 'SITE_LOCK_USER must stay in Cloudflare secrets, not wrangler vars.');
 assert(!('SITE_LOCK_PASS' in (wranglerConfig.vars ?? {})), 'SITE_LOCK_PASS must stay in Cloudflare secrets, not wrangler vars.');
 
-if (typeof globalThis.atob !== 'function') {
-  globalThis.atob = (value) => Buffer.from(value, 'base64').toString('binary');
-}
-
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (request) =>
   new Response(`upstream:${new URL(request.url).hostname}`, {
@@ -59,66 +55,19 @@ try {
   const workerModule = await import(moduleUrl);
   const worker = workerModule.default;
 
-  const callWorker = (url, env = {}, headers = {}) =>
-    worker.fetch(
-      new Request(url, {
-        headers,
-      }),
-      env
-    );
+  const callWorker = (url) => worker.fetch(new Request(url), {});
 
-  const basicAuth = (username, password) =>
-    `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
+  const localResponse = await callWorker('https://localhost:3000/');
+  assert(localResponse.status === 200, 'Site-lock worker must pass through localhost requests.');
+  assert(localResponse.headers.get('X-V-Flow-AI-Lock') === 'disabled', 'Site-lock worker must label pass-through responses as disabled.');
+  assert(localResponse.headers.get('X-Robots-Tag') === 'noindex, nofollow, noarchive, nosnippet, noimageindex', 'Site-lock worker must keep robots protection.');
+  assert(localResponse.headers.get('WWW-Authenticate') === null, 'Site-lock worker must not challenge with Basic Auth.');
 
-  const localResponse = await callWorker('https://localhost:3000/', {});
-  assert(localResponse.status === 200, 'Local/dev requests must bypass site-lock when the hostname is not protected.');
-  assert(localResponse.headers.get('X-V-Flow-AI-Lock') === null, 'Local/dev bypass must not decorate private headers.');
-
-  const prodWithoutSecrets = await callWorker('https://v-flow-ai.com/', {
-    SITE_LOCK_PROTECTED_HOSTS: 'v-flow-ai.com,www.v-flow-ai.com',
-  });
-  assert(prodWithoutSecrets.status === 503, 'Protected production hosts must fail closed when secrets are missing.');
-
-  const botBlocked = await callWorker(
-    'https://www.v-flow-ai.com/',
-    {
-      SITE_LOCK_PROTECTED_HOSTS: 'v-flow-ai.com,www.v-flow-ai.com',
-      SITE_LOCK_USER: 'admin',
-      SITE_LOCK_PASS: 'secret',
-    },
-    {
-      'User-Agent': 'DiscordBot/2.0',
-    }
-  );
-  assert(botBlocked.status === 403, 'Unauthenticated bots must be rejected on protected hosts.');
-
-  const wrongAuth = await callWorker(
-    'https://v-flow-ai.com/',
-    {
-      SITE_LOCK_PROTECTED_HOSTS: 'v-flow-ai.com,www.v-flow-ai.com',
-      SITE_LOCK_USER: 'admin',
-      SITE_LOCK_PASS: 'secret',
-    },
-    {
-      Authorization: basicAuth('admin', 'wrong'),
-    }
-  );
-  assert(wrongAuth.status === 401, 'Protected hosts must challenge invalid credentials.');
-
-  const correctAuth = await callWorker(
-    'https://v-flow-ai.com/',
-    {
-      SITE_LOCK_PROTECTED_HOSTS: 'v-flow-ai.com,www.v-flow-ai.com',
-      SITE_LOCK_USER: 'admin',
-      SITE_LOCK_PASS: 'secret',
-    },
-    {
-      Authorization: basicAuth('admin', 'secret'),
-    }
-  );
-  assert(correctAuth.status === 200, 'Protected hosts must allow valid credentials.');
-  assert(correctAuth.headers.get('X-V-Flow-AI-Lock') === 'basic-auth', 'Protected responses must keep the private header decoration.');
-  assert(correctAuth.headers.get('Cache-Control') === 'no-store', 'Protected responses must remain non-cacheable.');
+  const prodResponse = await callWorker('https://v-flow-ai.com/');
+  assert(prodResponse.status === 200, 'Site-lock worker must pass through protected production hosts.');
+  assert(prodResponse.headers.get('X-V-Flow-AI-Lock') === 'disabled', 'Production responses must report the lock as disabled.');
+  assert(prodResponse.headers.get('X-Robots-Tag') === 'noindex, nofollow, noarchive, nosnippet, noimageindex', 'Production responses must keep robots protection.');
+  assert(prodResponse.headers.get('WWW-Authenticate') === null, 'Production responses must not challenge with Basic Auth.');
 
   console.log('[cloudflare] site-lock validation passed.');
 } finally {

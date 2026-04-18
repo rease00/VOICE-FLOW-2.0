@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -77,8 +77,15 @@ const assertRuntimeMapping = (serviceName) => {
     `${serviceName} must keep the Modal OpenVoice runtime mapping.`
   );
   const allowedSecretBindings = new Set([
+    'FIREBASE_SERVICE_ACCOUNT_JSON',
+    'STRIPE_SECRET_KEY',
+    'STRIPE_WEBHOOK_SECRET',
+    'VF_ADMIN_UNLOCK_SIGNING_SECRET',
+    'GEMINI_RUNTIME_ADMIN_TOKEN',
     'VF_VOICE_CLONE_MODAL_RUNTIME_TOKEN',
+    'VF_VOICE_CLONE_RUNTIME_TOKEN',
     'VF_OPENVOICE_MODAL_RUNTIME_TOKEN',
+    'VF_OPENVOICE_RUNTIME_TOKEN',
     'VF_VOICE_CLONE_ARTIFACT_SECRET',
     'VF_OPENVOICE_ARTIFACT_SECRET',
   ]);
@@ -97,7 +104,6 @@ const assertRuntimeMapping = (serviceName) => {
 };
 
 assertRuntimeMapping('voiceflow-api');
-assertRuntimeMapping('voiceflow-worker');
 
 for (const service of config.services) {
   for (const [envName, secretRef] of Object.entries(service.secretEnv ?? {})) {
@@ -109,28 +115,35 @@ for (const service of config.services) {
 }
 
 assertContains('README.md', [
-  'Vertex text runtime',
-  'Cloud TTS runtime',
-  'Voice Clone/Seed-VC` is served through the backend voice-clone routes and the Modal-hosted runtime configured by `VF_VOICE_CLONE_RUNTIME_URL`',
+  'Cloudflare Workers/OpenNext is the preferred public web edge for launch.',
+  'Some `/api/v1/*` families are already native in this workspace, but billing, library compatibility routes, and `/api/v1/tts/*` still rely on an external compatibility backend',
 ]);
 assertContains('README_SERVERS.md', [
-  'Vertex text runtime',
-  'Cloud TTS runtime',
+  'This checkout only contains the Next.js control plane in `frontend/`.',
+  'compatibility backend sources available locally',
 ]);
 assertContains('docs/SCALING_ARCHITECTURE.md', [
-  'Engine runtimes (Cloud TTS and Vertex text)',
-  'Vertex text runtime',
+  'This document describes the production topology, not a repo-local deploy from this checkout.',
+  'compatibility backend and Python runtimes referenced below are external dependencies',
 ]);
 assertContains('infra/cloudrun/README.md', [
-  'voiceflow-vertex-text-runtime',
-  'VF_VERTEX_TEXT_RUNTIME_URL',
-  'Voice Clone, OpenVoice compatibility, and Demucs separation stay Modal-backed in production',
+  'Those sources are not present in this checkout',
+  'Cloudflare Workers/OpenNext for the public frontend plus an external Cloud Run compatibility backend',
 ]);
+
+assert(
+  !existsSync(path.join(repoRoot, 'backend')),
+  'validate-provider-drift expects this workspace snapshot to omit the legacy backend sources.',
+);
 
 const deployScript = readText('infra/cloudrun/deploy.ps1');
 assert(
   deployScript.includes('__VERTEX_TEXT_RUNTIME_URL__'),
   'infra/cloudrun/deploy.ps1 must resolve the Vertex text runtime placeholder.'
+);
+assert(
+  deployScript.includes('Compatibility backend sources were not found in this checkout.'),
+  'infra/cloudrun/deploy.ps1 must fail clearly when backend sources are missing from this checkout.'
 );
 assert(
   deployScript.includes('return "$token`:latest"'),

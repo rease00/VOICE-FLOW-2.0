@@ -39,8 +39,7 @@ const resolveBrowserApiBase = (...values) => {
 
 const main = () => {
   const browserApiBase = resolveBrowserApiBase(
-    process.env.NEXT_PUBLIC_API_BASE_URL,
-    process.env.VITE_API_BASE_URL
+    process.env.NEXT_PUBLIC_API_BASE_URL
   );
 
   if (browserApiBase !== '/api/v1') {

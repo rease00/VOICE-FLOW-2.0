@@ -1,26 +1,15 @@
 {
   "name": "cloudrun-2vcpu",
-  "description": "Production capacity contract for a 2 vCPU Cloud Run topology with a single public API region, queue-first worker isolation, and no session-affinity dependency.",
+  "description": "Production capacity contract for a 2 vCPU Cloud Run topology with a single public API region, dedicated runtimes, and no session-affinity dependency.",
   "services": {
     "voiceflow-api": {
       "cpu": "2",
       "memory": "2Gi",
-      "minInstances": 1,
+      "minInstances": 0,
       "maxInstances": 20,
       "concurrency": 16,
       "allowUnauthenticated": true,
       "ingress": "all",
-      "sessionAffinity": false
-    },
-    "voiceflow-worker": {
-      "cpu": "2",
-      "memory": "2Gi",
-      "minInstances": 0,
-      "maxInstances": 12,
-      "concurrency": 1,
-      "cpuAlwaysAllocated": false,
-      "allowUnauthenticated": false,
-      "ingress": "internal",
       "sessionAffinity": false
     },
     "voiceflow-gemini-runtime": {
@@ -47,7 +36,6 @@
   "rolloutOrder": [
     "voiceflow-gemini-runtime",
     "voiceflow-vertex-text-runtime",
-    "voiceflow-worker",
     "voiceflow-api"
   ],
   "canary": {
