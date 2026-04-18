@@ -66,6 +66,8 @@ jobs:
         run: npm --prefix frontend run headers:verify -- http://127.0.0.1:3000
 
       - name: Bundle budget
+        env:
+          NEXT_DIST_DIR: .next-ci
         run: npm --prefix frontend run bundle:budget
 
       - name: Stop standalone server
