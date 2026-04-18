@@ -58,22 +58,3 @@
     "minCompletionRate": 1
   }
 }
-  "rolloutOrder": [
-    "voiceflow-gemini-runtime",
-    "voiceflow-vertex-text-runtime",
-    "voiceflow-api"
-  ],
-  "canary": {
-    "steps": [10, 50, 100],
-    "soakSeconds": 180,
-    "maxQueueDepth": 60,
-    "maxOldestQueuedAgeMs": 60000
-  },
-  "loadTest": {
-    "concurrency": 12,
-    "requests": 12,
-    "maxQueueDepth": 80,
-    "maxOldestQueuedAgeMs": 60000,
-    "minCompletionRate": 1
-  }
-}

@@ -59,7 +59,6 @@ const deleteHandle = async (key: string): Promise<void> => {
 };
 
 const ensureWritePermission = async (handle: FileSystemHandle): Promise<boolean> => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fsHandle = handle as any;
   if (typeof fsHandle.queryPermission !== 'function') return true;
   const current = await fsHandle.queryPermission({ mode: 'readwrite' });
@@ -94,7 +93,6 @@ export const isNovelLocalFsSupported = (): boolean =>
 
 export const pickNovelRootFolder = async (): Promise<FileSystemDirectoryHandle> => {
   if (!isNovelLocalFsSupported()) throw new Error('File System Access API is not supported in this browser.');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (await (window as any).showDirectoryPicker({ mode: 'readwrite' })) as FileSystemDirectoryHandle;
   const ok = await ensureWritePermission(handle);
   if (!ok) throw new Error('Folder permission was denied.');
