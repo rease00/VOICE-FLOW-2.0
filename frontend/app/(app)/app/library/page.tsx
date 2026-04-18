@@ -1,5 +1,1 @@
-import { LibraryPage } from '@/features/library/LibraryPage';
-
-export default function LibraryRoute() {
-  return <LibraryPage />;
-}
+export { LibraryRouteScreen as default } from '../../../../src/app/library/LibraryRouteScreen';

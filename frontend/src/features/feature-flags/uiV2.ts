@@ -9,6 +9,7 @@
  *     surfaces: {              // per-surface gates
  *       studio: boolean,
  *       reader: boolean,
+ *       library: boolean,
  *     }
  *   }
  *
@@ -26,7 +27,7 @@ export interface UiV2Flag {
   rolloutPct: number;
   allowedUids: string[];
   blockedUids: string[];
-  surfaces: { studio: boolean; reader: boolean };
+  surfaces: { studio: boolean; reader: boolean; library: boolean };
 }
 
 export const DEFAULT_UI_V2_FLAG: UiV2Flag = {
@@ -34,7 +35,7 @@ export const DEFAULT_UI_V2_FLAG: UiV2Flag = {
   rolloutPct: 0,
   allowedUids: [],
   blockedUids: [],
-  surfaces: { studio: false, reader: false },
+  surfaces: { studio: false, reader: false, library: false },
 };
 
 const CACHE_KEY = "vf:flag:ui_v2";

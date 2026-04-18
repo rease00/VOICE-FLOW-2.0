@@ -16,7 +16,7 @@ function flag(overrides: Partial<UiV2Flag> = {}): UiV2Flag {
     ...DEFAULT_UI_V2_FLAG,
     enabled: true,
     rolloutPct: 100,
-    surfaces: { studio: true, reader: true },
+    surfaces: { studio: true, reader: true, library: true },
     ...overrides,
   };
 }
@@ -96,17 +96,35 @@ describe('resolveSurface', () => {
   it('returns true when master + surface are both enabled and uid qualifies', () => {
     expect(resolveSurface('alice', flag(), 'studio')).toBe(true);
     expect(resolveSurface('alice', flag(), 'reader')).toBe(true);
+    expect(resolveSurface('alice', flag(), 'library')).toBe(true);
   });
 
   it('returns false when surface is disabled even if master is on', () => {
     expect(
-      resolveSurface('alice', flag({ surfaces: { studio: false, reader: true } }), 'studio'),
+      resolveSurface('alice', flag({ surfaces: { studio: false, reader: true, library: true } }), 'studio'),
+    ).toBe(false);
+    expect(
+      resolveSurface('alice', flag({ surfaces: { studio: true, reader: true, library: false } }), 'library'),
     ).toBe(false);
   });
 
   it('returns false when master resolveUiV2 fails', () => {
     expect(resolveSurface(null, flag(), 'studio')).toBe(false);
     expect(resolveSurface('alice', flag({ enabled: false }), 'reader')).toBe(false);
+    expect(resolveSurface('alice', flag({ enabled: false }), 'library')).toBe(false);
+  });
+
+  it('library surface is independently gateable', () => {
+    const studioOnly = flag({ surfaces: { studio: true, reader: false, library: false } });
+    expect(resolveSurface('alice', studioOnly, 'studio')).toBe(true);
+    expect(resolveSurface('alice', studioOnly, 'reader')).toBe(false);
+    expect(resolveSurface('alice', studioOnly, 'library')).toBe(false);
+  });
+
+  it('DEFAULT_UI_V2_FLAG has all surfaces including library set to false', () => {
+    expect(DEFAULT_UI_V2_FLAG.surfaces.studio).toBe(false);
+    expect(DEFAULT_UI_V2_FLAG.surfaces.reader).toBe(false);
+    expect(DEFAULT_UI_V2_FLAG.surfaces.library).toBe(false);
   });
 });
 
