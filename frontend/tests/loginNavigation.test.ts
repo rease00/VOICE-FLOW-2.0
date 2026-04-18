@@ -5,7 +5,8 @@ describe('login navigation helpers', () => {
   it('preserves mode and safe next path in the login URL', () => {
     const href = resolveLoginPath('signup', '/app/billing?resumeCheckout=1');
 
-    expect(href).toBe('/app/login?mode=signup&next=%2Fapp%2Fbilling%3FresumeCheckout%3D1');
+    // signup is currently locked so normalizeLoginRouteMode coerces it to login.
+    expect(href).toBe('/app/login?mode=login&next=%2Fapp%2Fbilling%3FresumeCheckout%3D1');
   });
 
   it('accepts allowlisted internal next paths and rejects unsafe targets', () => {

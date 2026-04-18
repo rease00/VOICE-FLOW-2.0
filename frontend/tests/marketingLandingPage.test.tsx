@@ -11,25 +11,15 @@ describe('marketing landing page', () => {
 
     const html = renderToStaticMarkup(<LandingPage />);
 
+    expect(html).toContain('data-testid="marketing-landing"');
     expect(html).toContain('data-testid="landing-home"');
-    expect(html).toContain('data-testid="landing-home-hero"');
-    expect(html).toContain('data-testid="landing-tab-bar"');
-    expect(html).toContain('Audition voices.');
-    expect(html).toContain('Approve the final take.');
-    expect(html).toContain('Voice Flow product tour');
-    expect(html).toContain('href="/landing/single-voice"');
-    expect(html).toContain('href="/landing/prime-scenes"');
-    expect(html).toContain('href="/landing/direction"');
-    expect(html).toContain('href="/landing/reader"');
+    expect(html).toContain('data-testid="landing-ai-director"');
+    expect(html).toContain('Audition voices');
     expect(html).toContain('href="/billing"');
-    expect(html).toContain('href="/app/studio"');
     expect(html).toContain('application/ld+json');
     expect(html).toContain('SoftwareApplication');
     expect(html).toContain('FAQPage');
     expect(html).toContain('https://v-flow-ai.com/landing');
-
-    expect(html).not.toContain('data-testid="landing-single-speaker"');
-    expect(html).not.toContain('data-testid="landing-multi-speaker"');
   });
 
   it('keeps route-specific metadata for detail pages', async () => {

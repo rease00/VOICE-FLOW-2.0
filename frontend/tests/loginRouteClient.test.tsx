@@ -38,7 +38,7 @@ describe('LoginRouteClient', () => {
     );
 
     expect(html).toContain('Sign In');
-    expect(html).toContain('auth-email');
+    expect(html).toContain('route-login-email');
     expect(replaceMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
   });
