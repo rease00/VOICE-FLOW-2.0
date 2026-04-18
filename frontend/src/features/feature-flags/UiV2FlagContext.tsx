@@ -26,12 +26,18 @@ interface UiV2FlagContextValue {
   syncing: boolean;
   /** Returns whether a named surface is enabled for the given uid */
   checkSurface: (uid: string | null | undefined, surface: keyof UiV2Flag["surfaces"]) => boolean;
+  /**
+   * Manually override the in-memory flag and write it to the localStorage
+   * cache. Useful for developer/QA tooling when Firestore is unavailable.
+   */
+  overrideFlag: (patch: Partial<UiV2Flag> | ((prev: UiV2Flag) => UiV2Flag)) => void;
 }
 
 const UiV2FlagContext = createContext<UiV2FlagContextValue>({
   flag: DEFAULT_UI_V2_FLAG,
   syncing: false,
   checkSurface: () => false,
+  overrideFlag: () => {},
 });
 
 /* ── provider ─────────────────────────────────── */
@@ -82,8 +88,19 @@ export function UiV2FlagProvider({ children }: UiV2FlagProviderProps) {
     [flag],
   );
 
+  const overrideFlag = useCallback(
+    (patch: Partial<UiV2Flag> | ((prev: UiV2Flag) => UiV2Flag)) => {
+      setFlag((prev) => {
+        const next = typeof patch === "function" ? patch(prev) : { ...prev, ...patch };
+        writeCachedFlag(next);
+        return next;
+      });
+    },
+    [],
+  );
+
   return (
-    <UiV2FlagContext.Provider value={{ flag, syncing, checkSurface }}>
+    <UiV2FlagContext.Provider value={{ flag, syncing, checkSurface, overrideFlag }}>
       {children}
     </UiV2FlagContext.Provider>
   );

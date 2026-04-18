@@ -264,3 +264,63 @@ describe('fetchUiV2Flag', () => {
     expect(result!.surfaces.studio).toBe(false);
   });
 });
+
+/* ── writeCachedFlag + overrideFlag integration ── */
+
+describe('overrideFlag via writeCachedFlag round-trip', () => {
+  let storage: Record<string, string>;
+
+  beforeEach(() => {
+    storage = {};
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (k: string) => storage[k] ?? null,
+        setItem: (k: string, v: string) => { storage[k] = v; },
+        removeItem: (k: string) => { delete storage[k]; },
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('writes partial surface patch and can be read back', () => {
+    const base = flag({ surfaces: { studio: false, reader: false, library: false } });
+    writeCachedFlag(base);
+
+    // Simulate what overrideFlag does: merge + write
+    const patched = { ...base, surfaces: { ...base.surfaces, studio: true } };
+    writeCachedFlag(patched);
+
+    const result = readCachedFlag();
+    expect(result?.surfaces.studio).toBe(true);
+    expect(result?.surfaces.reader).toBe(false);
+    expect(result?.surfaces.library).toBe(false);
+  });
+
+  it('enableAll pattern writes all surfaces true', () => {
+    writeCachedFlag({
+      ...flag(),
+      enabled: true,
+      rolloutPct: 100,
+      surfaces: { studio: true, reader: true, library: true },
+    });
+    const result = readCachedFlag();
+    expect(result?.enabled).toBe(true);
+    expect(result?.rolloutPct).toBe(100);
+    expect(result?.surfaces).toEqual({ studio: true, reader: true, library: true });
+  });
+
+  it('resetToDefault pattern writes all surfaces false', () => {
+    writeCachedFlag({
+      ...DEFAULT_UI_V2_FLAG,
+      enabled: false,
+      rolloutPct: 0,
+      surfaces: { studio: false, reader: false, library: false },
+    });
+    const result = readCachedFlag();
+    expect(result?.enabled).toBe(false);
+    expect(result?.surfaces).toEqual({ studio: false, reader: false, library: false });
+  });
+});
