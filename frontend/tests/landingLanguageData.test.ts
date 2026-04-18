@@ -42,7 +42,6 @@ describe('landing multilingual data', () => {
 
     expect(directionHtml).toContain('data-testid="landing-ai-director"');
     expect(directionHtml).toContain('data-testid="landing-ai-director-prompt"');
-    expect(directionHtml).toContain('Live prompt contract');
 
     expect(readerHtml).toContain('data-testid="landing-reader-playback"');
     expect(readerHtml).toContain('data-testid="landing-reader-virtual-book"');

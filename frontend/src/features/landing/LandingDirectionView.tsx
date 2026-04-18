@@ -51,17 +51,6 @@ export function LandingDirectionView({ proof }: LandingDirectionViewProps) {
               </div>
             </div>
           </div>
-
-          {proof.prompt && (
-            <div
-              className="lp-direction-block"
-              data-vf-reveal
-              style={{ '--vf-marketing-delay': '300ms' } as CSSProperties}
-            >
-              <p className="lp-direction-block__label">Live prompt contract</p>
-              <pre className="lp-direction-block__code">{proof.prompt}</pre>
-            </div>
-          )}
         </div>
       </section>
 

@@ -437,13 +437,6 @@ export function MarketingLandingV2({
                 </div>
               </div>
             </div>
-
-            {directorProof.prompt && (
-              <div className="lp-direction-block" data-vf-reveal style={d(300)}>
-                <p className="lp-direction-block__label">Live prompt contract</p>
-                <pre className="lp-direction-block__code">{directorProof.prompt}</pre>
-              </div>
-            )}
           </div>
         </section>
 
