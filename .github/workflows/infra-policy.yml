@@ -47,7 +47,19 @@ jobs:
           }
           Write-Host "Cloud Run service contract verified for: $($contractNames -join ', ')"
 
+      - name: Detect backend sources
+        id: detect
+        shell: bash
+        run: |
+          if [ -d backend ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Backend skipped::infra/cloudrun deploy dry-run requires backend/; skipped until compatibility-backend tree is reintroduced."
+          fi
+
       - name: Validate deploy placeholder resolution dry run
+        if: steps.detect.outputs.present == 'true'
         shell: pwsh
         run: |
           ./infra/cloudrun/deploy.ps1 `
