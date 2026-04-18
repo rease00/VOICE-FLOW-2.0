@@ -15,6 +15,7 @@ import {
   VolumeX,
   Gauge,
 } from "lucide-react";
+import { useReaderStore } from "./readerStore";
 
 interface PlayerDockProps {
   /** Audio source URL to play */
@@ -46,6 +47,12 @@ export function PlayerDock({
   const [speed, setSpeed] = useState(1.0);
   const [showSpeed, setShowSpeed] = useState(false);
 
+  /* ── mirror key state into readerStore so MiniPlayer can resume ── */
+  const storeSetPlaying = useReaderStore((s) => s.setPlaying);
+  const storeSetCurrentTime = useReaderStore((s) => s.setCurrentTime);
+  const storeSetDuration = useReaderStore((s) => s.setDuration);
+  const storeSetSpeed = useReaderStore((s) => s.setSpeed);
+
   const togglePlay = useCallback(() => {
     if (!audioRef.current) return;
     if (playing) {
@@ -53,8 +60,10 @@ export function PlayerDock({
     } else {
       audioRef.current.play();
     }
-    setPlaying(!playing);
-  }, [playing]);
+    const next = !playing;
+    setPlaying(next);
+    storeSetPlaying(next);
+  }, [playing, storeSetPlaying]);
 
   const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const t = parseFloat(e.target.value);
@@ -75,9 +84,10 @@ export function PlayerDock({
     if (audioRef.current) {
       audioRef.current.playbackRate = s;
       setSpeed(s);
+      storeSetSpeed(s);
       setShowSpeed(false);
     }
-  }, []);
+  }, [storeSetSpeed]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -91,10 +101,17 @@ export function PlayerDock({
 
     const handleTime = () => {
       setCurrentTime(audio.currentTime);
+      storeSetCurrentTime(audio.currentTime);
       onTimeUpdate?.(audio.currentTime, audio.duration);
     };
-    const handleMeta = () => setDuration(audio.duration);
-    const handleEnded = () => setPlaying(false);
+    const handleMeta = () => {
+      setDuration(audio.duration);
+      storeSetDuration(audio.duration);
+    };
+    const handleEnded = () => {
+      setPlaying(false);
+      storeSetPlaying(false);
+    };
 
     audio.addEventListener("timeupdate", handleTime);
     audio.addEventListener("loadedmetadata", handleMeta);
@@ -104,7 +121,7 @@ export function PlayerDock({
       audio.removeEventListener("loadedmetadata", handleMeta);
       audio.removeEventListener("ended", handleEnded);
     };
-  }, [audioUrl, onTimeUpdate]);
+  }, [audioUrl, onTimeUpdate, storeSetCurrentTime, storeSetDuration, storeSetPlaying]);
 
   return (
     <GlassPanel

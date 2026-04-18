@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { UiV2FlagProvider } from '../../../src/features/feature-flags/UiV2FlagContext';
 import { AuroraDevPanel } from '../../../src/features/feature-flags/AuroraDevPanel';
+import { MiniPlayer } from '../../../src/features/reader/v2/MiniPlayer';
 
 // The /app workspace ships with a nonce-based CSP from middleware.ts.
 // Force request-time rendering so Next can stamp matching nonces onto its
@@ -11,6 +12,7 @@ export default function WorkspaceShellLayout({ children }: Readonly<{ children: 
   return (
     <UiV2FlagProvider>
       {children}
+      <MiniPlayer />
       <AuroraDevPanel />
     </UiV2FlagProvider>
   );

@@ -54,7 +54,8 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "tailwind-merge": "3.5.0",
-    "ws": "8.18.1"
+    "ws": "8.18.1",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@opennextjs/cloudflare": "1.19.1",

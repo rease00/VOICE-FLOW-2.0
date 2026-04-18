@@ -8,6 +8,7 @@ import { fadeIn } from "@/ui/motion";
 import { FileText, Globe, BookOpen, Upload } from "lucide-react";
 import { TextCanvas } from "./TextCanvas";
 import { PlayerDock } from "./PlayerDock";
+import { useReaderStore } from "./readerStore";
 import { useStudioGenerate } from "../../studio/hooks/useStudioGenerate";
 import { VOICES } from "../../../../constants";
 import type { GenerationSettings } from "../../../../types";
@@ -29,6 +30,11 @@ export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [synthesizing, setSynthesizing] = useState(false);
 
+  /* ── store writes so MiniPlayer can resume on nav away ─── */
+  const storeSetAudioUrl = useReaderStore((s) => s.setAudioUrl);
+  const storeSetSynthesizing = useReaderStore((s) => s.setSynthesizing);
+  const storeSetTrack = useReaderStore((s) => s.setTrack);
+
   const { synthesize } = useStudioGenerate();
 
   const paragraphs = content
@@ -44,6 +50,12 @@ export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
       if (!para) return;
 
       setSynthesizing(true);
+      storeSetSynthesizing(true);
+      storeSetTrack({
+        title: para.slice(0, 60) + (para.length > 60 ? "…" : ""),
+        activeIndex: index,
+        totalParagraphs: paragraphs.length,
+      });
       const voice = VOICES[0];
       if (!voice) return;
       const settings: GenerationSettings = {
@@ -57,20 +69,24 @@ export function ReaderShellV2({ paid = false }: { paid?: boolean }) {
 
       try {
         const result = await synthesize(para, settings, 'speech', undefined);
+        let url: string | null = null;
         if (result instanceof Blob) {
-          setAudioUrl(URL.createObjectURL(result));
+          url = URL.createObjectURL(result);
         } else if (result instanceof ArrayBuffer) {
-          setAudioUrl(URL.createObjectURL(new Blob([result], { type: "audio/mp3" })));
+          url = URL.createObjectURL(new Blob([result], { type: "audio/mp3" }));
         } else if (typeof result === "object" && result !== null && "audioUrl" in result) {
-          setAudioUrl((result as { audioUrl: string }).audioUrl);
+          url = (result as { audioUrl: string }).audioUrl;
         }
+        setAudioUrl(url);
+        storeSetAudioUrl(url);
       } catch {
         /* ignore */
       } finally {
         setSynthesizing(false);
+        storeSetSynthesizing(false);
       }
     },
-    [paragraphs, synthesize],
+    [paragraphs, synthesize, storeSetAudioUrl, storeSetSynthesizing, storeSetTrack],
   );
 
   /* ── skip forward/back ─────────────────────── */
