@@ -8,6 +8,7 @@ import { EditorPane } from "./EditorPane";
 import { VoicePickerDrawer } from "./VoicePickerDrawer";
 import { GenerationDock } from "./GenerationDock";
 import { useStudioGenerate } from "../hooks/useStudioGenerate";
+import { useStudioStore } from "./studioStore";
 import { saveStudioDraft } from "../../../../services/studioDraftService";
 import { VOICES } from "../../../../constants";
 import type { StudioEditorMode, GenerationSettings } from "../../../../types";
@@ -32,6 +33,14 @@ export function StudioShellV2() {
   const abortRef = useRef<AbortController | null>(null);
 
   const { synthesize } = useStudioGenerate();
+
+  /* ── store writes (GenerationIndicator reads these) ── */
+  const storeStartGeneration = useStudioStore((s) => s.startGeneration);
+  const storeSetProgress = useStudioStore((s) => s.setProgress);
+  const storeCompleteGeneration = useStudioStore((s) => s.completeGeneration);
+  const storeFailGeneration = useStudioStore((s) => s.failGeneration);
+  const storeCancelGeneration = useStudioStore((s) => s.cancelGeneration);
+  const storeSetStatus = useStudioStore((s) => s.setStatus);
 
   /* ── draft persistence ─────────────────────── */
   useEffect(() => {
@@ -59,12 +68,22 @@ export function StudioShellV2() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    const voice = VOICES.find((v) => v.id === selectedVoiceId) ?? VOICES[0]!;
+    storeStartGeneration({
+      label: text.slice(0, 80) + (text.length > 80 ? "…" : ""),
+      voiceName: voice?.name ?? selectedVoiceId,
+    });
+
     // Simulated progress
     const interval = setInterval(() => {
-      setProgress((p) => Math.min(p + 8, 90));
+      setProgress((p) => {
+        const next = Math.min(p + 8, 90);
+        storeSetProgress(next);
+        return next;
+      });
     }, 600);
 
-    const voice = VOICES.find((v) => v.id === selectedVoiceId) ?? VOICES[0]!;
+
     const settings: GenerationSettings = {
       voiceId: voice!.id,
       speed: 1,
@@ -79,33 +98,48 @@ export function StudioShellV2() {
       clearInterval(interval);
       setProgress(100);
 
+      let url: string | null = null;
       if (result instanceof Blob) {
-        setAudioUrl(URL.createObjectURL(result));
+        url = URL.createObjectURL(result);
       } else if (result instanceof ArrayBuffer) {
-        setAudioUrl(URL.createObjectURL(new Blob([result], { type: "audio/mp3" })));
+        url = URL.createObjectURL(new Blob([result], { type: "audio/mp3" }));
       } else if (typeof result === "object" && result !== null && "audioUrl" in result) {
-        setAudioUrl((result as { audioUrl: string }).audioUrl);
+        url = (result as { audioUrl: string }).audioUrl;
       }
+      setAudioUrl(url);
+      storeCompleteGeneration(url);
       setStatus("idle");
     } catch (err: unknown) {
       clearInterval(interval);
       if ((err as Error).name === "AbortError") {
         setStatus("idle");
+        storeCancelGeneration();
       } else {
         setStatus("error");
-        setErrorMessage((err as Error).message || "Generation failed");
+        const msg = (err as Error).message || "Generation failed";
+        setErrorMessage(msg);
+        storeFailGeneration(msg);
       }
     }
-  }, [text, selectedVoiceId, editorMode, status, synthesize]);
+  }, [text, selectedVoiceId, editorMode, status, synthesize,
+      storeStartGeneration, storeSetProgress, storeCompleteGeneration,
+      storeFailGeneration, storeCancelGeneration]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     setStatus("idle");
     setProgress(0);
-  }, []);
+    storeCancelGeneration();
+  }, [storeCancelGeneration]);
 
-  const handlePlay = useCallback(() => setStatus("playing"), []);
-  const handlePause = useCallback(() => setStatus("paused"), []);
+  const handlePlay = useCallback(() => {
+    setStatus("playing");
+    storeSetStatus("playing");
+  }, [storeSetStatus]);
+  const handlePause = useCallback(() => {
+    setStatus("paused");
+    storeSetStatus("paused");
+  }, [storeSetStatus]);
 
   const handleDownload = useCallback(() => {
     if (!audioUrl) return;
