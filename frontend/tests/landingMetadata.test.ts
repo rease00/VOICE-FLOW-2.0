@@ -14,13 +14,13 @@ describe('landing metadata', () => {
     expect(metadata.openGraph?.siteName).toBe('V FLOW AI');
     expect(metadata.openGraph?.title).toBe('V FLOW AI — Script to voice. One workspace.');
     expect(metadata.openGraph?.description).toContain('AI voices');
-    expect(metadata.openGraph?.images?.[0]?.url).toBe('/brand-logo.svg');
+    expect(metadata.openGraph?.images?.[0]?.url).toBe('/og-landing.png');
     expect(metadata.openGraph?.images?.[0]?.alt).toContain('V FLOW AI');
 
     expect(metadata.twitter?.card).toBe('summary_large_image');
     expect(metadata.twitter?.title).toBe('V FLOW AI — Script to voice. One workspace.');
     expect(metadata.twitter?.description).toContain('AI voices');
-    expect(metadata.twitter?.images?.[0]).toBe('/brand-logo.svg');
+    expect(metadata.twitter?.images?.[0]).toBe('/og-landing.png');
   });
 
   it('builds detail metadata from the route definitions', () => {

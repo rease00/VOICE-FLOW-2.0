@@ -107,7 +107,7 @@ export function LandingShell({ activePage, nextAction, children }: LandingShellP
           </div>
           <div>
             <p className="lp-footer__col-title">Explore</p>
-            <nav className="lp-footer__links">
+            <nav className="lp-footer__links" aria-label="Explore links">
               {LANDING_HEADER_TABS.map((tab) => (
                 <a key={tab.key} href={tab.href} className="lp-footer__link">{tab.label}</a>
               ))}
@@ -115,7 +115,7 @@ export function LandingShell({ activePage, nextAction, children }: LandingShellP
           </div>
           <div>
             <p className="lp-footer__col-title">Continue</p>
-            <nav className="lp-footer__links">
+            <nav className="lp-footer__links" aria-label="Continue links">
               <a href="/billing" className="lp-footer__link">Pricing</a>
               <a href={APP_ROUTE_PATHS.studio} className="lp-footer__link">Studio</a>
               <a href={loginHref} className="lp-footer__link">Sign in</a>

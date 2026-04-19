@@ -36,9 +36,9 @@ export const landingMetadata: Metadata = {
     siteName: 'V FLOW AI',
     images: [
       {
-        url: '/brand-logo.svg',
-        width: 512,
-        height: 512,
+        url: '/og-landing.png',
+        width: 1200,
+        height: 630,
         alt: 'V FLOW AI — AI voice production workspace',
       },
     ],
@@ -48,7 +48,7 @@ export const landingMetadata: Metadata = {
     title: 'V FLOW AI — Script to voice. One workspace.',
     description:
       'Write scripts, pick AI voices across 30+ languages, direct delivery, and render audio. Token-based billing, no monthly minimum.',
-    images: ['/brand-logo.svg'],
+    images: ['/og-landing.png'],
   },
 };
 

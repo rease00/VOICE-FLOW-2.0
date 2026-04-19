@@ -40,6 +40,7 @@ const d = (ms: number): CSSProperties =>
 const HERO_METER = [0.42, 0.76, 0.54, 0.92, 0.62, 0.88, 0.48, 0.72] as const;
 
 const TRUST_ITEMS = [
+  'Prime engine',
   'Multi-language TTS',
   'Multi-speaker scenes',
   'AI-directed delivery',
@@ -85,7 +86,7 @@ const FAQ_ITEMS = [
   },
   {
     q: 'What languages are supported?',
-    a: 'The Vector engine supports 30+ languages including English, Hindi, Spanish, Japanese, Arabic, French, German, and more. New languages are added as the upstream model expands.',
+    a: 'The Prime engine supports 30+ languages including English, Hindi, Spanish, Japanese, Arabic, French, German, and more. New languages are added as the upstream model expands.',
   },
   {
     q: 'How does billing work?',
@@ -130,8 +131,8 @@ export function MarketingLandingV2({
   readerProof,
 }: MarketingLandingV2Props) {
   const featuredScene = multiSpeakerDemos[0];
-  const singleDemos = singleSpeakerDemos.slice(0, 3);
-  const multiDemos = multiSpeakerDemos.slice(0, 2);
+  const singleDemos = singleSpeakerDemos.slice(0, 4);
+  const multiDemos = multiSpeakerDemos.slice(0, 4);
 
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const toggleMobileNav = useCallback(() => setMobileNavOpen((v) => !v), []);
@@ -204,7 +205,7 @@ export function MarketingLandingV2({
         )}
       </header>
 
-      <main id="main-content">
+      <main id="main-content" inert={mobileNavOpen || undefined}>
         {/* ═══════════════ HERO ═══════════════════════ */}
         <section className="lp-hero lp-page" data-testid="landing-home" id="hero">
           <div className="lp-hero__inner">
@@ -222,8 +223,8 @@ export function MarketingLandingV2({
               </h1>
               <p className="lp-hero__sub" data-vf-reveal style={d(220)}>
                 Write your script, pick AI voices across 30+ languages,
-                direct delivery with prompts, and render final audio — without
-                switching tools.
+                direct delivery with prompts, and render final audio — powered
+                by the Prime engine.
               </p>
               <div className="lp-hero__actions" data-vf-reveal style={d(300)}>
                 <a href={APP_ROUTE_PATHS.studio} className="lp-btn-primary">
@@ -234,6 +235,7 @@ export function MarketingLandingV2({
                 </a>
               </div>
               <div className="lp-proof-strip" data-vf-reveal style={d(360)}>
+                <span className="lp-proof-chip"><Sparkles size={14} /> Powered by Prime engine</span>
                 <span className="lp-proof-chip"><Globe size={14} /> 30+ languages</span>
                 <span className="lp-proof-chip"><AudioLines size={14} /> Real-time preview</span>
                 <span className="lp-proof-chip"><Zap size={14} /> Token-based — pay only for what you use</span>
@@ -245,7 +247,7 @@ export function MarketingLandingV2({
                 <div className="lp-stage">
                   <div className="lp-stage__header">
                     <span className="lp-stage__label"><Sparkles size={11} /> Live scene preview</span>
-                    <span className="lp-stage__live"><span className="lp-stage__live-dot" aria-hidden="true" /> Vector</span>
+                    <span className="lp-stage__live"><span className="lp-stage__live-dot" aria-hidden="true" /> Prime</span>
                   </div>
                   <div className="lp-stage__meter" aria-hidden="true">
                     {HERO_METER.map((scale, i) => (
@@ -298,14 +300,14 @@ export function MarketingLandingV2({
               </p>
             </div>
             <div className="lp-features__grid">
-              <a href="#demos" className="lp-feature-card" data-vf-reveal style={d(0)}>
+              <div className="lp-feature-card" data-vf-reveal style={d(0)}>
                 <div className="lp-feature-icon"><Mic2 size={20} /></div>
                 <h3 className="lp-feature-title">Single Voice</h3>
                 <p className="lp-feature-body">
                   Audition voices across languages in seconds. Hear the read before you commit the whole scene.
                 </p>
                 <span className="lp-feature-tag">Fast audition</span>
-              </a>
+              </div>
               <div className="lp-feature-card" data-vf-reveal style={d(70)}>
                 <div className="lp-feature-icon" style={{ '--lp-card-accent': 'var(--lp-accent2)' } as CSSProperties}><WandSparkles size={20} /></div>
                 <h3 className="lp-feature-title">Multi-Speaker Scenes</h3>
@@ -466,6 +468,19 @@ export function MarketingLandingV2({
                     <span className="lp-reader-card__chip"><Globe size={12} /> {readerProof.sample.language}</span>
                     <span className="lp-reader-card__chip">{readerProof.progressLabel}</span>
                   </div>
+                  <MarketingAudioCard
+                    eyebrow="Reader sample"
+                    title={readerProof.sample.title}
+                    summary={`${Math.floor(readerProof.sample.durationSec / 60)}:${String(Math.floor(readerProof.sample.durationSec % 60)).padStart(2, '0')} preview`}
+                    audioSrc={readerProof.sample.audioSrc}
+                    ariaLabel={`${readerProof.sample.title} reader preview`}
+                    badges={[
+                      { label: 'Prime', tone: 'accent' },
+                      { label: readerProof.sample.language, tone: 'warm' },
+                    ]}
+                    note={readerProof.sample.cue}
+                    className="lp-reader-card__audio"
+                  />
                 </div>
               </div>
               {readerProof.virtualBook.chapters.length > 0 && (
@@ -605,7 +620,7 @@ export function MarketingLandingV2({
           </div>
           <div>
             <p className="lp-footer__col-title">Product</p>
-            <nav className="lp-footer__links">
+            <nav className="lp-footer__links" aria-label="Product links">
               <a href="#features" className="lp-footer__link">Features</a>
               <a href="#demos" className="lp-footer__link">Demos</a>
               <a href="#how-it-works" className="lp-footer__link">How it works</a>
@@ -615,7 +630,7 @@ export function MarketingLandingV2({
           </div>
           <div>
             <p className="lp-footer__col-title">Get started</p>
-            <nav className="lp-footer__links">
+            <nav className="lp-footer__links" aria-label="Get started links">
               <a href="/billing" className="lp-footer__link">Pricing</a>
               <a href={APP_ROUTE_PATHS.studio} className="lp-footer__link">Studio</a>
               <a href={loginHref} className="lp-footer__link">Sign in</a>

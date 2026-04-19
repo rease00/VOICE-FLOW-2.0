@@ -1,5 +1,6 @@
 import { MarketingLandingV2 } from './MarketingLandingV2';
 import { LandingMotionObserver } from './LandingMotionObserver';
+import { LandingErrorBoundary } from './LandingErrorBoundary';
 import {
   LANDING_DIRECTOR_PROOF,
   LANDING_MULTI_SPEAKER_DEMOS,
@@ -59,7 +60,7 @@ const faqStructuredData = {
       name: 'What languages are supported?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'The Vector engine supports 30+ languages including English, Hindi, Spanish, Japanese, Arabic, French, German, and more.',
+        text: 'The Prime engine supports 30+ languages including English, Hindi, Spanish, Japanese, Arabic, French, German, and more.',
       },
     },
     {
@@ -109,12 +110,14 @@ export function PublicLandingPage() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqStructuredData) }}
       />
-      <MarketingLandingV2
-        singleSpeakerDemos={LANDING_SINGLE_SPEAKER_DEMOS}
-        multiSpeakerDemos={LANDING_MULTI_SPEAKER_DEMOS}
-        directorProof={LANDING_DIRECTOR_PROOF}
-        readerProof={LANDING_READER_PROOF}
-      />
+      <LandingErrorBoundary>
+        <MarketingLandingV2
+          singleSpeakerDemos={LANDING_SINGLE_SPEAKER_DEMOS}
+          multiSpeakerDemos={LANDING_MULTI_SPEAKER_DEMOS}
+          directorProof={LANDING_DIRECTOR_PROOF}
+          readerProof={LANDING_READER_PROOF}
+        />
+      </LandingErrorBoundary>
     </>
   );
 }
