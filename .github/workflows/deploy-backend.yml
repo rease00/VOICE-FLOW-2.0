@@ -43,7 +43,7 @@ jobs:
       gemini: ${{ steps.filter.outputs.gemini }}
       vertex: ${{ steps.filter.outputs.vertex }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: filter
         uses: dorny/paths-filter@v3
         with:
@@ -92,7 +92,7 @@ jobs:
           echo "${{ matrix.service }} unchanged — skipping"
           exit 0
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: matrix.changed == 'true' || github.event_name == 'workflow_dispatch'
 
       - name: Authenticate to GCP (OIDC / WIF)
