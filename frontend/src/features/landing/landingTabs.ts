@@ -2,7 +2,6 @@ export const LANDING_DETAIL_TAB_KEYS = [
   'single-voice',
   'prime-scenes',
   'direction',
-  'reader',
 ] as const;
 
 export type LandingDetailTabKey = (typeof LANDING_DETAIL_TAB_KEYS)[number];
@@ -45,13 +44,6 @@ export const LANDING_HEADER_TABS: readonly LandingTabDefinition[] = [
     title: 'AI Direction',
     description: 'Tighten delivery with a prompt contract that stays readable.',
   },
-  {
-    key: 'reader',
-    label: 'Reader',
-    href: '/landing/reader',
-    title: 'Reader Review',
-    description: 'Close the loop with a lighter reader-ready review surface.',
-  },
 ] as const;
 
 export const isLandingDetailTab = (value?: string | null): value is LandingDetailTabKey => (
@@ -87,8 +79,6 @@ export const resolveLandingNextAction = (key: LandingPageVariant): LandingNextAc
     case 'prime-scenes':
       return { href: '/landing/direction', label: 'Next: AI Direction', kicker: 'Move forward' };
     case 'direction':
-      return { href: '/landing/reader', label: 'Next: Reader Review', kicker: 'Move forward' };
-    case 'reader':
       return { href: '/app/studio', label: 'Open the Studio', kicker: 'Final step' };
     default:
       return { href: '/landing', label: 'Back to Overview', kicker: 'Continue' };

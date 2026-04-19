@@ -5,7 +5,6 @@ import type { CSSProperties } from 'react';
 import {
   ArrowRight,
   AudioLines,
-  BookOpen,
   Brain,
   Copy,
   Mic2,
@@ -18,7 +17,6 @@ import type {
   LandingMultiSpeakerDemo,
   LandingVoiceCloneProof,
   LandingDirectorProof,
-  LandingReaderProof,
 } from './landingData';
 
 /* ─── Tab keys ───────────────────────────────────────────────────────────── */
@@ -28,7 +26,6 @@ export const DEMO_TAB_KEYS = [
   'prime-scenes',
   'clone-proof',
   'direction',
-  'reader',
 ] as const;
 export type DemoTabKey = (typeof DEMO_TAB_KEYS)[number];
 
@@ -37,7 +34,6 @@ const demoTabs = [
   { key: 'prime-scenes' as DemoTabKey, label: 'Prime Scenes', icon: <WandSparkles size={14} /> },
   { key: 'clone-proof'  as DemoTabKey, label: 'Clone Proof',  icon: <Copy size={14} /> },
   { key: 'direction'    as DemoTabKey, label: 'AI Direction', icon: <Brain size={14} /> },
-  { key: 'reader'       as DemoTabKey, label: 'Reader',       icon: <BookOpen size={14} /> },
 ] as const;
 
 /* ─── Props ──────────────────────────────────────────────────────────────── */
@@ -48,7 +44,6 @@ interface LandingDemoTabsProps {
   multiSpeakerDemos:  readonly LandingMultiSpeakerDemo[];
   voiceCloneProof:    LandingVoiceCloneProof;
   directorProof:      LandingDirectorProof;
-  readerProof:        LandingReaderProof;
 }
 
 /* ─── Component ──────────────────────────────────────────────────────────── */
@@ -59,7 +54,6 @@ export function LandingDemoTabs({
   multiSpeakerDemos,
   voiceCloneProof,
   directorProof,
-  readerProof,
 }: LandingDemoTabsProps) {
   const [activeTab, setActiveTab] = useState<DemoTabKey>(initialTab);
 
@@ -259,71 +253,6 @@ export function LandingDemoTabs({
         </div>
       </div>
 
-      {/* ── Reader ───────────────────────────────────────────────────── */}
-      <div
-        id="demo-panel-reader"
-        role="tabpanel"
-        aria-labelledby="demo-tab-reader"
-        data-testid="landing-reader-playback"
-        className={`lp-tab-panel${activeTab === 'reader' ? ' is-active' : ''}`}
-      >
-        <div className="lp-demos__intro" data-vf-reveal style={{ '--vf-marketing-delay': '160ms' } as CSSProperties}>
-          <p className="lp-eyebrow"><BookOpen size={13} /> Reader Review</p>
-          <h2 className="lp-section-title" style={{ fontSize: 'clamp(1.6rem, 2.5vw, 2.4rem)', marginBottom: '0.5rem' }}>
-            Reader review, kept simple.
-          </h2>
-          <p className="lp-section-sub" style={{ textAlign: 'left', maxWidth: '36rem' }}>
-            A lighter approval lane that keeps continuity, progress, and the active listening surface visible.
-          </p>
-        </div>
-        <div className="lp-reader-deck">
-          <aside className="lp-reader-rail" data-vf-reveal style={{ '--vf-marketing-delay': '220ms' } as CSSProperties}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-              <div>
-                <p style={{ color: 'var(--lp-accent, #38e8d0)', fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', margin: '0 0 0.3rem' }}>
-                  {readerProof.modeLabel}
-                </p>
-                <h3 style={{ color: 'white', fontSize: '1rem', fontWeight: 700, margin: 0 }}>
-                  {readerProof.title}
-                </h3>
-              </div>
-              <span className="lp-reader-unit__status">{readerProof.progressLabel}</span>
-            </div>
-            {readerProof.units.map((unit) => (
-              <div key={unit.id} className="lp-reader-unit">
-                <div className="lp-reader-unit__head">
-                  <p className="lp-reader-unit__title">{unit.title}</p>
-                  <span className="lp-reader-unit__status">{unit.status}</span>
-                </div>
-                <p className="lp-reader-unit__body">{unit.body}</p>
-              </div>
-            ))}
-          </aside>
-          <section className="lp-reader-stage" data-vf-reveal style={{ '--vf-marketing-delay': '320ms' } as CSSProperties}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div>
-                <p style={{ color: 'var(--lp-accent, #38e8d0)', fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', margin: '0 0 0.3rem' }}>
-                  {readerProof.coverLabel}
-                </p>
-                <h3 style={{ color: 'white', fontSize: '1rem', fontWeight: 700, margin: 0 }}>
-                  {readerProof.activeTitle}
-                </h3>
-              </div>
-              <span className="lp-reader-unit__status" style={{ background: 'rgba(56,232,208,0.14)', borderColor: 'rgba(56,232,208,0.28)', color: 'var(--lp-accent, #38e8d0)' }}>
-                {readerProof.activeStatus}
-              </span>
-            </div>
-            <div className="lp-reader-cover">
-              <p style={{ color: 'var(--lp-accent, #38e8d0)', fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.16em', margin: 0, textTransform: 'uppercase' }}>
-                Approval loop
-              </p>
-              <p style={{ color: 'rgba(203,213,225,0.7)', fontSize: '0.92rem', lineHeight: 1.65, margin: 0 }}>
-                Keep the active listening pass visible and calm.
-              </p>
-            </div>
-          </section>
-        </div>
-      </div>
     </>
   );
 }

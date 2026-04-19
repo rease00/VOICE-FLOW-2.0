@@ -39,9 +39,9 @@ const LEGACY_LANDING_REDIRECTS: Record<string, LandingPageVariant> = {
   'voice-cloning': 'direction',
   director: 'direction',
   'ai-director': 'direction',
-  review: 'reader',
-  playback: 'reader',
-  'reader-review': 'reader',
+  review: 'direction',
+  playback: 'direction',
+  'reader-review': 'direction',
 };
 
 const resolveLegacyLandingTarget = (value: string): LandingPageVariant | null => (

@@ -1,4 +1,3 @@
-import readerDemoManifestJson from '../../../public/audio/reader-demo/manifest.json';
 import vectorDemoManifestJson from '../../../public/audio/vector-demo/manifest.json';
 import vectorMultiDemoManifestJson from '../../../public/audio/vector-multi-demo/manifest.json';
 import { buildStudioLiveMultiSpeakerPrompt } from '../../shared/prompts/liveMultiSpeakerPrompt';
@@ -51,48 +50,6 @@ interface MultiSpeakerManifest {
   entries: MultiSpeakerManifestEntry[];
 }
 
-interface ReaderDemoManifestSample {
-  id: string;
-  title: string;
-  summary: string;
-  language: string;
-  locale: string;
-  audioSrc: string;
-  posterSrc: string;
-  cue: string;
-  durationSec: number;
-  script: string;
-}
-
-interface ReaderDemoManifestVirtualBook {
-  id: string;
-  title: string;
-  author: string;
-  language: string;
-  locale: string;
-  description: string;
-  coverSrc: string;
-  totalChapters: number;
-}
-
-interface ReaderDemoManifestChapter {
-  id: string;
-  order: number;
-  title: string;
-  summary: string;
-  cue: string;
-  audioSrc: string;
-  durationSec: number;
-  script: string;
-}
-
-interface ReaderDemoManifest {
-  engine: string;
-  sample: ReaderDemoManifestSample;
-  virtualBook?: ReaderDemoManifestVirtualBook;
-  chapters?: ReaderDemoManifestChapter[];
-}
-
 export interface LandingSingleSpeakerDemo {
   id: string;
   title: string;
@@ -139,13 +96,6 @@ export interface LandingDirectorProof {
   bullets: LandingDirectorBullet[];
 }
 
-export interface LandingReaderUnit {
-  id: string;
-  title: string;
-  status: string;
-  body: string;
-}
-
 export interface LandingVoiceCloneProof {
   title: string;
   summary: string;
@@ -153,56 +103,8 @@ export interface LandingVoiceCloneProof {
   rendered: { label: string; name: string; audioSrc: string };
 }
 
-export interface LandingReaderSample {
-  id: string;
-  title: string;
-  summary: string;
-  language: string;
-  locale: string;
-  audioSrc: string;
-  posterSrc: string;
-  cue: string;
-  durationSec: number;
-}
-
-export interface LandingReaderChapter {
-  id: string;
-  order: number;
-  title: string;
-  summary: string;
-  cue: string;
-  audioSrc: string;
-  durationSec: number;
-}
-
-export interface LandingReaderVirtualBook {
-  id: string;
-  title: string;
-  author: string;
-  language: string;
-  locale: string;
-  description: string;
-  coverSrc: string;
-  totalChapters: number;
-  chapters: LandingReaderChapter[];
-}
-
-export interface LandingReaderProof {
-  title: string;
-  summary: string;
-  modeLabel: string;
-  coverLabel: string;
-  progressLabel: string;
-  activeTitle: string;
-  activeStatus: string;
-  sample: LandingReaderSample;
-  virtualBook: LandingReaderVirtualBook;
-  units: LandingReaderUnit[];
-}
-
 const asVectorDemoManifest = vectorDemoManifestJson as VectorDemoManifest;
 const asMultiSpeakerManifest = vectorMultiDemoManifestJson as MultiSpeakerManifest;
-const asReaderDemoManifest = readerDemoManifestJson as ReaderDemoManifest;
 
 /**
  * When NEXT_PUBLIC_DEMO_AUDIO_BASE is set (e.g. an R2 public bucket URL),
@@ -261,72 +163,6 @@ const requireMultiSpeakerEntry = (id: string) => {
     throw new Error(`Landing multi-speaker sample "${id}" is missing from the Prime manifest.`);
   }
   return entry;
-};
-
-const requireReaderSample = () => {
-  const sample = asReaderDemoManifest.sample;
-  if (!sample) {
-    throw new Error('Reader landing proof is missing the sample payload.');
-  }
-
-  if (!String(sample.audioSrc || '').trim().startsWith('/audio/reader-demo/')) {
-    throw new Error('Reader landing proof has an invalid audio source path.');
-  }
-
-  if (!String(sample.posterSrc || '').trim().startsWith('/images/')) {
-    throw new Error('Reader landing proof has an invalid poster source path.');
-  }
-
-  return sample;
-};
-
-const requireReaderVirtualBook = () => {
-  const virtualBook = asReaderDemoManifest.virtualBook;
-  if (!virtualBook) {
-    throw new Error('Reader landing proof is missing the virtual book payload.');
-  }
-
-  const chapters = Array.isArray(asReaderDemoManifest.chapters) ? asReaderDemoManifest.chapters : [];
-  if (chapters.length < 2) {
-    throw new Error('Reader landing proof requires at least two virtual book chapters.');
-  }
-
-  if (!String(virtualBook.coverSrc || '').trim().startsWith('/images/')) {
-    throw new Error('Reader landing proof has an invalid virtual book cover path.');
-  }
-
-  const normalizedChapters = chapters
-    .map((chapter) => ({
-      ...chapter,
-      order: Number(chapter.order || 0),
-      durationSec: Number(chapter.durationSec || 0),
-    }))
-    .sort((a, b) => a.order - b.order);
-
-  const seen = new Set<string>();
-  for (const chapter of normalizedChapters) {
-    const chapterId = String(chapter.id || '').trim();
-    if (!chapterId) {
-      throw new Error('Reader landing proof includes a chapter without an id.');
-    }
-    if (seen.has(chapterId)) {
-      throw new Error(`Reader landing proof includes a duplicate chapter id: ${chapterId}`);
-    }
-    seen.add(chapterId);
-
-    if (!String(chapter.audioSrc || '').trim().startsWith('/audio/reader-demo/')) {
-      throw new Error(`Reader landing proof has an invalid chapter audio path for ${chapterId}.`);
-    }
-
-    if (!(chapter.durationSec > 0)) {
-      throw new Error(`Reader landing proof has an invalid chapter duration for ${chapterId}.`);
-    }
-  }
-
-  return {
-    virtualBook,
-    chapters: normalizedChapters,
-  };
 };
 
 const FEATURED_SINGLE_SPEAKER_IDS: readonly string[] = asVectorDemoManifest.samples
@@ -395,9 +231,6 @@ const LANDING_DIRECTOR_PROMPT_BUNDLE = buildStudioLiveMultiSpeakerPrompt({
   tone: 'calm and premium',
 });
 
-const readerSample = requireReaderSample();
-const readerVirtualBook = requireReaderVirtualBook();
-
 export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
   title: 'AI Director',
   summary: 'Write or paste any story, press AI Director, and get a fully directed multi-speaker script in seconds.',
@@ -409,50 +242,4 @@ export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
     { label: 'Emotion tagging', value: 'Tags each line with emotions — Determined, Sarcastic, Anxious — for natural delivery.' },
     { label: 'One click', value: 'Write your story, press AI Director, and the formatted script is ready to render.' },
   ],
-};
-
-export const LANDING_READER_PROOF: LandingReaderProof = {
-  title: 'Reader playback',
-  summary: 'The reader closes the loop between script review and final listening.',
-  modeLabel: 'Reader review',
-  coverLabel: 'Approval surface',
-  progressLabel: `${readerVirtualBook.chapters.length} chapters ready`,
-  activeTitle: readerVirtualBook.chapters[0]?.title || 'Chapter playback',
-  activeStatus: 'Reviewing',
-  sample: {
-    id: readerSample.id,
-    title: readerSample.title,
-    summary: readerSample.summary,
-    language: readerSample.language,
-    locale: readerSample.locale,
-    audioSrc: resolveDemoAudioSrc(readerSample.audioSrc),
-    posterSrc: readerSample.posterSrc,
-    cue: readerSample.cue,
-    durationSec: Number(readerSample.durationSec || 0),
-  },
-  virtualBook: {
-    id: readerVirtualBook.virtualBook.id,
-    title: readerVirtualBook.virtualBook.title,
-    author: readerVirtualBook.virtualBook.author,
-    language: readerVirtualBook.virtualBook.language,
-    locale: readerVirtualBook.virtualBook.locale,
-    description: readerVirtualBook.virtualBook.description,
-    coverSrc: readerVirtualBook.virtualBook.coverSrc,
-    totalChapters: Number(readerVirtualBook.virtualBook.totalChapters || readerVirtualBook.chapters.length),
-    chapters: readerVirtualBook.chapters.map((chapter) => ({
-      id: chapter.id,
-      order: Number(chapter.order || 0),
-      title: chapter.title,
-      summary: chapter.summary,
-      cue: chapter.cue,
-      audioSrc: resolveDemoAudioSrc(chapter.audioSrc),
-      durationSec: Number(chapter.durationSec || 0),
-    })),
-  },
-  units: readerVirtualBook.chapters.map((chapter) => ({
-    id: chapter.id,
-    title: chapter.title,
-    status: chapter.order === 1 ? 'Live' : 'Ready',
-    body: chapter.summary,
-  })),
 };

@@ -4,7 +4,6 @@ import { LandingErrorBoundary } from './LandingErrorBoundary';
 import {
   LANDING_DIRECTOR_PROOF,
   LANDING_MULTI_SPEAKER_DEMOS,
-  LANDING_READER_PROOF,
   LANDING_SINGLE_SPEAKER_DEMOS,
 } from './landingData';
 import './MarketingLandingV2.css';
@@ -28,7 +27,6 @@ const softwareStructuredData = {
     'Single voice auditions in 30+ languages',
     'Multi-speaker scene rendering',
     'AI-powered prompt-based direction',
-    'Reader review and approval surface',
     'Token-based pay-as-you-go billing',
   ],
   audience: {
@@ -115,7 +113,6 @@ export function PublicLandingPage() {
           singleSpeakerDemos={LANDING_SINGLE_SPEAKER_DEMOS}
           multiSpeakerDemos={LANDING_MULTI_SPEAKER_DEMOS}
           directorProof={LANDING_DIRECTOR_PROOF}
-          readerProof={LANDING_READER_PROOF}
         />
       </LandingErrorBoundary>
     </>

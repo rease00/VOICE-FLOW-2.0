@@ -101,8 +101,8 @@ export function LandingShell({ activePage, nextAction, children }: LandingShellP
           <div className="lp-footer__brand">
             <a href="/landing" aria-label="V FLOW AI home"><BrandLogo size="md" tone="light" /></a>
             <p className="lp-footer__tagline">
-              Voice Flow keeps voice auditions, multi-speaker scenes, AI direction,
-              and reader review moving in one clean production flow.
+              Voice Flow keeps voice auditions, multi-speaker scenes, and AI direction
+              moving in one clean production flow.
             </p>
           </div>
           <div>

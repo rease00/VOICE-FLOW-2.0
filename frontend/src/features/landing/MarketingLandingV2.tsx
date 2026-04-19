@@ -24,7 +24,6 @@ import { MarketingAudioCard } from './MarketingAudioCard';
 import type {
   LandingDirectorProof,
   LandingMultiSpeakerDemo,
-  LandingReaderProof,
   LandingSingleSpeakerDemo,
 } from './landingData';
 
@@ -44,7 +43,6 @@ const TRUST_ITEMS = [
   'Multi-language TTS',
   'Multi-speaker scenes',
   'AI-directed delivery',
-  'Reader-ready approval',
   'Token-based billing',
   'No monthly minimum',
   'Real-time preview',
@@ -74,8 +72,8 @@ const STEPS = [
   {
     num: '03',
     title: 'Render, review, publish',
-    body: 'Generate the audio, listen in the Reader surface, approve, and export. The whole flow stays in one place.',
-    icon: BookOpen,
+    body: 'Generate the audio, preview in the studio, approve, and export. The whole flow stays in one place.',
+    icon: Zap,
   },
 ] as const;
 
@@ -121,14 +119,12 @@ interface MarketingLandingV2Props {
   singleSpeakerDemos: readonly LandingSingleSpeakerDemo[];
   multiSpeakerDemos: readonly LandingMultiSpeakerDemo[];
   directorProof: LandingDirectorProof;
-  readerProof: LandingReaderProof;
 }
 
 export function MarketingLandingV2({
   singleSpeakerDemos,
   multiSpeakerDemos,
   directorProof,
-  readerProof,
 }: MarketingLandingV2Props) {
   const featuredScene = multiSpeakerDemos[0];
   const singleDemos = singleSpeakerDemos.slice(0, 8);
@@ -325,12 +321,12 @@ export function MarketingLandingV2({
                 <span className="lp-feature-tag">One-click direction</span>
               </div>
               <div className="lp-feature-card" data-vf-reveal style={d(210)}>
-                <div className="lp-feature-icon" style={{ '--lp-card-accent': '#a78bfa' } as CSSProperties}><BookOpen size={20} /></div>
-                <h3 className="lp-feature-title">Reader Review</h3>
+                <div className="lp-feature-icon" style={{ '--lp-card-accent': '#a78bfa' } as CSSProperties}><Zap size={20} /></div>
+                <h3 className="lp-feature-title">Export & Publish</h3>
                 <p className="lp-feature-body">
-                  A quiet listening surface for final approval. Chapter-level playback, progress tracking, export.
+                  Preview your renders in the studio, approve the final take, and export — all in one workspace.
                 </p>
-                <span className="lp-feature-tag">Approval surface</span>
+                <span className="lp-feature-tag">One workspace</span>
               </div>
             </div>
           </div>
@@ -438,65 +434,6 @@ export function MarketingLandingV2({
                   ))}
                 </div>
               </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ═══════════════ READER ════════════════════ */}
-        <section className="lp-reader-section" id="reader" data-testid="landing-reader">
-          <div className="lp-section">
-            <div className="lp-section-head" data-vf-reveal>
-              <p className="lp-eyebrow"><BookOpen size={13} /> Reader</p>
-              <h2 className="lp-section-title">
-                Listen, review, approve — all in one surface.
-              </h2>
-              <p className="lp-section-sub">
-                After rendering, the Reader gives you chapter-level playback, progress tracking,
-                and a quiet space to listen before you publish.
-              </p>
-            </div>
-            <div className="lp-reader-showcase" data-vf-reveal style={d(140)}>
-              <div className="lp-reader-card">
-                <div className="lp-reader-card__cover">
-                  <BookOpen size={32} />
-                </div>
-                <div className="lp-reader-card__body">
-                  <p className="lp-reader-card__label">{readerProof.modeLabel}</p>
-                  <h3 className="lp-reader-card__title">{readerProof.sample.title}</h3>
-                  <p className="lp-reader-card__summary">{readerProof.sample.summary}</p>
-                  <div className="lp-reader-card__meta">
-                    <span className="lp-reader-card__chip"><Globe size={12} /> {readerProof.sample.language}</span>
-                    <span className="lp-reader-card__chip">{readerProof.progressLabel}</span>
-                  </div>
-                  <MarketingAudioCard
-                    eyebrow="Reader sample"
-                    title={readerProof.sample.title}
-                    summary={`${Math.floor(readerProof.sample.durationSec / 60)}:${String(Math.floor(readerProof.sample.durationSec % 60)).padStart(2, '0')} preview`}
-                    audioSrc={readerProof.sample.audioSrc}
-                    ariaLabel={`${readerProof.sample.title} reader preview`}
-                    badges={[
-                      { label: 'Prime', tone: 'accent' },
-                      { label: readerProof.sample.language, tone: 'warm' },
-                    ]}
-                    note={readerProof.sample.cue}
-                    className="lp-reader-card__audio"
-                  />
-                </div>
-              </div>
-              {readerProof.virtualBook.chapters.length > 0 && (
-                <div className="lp-reader-chapters">
-                  <p className="lp-reader-chapters__title">Chapter preview</p>
-                  {readerProof.virtualBook.chapters.slice(0, 3).map((ch, i) => (
-                    <div key={ch.id} className="lp-reader-chapter" data-vf-reveal style={d(200 + i * 80)}>
-                      <span className="lp-reader-chapter__num">{String(ch.order).padStart(2, '0')}</span>
-                      <div className="lp-reader-chapter__info">
-                        <span className="lp-reader-chapter__name">{ch.title}</span>
-                        <span className="lp-reader-chapter__dur">{Math.floor(ch.durationSec / 60)}:{String(Math.floor(ch.durationSec % 60)).padStart(2, '0')}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         </section>

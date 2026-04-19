@@ -29,7 +29,6 @@ describe('landing multilingual data', () => {
     const singleVoiceHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'single-voice' }));
     const primeScenesHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'prime-scenes' }));
     const directionHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'direction' }));
-    const readerHtml = renderToStaticMarkup(React.createElement(MarketingLanding, { activePage: 'reader' }));
 
     expect(singleVoiceHtml).toContain('data-testid="landing-single-speaker"');
     expect(singleVoiceHtml).toContain('/audio/vector-demo/');
@@ -42,17 +41,6 @@ describe('landing multilingual data', () => {
 
     expect(directionHtml).toContain('data-testid="landing-ai-director"');
     expect(directionHtml).toContain('data-testid="landing-ai-director-prompt"');
-
-    expect(readerHtml).toContain('data-testid="landing-reader-playback"');
-    expect(readerHtml).toContain('data-testid="landing-reader-virtual-book"');
-    expect(readerHtml).toContain('The Lighthouse Ledger');
-    expect(readerHtml).toContain('Chapter 01');
-    expect(readerHtml).toContain('Chapter 02');
-    expect(readerHtml).toContain('/audio/reader-demo/chapter-01-fog-over-meridian-bay.wav');
-    expect(readerHtml).toContain('/audio/reader-demo/chapter-02-the-second-signal.wav');
-    expect(readerHtml).toContain('/audio/reader-demo/');
-    expect(readerHtml).toContain('/images/reader-demo-poster.svg');
-    expect(readerHtml).toContain('Open Reader in App');
   });
 
   it('keeps shared brand theme configuration deterministic', () => {

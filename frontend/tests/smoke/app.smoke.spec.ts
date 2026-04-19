@@ -70,7 +70,6 @@ const LANDING_SURFACE_TEST_IDS = [
   'landing-single-speaker',
   'landing-multi-speaker',
   'landing-ai-director',
-  'landing-reader-playback',
 ] as const;
 
 const expectLandingChrome = async (page: Page, activeLabel: string): Promise<void> => {
@@ -216,18 +215,7 @@ const routeSmokeCases: RouteAssertion[] = [
       await expectLandingChrome(page, 'AI Direction');
       await expectOnlyActiveLandingSurface(page, 'landing-ai-director');
       await expect(page.getByTestId('landing-ai-director-prompt')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('link', { name: /Next: Reader Review/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expectNoLandingMediaRequestsBeforeInteraction(page);
-    },
-  },
-  {
-    path: '/landing/reader',
-    title: 'landing reader page',
-    expect: async (page) => {
-      await expectLandingChrome(page, 'Reader');
-      await expectOnlyActiveLandingSurface(page, 'landing-reader-playback');
-      await expect(page.getByText('Close the loop with a quieter review surface built for final listening.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('link', { name: /Open the Studio/i }).last()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('link', { name: /Open the Studio/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expectNoLandingMediaRequestsBeforeInteraction(page);
     },
   },

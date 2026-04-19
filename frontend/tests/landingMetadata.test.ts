@@ -24,11 +24,11 @@ describe('landing metadata', () => {
   });
 
   it('builds detail metadata from the route definitions', () => {
-    const detailMetadata = buildLandingMetadata('reader');
+    const detailMetadata = buildLandingMetadata('direction');
 
-    expect(detailMetadata.title).toBe('Reader Review | Voice Flow');
-    expect(detailMetadata.alternates?.canonical).toBe('/landing/reader');
-    expect(detailMetadata.openGraph?.url).toBe('/landing/reader');
-    expect(detailMetadata.twitter?.title).toBe('Reader Review | Voice Flow');
+    expect(detailMetadata.title).toBe('AI Direction | Voice Flow');
+    expect(detailMetadata.alternates?.canonical).toBe('/landing/direction');
+    expect(detailMetadata.openGraph?.url).toBe('/landing/direction');
+    expect(detailMetadata.twitter?.title).toBe('AI Direction | Voice Flow');
   });
 });

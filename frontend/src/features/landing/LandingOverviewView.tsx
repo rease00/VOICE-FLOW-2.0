@@ -37,7 +37,7 @@ export function LandingOverviewView({
             </h1>
             <p className="lp-hero__sub" data-vf-reveal style={delay(220)}>
               Voice Flow gives creators one clear path from quick single-voice reads to
-              multi-speaker scenes, AI direction, and reader-ready review.
+              multi-speaker scenes, AI direction, and studio-level review.
             </p>
             <div className="lp-hero__actions" data-vf-reveal style={delay(300)}>
               <a href={APP_ROUTE_PATHS.studio} className="lp-btn-primary">
@@ -99,7 +99,7 @@ export function LandingOverviewView({
         <div className="lp-section">
           <div className="lp-section-head" data-vf-reveal>
             <p className="lp-eyebrow"><AudioLines size={13} /> Voice Flow in one pass</p>
-            <h2 className="lp-section-title">Five product lanes, one cleaner review flow.</h2>
+            <h2 className="lp-section-title">Four product lanes, one cleaner review flow.</h2>
             <p className="lp-section-sub">
               Start on the surface you need, keep the proof visible, and move forward when you are ready.
             </p>
@@ -122,12 +122,6 @@ export function LandingOverviewView({
               <h3 className="lp-feature-title">AI Direction</h3>
               <p className="lp-feature-body">Tighten emphasis and handoffs with a prompt contract that stays readable before rerender.</p>
               <span className="lp-feature-tag">Editorial control</span>
-            </a>
-            <a href="/landing/reader" className="lp-feature-card" data-vf-reveal style={delay(210)}>
-              <div className="lp-feature-icon"><Sparkles size={20} /></div>
-              <h3 className="lp-feature-title">Reader</h3>
-              <p className="lp-feature-body">Close the loop with a calmer approval surface built for the final listening pass.</p>
-              <span className="lp-feature-tag">Final review</span>
             </a>
           </div>
         </div>
