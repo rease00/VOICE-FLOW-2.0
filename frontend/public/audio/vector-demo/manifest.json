@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-04-17T21:25:06.620Z",
-  "runtimeSynthesizeUrl": "http://localhost:3000/api/v1/studio/tts/synthesize",
-  "engine": "VECTOR",
+  "generatedAt": "2026-04-19T05:18:52.793Z",
+  "runtimeSynthesizeUrl": "http://localhost:3000/api/v1/studio/tts/stream",
+  "engine": "PRIME",
   "voiceName": "App studio voices",
   "samples": [
     {
@@ -14,8 +14,8 @@
       "file": "/audio/vector-demo/morning-brief-en.wav",
       "generatedWith": {
         "source": "app-studio-api",
-        "endpoint": "/api/v1/studio/tts/synthesize",
-        "engine": "VECTOR",
+        "endpoint": "/api/v1/studio/tts/stream",
+        "engine": "PRIME",
         "voiceName": "Puck",
         "payloadLanguage": "en-US"
       }
@@ -30,8 +30,8 @@
       "file": "/audio/vector-demo/support-update-hi.wav",
       "generatedWith": {
         "source": "app-studio-api",
-        "endpoint": "/api/v1/studio/tts/synthesize",
-        "engine": "VECTOR",
+        "endpoint": "/api/v1/studio/tts/stream",
+        "engine": "PRIME",
         "voiceName": "Kore",
         "payloadLanguage": "hi-IN"
       }
@@ -46,8 +46,8 @@
       "file": "/audio/vector-demo/delivery-alert-es.wav",
       "generatedWith": {
         "source": "app-studio-api",
-        "endpoint": "/api/v1/studio/tts/synthesize",
-        "engine": "VECTOR",
+        "endpoint": "/api/v1/studio/tts/stream",
+        "engine": "PRIME",
         "voiceName": "Charon",
         "payloadLanguage": "es-ES"
       }
@@ -62,8 +62,8 @@
       "file": "/audio/vector-demo/podcast-opening-en.wav",
       "generatedWith": {
         "source": "app-studio-api",
-        "endpoint": "/api/v1/studio/tts/synthesize",
-        "engine": "VECTOR",
+        "endpoint": "/api/v1/studio/tts/stream",
+        "engine": "PRIME",
         "voiceName": "Zephyr",
         "payloadLanguage": "en-US"
       }
