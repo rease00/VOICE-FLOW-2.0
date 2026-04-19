@@ -88,7 +88,14 @@ const nextConfig = {
     root: turbopackRoot,
   },
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
-  serverExternalPackages: ['sharp'],
+  serverExternalPackages: [
+    'sharp',
+    'firebase-admin',
+    '@google-cloud/text-to-speech',
+    '@aws-sdk/client-s3',
+    '@aws-sdk/s3-request-presigner',
+    '@google/genai',
+  ],
   outputFileTracingIncludes: {
     '/*': [
       './node_modules/jose/dist/browser/**/*',

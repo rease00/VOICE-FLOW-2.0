@@ -492,45 +492,7 @@ export function MarketingLandingV2({
           </div>
         </section>
 
-        {/* ═══════════════ PRICING ════════════════════ */}
-        <section className="lp-pricing" id="pricing">
-          <div className="lp-section">
-            <div className="lp-section-head" data-vf-reveal>
-              <p className="lp-eyebrow"><Sparkles size={13} /> Pricing</p>
-              <h2 className="lp-section-title">Simple credit-based plans.</h2>
-              <p className="lp-section-sub">
-                Pick a plan, get VF Credits, spend them on any feature. No hidden fees. Cancel anytime.
-              </p>
-            </div>
-            <div className="lp-pricing-grid" data-vf-reveal>
-              {PLAN_HIGHLIGHTS.map((plan) => (
-                <div
-                  key={plan.name}
-                  className={`lp-price-card${plan.featured ? ' lp-price-card--featured' : ''}`}
-                >
-                  {plan.featured && <span className="lp-price-card__badge">Most popular</span>}
-                  <h3 className="lp-price-card__name">{plan.name}</h3>
-                  <div className="lp-price-card__amount">
-                    <span className="lp-price-card__price">{plan.price}</span>
-                    <span className="lp-price-card__period">/month</span>
-                  </div>
-                  <p className="lp-price-card__credits">{plan.credits} VF Credits included</p>
-                  <p className="lp-price-card__note">{plan.note}</p>
-                  <a
-                    href="/billing"
-                    className={plan.featured ? 'lp-btn-primary lp-price-card__cta' : 'lp-btn-secondary lp-price-card__cta'}
-                  >
-                    View plans <ChevronRight size={14} />
-                  </a>
-                </div>
-              ))}
-            </div>
-            <p className="lp-pricing-footnote" data-vf-reveal>
-              Token top-up packs also available from ₹550. All prices in INR.
-              <a href="/billing" className="lp-pricing-footnote__link"> See full pricing →</a>
-            </p>
-          </div>
-        </section>
+        {/* ═══════════════ PRICING (hidden until ready) ════════════════════ */}
 
         {/* ═══════════════ FAQ ════════════════════════ */}
         <section className="lp-faq" id="faq">

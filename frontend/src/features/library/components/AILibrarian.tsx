@@ -1,8 +1,10 @@
+'use client';
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Sparkles, Loader2, BookOpen, User } from 'lucide-react';
 import { createLibrarianChat } from '../services/librarianService';
 import { ChatMessage } from '../model/types';
-import { Chat } from '@google/genai';
+import type { Chat } from '@google/genai';
 
 export function AILibrarian() {
   const [messages, setMessages] = useState<ChatMessage[]>([
