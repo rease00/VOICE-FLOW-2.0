@@ -76,30 +76,125 @@ const sanitizeStoredVolumeSettings = (): void => {
 };
 
 const AppErrorFallback: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
-  <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 text-slate-100 p-6">
-    <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-      <div className="mb-4 flex justify-center">
+  <div
+    className="min-h-screen w-full flex items-center justify-center text-slate-100 p-4 relative overflow-hidden"
+    style={{ background: '#0a0e14' }}
+  >
+    {/* Keyframes injected inline — no extra stylesheet needed */}
+    <style>{`
+      @keyframes vf-err-orb {
+        0%,100% { transform: translate(-50%,-50%) scale(1); opacity:.7; }
+        50%      { transform: translate(-50%,-50%) scale(1.12); opacity:1; }
+      }
+      @keyframes vf-err-card-glow {
+        0%,100% { box-shadow: 0 0 0 1px rgba(71,214,202,.12), 0 24px 64px rgba(0,0,0,.55); }
+        50%      { box-shadow: 0 0 0 1px rgba(71,214,202,.28), 0 24px 64px rgba(71,214,202,.08); }
+      }
+      @keyframes vf-err-dot {
+        0%,100% { opacity:1; transform:scale(1); box-shadow:0 0 6px rgba(71,214,202,.7); }
+        50%      { opacity:.3; transform:scale(.65); box-shadow:0 0 2px rgba(71,214,202,.3); }
+      }
+      @keyframes vf-err-shimmer {
+        0%   { background-position: -200% center; }
+        100% { background-position:  200% center; }
+      }
+    `}</style>
+
+    {/* Aurora orb */}
+    <div
+      aria-hidden="true"
+      style={{
+        position: 'absolute', top: '38%', left: '50%',
+        width: '600px', height: '600px', borderRadius: '50%',
+        background: 'radial-gradient(circle, rgba(71,214,202,.09) 0%, rgba(79,124,255,.05) 45%, transparent 70%)',
+        pointerEvents: 'none',
+        animation: 'vf-err-orb 14s ease-in-out infinite',
+      }}
+    />
+
+    {/* Card */}
+    <div
+      className="relative w-full max-w-md rounded-2xl p-6"
+      style={{
+        background: '#151b25',
+        border: '1px solid rgba(71,214,202,.15)',
+        animation: 'vf-err-card-glow 3.5s ease-in-out infinite',
+      }}
+    >
+      <div className="mb-5 flex justify-center">
         <BrandLogo size="sm" tone="light" />
       </div>
-      <h1 className="text-lg font-bold">Interface Error</h1>
-      <p className="mt-2 text-sm text-slate-300">
+
+      {/* Title row */}
+      <div className="flex items-center gap-2 mb-1">
+        <span
+          style={{
+            width: 7, height: 7, borderRadius: '50%',
+            background: '#47d6ca', flexShrink: 0,
+            animation: 'vf-err-dot 2s ease-in-out infinite',
+          }}
+        />
+        <h1 className="text-base font-bold text-white">Interface Error</h1>
+      </div>
+
+      <p className="text-sm mb-3" style={{ color: '#8a94a6' }}>
         The UI hit a runtime error. You can retry without restarting services.
       </p>
-      <pre className="mt-3 max-h-40 overflow-auto rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-rose-300 custom-scrollbar">
+
+      {/* Error message box */}
+      <pre
+        className="custom-scrollbar"
+        style={{
+          maxHeight: '7rem', overflowY: 'auto',
+          borderRadius: 8, border: '1px solid rgba(255,255,255,.07)',
+          background: '#0d1117',
+          padding: '.5rem .75rem',
+          fontSize: '.72rem', lineHeight: 1.6,
+          color: 'rgba(252,165,165,.8)',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          margin: 0,
+        }}
+      >
         {message}
       </pre>
+
+      {/* Actions */}
       <div className="mt-4 flex gap-2">
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+          style={{
+            background: 'linear-gradient(100deg,#47d6ca 0%,#38b2ac 50%,#4f7cff 100%)',
+            backgroundSize: '200% auto',
+            animation: 'vf-err-shimmer 4s linear infinite',
+            border: 'none', borderRadius: 8,
+            padding: '.5rem 1.1rem',
+            fontSize: '.875rem', fontWeight: 600,
+            color: '#0a0e14', cursor: 'pointer',
+          }}
         >
           Retry UI
         </button>
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+          style={{
+            background: 'transparent',
+            border: '1px solid rgba(255,255,255,.12)',
+            borderRadius: 8,
+            padding: '.5rem 1.1rem',
+            fontSize: '.875rem', fontWeight: 500,
+            color: '#8a94a6', cursor: 'pointer',
+            transition: 'border-color .2s, color .2s',
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(71,214,202,.3)';
+            (e.currentTarget as HTMLButtonElement).style.color = '#e3e8ef';
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,.12)';
+            (e.currentTarget as HTMLButtonElement).style.color = '#8a94a6';
+          }}
         >
           Reload App
         </button>

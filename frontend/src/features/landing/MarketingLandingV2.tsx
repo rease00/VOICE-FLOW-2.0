@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import {
   ArrowRight,
   AudioLines,
   BookOpen,
   Brain,
+  ChevronLeft,
   ChevronRight,
   Globe,
   Menu,
@@ -142,6 +143,14 @@ export function MarketingLandingV2({
     return () => document.removeEventListener('keydown', onKey);
   }, [mobileNavOpen]);
 
+  const singleCarouselRef = useRef<HTMLDivElement>(null);
+  const multiCarouselRef = useRef<HTMLDivElement>(null);
+  const scrollCarousel = useCallback((el: HTMLDivElement | null, dir: -1 | 1) => {
+    if (!el) return;
+    const card = el.querySelector<HTMLElement>('.lp-carousel-card');
+    el.scrollBy({ left: dir * ((card?.offsetWidth ?? 280) + 14), behavior: 'smooth' });
+  }, []);
+
   return (
     <div
       className="lp-shell"
@@ -155,6 +164,7 @@ export function MarketingLandingV2({
       <div className="lp-spotlight lp-spotlight--a" aria-hidden="true" />
       <div className="lp-spotlight lp-spotlight--b" aria-hidden="true" />
       <div className="lp-spotlight lp-spotlight--c" aria-hidden="true" />
+      <div className="lp-spotlight lp-spotlight--d" aria-hidden="true" />
 
       {/* ── Header ──────────────────────────────────── */}
       <header className="lp-header" data-vf-reveal>
@@ -347,53 +357,71 @@ export function MarketingLandingV2({
             {/* Single voice demos */}
             <div className="lp-demo-section" data-vf-reveal>
               <div className="lp-demo-section__head">
-                <h3 className="lp-demo-section__title"><Mic2 size={16} /> Single voice reads</h3>
+                <div className="lp-demo-section__title-row">
+                  <h3 className="lp-demo-section__title"><Mic2 size={16} /> Single voice reads</h3>
+                  <div className="lp-carousel-arrows">
+                    <button className="lp-carousel-arrow" onClick={() => scrollCarousel(singleCarouselRef.current, -1)} aria-label="Previous demos"><ChevronLeft size={15} /></button>
+                    <button className="lp-carousel-arrow" onClick={() => scrollCarousel(singleCarouselRef.current, 1)} aria-label="Next demos"><ChevronRight size={15} /></button>
+                  </div>
+                </div>
                 <p className="lp-demo-section__sub">Quick auditions across languages</p>
               </div>
-              <div className="lp-audio-grid">
-                {singleDemos.map((demo, i) => (
-                  <MarketingAudioCard
-                    key={demo.id}
-                    eyebrow={`${demo.language} / ${demo.market}`}
-                    title={demo.title}
-                    summary={demo.summary}
-                    audioSrc={demo.audioSrc}
-                    ariaLabel={`${demo.title} preview`}
-                    motionDelayMs={120 + i * 80}
-                    badges={[
-                      { label: demo.language, tone: 'warm' },
-                    ]}
-                    note={demo.cue}
-                  />
-                ))}
+              <div className="lp-carousel-wrap">
+                <div className="lp-carousel-track" ref={singleCarouselRef}>
+                  {singleDemos.map((demo, i) => (
+                    <div className="lp-carousel-card" key={demo.id}>
+                      <MarketingAudioCard
+                        eyebrow={`${demo.language} / ${demo.market}`}
+                        title={demo.title}
+                        summary={demo.summary}
+                        audioSrc={demo.audioSrc}
+                        ariaLabel={`${demo.title} preview`}
+                        motionDelayMs={120 + i * 80}
+                        badges={[
+                          { label: demo.language, tone: 'warm' },
+                        ]}
+                        note={demo.cue}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
             {/* Multi-speaker demos */}
-            <div className="lp-demo-section" data-vf-reveal style={{ marginTop: '3rem' }}>
+            <div className="lp-demo-section" data-vf-reveal style={{ marginTop: '2.5rem' }}>
               <div className="lp-demo-section__head">
-                <h3 className="lp-demo-section__title"><WandSparkles size={16} /> Multi-speaker scenes</h3>
+                <div className="lp-demo-section__title-row">
+                  <h3 className="lp-demo-section__title"><WandSparkles size={16} /> Multi-speaker scenes</h3>
+                  <div className="lp-carousel-arrows">
+                    <button className="lp-carousel-arrow" onClick={() => scrollCarousel(multiCarouselRef.current, -1)} aria-label="Previous scenes"><ChevronLeft size={15} /></button>
+                    <button className="lp-carousel-arrow" onClick={() => scrollCarousel(multiCarouselRef.current, 1)} aria-label="Next scenes"><ChevronRight size={15} /></button>
+                  </div>
+                </div>
                 <p className="lp-demo-section__sub">Full cast dialogues with natural handoffs</p>
               </div>
-              <div className="lp-audio-grid lp-audio-grid--2col">
-                {multiDemos.map((demo, i) => (
-                  <MarketingAudioCard
-                    key={demo.id}
-                    variant="scene"
-                    eyebrow={`${demo.scene} / ${demo.market}`}
-                    title={demo.title}
-                    summary={demo.summary}
-                    audioSrc={demo.audioSrc}
-                    ariaLabel={`${demo.title} preview`}
-                    motionDelayMs={120 + i * 90}
-                    badges={[
-                      { label: `${demo.cast.length} voices`, tone: 'accent' },
-                      { label: demo.market, tone: 'warm' },
-                    ]}
-                    cast={demo.cast}
-                    note={demo.cue}
-                  />
-                ))}
+              <div className="lp-carousel-wrap">
+                <div className="lp-carousel-track lp-carousel-track--scene" ref={multiCarouselRef}>
+                  {multiDemos.map((demo, i) => (
+                    <div className="lp-carousel-card lp-carousel-card--scene" key={demo.id}>
+                      <MarketingAudioCard
+                        variant="scene"
+                        eyebrow={`${demo.scene} / ${demo.market}`}
+                        title={demo.title}
+                        summary={demo.summary}
+                        audioSrc={demo.audioSrc}
+                        ariaLabel={`${demo.title} preview`}
+                        motionDelayMs={120 + i * 90}
+                        badges={[
+                          { label: `${demo.cast.length} voices`, tone: 'accent' },
+                          { label: demo.market, tone: 'warm' },
+                        ]}
+                        cast={demo.cast}
+                        note={demo.cue}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
