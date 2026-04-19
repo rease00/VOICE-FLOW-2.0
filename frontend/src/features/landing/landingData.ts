@@ -331,13 +331,13 @@ const requireReaderVirtualBook = () => {
 
 const FEATURED_SINGLE_SPEAKER_IDS: readonly string[] = asVectorDemoManifest.samples
   .map((sample) => sample.slug)
-  .slice(0, 6);
+  .slice(0, 10);
 
 const FEATURED_MULTI_SPEAKER_IDS: readonly string[] = (
   asMultiSpeakerManifest.featuredIds.length > 0
     ? asMultiSpeakerManifest.featuredIds
     : asMultiSpeakerManifest.entries.map((entry) => entry.id)
-).slice(0, 6);
+).slice(0, 8);
 
 export const LANDING_SINGLE_SPEAKER_DEMOS: readonly LandingSingleSpeakerDemo[] = FEATURED_SINGLE_SPEAKER_IDS.map((slug, index) => {
   const sample = requireSingleSample(slug);
@@ -402,8 +402,8 @@ export const LANDING_DIRECTOR_PROOF: LandingDirectorProof = {
   title: 'AI Director',
   summary: 'Write or paste any story, press AI Director, and get a fully directed multi-speaker script in seconds.',
   prompt: LANDING_DIRECTOR_PROMPT_BUNDLE.systemPrompt.split('\n').slice(0, 8).join('\n'),
-  before: 'Riya wiped the rain from her face. "The map says the Sky Cave is behind this waterfall."\nKabir grinned. "Then we climb."\nZane looked at the crashing water below. "Wonderful. I always wanted to risk my life for a rumor."',
-  after: 'Riya (Determined): The map says the Sky Cave is behind this waterfall.\nKabir (Excited): Then we climb.\nZane (Sarcastic, Dry): Wonderful. I always wanted to risk my life for a rumor.\nTara (Calm, Authoritative): It stopped being a rumor when the mountain started glowing.',
+  before: 'Maya wiped her headphones off. "Can AI actually be creative, or is it just really good at copying?"\nDev leaned back. "Creativity requires intent. AI doesn\'t want to create."\nZara crossed her arms. "But does intent matter if the output moves people?"',
+  after: 'Maya (Enthusiastic): Can AI actually be creative, or is it just really good at copying?\nDev (Thoughtful): Creativity requires intent. AI doesn\'t want to create.\nZara (Challenging): But does intent matter if the output moves people?\nKai (Calm, Casual): AI is a tool. The best paintbrush in the world doesn\'t make you Picasso.',
   bullets: [
     { label: 'Speaker detection', value: 'Identifies every character, assigns gender and age metadata for voice matching.' },
     { label: 'Emotion tagging', value: 'Tags each line with emotions — Determined, Sarcastic, Anxious — for natural delivery.' },

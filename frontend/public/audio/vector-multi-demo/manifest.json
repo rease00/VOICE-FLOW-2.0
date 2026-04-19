@@ -1,241 +1,46 @@
 {
-  "generatedAt": "2026-04-19T05:18:52.793Z",
+  "generatedAt": "2026-04-19T06:09:05.397Z",
   "engine": "App studio multi-speaker",
-  "selectionNote": "Generated through app studio synth API with Aryan/Puck, Neha/Kore, Raj/Charon, Priya/Zephyr.",
+  "selectionNote": "Generated through app studio synth API with expanded global voice cast.",
   "featuredIds": [
-    "en-smart-home-chat",
-    "hi-support-call",
-    "es-delivery-chat",
-    "en-podcast-style"
+    "en-ai-debate",
+    "hi-chai-charcha",
+    "es-receta-secreta",
+    "en-mission-control"
   ],
   "entries": [
     {
-      "id": "en-smart-home-chat",
-      "title": "Morning Smart Home Chat",
+      "id": "en-ai-debate",
+      "title": "The AI Debate",
       "language": "English",
       "market": "Global English",
-      "useCase": "Daily assistant",
-      "scenario": "Smart home morning chat",
-      "direction": "Cheerful, playful handoffs with a natural wake-up rhythm.",
-      "summary": "A light two-voice morning exchange with weather and reminder cues.",
+      "useCase": "Podcast discussion",
+      "scenario": "AI creativity debate",
+      "direction": "A lively four-voice podcast panel debating AI and creativity with natural interruptions and genuine curiosity.",
+      "summary": "Four hosts debate whether AI can truly be creative, with thoughtful arguments and playful energy.",
       "translation": "N/A",
-      "audioSrc": "/audio/vector-multi-demo/en-smart-home-chat.wav",
+      "audioSrc": "/audio/vector-multi-demo/en-ai-debate.wav",
       "cast": [
         {
-          "speaker": "Aryan",
+          "speaker": "Maya",
           "role": "Voice 1",
           "displayName": "Voice 1",
           "voiceId": "Puck"
         },
         {
-          "speaker": "Neha",
+          "speaker": "Dev",
           "role": "Voice 2",
           "displayName": "Voice 2",
-          "voiceId": "Kore"
-        }
-      ],
-      "lines": [
-        {
-          "speaker": "Aryan",
-          "role": "Voice 1",
-          "text": "[cheerfully] Hey Neha! Good morning — quick heads up before you start your day."
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 2",
-          "text": "[sleepily] Mm... yeah go ahead, what's up?"
-        },
-        {
-          "speaker": "Aryan",
-          "role": "Voice 1",
-          "text": "[playfully] So, it's 24 degrees outside, pretty sunny — great day to not stay indoors."
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 2",
-          "text": "[laughs] You literally say that every day."
-        },
-        {
-          "speaker": "Aryan",
-          "role": "Voice 1",
-          "text": "[warmly] Because every day you stay indoors! Anyway — your 10 AM standup is still on."
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 2",
-          "text": "[sighs] Ugh, fine. Okay. Coffee first though."
-        },
-        {
-          "speaker": "Aryan",
-          "role": "Voice 1",
-          "text": "[bright] Obviously. Go go go!"
-        }
-      ]
-    },
-    {
-      "id": "hi-support-call",
-      "title": "Customer Support Call",
-      "language": "Hindi",
-      "market": "India Hindi",
-      "useCase": "Support escalation",
-      "scenario": "Customer support call",
-      "direction": "Empathetic escalation with reassurance and clear resolution cues.",
-      "summary": "A Hindi support conversation with escalation and supervisor intervention.",
-      "translation": "N/A",
-      "audioSrc": "/audio/vector-multi-demo/hi-support-call.wav",
-      "cast": [
-        {
-          "speaker": "Raj",
-          "role": "Voice 1",
-          "displayName": "Voice 1",
           "voiceId": "Charon"
         },
         {
-          "speaker": "Priya",
-          "role": "Voice 2",
-          "displayName": "Voice 2",
-          "voiceId": "Zephyr"
-        },
-        {
-          "speaker": "Aryan",
+          "speaker": "Zara",
           "role": "Voice 3",
           "displayName": "Voice 3",
-          "voiceId": "Puck"
-        }
-      ],
-      "lines": [
-        {
-          "speaker": "Raj",
-          "role": "Voice 1",
-          "text": "[frustrated] Yaar, mera order abhi tak nahi aaya — teen din ho gaye hain!"
-        },
-        {
-          "speaker": "Priya",
-          "role": "Voice 2",
-          "text": "[calmly] Arrey, main samajh sakti hoon aapki baat. Ek second, main check karti hoon."
-        },
-        {
-          "speaker": "Priya",
-          "role": "Voice 2",
-          "text": "[reassuringly] Haan, aapka order kal dispatch hua hai — kal shaam tak aa jayega pakka."
-        },
-        {
-          "speaker": "Raj",
-          "role": "Voice 1",
-          "text": "[doubtfully] Pakka? Pehle bhi yahi bola tha na..."
-        },
-        {
-          "speaker": "Priya",
-          "role": "Voice 2",
-          "text": "[gently] Main guarantee de rahi hoon is baar. Aur agar nahi aaya toh—"
-        },
-        {
-          "speaker": "Aryan",
-          "role": "Voice 3",
-          "text": "[professionally] Main supervisor Aryan bol raha hoon — hum personally ensure karenge delivery. Sorry for the wait!"
-        },
-        {
-          "speaker": "Raj",
-          "role": "Voice 1",
-          "text": "[relieved] Okay okay, theek hai. Thanks yaar."
-        }
-      ]
-    },
-    {
-      "id": "es-delivery-chat",
-      "title": "Delivery Update Chat",
-      "language": "Spanish",
-      "market": "Spain Spanish",
-      "useCase": "Delivery update",
-      "scenario": "Delivery handoff chat",
-      "direction": "Upbeat status exchange with playful but clear logistics pacing.",
-      "summary": "A Spanish two-voice delivery handoff with timing confirmation.",
-      "translation": "N/A",
-      "audioSrc": "/audio/vector-multi-demo/es-delivery-chat.wav",
-      "cast": [
-        {
-          "speaker": "Neha",
-          "role": "Voice 1",
-          "displayName": "Voice 1",
           "voiceId": "Kore"
         },
         {
-          "speaker": "Raj",
-          "role": "Voice 2",
-          "displayName": "Voice 2",
-          "voiceId": "Charon"
-        }
-      ],
-      "lines": [
-        {
-          "speaker": "Neha",
-          "role": "Voice 1",
-          "text": "[upbeat] ¡Ey! Tu paquete está casi en tu puerta."
-        },
-        {
-          "speaker": "Raj",
-          "role": "Voice 2",
-          "text": "[surprised] ¿En serio? ¿Ya?"
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 1",
-          "text": "[cheerfully] ¡Sí! El repartidor llega entre las 3 y las 5. ¡Hoy es el día!"
-        },
-        {
-          "speaker": "Raj",
-          "role": "Voice 2",
-          "text": "[playfully] Buf, por fin — llevaba esperándolo como una semana."
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 1",
-          "text": "[warmly] Lo sabemos, perdona la espera. ¿Estarás en casa a esa hora?"
-        },
-        {
-          "speaker": "Raj",
-          "role": "Voice 2",
-          "text": "[casually] Sí sí, no me muevo. Gracias eh."
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 1",
-          "text": "[bright] ¡Perfecto! ¡Que lo disfrutes!"
-        }
-      ]
-    },
-    {
-      "id": "en-podcast-style",
-      "title": "Podcast Style Roundtable",
-      "language": "English",
-      "market": "Global English",
-      "useCase": "Podcast conversation",
-      "scenario": "Podcast style roundtable",
-      "direction": "Conversational panel cadence with dynamic but readable handoffs.",
-      "summary": "A four-voice English roundtable discussing TTS quality and expression.",
-      "translation": "N/A",
-      "audioSrc": "/audio/vector-multi-demo/en-podcast-style.wav",
-      "cast": [
-        {
-          "speaker": "Aryan",
-          "role": "Voice 1",
-          "displayName": "Voice 1",
-          "voiceId": "Puck"
-        },
-        {
-          "speaker": "Neha",
-          "role": "Voice 2",
-          "displayName": "Voice 2",
-          "voiceId": "Kore"
-        },
-        {
-          "speaker": "Raj",
-          "role": "Voice 3",
-          "displayName": "Voice 3",
-          "voiceId": "Charon"
-        },
-        {
-          "speaker": "Priya",
+          "speaker": "Kai",
           "role": "Voice 4",
           "displayName": "Voice 4",
           "voiceId": "Zephyr"
@@ -243,49 +48,265 @@
       ],
       "lines": [
         {
-          "speaker": "Aryan",
+          "speaker": "Maya",
           "role": "Voice 1",
-          "text": "[enthusiastically] Alright folks, welcome back! Today we're talking about AI voices — and it's gonna get nerdy."
+          "text": "[enthusiastically] Welcome back to The Signal! Today's big question — can AI actually be creative, or is it just really good at copying?"
         },
         {
-          "speaker": "Neha",
+          "speaker": "Dev",
           "role": "Voice 2",
-          "text": "[laughs] I mean, when does it NOT get nerdy with us?"
+          "text": "[thoughtfully] I mean, creativity requires intent, right? AI doesn't want to create. It just predicts the next token."
         },
         {
-          "speaker": "Aryan",
-          "role": "Voice 1",
-          "text": "[playfully] Fair point. So Raj, you've been testing Gemini TTS — first impressions?"
-        },
-        {
-          "speaker": "Raj",
+          "speaker": "Zara",
           "role": "Voice 3",
-          "text": "[casually] Honestly? Way better than I expected. Like the emotions actually land, you know?"
+          "text": "[challenging] But does intent matter if the output moves people? A sunset doesn't intend to be beautiful."
         },
         {
-          "speaker": "Priya",
-          "role": "Voice 4",
-          "text": "[thoughtfully] That's the thing — most TTS engines fake emotion. Gemini actually reads context."
-        },
-        {
-          "speaker": "Neha",
+          "speaker": "Dev",
           "role": "Voice 2",
-          "text": "[curious] So like, it figures out the vibe from the sentence itself?"
+          "text": "[pauses] That's... actually a good point."
         },
         {
-          "speaker": "Priya",
+          "speaker": "Kai",
           "role": "Voice 4",
-          "text": "[warmly] Exactly. You write \"ugh, not again\" — it doesn't need a tag. It just... gets it."
+          "text": "[casually] Here's what I think. AI is a tool. The best paintbrush in the world doesn't make you Picasso."
         },
         {
-          "speaker": "Aryan",
+          "speaker": "Maya",
           "role": "Voice 1",
-          "text": "[impressed] That's wild. Okay we are definitely doing a full demo next episode."
+          "text": "[curious] So the human is still the artist?"
         },
         {
-          "speaker": "Neha",
+          "speaker": "Kai",
+          "role": "Voice 4",
+          "text": "[warmly] Always. The tool just got a massive upgrade."
+        },
+        {
+          "speaker": "Zara",
+          "role": "Voice 3",
+          "text": "[bright] And honestly? That's exciting, not scary."
+        },
+        {
+          "speaker": "Maya",
+          "role": "Voice 1",
+          "text": "[energetically] Love that take. More after the break — don't go anywhere!"
+        }
+      ]
+    },
+    {
+      "id": "hi-chai-charcha",
+      "title": "Chai Pe Charcha",
+      "language": "Hindi",
+      "market": "India Hindi",
+      "useCase": "Casual conversation",
+      "scenario": "Friends planning a trip over tea",
+      "direction": "Warm, playful banter between three friends with natural Hindi speech rhythms and casual energy.",
+      "summary": "Three friends argue over weekend plans while drinking chai — fun, warm, and totally relatable.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/hi-chai-charcha.wav",
+      "cast": [
+        {
+          "speaker": "Vikram",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Fenrir"
+        },
+        {
+          "speaker": "Ananya",
           "role": "Voice 2",
-          "text": "[bright] Subscribe people — you don't wanna miss that one!"
+          "displayName": "Voice 2",
+          "voiceId": "Kore"
+        },
+        {
+          "speaker": "Kabir",
+          "role": "Voice 3",
+          "displayName": "Voice 3",
+          "voiceId": "Puck"
+        }
+      ],
+      "lines": [
+        {
+          "speaker": "Vikram",
+          "role": "Voice 1",
+          "text": "[excitedly] Yaar sunno sunno — iss weekend Goa chalte hain! Tickets saste mil rahe hain!"
+        },
+        {
+          "speaker": "Ananya",
+          "role": "Voice 2",
+          "text": "[skeptically] Goa? Phir se? Pichli baar bhi toh hum wahi gaye the."
+        },
+        {
+          "speaker": "Vikram",
+          "role": "Voice 1",
+          "text": "[persuasively] Arrey par iss baar South Goa chalenge — bilkul alag vibe hai wahan ki."
+        },
+        {
+          "speaker": "Kabir",
+          "role": "Voice 3",
+          "text": "[lazily] Bhai mujhe toh bas AC room chahiye aur achha khana. Baaki tum decide karo."
+        },
+        {
+          "speaker": "Ananya",
+          "role": "Voice 2",
+          "text": "[laughing] Kabir tu har trip mein yahi bolta hai!"
+        },
+        {
+          "speaker": "Kabir",
+          "role": "Voice 3",
+          "text": "[innocently] Kyunki yahi sach hai! Simple insaan hoon main."
+        },
+        {
+          "speaker": "Vikram",
+          "role": "Voice 1",
+          "text": "[warmly] Chal theek hai — main sab book karta hoon. Bas Friday shaam nikalna hai."
+        },
+        {
+          "speaker": "Ananya",
+          "role": "Voice 2",
+          "text": "[happily] Done! Chai khatam karo pehle phir planning karte hain."
+        }
+      ]
+    },
+    {
+      "id": "es-receta-secreta",
+      "title": "La Receta Secreta",
+      "language": "Spanish",
+      "market": "Spain Spanish",
+      "useCase": "Cooking show",
+      "scenario": "Chef reveals a secret family recipe on live TV",
+      "direction": "Warm nostalgia meets playful banter — a chef and host sharing a family treasure on air.",
+      "summary": "A Spanish cooking show where a chef reveals her grandmother's secret paella recipe with warmth and mystery.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/es-receta-secreta.wav",
+      "cast": [
+        {
+          "speaker": "Carmen",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Zephyr"
+        },
+        {
+          "speaker": "Luis",
+          "role": "Voice 2",
+          "displayName": "Voice 2",
+          "voiceId": "Charon"
+        }
+      ],
+      "lines": [
+        {
+          "speaker": "Carmen",
+          "role": "Voice 1",
+          "text": "[warmly] Bienvenidos a mi cocina. Hoy les voy a enseñar algo muy especial — la paella de mi abuela."
+        },
+        {
+          "speaker": "Luis",
+          "role": "Voice 2",
+          "text": "[curious] Carmen, dicen que tu abuela nunca compartió esta receta con nadie."
+        },
+        {
+          "speaker": "Carmen",
+          "role": "Voice 1",
+          "text": "[nostalgically] Es verdad. Me la susurró al oído cuando yo tenía diez años. Dijo — solo cocínala cuando tengas a alguien a quien quieras impresionar."
+        },
+        {
+          "speaker": "Luis",
+          "role": "Voice 2",
+          "text": "[impressed] ¿Y cuál es el secreto?"
+        },
+        {
+          "speaker": "Carmen",
+          "role": "Voice 1",
+          "text": "[mysteriously] El secreto no está en los ingredientes, Luis. Está en la paciencia. El arroz tiene que escuchar el fuego."
+        },
+        {
+          "speaker": "Luis",
+          "role": "Voice 2",
+          "text": "[playfully] ¡Escuchar el fuego! Eso es poesía pura."
+        },
+        {
+          "speaker": "Carmen",
+          "role": "Voice 1",
+          "text": "[laughing] ¡La buena cocina siempre es poesía!"
+        }
+      ]
+    },
+    {
+      "id": "en-mission-control",
+      "title": "Mission Control",
+      "language": "English",
+      "market": "Global English",
+      "useCase": "Drama scene",
+      "scenario": "Space mission lunar descent",
+      "direction": "Tense, precise military cadence building to an emotional touchdown — three distinct voices under pressure.",
+      "summary": "A gripping three-voice space mission countdown from orbit to lunar touchdown.",
+      "translation": "N/A",
+      "audioSrc": "/audio/vector-multi-demo/en-mission-control.wav",
+      "cast": [
+        {
+          "speaker": "Commander",
+          "role": "Voice 1",
+          "displayName": "Voice 1",
+          "voiceId": "Alnilam"
+        },
+        {
+          "speaker": "Houston",
+          "role": "Voice 2",
+          "displayName": "Voice 2",
+          "voiceId": "Orus"
+        },
+        {
+          "speaker": "Pilot",
+          "role": "Voice 3",
+          "displayName": "Voice 3",
+          "voiceId": "Leda"
+        }
+      ],
+      "lines": [
+        {
+          "speaker": "Commander",
+          "role": "Voice 1",
+          "text": "[calmly] Mission Control, this is Artemis Seven. We have visual on the landing zone. Requesting final go for descent."
+        },
+        {
+          "speaker": "Houston",
+          "role": "Voice 2",
+          "text": "[professionally] Artemis Seven, Houston confirms. All systems nominal. You are go for powered descent. Good luck up there."
+        },
+        {
+          "speaker": "Commander",
+          "role": "Voice 1",
+          "text": "[focused] Copy that. Initiating descent sequence. Altitude twelve thousand meters and dropping."
+        },
+        {
+          "speaker": "Pilot",
+          "role": "Voice 3",
+          "text": "[alert] Commander, wind shear detected at eight thousand. Adjusting trajectory by point three degrees."
+        },
+        {
+          "speaker": "Commander",
+          "role": "Voice 1",
+          "text": "[steady] Acknowledged. Compensating now. Fuel is nominal. We are on the glide path."
+        },
+        {
+          "speaker": "Houston",
+          "role": "Voice 2",
+          "text": "[tensely] Artemis Seven, you are passing through five thousand meters. Looking good from down here."
+        },
+        {
+          "speaker": "Pilot",
+          "role": "Voice 3",
+          "text": "[excited] Terrain scan complete — landing pad is clear! Two thousand meters!"
+        },
+        {
+          "speaker": "Commander",
+          "role": "Voice 1",
+          "text": "[firmly] Cutting main engines. Switching to hover thrusters. Contact light — we are down!"
+        },
+        {
+          "speaker": "Houston",
+          "role": "Voice 2",
+          "text": "[elated] Artemis Seven, Houston confirms touchdown! Outstanding work, crew!"
         }
       ]
     }

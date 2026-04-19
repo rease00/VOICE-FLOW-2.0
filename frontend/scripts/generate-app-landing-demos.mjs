@@ -12,242 +12,248 @@ const maxRetryAttempts = Number.parseInt(String(process.env.VF_DEMO_MAX_RETRIES 
 const retryBaseMs = Number.parseInt(String(process.env.VF_DEMO_RETRY_BASE_MS || '12000'), 10) || 12000;
 const retryMaxMs = Number.parseInt(String(process.env.VF_DEMO_RETRY_MAX_MS || '90000'), 10) || 90000;
 
-const parsedReaderMinDuration = Number.parseFloat(String(process.env.VF_READER_DEMO_MIN_DURATION_SEC || '25'));
-const parsedReaderMaxDuration = Number.parseFloat(String(process.env.VF_READER_DEMO_MAX_DURATION_SEC || '35'));
-const readerDemoMinDurationSec = Number.isFinite(parsedReaderMinDuration) ? parsedReaderMinDuration : 25;
-const readerDemoMaxDurationSec = Number.isFinite(parsedReaderMaxDuration) ? parsedReaderMaxDuration : 35;
-
-const parsedReaderChapterMinDuration = Number.parseFloat(String(process.env.VF_READER_CHAPTER_MIN_DURATION_SEC || '20'));
-const parsedReaderChapterMaxDuration = Number.parseFloat(String(process.env.VF_READER_CHAPTER_MAX_DURATION_SEC || '120'));
-const readerChapterMinDurationSec = Number.isFinite(parsedReaderChapterMinDuration) ? parsedReaderChapterMinDuration : 20;
-const readerChapterMaxDurationSec = Number.isFinite(parsedReaderChapterMaxDuration) ? parsedReaderChapterMaxDuration : 120;
-
 const projectRoot = process.cwd();
 const singleDir = path.join(projectRoot, 'frontend', 'public', 'audio', 'vector-demo');
 const multiDir = path.join(projectRoot, 'frontend', 'public', 'audio', 'vector-multi-demo');
-const readerDir = path.join(projectRoot, 'frontend', 'public', 'audio', 'reader-demo');
 
 const speakerVoices = {
-  Aryan: 'Puck',
-  Neha: 'Kore',
-  Raj: 'Charon',
-  Priya: 'Zephyr',
+  // Multi-speaker demo cast — English: The AI Debate
+  Maya: 'Puck',
+  Dev: 'Charon',
+  Zara: 'Kore',
+  Kai: 'Zephyr',
+  // Multi-speaker demo cast — Hindi: Chai Pe Charcha
+  Vikram: 'Fenrir',
+  Ananya: 'Kore',
+  Kabir: 'Puck',
+  // Multi-speaker demo cast — Spanish: La Receta Secreta
+  Carmen: 'Zephyr',
+  Luis: 'Charon',
+  // Multi-speaker demo cast — English: Mission Control
+  Commander: 'Alnilam',
+  Houston: 'Orus',
+  Pilot: 'Leda',
 };
 
 const singleSpeakerDemos = [
   {
-    slug: 'morning-brief-en',
-    title: 'Morning Brief',
-    summary: 'A compact morning-ready status update for single-voice checks.',
+    slug: 'future-is-now-en',
+    title: 'The Future Is Now',
+    summary: 'A visionary tech keynote opener that showcases confident, energetic delivery.',
     language: 'English',
-    country: 'Global',
+    country: 'United States',
     payloadLanguage: 'en-US',
-    voice: speakerVoices.Aryan,
-    text: 'Quick morning brief. You have one product sync at ten, one review at two, and a final wrap at five. Keep delivery clear, energetic, and focused.',
+    voice: 'Puck',
+    text: 'Imagine a world where your ideas become reality the moment you speak them. Where a single sentence transforms into a symphony of voices — each one distinct, each one alive. That world is not coming. It is here. Welcome to the next generation of voice.',
   },
   {
-    slug: 'support-update-hi',
-    title: 'Support Update',
-    summary: 'A calm reassurance read for support-first voice review.',
+    slug: 'mumbai-baarish-hi',
+    title: 'Mumbai ki Baarish',
+    summary: 'A poetic Hindi narration capturing the magic of Mumbai monsoons.',
     language: 'Hindi',
-    country: 'Global',
+    country: 'India',
     payloadLanguage: 'hi-IN',
-    voice: speakerVoices.Neha,
-    text: 'Support update. We received your issue report and verified the behavior. A fix is scheduled in the next release window and we will keep you posted every step of the way.',
+    voice: 'Kore',
+    text: 'मुंबई की बारिश कुछ अलग ही होती है। पहली बूँद गिरती है और पूरा शहर ठहर जाता है। चाय की दुकानों पर भीड़ लग जाती है, ट्रेनें धीमी हो जाती हैं, और बच्चे सड़कों पर नाचने लगते हैं। यह बारिश सिर्फ पानी नहीं है — यह मुंबई की धड़कन है।',
   },
   {
-    slug: 'delivery-alert-es',
-    title: 'Delivery Alert',
-    summary: 'A bright delivery confirmation for quick voice audition.',
+    slug: 'noche-flamenco-es',
+    title: 'Noche de Flamenco',
+    summary: 'A vivid Spanish narration of a flamenco night that pulses with rhythm and emotion.',
     language: 'Spanish',
-    country: 'Global',
+    country: 'Spain',
     payloadLanguage: 'es-ES',
-    voice: speakerVoices.Raj,
-    text: 'Delivery alert. Tu pedido ya esta despachado y llega hoy entre las tres y las cinco de la tarde. Mantente cerca del telefono para la entrega.',
+    voice: 'Zephyr',
+    text: 'La guitarra comienza con un susurro. Los tacones golpean el suelo como un corazón que despierta. La bailaora levanta los brazos y el silencio se rompe en mil pedazos. Esta noche, el flamenco no se baila — se vive. Cada nota cuenta una historia que las palabras no pueden.',
   },
   {
-    slug: 'podcast-opening-en',
-    title: 'Podcast Opening',
-    summary: 'An energetic intro lane for presentation and pacing checks.',
-    language: 'English',
-    country: 'Global',
-    payloadLanguage: 'en-US',
-    voice: speakerVoices.Priya,
-    text: 'Launch reminder. Final QA starts in twenty minutes. Confirm assets, lock the narration pass, and keep your approval notes concise for the team.',
+    slug: 'sakura-season-ja',
+    title: '桜の季節',
+    summary: 'A serene Japanese meditation on cherry blossom season and fleeting beauty.',
+    language: 'Japanese',
+    country: 'Japan',
+    payloadLanguage: 'ja-JP',
+    voice: 'Achernar',
+    text: '春が来ると、街は薄桃色に染まります。一枚一枚の花びらが風に舞い、川面を静かに流れていきます。人々は桜の下に集まり、お茶を飲み、笑い合います。この一瞬の美しさこそが、日本の春の本質です。',
+  },
+  {
+    slug: 'carnaval-ritmo-pt',
+    title: 'Ritmo do Carnaval',
+    summary: 'An energetic Portuguese narration bursting with the pulse of Rio Carnival.',
+    language: 'Portuguese',
+    country: 'Brazil',
+    payloadLanguage: 'pt-BR',
+    voice: 'Algenib',
+    text: 'O tambor começa baixinho, quase um segredo. Depois vem o surdo, forte como o coração da cidade. As cores explodem na avenida e os corpos se movem como se não houvesse amanhã. No carnaval do Rio, não existe plateia — todo mundo dança, todo mundo canta, todo mundo vive.',
+  },
+  {
+    slug: 'alpenmorgen-de',
+    title: 'Alpenmorgen',
+    summary: 'A documentary-style German narration of an Alpine dawn, quiet and precise.',
+    language: 'German',
+    country: 'Germany',
+    payloadLanguage: 'de-DE',
+    voice: 'Rasalgethi',
+    text: 'Der erste Sonnenstrahl trifft den Gipfel, und die Alpen erwachen. Nebel steigt aus den Tälern auf wie ein langsamer Atem. Die Kuhglocken läuten in der Ferne, und der Geruch von frischem Heu liegt in der Luft. Hier oben, über den Wolken, beginnt jeder Tag wie ein stilles Versprechen.',
+  },
+  {
+    slug: 'matin-paris-fr',
+    title: 'Un Matin à Paris',
+    summary: 'A cinematic French narration of a Parisian morning, warm and literary.',
+    language: 'French',
+    country: 'France',
+    payloadLanguage: 'fr-FR',
+    voice: 'Sadaltager',
+    text: "Le jour se lève sur les toits de Paris. L'odeur du café frais se mêle à celle des croissants dorés. Un violoniste joue doucement près du pont. Les feuilles d'automne dansent sur les pavés, et la Seine brille comme un ruban d'argent. Paris ne se réveille pas — elle murmure.",
+  },
+  {
+    slug: 'desert-stars-ar',
+    title: 'نجوم الصحراء',
+    summary: 'A poetic Arabic narration of the Arabian desert under a canopy of stars.',
+    language: 'Arabic',
+    country: 'UAE',
+    payloadLanguage: 'ar-XA',
+    voice: 'Umbriel',
+    text: 'عندما تغيب الشمس عن الصحراء، يبدأ عرض آخر. ملايين النجوم تضيء السماء وكأنها لوحة رسمها فنان لا ينام. الرمال تبرد تحت قدميك، والهواء يحمل رائحة البخور. في هذا الصمت العظيم، تسمع صوت الكون يتحدث.',
   },
 ];
 
 const multiSpeakerDemos = [
   {
-    id: 'en-smart-home-chat',
-    title: 'Morning Smart Home Chat',
+    id: 'en-ai-debate',
+    title: 'The AI Debate',
     language: 'English',
     market: 'Global English',
     payloadLanguage: 'en-US',
-    useCase: 'Daily assistant',
-    scenario: 'Smart home morning chat',
-    direction: 'Cheerful, playful handoffs with a natural wake-up rhythm.',
-    summary: 'A light two-voice morning exchange with weather and reminder cues.',
-    speakers: ['Aryan', 'Neha'],
+    useCase: 'Podcast discussion',
+    scenario: 'AI creativity debate',
+    direction: 'A lively four-voice podcast panel debating AI and creativity with natural interruptions and genuine curiosity.',
+    summary: 'Four hosts debate whether AI can truly be creative, with thoughtful arguments and playful energy.',
+    speakers: ['Maya', 'Dev', 'Zara', 'Kai'],
     script: [
-      'Aryan: [cheerfully] Hey Neha! Good morning — quick heads up before you start your day.',
-      'Neha: [sleepily] Mm... yeah go ahead, what\'s up?',
-      'Aryan: [playfully] So, it\'s 24 degrees outside, pretty sunny — great day to not stay indoors.',
-      'Neha: [laughs] You literally say that every day.',
-      'Aryan: [warmly] Because every day you stay indoors! Anyway — your 10 AM standup is still on.',
-      '<break time="300ms"/>',
-      'Neha: [sighs] Ugh, fine. Okay. Coffee first though.',
-      'Aryan: [bright] Obviously. Go go go!',
+      'Maya: [enthusiastically] Welcome back to The Signal! Today\'s big question — can AI actually be creative, or is it just really good at copying?',
+      'Dev: [thoughtfully] I mean, creativity requires intent, right? AI doesn\'t want to create. It just predicts the next token.',
+      'Zara: [challenging] But does intent matter if the output moves people? A sunset doesn\'t intend to be beautiful.',
+      '<break time="400ms"/>',
+      'Dev: [pauses] That\'s... actually a good point.',
+      'Kai: [casually] Here\'s what I think. AI is a tool. The best paintbrush in the world doesn\'t make you Picasso.',
+      'Maya: [curious] So the human is still the artist?',
+      'Kai: [warmly] Always. The tool just got a massive upgrade.',
+      'Zara: [bright] And honestly? That\'s exciting, not scary.',
+      'Maya: [energetically] Love that take. More after the break — don\'t go anywhere!',
     ].join('\n'),
     lines: [
-      { speaker: 'Aryan', text: '[cheerfully] Hey Neha! Good morning — quick heads up before you start your day.' },
-      { speaker: 'Neha', text: '[sleepily] Mm... yeah go ahead, what\'s up?' },
-      { speaker: 'Aryan', text: '[playfully] So, it\'s 24 degrees outside, pretty sunny — great day to not stay indoors.' },
-      { speaker: 'Neha', text: '[laughs] You literally say that every day.' },
-      { speaker: 'Aryan', text: '[warmly] Because every day you stay indoors! Anyway — your 10 AM standup is still on.' },
-      { speaker: 'Neha', text: '[sighs] Ugh, fine. Okay. Coffee first though.' },
-      { speaker: 'Aryan', text: '[bright] Obviously. Go go go!' },
+      { speaker: 'Maya', text: '[enthusiastically] Welcome back to The Signal! Today\'s big question — can AI actually be creative, or is it just really good at copying?' },
+      { speaker: 'Dev', text: '[thoughtfully] I mean, creativity requires intent, right? AI doesn\'t want to create. It just predicts the next token.' },
+      { speaker: 'Zara', text: '[challenging] But does intent matter if the output moves people? A sunset doesn\'t intend to be beautiful.' },
+      { speaker: 'Dev', text: '[pauses] That\'s... actually a good point.' },
+      { speaker: 'Kai', text: '[casually] Here\'s what I think. AI is a tool. The best paintbrush in the world doesn\'t make you Picasso.' },
+      { speaker: 'Maya', text: '[curious] So the human is still the artist?' },
+      { speaker: 'Kai', text: '[warmly] Always. The tool just got a massive upgrade.' },
+      { speaker: 'Zara', text: '[bright] And honestly? That\'s exciting, not scary.' },
+      { speaker: 'Maya', text: '[energetically] Love that take. More after the break — don\'t go anywhere!' },
     ],
   },
   {
-    id: 'hi-support-call',
-    title: 'Customer Support Call',
+    id: 'hi-chai-charcha',
+    title: 'Chai Pe Charcha',
     language: 'Hindi',
     market: 'India Hindi',
     payloadLanguage: 'hi-IN',
-    useCase: 'Support escalation',
-    scenario: 'Customer support call',
-    direction: 'Empathetic escalation with reassurance and clear resolution cues.',
-    summary: 'A Hindi support conversation with escalation and supervisor intervention.',
-    speakers: ['Raj', 'Priya', 'Aryan'],
+    useCase: 'Casual conversation',
+    scenario: 'Friends planning a trip over tea',
+    direction: 'Warm, playful banter between three friends with natural Hindi speech rhythms and casual energy.',
+    summary: 'Three friends argue over weekend plans while drinking chai — fun, warm, and totally relatable.',
+    speakers: ['Vikram', 'Ananya', 'Kabir'],
     script: [
-      'Raj: [frustrated] Yaar, mera order abhi tak nahi aaya — teen din ho gaye hain!',
-      'Priya: [calmly] Arrey, main samajh sakti hoon aapki baat. Ek second, main check karti hoon.',
-      '<break time="500ms"/>',
-      'Priya: [reassuringly] Haan, aapka order kal dispatch hua hai — kal shaam tak aa jayega pakka.',
-      'Raj: [doubtfully] Pakka? Pehle bhi yahi bola tha na...',
-      'Priya: [gently] Main guarantee de rahi hoon is baar. Aur agar nahi aaya toh—',
-      'Aryan: [professionally] Main supervisor Aryan bol raha hoon — hum personally ensure karenge delivery. Sorry for the wait!',
-      'Raj: [relieved] Okay okay, theek hai. Thanks yaar.',
+      'Vikram: [excitedly] Yaar sunno sunno — iss weekend Goa chalte hain! Tickets saste mil rahe hain!',
+      'Ananya: [skeptically] Goa? Phir se? Pichli baar bhi toh hum wahi gaye the.',
+      'Vikram: [persuasively] Arrey par iss baar South Goa chalenge — bilkul alag vibe hai wahan ki.',
+      'Kabir: [lazily] Bhai mujhe toh bas AC room chahiye aur achha khana. Baaki tum decide karo.',
+      '<break time="300ms"/>',
+      'Ananya: [laughing] Kabir tu har trip mein yahi bolta hai!',
+      'Kabir: [innocently] Kyunki yahi sach hai! Simple insaan hoon main.',
+      'Vikram: [warmly] Chal theek hai — main sab book karta hoon. Bas Friday shaam nikalna hai.',
+      'Ananya: [happily] Done! Chai khatam karo pehle phir planning karte hain.',
     ].join('\n'),
     lines: [
-      { speaker: 'Raj', text: '[frustrated] Yaar, mera order abhi tak nahi aaya — teen din ho gaye hain!' },
-      { speaker: 'Priya', text: '[calmly] Arrey, main samajh sakti hoon aapki baat. Ek second, main check karti hoon.' },
-      { speaker: 'Priya', text: '[reassuringly] Haan, aapka order kal dispatch hua hai — kal shaam tak aa jayega pakka.' },
-      { speaker: 'Raj', text: '[doubtfully] Pakka? Pehle bhi yahi bola tha na...' },
-      { speaker: 'Priya', text: '[gently] Main guarantee de rahi hoon is baar. Aur agar nahi aaya toh—' },
-      { speaker: 'Aryan', text: '[professionally] Main supervisor Aryan bol raha hoon — hum personally ensure karenge delivery. Sorry for the wait!' },
-      { speaker: 'Raj', text: '[relieved] Okay okay, theek hai. Thanks yaar.' },
+      { speaker: 'Vikram', text: '[excitedly] Yaar sunno sunno — iss weekend Goa chalte hain! Tickets saste mil rahe hain!' },
+      { speaker: 'Ananya', text: '[skeptically] Goa? Phir se? Pichli baar bhi toh hum wahi gaye the.' },
+      { speaker: 'Vikram', text: '[persuasively] Arrey par iss baar South Goa chalenge — bilkul alag vibe hai wahan ki.' },
+      { speaker: 'Kabir', text: '[lazily] Bhai mujhe toh bas AC room chahiye aur achha khana. Baaki tum decide karo.' },
+      { speaker: 'Ananya', text: '[laughing] Kabir tu har trip mein yahi bolta hai!' },
+      { speaker: 'Kabir', text: '[innocently] Kyunki yahi sach hai! Simple insaan hoon main.' },
+      { speaker: 'Vikram', text: '[warmly] Chal theek hai — main sab book karta hoon. Bas Friday shaam nikalna hai.' },
+      { speaker: 'Ananya', text: '[happily] Done! Chai khatam karo pehle phir planning karte hain.' },
     ],
   },
   {
-    id: 'es-delivery-chat',
-    title: 'Delivery Update Chat',
+    id: 'es-receta-secreta',
+    title: 'La Receta Secreta',
     language: 'Spanish',
     market: 'Spain Spanish',
     payloadLanguage: 'es-ES',
-    useCase: 'Delivery update',
-    scenario: 'Delivery handoff chat',
-    direction: 'Upbeat status exchange with playful but clear logistics pacing.',
-    summary: 'A Spanish two-voice delivery handoff with timing confirmation.',
-    speakers: ['Neha', 'Raj'],
+    useCase: 'Cooking show',
+    scenario: 'Chef reveals a secret family recipe on live TV',
+    direction: 'Warm nostalgia meets playful banter — a chef and host sharing a family treasure on air.',
+    summary: 'A Spanish cooking show where a chef reveals her grandmother\'s secret paella recipe with warmth and mystery.',
+    speakers: ['Carmen', 'Luis'],
     script: [
-      'Neha: [upbeat] ¡Ey! Tu paquete está casi en tu puerta.',
-      'Raj: [surprised] ¿En serio? ¿Ya?',
-      'Neha: [cheerfully] ¡Sí! El repartidor llega entre las 3 y las 5. ¡Hoy es el día!',
-      'Raj: [playfully] Buf, por fin — llevaba esperándolo como una semana.',
-      'Neha: [warmly] Lo sabemos, perdona la espera. ¿Estarás en casa a esa hora?',
-      'Raj: [casually] Sí sí, no me muevo. Gracias eh.',
-      'Neha: [bright] ¡Perfecto! ¡Que lo disfrutes!',
+      'Carmen: [warmly] Bienvenidos a mi cocina. Hoy les voy a enseñar algo muy especial — la paella de mi abuela.',
+      'Luis: [curious] Carmen, dicen que tu abuela nunca compartió esta receta con nadie.',
+      'Carmen: [nostalgically] Es verdad. Me la susurró al oído cuando yo tenía diez años. Dijo — solo cocínala cuando tengas a alguien a quien quieras impresionar.',
+      '<break time="400ms"/>',
+      'Luis: [impressed] ¿Y cuál es el secreto?',
+      'Carmen: [mysteriously] El secreto no está en los ingredientes, Luis. Está en la paciencia. El arroz tiene que escuchar el fuego.',
+      'Luis: [playfully] ¡Escuchar el fuego! Eso es poesía pura.',
+      'Carmen: [laughing] ¡La buena cocina siempre es poesía!',
     ].join('\n'),
     lines: [
-      { speaker: 'Neha', text: '[upbeat] ¡Ey! Tu paquete está casi en tu puerta.' },
-      { speaker: 'Raj', text: '[surprised] ¿En serio? ¿Ya?' },
-      { speaker: 'Neha', text: '[cheerfully] ¡Sí! El repartidor llega entre las 3 y las 5. ¡Hoy es el día!' },
-      { speaker: 'Raj', text: '[playfully] Buf, por fin — llevaba esperándolo como una semana.' },
-      { speaker: 'Neha', text: '[warmly] Lo sabemos, perdona la espera. ¿Estarás en casa a esa hora?' },
-      { speaker: 'Raj', text: '[casually] Sí sí, no me muevo. Gracias eh.' },
-      { speaker: 'Neha', text: '[bright] ¡Perfecto! ¡Que lo disfrutes!' },
+      { speaker: 'Carmen', text: '[warmly] Bienvenidos a mi cocina. Hoy les voy a enseñar algo muy especial — la paella de mi abuela.' },
+      { speaker: 'Luis', text: '[curious] Carmen, dicen que tu abuela nunca compartió esta receta con nadie.' },
+      { speaker: 'Carmen', text: '[nostalgically] Es verdad. Me la susurró al oído cuando yo tenía diez años. Dijo — solo cocínala cuando tengas a alguien a quien quieras impresionar.' },
+      { speaker: 'Luis', text: '[impressed] ¿Y cuál es el secreto?' },
+      { speaker: 'Carmen', text: '[mysteriously] El secreto no está en los ingredientes, Luis. Está en la paciencia. El arroz tiene que escuchar el fuego.' },
+      { speaker: 'Luis', text: '[playfully] ¡Escuchar el fuego! Eso es poesía pura.' },
+      { speaker: 'Carmen', text: '[laughing] ¡La buena cocina siempre es poesía!' },
     ],
   },
   {
-    id: 'en-podcast-style',
-    title: 'Podcast Style Roundtable',
+    id: 'en-mission-control',
+    title: 'Mission Control',
     language: 'English',
     market: 'Global English',
     payloadLanguage: 'en-US',
-    useCase: 'Podcast conversation',
-    scenario: 'Podcast style roundtable',
-    direction: 'Conversational panel cadence with dynamic but readable handoffs.',
-    summary: 'A four-voice English roundtable discussing TTS quality and expression.',
-    speakers: ['Aryan', 'Neha', 'Raj', 'Priya'],
+    useCase: 'Drama scene',
+    scenario: 'Space mission lunar descent',
+    direction: 'Tense, precise military cadence building to an emotional touchdown — three distinct voices under pressure.',
+    summary: 'A gripping three-voice space mission countdown from orbit to lunar touchdown.',
+    speakers: ['Commander', 'Houston', 'Pilot'],
     script: [
-      'Aryan: [enthusiastically] Alright folks, welcome back! Today we\'re talking about AI voices — and it\'s gonna get nerdy.',
-      'Neha: [laughs] I mean, when does it NOT get nerdy with us?',
-      'Aryan: [playfully] Fair point. So Raj, you\'ve been testing Gemini TTS — first impressions?',
-      'Raj: [casually] Honestly? Way better than I expected. Like the emotions actually land, you know?',
-      '<break time="400ms"/>',
-      'Priya: [thoughtfully] That\'s the thing — most TTS engines fake emotion. Gemini actually reads context.',
-      'Neha: [curious] So like, it figures out the vibe from the sentence itself?',
-      'Priya: [warmly] Exactly. You write "ugh, not again" — it doesn\'t need a tag. It just... gets it.',
-      'Aryan: [impressed] That\'s wild. Okay we are definitely doing a full demo next episode.',
-      'Neha: [bright] Subscribe people — you don\'t wanna miss that one!',
+      'Commander: [calmly] Mission Control, this is Artemis Seven. We have visual on the landing zone. Requesting final go for descent.',
+      'Houston: [professionally] Artemis Seven, Houston confirms. All systems nominal. You are go for powered descent. Good luck up there.',
+      'Commander: [focused] Copy that. Initiating descent sequence. Altitude twelve thousand meters and dropping.',
+      '<break time="500ms"/>',
+      'Pilot: [alert] Commander, wind shear detected at eight thousand. Adjusting trajectory by point three degrees.',
+      'Commander: [steady] Acknowledged. Compensating now. Fuel is nominal. We are on the glide path.',
+      'Houston: [tensely] Artemis Seven, you are passing through five thousand meters. Looking good from down here.',
+      'Pilot: [excited] Terrain scan complete — landing pad is clear! Two thousand meters!',
+      'Commander: [firmly] Cutting main engines. Switching to hover thrusters. Contact light — we are down!',
+      'Houston: [elated] Artemis Seven, Houston confirms touchdown! Outstanding work, crew!',
     ].join('\n'),
     lines: [
-      { speaker: 'Aryan', text: '[enthusiastically] Alright folks, welcome back! Today we\'re talking about AI voices — and it\'s gonna get nerdy.' },
-      { speaker: 'Neha', text: '[laughs] I mean, when does it NOT get nerdy with us?' },
-      { speaker: 'Aryan', text: '[playfully] Fair point. So Raj, you\'ve been testing Gemini TTS — first impressions?' },
-      { speaker: 'Raj', text: '[casually] Honestly? Way better than I expected. Like the emotions actually land, you know?' },
-      { speaker: 'Priya', text: '[thoughtfully] That\'s the thing — most TTS engines fake emotion. Gemini actually reads context.' },
-      { speaker: 'Neha', text: '[curious] So like, it figures out the vibe from the sentence itself?' },
-      { speaker: 'Priya', text: '[warmly] Exactly. You write "ugh, not again" — it doesn\'t need a tag. It just... gets it.' },
-      { speaker: 'Aryan', text: '[impressed] That\'s wild. Okay we are definitely doing a full demo next episode.' },
-      { speaker: 'Neha', text: '[bright] Subscribe people — you don\'t wanna miss that one!' },
+      { speaker: 'Commander', text: '[calmly] Mission Control, this is Artemis Seven. We have visual on the landing zone. Requesting final go for descent.' },
+      { speaker: 'Houston', text: '[professionally] Artemis Seven, Houston confirms. All systems nominal. You are go for powered descent. Good luck up there.' },
+      { speaker: 'Commander', text: '[focused] Copy that. Initiating descent sequence. Altitude twelve thousand meters and dropping.' },
+      { speaker: 'Pilot', text: '[alert] Commander, wind shear detected at eight thousand. Adjusting trajectory by point three degrees.' },
+      { speaker: 'Commander', text: '[steady] Acknowledged. Compensating now. Fuel is nominal. We are on the glide path.' },
+      { speaker: 'Houston', text: '[tensely] Artemis Seven, you are passing through five thousand meters. Looking good from down here.' },
+      { speaker: 'Pilot', text: '[excited] Terrain scan complete — landing pad is clear! Two thousand meters!' },
+      { speaker: 'Commander', text: '[firmly] Cutting main engines. Switching to hover thrusters. Contact light — we are down!' },
+      { speaker: 'Houston', text: '[elated] Artemis Seven, Houston confirms touchdown! Outstanding work, crew!' },
     ],
   },
 ];
-
-const readerDemoSample = {
-  id: 'reader-review-en-30s',
-  title: 'Reader Review Sample',
-  summary: 'A 30-second approval-style reader pass for final listening checks.',
-  language: 'English',
-  locale: 'en-US',
-  voice: speakerVoices.Priya,
-  cue: 'Reader sample · final pass',
-  posterSrc: '/images/reader-demo-poster.svg',
-  text: 'Welcome to the final listening pass. This short reader sample is designed to sound like an approval run, not a dramatic trailer. You will hear steady pacing, clear consonants, and intentional pauses between sections. <break time="700ms"/> Use this moment to confirm names, sentence rhythm, and chapter tone. <break time="700ms"/> If the delivery matches your script, move into the app reader, continue from scene three, and lock the episode for publish.',
-};
-
-const virtualReaderBook = {
-  id: 'virtual-book-lighthouse-ledger',
-  title: 'The Lighthouse Ledger',
-  author: 'V FLOW AI Demo Press',
-  language: 'English',
-  locale: 'en-US',
-  coverSrc: '/images/virtual-reader-book-cover.svg',
-  description: 'A two-chapter mystery preview for Reader demos with chapter-level playback checks.',
-  chapters: [
-    {
-      id: 'chapter-01-fog-over-meridian-bay',
-      order: 1,
-      title: 'Chapter 01 - Fog Over Meridian Bay',
-      summary: 'A harbor town wakes to a missing ledger and a warning bell before sunrise.',
-      cue: 'Virtual book · chapter 1',
-      voice: speakerVoices.Priya,
-      text: 'Chapter one. Meridian Bay woke under thick fog, and the harbor bell rang before sunrise. Lina found the lighthouse door open, the night lantern still warm, and the captain\'s ledger gone from its iron shelf. <break time="500ms"/> On the last page, one line remained in blue ink: if the tide turns twice before noon, do not trust the second signal. <break time="500ms"/> She folded the warning into her coat, crossed the wet stone quay, and promised herself she would find whoever rewrote the harbor clock.',
-    },
-    {
-      id: 'chapter-02-the-second-signal',
-      order: 2,
-      title: 'Chapter 02 - The Second Signal',
-      summary: 'Lina follows the coded bell pattern and uncovers a staged rescue call.',
-      cue: 'Virtual book · chapter 2',
-      voice: speakerVoices.Priya,
-      text: 'Chapter two. By midmorning, the tide had turned once, and the town watched the channel in silence. Lina climbed the signal tower and counted the bell pattern: three short, one long, then three short again. <break time="500ms"/> It matched an old distress code, but the rescue flare never rose. Instead, a tugboat drifted empty near the reef with fresh paint over its name. <break time="500ms"/> Lina marked the hidden letters beneath the paint, sent a trusted runner to the archive, and prepared for the second signal before the storm reached the bay.',
-    },
-  ],
-};
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
@@ -514,7 +520,6 @@ const run = async () => {
 
   await cleanDemoDirectory(singleDir);
   await cleanDemoDirectory(multiDir);
-  await cleanDemoDirectory(readerDir);
 
   const singleManifestSamples = [];
   for (const demo of singleSpeakerDemos) {
@@ -595,78 +600,6 @@ const run = async () => {
     });
   }
 
-  const readerOutName = `${readerDemoSample.id}.wav`;
-  const readerOutPath = path.join(readerDir, readerOutName);
-
-  console.log(`[app-demos] generating reader sample: ${readerDemoSample.id} (${readerDemoSample.voice})`);
-  const readerAudio = await requestAudio({
-    mode: 'studio',
-    text: readerDemoSample.text,
-    voice: readerDemoSample.voice,
-    language: readerDemoSample.locale,
-    engine: defaultEngine,
-    speed: 1,
-  }, `reader:${readerDemoSample.id}`);
-  await fs.writeFile(readerOutPath, readerAudio);
-
-  const readerDurationSec = parseWavDurationSeconds(readerAudio);
-  if (!Number.isFinite(readerDurationSec)) {
-    throw new Error(`Reader demo duration could not be parsed from generated WAV: ${readerDemoSample.id}`);
-  }
-
-  if (readerDurationSec < readerDemoMinDurationSec || readerDurationSec > readerDemoMaxDurationSec) {
-    throw new Error(
-      `Reader demo duration ${readerDurationSec.toFixed(2)}s is out of range ${readerDemoMinDurationSec}-${readerDemoMaxDurationSec}s for ${readerDemoSample.id}`,
-    );
-  }
-
-  const chapterManifestEntries = [];
-  for (const chapter of virtualReaderBook.chapters) {
-    const chapterOutName = `${chapter.id}.wav`;
-    const chapterOutPath = path.join(readerDir, chapterOutName);
-
-    console.log(`[app-demos] generating reader chapter: ${chapter.id} (${chapter.voice})`);
-    const chapterAudio = await requestAudio({
-      mode: 'studio',
-      text: chapter.text,
-      voice: chapter.voice,
-      language: virtualReaderBook.locale,
-      engine: defaultEngine,
-      speed: 1,
-    }, `reader-chapter:${chapter.id}`);
-    await fs.writeFile(chapterOutPath, chapterAudio);
-
-    const chapterDurationSec = parseWavDurationSeconds(chapterAudio);
-    if (!Number.isFinite(chapterDurationSec)) {
-      throw new Error(`Reader chapter duration could not be parsed from generated WAV: ${chapter.id}`);
-    }
-
-    if (chapterDurationSec < readerChapterMinDurationSec || chapterDurationSec > readerChapterMaxDurationSec) {
-      throw new Error(
-        `Reader chapter duration ${chapterDurationSec.toFixed(2)}s is out of range ${readerChapterMinDurationSec}-${readerChapterMaxDurationSec}s for ${chapter.id}`,
-      );
-    }
-
-    chapterManifestEntries.push({
-      id: chapter.id,
-      order: chapter.order,
-      title: chapter.title,
-      summary: chapter.summary,
-      cue: chapter.cue,
-      audioSrc: `/audio/reader-demo/${chapterOutName}`,
-      durationSec: Number(chapterDurationSec.toFixed(2)),
-      script: chapter.text,
-      generatedWith: {
-        source: 'app-studio-api',
-        endpoint: '/api/v1/studio/tts/stream',
-        engine: defaultEngine,
-        voiceName: chapter.voice,
-        payloadLanguage: virtualReaderBook.locale,
-        speed: 1,
-      },
-    });
-  }
-
   const generatedAt = new Date().toISOString();
 
   const singleManifest = {
@@ -680,62 +613,16 @@ const run = async () => {
   const multiManifest = {
     generatedAt,
     engine: 'App studio multi-speaker',
-    selectionNote: 'Generated through app studio synth API with Aryan/Puck, Neha/Kore, Raj/Charon, Priya/Zephyr.',
+    selectionNote: 'Generated through app studio synth API with expanded global voice cast.',
     featuredIds: multiManifestEntries.map((entry) => entry.id),
     entries: multiManifestEntries,
   };
 
-  const readerManifest = {
-    generatedAt,
-    runtimeSynthesizeUrl: streamUrl,
-    engine: defaultEngine,
-    expectedDurationRangeSec: {
-      min: readerDemoMinDurationSec,
-      max: readerDemoMaxDurationSec,
-    },
-    expectedChapterDurationRangeSec: {
-      min: readerChapterMinDurationSec,
-      max: readerChapterMaxDurationSec,
-    },
-    sample: {
-      id: readerDemoSample.id,
-      title: readerDemoSample.title,
-      summary: readerDemoSample.summary,
-      language: readerDemoSample.language,
-      locale: readerDemoSample.locale,
-      audioSrc: `/audio/reader-demo/${readerOutName}`,
-      posterSrc: readerDemoSample.posterSrc,
-      cue: readerDemoSample.cue,
-      durationSec: Number(readerDurationSec.toFixed(2)),
-      script: readerDemoSample.text,
-      generatedWith: {
-        source: 'app-studio-api',
-        endpoint: '/api/v1/studio/tts/stream',
-        engine: defaultEngine,
-        voiceName: readerDemoSample.voice,
-        payloadLanguage: readerDemoSample.locale,
-        speed: 1,
-      },
-    },
-    virtualBook: {
-      id: virtualReaderBook.id,
-      title: virtualReaderBook.title,
-      author: virtualReaderBook.author,
-      language: virtualReaderBook.language,
-      locale: virtualReaderBook.locale,
-      description: virtualReaderBook.description,
-      coverSrc: virtualReaderBook.coverSrc,
-      totalChapters: virtualReaderBook.chapters.length,
-    },
-    chapters: chapterManifestEntries,
-  };
-
   await writeTextFileWithRetry(path.join(singleDir, 'manifest.json'), `${JSON.stringify(singleManifest, null, 2)}\n`);
   await writeTextFileWithRetry(path.join(multiDir, 'manifest.json'), `${JSON.stringify(multiManifest, null, 2)}\n`);
-  await writeTextFileWithRetry(path.join(readerDir, 'manifest.json'), `${JSON.stringify(readerManifest, null, 2)}\n`);
 
   console.log(
-    `[app-demos] complete: ${singleManifestSamples.length} single + ${multiManifestEntries.length} multi demos + reader sample ${readerDemoSample.id} (${readerDurationSec.toFixed(2)}s) + ${chapterManifestEntries.length} reader chapters from ${virtualReaderBook.id}.`,
+    `[app-demos] complete: ${singleManifestSamples.length} single + ${multiManifestEntries.length} multi demos.`,
   );
 };
 

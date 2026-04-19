@@ -131,7 +131,7 @@ export function MarketingLandingV2({
   readerProof,
 }: MarketingLandingV2Props) {
   const featuredScene = multiSpeakerDemos[0];
-  const singleDemos = singleSpeakerDemos.slice(0, 4);
+  const singleDemos = singleSpeakerDemos.slice(0, 8);
   const multiDemos = multiSpeakerDemos.slice(0, 4);
 
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
