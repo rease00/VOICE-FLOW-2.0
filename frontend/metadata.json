@@ -1,8 +1,0 @@
-{
-  "name": "V FLOW AI",
-  "description": "A text-to-speech application featuring a modern UI, powered by V FLOW AI cloud audio runtime.",
-  "requestFramePermissions": [
-    "microphone",
-    "camera"
-  ]
-}

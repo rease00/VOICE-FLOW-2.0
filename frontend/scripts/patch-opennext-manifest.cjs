@@ -1,1 +1,0 @@
-const fs=require('fs'); const file='frontend/.next/server/middleware-manifest.json'; const m=JSON.parse(fs.readFileSync(file)); m.middleware['/'] = { files: ['server/middleware.js'], name: 'middleware', page: '/', matchers: [{ regexp: '.*', originalSource: '/:path*' }] }; fs.writeFileSync(file, JSON.stringify(m));

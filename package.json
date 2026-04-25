@@ -1,38 +1,10 @@
 {
-  "name": "v-flow-ai-workspace-root",
+  "name": "v-flow-ai-workers-snapshot",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
-  "engines": {
-    "node": ">=20.0.0 <23.0.0"
-  },
   "scripts": {
-    "frontend": "npm --prefix frontend run",
-    "start:frontend": "npm run frontend -- dev:ui",
-    "cloudflare:build": "npm run frontend -- cloudflare:build",
-    "cloudflare:deploy": "npm run frontend -- cloudflare:deploy",
-    "dev": "npm --prefix frontend run dev:ui",
-    "dev:ui": "npm --prefix frontend run dev:ui",
-    "build": "npm --prefix frontend run build",
-    "preview": "npm --prefix frontend run preview",
-    "frontend:verify:single": "npm --prefix frontend run verify:single-frontend",
-    "frontend:clean:artifacts": "npm --prefix frontend run clean:frontend-artifacts",
-    "frontend:build": "npm --prefix frontend run build",
-    "frontend:typecheck": "npm --prefix frontend run typecheck",
-    "frontend:audit:prod": "npm --prefix frontend run audit:prod",
-    "ci:frontend:phase1": "npm run frontend:verify:single && npm run frontend:build && npm run frontend:typecheck && npm run frontend:audit:prod",
-    "ci:frontend:phase2": "npm run ci:frontend:phase1 && npm --prefix frontend run lint && npm --prefix frontend run test:ci",
-    "ci:frontend:phase3": "npm run ci:frontend:phase2 && npm --prefix frontend run e2e:smoke && npm --prefix frontend run perf:lighthouse",
-    "audit:secrets:tracked-config": "node scripts/scan-staged-secrets.mjs",
-    "audit:secrets:staged": "node scripts/scan-staged-secrets.mjs",
-    "audit:secrets": "npm run audit:secrets:staged && npm run audit:secrets:tracked-config",
-    "precommit:secrets": "npm run audit:secrets:staged",
-    "hooks:install": "git config core.hooksPath .githooks"
-  },
-  "dependencies": {
-    "crypto-js": "4.2.0"
-  },
-  "devDependencies": {
-    "@types/crypto-js": "4.2.2"
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
   }
 }

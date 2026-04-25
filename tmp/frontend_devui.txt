@@ -1,5 +1,0 @@
-
-> v-flow-ai-studio@0.0.0 dev:ui
-> node scripts/run-next-dev-with-guard.mjs --turbopack
-
-[frontend-startup-guard] Cannot start next dev on loopback port 3000. Detected frontend-server listening at localhost:3000. Stop the existing frontend server or change PORT.

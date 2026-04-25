@@ -1,4 +1,0 @@
-tmp_dir/*.onnx filter=lfs diff=lfs merge=lfs -text
-tmp_dir/*.onnx.data filter=lfs diff=lfs merge=lfs -text
-backend/tmp_dir/*.onnx filter=lfs diff=lfs merge=lfs -text
-backend/tmp_dir/*.onnx.data filter=lfs diff=lfs merge=lfs -text
