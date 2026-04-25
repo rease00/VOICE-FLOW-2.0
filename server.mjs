@@ -16,6 +16,8 @@ const hopByHopHeaders = new Set([
   'transfer-encoding',
   'upgrade',
 ]);
+const upstreamRequestHeaderBlocklist = new Set(['accept-encoding', 'content-length', 'expect']);
+const upstreamResponseHeaderBlocklist = new Set(['content-encoding', 'content-length']);
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -58,6 +60,12 @@ const readRequestBody = (req) => new Promise((resolve, reject) => {
   req.on('error', reject);
 });
 
+const formatErrorWithCause = (error) => {
+  if (!(error instanceof Error)) return String(error);
+  if (error.cause instanceof Error) return `${error.message} | cause: ${error.cause.message}`;
+  return error.message;
+};
+
 const proxyToUpstream = async (req, res, pathnameWithQuery) => {
   const url = new URL(pathnameWithQuery, upstreamBase);
   const method = req.method || 'GET';
@@ -65,7 +73,7 @@ const proxyToUpstream = async (req, res, pathnameWithQuery) => {
 
   for (const [name, value] of Object.entries(req.headers)) {
     const lower = name.toLowerCase();
-    if (hopByHopHeaders.has(lower) || typeof value === 'undefined') continue;
+    if (hopByHopHeaders.has(lower) || upstreamRequestHeaderBlocklist.has(lower) || typeof value === 'undefined') continue;
     if (Array.isArray(value)) {
       headers.set(name, value.join(', '));
     } else {
@@ -76,16 +84,22 @@ const proxyToUpstream = async (req, res, pathnameWithQuery) => {
   headers.set('host', upstreamBase.host);
 
   const body = method === 'GET' || method === 'HEAD' ? undefined : await readRequestBody(req);
-  const upstreamResponse = await fetch(url, {
-    method,
-    headers,
-    body,
-    redirect: 'manual',
-  });
+  let upstreamResponse;
+  try {
+    upstreamResponse = await fetch(url, {
+      method,
+      headers,
+      body,
+      redirect: 'manual',
+    });
+  } catch (error) {
+    throw new Error(`Proxy fetch failed for ${method} ${url.pathname}: ${formatErrorWithCause(error)}`);
+  }
 
   const responseHeaders = {};
   upstreamResponse.headers.forEach((value, name) => {
-    if (!hopByHopHeaders.has(name.toLowerCase())) {
+    const lower = name.toLowerCase();
+    if (!hopByHopHeaders.has(lower) && !upstreamResponseHeaderBlocklist.has(lower)) {
       responseHeaders[name] = value;
     }
   });
@@ -100,7 +114,7 @@ const proxyToUpstream = async (req, res, pathnameWithQuery) => {
   res.end(Buffer.from(await upstreamResponse.arrayBuffer()));
 };
 
-const resolveCandidatePath = async (urlPathname, allowSpaFallback) => {
+const resolveCandidatePath = async (urlPathname) => {
   const pathname = decodeURIComponent(urlPathname.split('?')[0] || '/');
   const cleanPath = pathname.replace(/\/+$/, '') || '/';
   const directCandidate = safeJoin(`.${cleanPath}`);
@@ -120,29 +134,20 @@ const resolveCandidatePath = async (urlPathname, allowSpaFallback) => {
     return asDirectoryIndex;
   }
 
-  if (allowSpaFallback && !path.extname(cleanPath)) {
-    const rootIndex = safeJoin('index.html');
-    if (rootIndex && await exists(rootIndex)) {
-      return rootIndex;
-    }
-  }
-
   return null;
 };
 
 const serve = async (req, res) => {
   try {
     const requestPath = req.url || '/';
-    const method = req.method || 'GET';
     const pathname = decodeURIComponent(requestPath.split('?')[0] || '/');
-    const allowSpaFallback = method === 'GET' || method === 'HEAD';
 
     if (isApiPath(pathname)) {
       await proxyToUpstream(req, res, requestPath);
       return;
     }
 
-    const candidate = await resolveCandidatePath(requestPath, allowSpaFallback);
+    const candidate = await resolveCandidatePath(requestPath);
     if (!candidate) {
       await proxyToUpstream(req, res, requestPath);
       return;
