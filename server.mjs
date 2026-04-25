@@ -4,6 +4,18 @@ import { promises as fs } from 'node:fs';
 
 const rootDir = process.cwd();
 const port = Number(process.env.PORT || 3000);
+const upstreamOrigin = process.env.UPSTREAM_ORIGIN || 'https://v-flow-ai.1wasim9851229685.workers.dev';
+const upstreamBase = new URL(upstreamOrigin);
+const hopByHopHeaders = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -37,7 +49,58 @@ const safeJoin = (...segments) => {
   return resolved;
 };
 
-const resolveCandidatePath = async (urlPathname) => {
+const isApiPath = (pathname) => pathname === '/api' || pathname.startsWith('/api/');
+
+const readRequestBody = (req) => new Promise((resolve, reject) => {
+  const chunks = [];
+  req.on('data', (chunk) => chunks.push(chunk));
+  req.on('end', () => resolve(Buffer.concat(chunks)));
+  req.on('error', reject);
+});
+
+const proxyToUpstream = async (req, res, pathnameWithQuery) => {
+  const url = new URL(pathnameWithQuery, upstreamBase);
+  const method = req.method || 'GET';
+  const headers = new Headers();
+
+  for (const [name, value] of Object.entries(req.headers)) {
+    const lower = name.toLowerCase();
+    if (hopByHopHeaders.has(lower) || typeof value === 'undefined') continue;
+    if (Array.isArray(value)) {
+      headers.set(name, value.join(', '));
+    } else {
+      headers.set(name, String(value));
+    }
+  }
+
+  headers.set('host', upstreamBase.host);
+
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await readRequestBody(req);
+  const upstreamResponse = await fetch(url, {
+    method,
+    headers,
+    body,
+    redirect: 'manual',
+  });
+
+  const responseHeaders = {};
+  upstreamResponse.headers.forEach((value, name) => {
+    if (!hopByHopHeaders.has(name.toLowerCase())) {
+      responseHeaders[name] = value;
+    }
+  });
+
+  if (typeof upstreamResponse.headers.getSetCookie === 'function') {
+    const setCookies = upstreamResponse.headers.getSetCookie();
+    if (setCookies.length) responseHeaders['set-cookie'] = setCookies;
+  }
+
+  responseHeaders['cache-control'] = responseHeaders['cache-control'] || 'no-store';
+  res.writeHead(upstreamResponse.status, responseHeaders);
+  res.end(Buffer.from(await upstreamResponse.arrayBuffer()));
+};
+
+const resolveCandidatePath = async (urlPathname, allowSpaFallback) => {
   const pathname = decodeURIComponent(urlPathname.split('?')[0] || '/');
   const cleanPath = pathname.replace(/\/+$/, '') || '/';
   const directCandidate = safeJoin(`.${cleanPath}`);
@@ -57,7 +120,7 @@ const resolveCandidatePath = async (urlPathname) => {
     return asDirectoryIndex;
   }
 
-  if (!path.extname(cleanPath)) {
+  if (allowSpaFallback && !path.extname(cleanPath)) {
     const rootIndex = safeJoin('index.html');
     if (rootIndex && await exists(rootIndex)) {
       return rootIndex;
@@ -69,10 +132,19 @@ const resolveCandidatePath = async (urlPathname) => {
 
 const serve = async (req, res) => {
   try {
-    const candidate = await resolveCandidatePath(req.url || '/');
+    const requestPath = req.url || '/';
+    const method = req.method || 'GET';
+    const pathname = decodeURIComponent(requestPath.split('?')[0] || '/');
+    const allowSpaFallback = method === 'GET' || method === 'HEAD';
+
+    if (isApiPath(pathname)) {
+      await proxyToUpstream(req, res, requestPath);
+      return;
+    }
+
+    const candidate = await resolveCandidatePath(requestPath, allowSpaFallback);
     if (!candidate) {
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end('Not Found');
+      await proxyToUpstream(req, res, requestPath);
       return;
     }
 
