@@ -1,0 +1,16 @@
+node_modules/
+_next/
+output/
+audio/
+.playwright-mcp/
+*.html
+*.svg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.ico
+*.wav
+*.mp3
+*.webmanifest
+*.json
