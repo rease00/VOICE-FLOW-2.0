@@ -20,7 +20,6 @@ import {
 } from 'firebase/auth';
 import { useRouter } from 'next/navigation';
 
-import { BrandLogo } from '../../../../components/BrandLogo';
 import { APP_ROUTE_PATHS, resolveSafeInternalNextPath } from '../../../../src/app/navigation';
 import { sanitizeUiText } from '../../../../src/shared/ui/terminology';
 import { resolveAdminProvisioningHint } from '../../../../src/shared/auth/adminProvisioning';
@@ -219,125 +218,221 @@ export function RouteLoginScreen({ nextPath }: RouteLoginScreenProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(84%_74%_at_8%_8%,rgba(71,214,202,0.18),transparent_58%),radial-gradient(78%_70%_at_92%_12%,rgba(47,128,237,0.16),transparent_60%),linear-gradient(165deg,#041321_0%,#071b31_46%,#0b1730_72%,#17161f_100%)] px-4 py-8 text-slate-100">
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-5xl items-center justify-center">
-        <div className="w-full max-w-[36rem] rounded-[2rem] border border-white/10 bg-[linear-gradient(145deg,rgba(6,12,26,0.92),rgba(8,18,34,0.94)_52%,rgba(8,16,33,0.98))] p-6 shadow-[0_28px_90px_rgba(2,6,23,0.52)] sm:p-8">
-          <div className="text-center">
-            <div className="mx-auto mb-4 flex justify-center">
-              <BrandLogo size="lg" tone="light" />
+    <div className="vf-auth-shell relative px-4 py-8 text-slate-100 selection:bg-cyan-300/30">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="vf-login-orb vf-login-orb-a absolute left-[-8rem] top-[-7rem] h-[20rem] w-[20rem] bg-[radial-gradient(circle,rgba(71,214,202,0.22),transparent_66%)]" />
+        <div className="vf-login-orb vf-login-orb-b absolute right-[-6rem] top-[4rem] h-[24rem] w-[24rem] bg-[radial-gradient(circle,rgba(96,72,255,0.20),transparent_68%)]" />
+        <div className="vf-login-orb vf-login-orb-c absolute bottom-[-8rem] left-[18%] h-[22rem] w-[22rem] bg-[radial-gradient(circle,rgba(243,184,107,0.10),transparent_66%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(3,7,18,0)_0%,rgba(3,7,18,0.24)_72%,rgba(3,7,18,0.7)_100%)]" />
+      </div>
+
+      <div className="relative mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-5xl items-center justify-center">
+        <div className="vf-auth-card relative w-full max-w-[36rem] overflow-hidden rounded-[2rem] sm:rounded-[2.1rem]">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(71,214,202,0.10),transparent_34%),radial-gradient(circle_at_100%_16%,rgba(139,92,246,0.12),transparent_28%),linear-gradient(120deg,rgba(255,255,255,0.04),transparent_28%,transparent_72%,rgba(255,255,255,0.02))] opacity-90" />
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.02),transparent_20%,transparent_80%,rgba(255,255,255,0.02))]" />
+          <div className="vf-login-card-shine absolute inset-x-[-20%] top-0 h-24 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.12),transparent)] opacity-50" />
+
+          <div className="relative p-6 sm:p-8">
+            <div className="mb-5 flex justify-center">
+              <img
+                src="/brand-logo.svg"
+                alt="V FLOW AI logo"
+                className="block h-16 w-16 select-none drop-shadow-[0_18px_32px_rgba(71,214,202,0.18)] sm:h-[4.75rem] sm:w-[4.75rem]"
+                draggable={false}
+              />
             </div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-200/80">Secure sign-in</p>
+
+            <p className="vf-auth-chip mx-auto w-fit rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em]">Secure sign-in</p>
             <h1 className="mt-4 text-3xl font-black tracking-tight text-white sm:text-4xl">Welcome back</h1>
             <p className="mt-3 text-sm leading-7 text-slate-300">Sign in to continue into your V FLOW AI workspace.</p>
-          </div>
 
-          <div className="mt-6 grid grid-cols-[1fr,1fr] gap-2 rounded-[1.2rem] border border-white/10 bg-white/[0.03] p-2 text-sm">
-            <div className="rounded-[0.9rem] bg-white/10 px-4 py-3 font-semibold text-white">Login</div>
-            <div className="rounded-[0.9rem] border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-left text-amber-50">
+            <div className="vf-auth-card--nested mt-6 grid grid-cols-[1fr,1fr] gap-2 rounded-[1.2rem] border p-2 text-sm">
+              <div className="rounded-[0.9rem] bg-white/10 px-4 py-3 font-semibold text-white">Login</div>
+              <div className="rounded-[0.9rem] border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-left text-amber-50">
+                <p className="font-semibold">{SIGNUP_DISABLED_TITLE}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-[1.2rem] border border-amber-300/20 bg-amber-400/10 px-4 py-4 text-sm leading-6 text-amber-50">
               <p className="font-semibold">{SIGNUP_DISABLED_TITLE}</p>
+              <p className="mt-1 text-amber-100/90">{SIGNUP_DISABLED_DETAIL}</p>
             </div>
-          </div>
 
-          <div className="mt-4 rounded-[1.2rem] border border-amber-300/20 bg-amber-400/10 px-4 py-4 text-sm leading-6 text-amber-50">
-            <p className="font-semibold">{SIGNUP_DISABLED_TITLE}</p>
-            <p className="mt-1 text-amber-100/90">{SIGNUP_DISABLED_DETAIL}</p>
-          </div>
-
-          {errorMsg ? (
-            <div className="mt-4 flex items-start gap-3 rounded-[1.1rem] border border-rose-300/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-50">
-              <AlertCircle size={16} className="mt-0.5 shrink-0" />
-              <span>{errorMsg}</span>
-            </div>
-          ) : null}
-
-          {infoMsg ? (
-            <div className="mt-4 flex items-start gap-3 rounded-[1.1rem] border border-cyan-300/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-50">
-              <AlertCircle size={16} className="mt-0.5 shrink-0" />
-              <span>{infoMsg}</span>
-            </div>
-          ) : null}
-
-          <form className="mt-5 space-y-4" onSubmit={handleEmailSubmit}>
-            <div>
-              <label htmlFor="route-login-email" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">Email</label>
-              <div className="relative">
-                <input
-                  id="route-login-email"
-                  name="email"
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                  className="w-full rounded-[1rem] border border-white/10 bg-white/[0.04] px-11 py-3 text-sm text-white outline-none transition focus:border-cyan-300/50 focus:ring-2 focus:ring-cyan-300/30"
-                  required
-                />
-                <Mail size={16} className="pointer-events-none absolute left-4 top-3.5 text-[#7E92A8]" />
+            {errorMsg ? (
+              <div className="mt-4 flex items-start gap-3 rounded-[1.1rem] border border-rose-300/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-50">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <span>{errorMsg}</span>
               </div>
-            </div>
+            ) : null}
 
-            <div>
-              <label htmlFor="route-login-password" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">Password</label>
-              <div className="relative">
-                <input
-                  id="route-login-password"
-                  name="password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="Enter password"
-                  autoComplete="current-password"
-                  className="w-full rounded-[1rem] border border-white/10 bg-white/[0.04] px-11 py-3 pr-12 text-sm text-white outline-none transition focus:border-cyan-300/50 focus:ring-2 focus:ring-cyan-300/30"
-                  required
-                />
-                <Lock size={16} className="pointer-events-none absolute left-4 top-3.5 text-[#7E92A8]" />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="absolute right-2 top-2 inline-flex h-10 w-10 items-center justify-center rounded-full text-[#7E92A8] transition hover:text-white"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
+            {infoMsg ? (
+              <div className="mt-4 flex items-start gap-3 rounded-[1.1rem] border border-cyan-300/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-50">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <span>{infoMsg}</span>
               </div>
-              <div className="mt-2 text-right">
-                <button
-                  type="button"
-                  onClick={handleForgotPassword}
-                  disabled={isLoading || isResetting || !email.trim()}
-                  className="text-xs font-semibold text-cyan-200 transition hover:text-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isResetting ? 'Sending reset link...' : 'Forgot password?'}
-                </button>
+            ) : null}
+
+            <form className="mt-5 space-y-4" onSubmit={handleEmailSubmit}>
+              <div>
+                <label htmlFor="route-login-email" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">Email</label>
+                <div className="relative">
+                  <input
+                    id="route-login-email"
+                    name="email"
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                    className="vf-auth-field w-full rounded-[1rem] px-11 py-3 text-sm outline-none transition focus:ring-2 focus:ring-cyan-300/30"
+                    required
+                  />
+                  <Mail size={16} className="pointer-events-none absolute left-4 top-3.5 text-[#7E92A8]" />
+                </div>
               </div>
+
+              <div>
+                <label htmlFor="route-login-password" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-[#9CB1C9]">Password</label>
+                <div className="relative">
+                  <input
+                    id="route-login-password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="Enter password"
+                    autoComplete="current-password"
+                    className="vf-auth-field w-full rounded-[1rem] px-11 py-3 pr-12 text-sm outline-none transition focus:ring-2 focus:ring-cyan-300/30"
+                    required
+                  />
+                  <Lock size={16} className="pointer-events-none absolute left-4 top-3.5 text-[#7E92A8]" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="absolute right-2 top-2 inline-flex h-10 w-10 items-center justify-center rounded-full text-[#7E92A8] transition hover:text-white"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                <div className="mt-2 text-right">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={isLoading || isResetting || !email.trim()}
+                    className="text-xs font-semibold text-cyan-200 transition hover:text-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isResetting ? 'Sending reset link...' : 'Forgot password?'}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading || isResetting}
+                className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#47d6ca] via-[#2f80ed] to-[#f3b86b] px-6 py-3 text-sm font-semibold text-slate-950 shadow-[0_18px_40px_rgba(71,214,202,0.24)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isLoading ? 'Please wait...' : 'Sign In'}
+                {!isLoading ? <ArrowRight size={16} /> : null}
+              </button>
+            </form>
+
+            <div className="my-5 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+              <hr className="vf-auth-divider h-px flex-1 border-none" />
+              Or continue with
+              <hr className="vf-auth-divider h-px flex-1 border-none" />
             </div>
 
             <button
-              type="submit"
-              disabled={isLoading || isResetting}
-              className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#47d6ca] via-[#2f80ed] to-[#f3b86b] px-6 py-3 text-sm font-semibold text-slate-950 shadow-[0_18px_40px_rgba(71,214,202,0.24)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={isLoading}
+              className="inline-flex min-h-12 w-full items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-6 py-3 text-sm font-semibold text-slate-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isLoading ? 'Please wait...' : 'Sign In'}
-              {!isLoading ? <ArrowRight size={16} /> : null}
+              Sign in with Google
             </button>
-          </form>
-
-          <div className="my-5 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
-            <hr className="h-px flex-1 border-none bg-white/10" />
-            Or continue with
-            <hr className="h-px flex-1 border-none bg-white/10" />
           </div>
-
-          <button
-            type="button"
-            onClick={handleGoogleSignIn}
-            disabled={isLoading}
-            className="inline-flex min-h-12 w-full items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-6 py-3 text-sm font-semibold text-slate-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Sign in with Google
-          </button>
         </div>
       </div>
+
+      <style jsx global>{`
+        .vf-login-orb {
+          will-change: transform, opacity;
+          filter: blur(48px);
+          transform-origin: center;
+        }
+
+        .vf-login-orb-a {
+          animation: vfLoginOrbA 18s ease-in-out infinite alternate;
+        }
+
+        .vf-login-orb-b {
+          animation: vfLoginOrbB 22s ease-in-out infinite alternate;
+        }
+
+        .vf-login-orb-c {
+          animation: vfLoginOrbC 24s ease-in-out infinite alternate;
+        }
+
+        .vf-login-card-shine {
+          animation: vfLoginSheen 11s ease-in-out infinite alternate;
+          will-change: transform, opacity;
+        }
+
+        @keyframes vfLoginOrbA {
+          from {
+            transform: translate3d(-1.5rem, -1rem, 0) scale(1);
+            opacity: 0.72;
+          }
+          to {
+            transform: translate3d(2rem, 1.5rem, 0) scale(1.08);
+            opacity: 0.94;
+          }
+        }
+
+        @keyframes vfLoginOrbB {
+          from {
+            transform: translate3d(0, 0, 0) scale(1);
+            opacity: 0.64;
+          }
+          to {
+            transform: translate3d(-2.5rem, 1.5rem, 0) scale(1.06);
+            opacity: 0.88;
+          }
+        }
+
+        @keyframes vfLoginOrbC {
+          from {
+            transform: translate3d(0, 0, 0) scale(1);
+            opacity: 0.24;
+          }
+          to {
+            transform: translate3d(1.5rem, -1rem, 0) scale(1.05);
+            opacity: 0.42;
+          }
+        }
+
+        @keyframes vfLoginSheen {
+          from {
+            transform: translateX(-18%) rotate(-5deg);
+            opacity: 0.28;
+          }
+          50% {
+            opacity: 0.54;
+          }
+          to {
+            transform: translateX(18%) rotate(-5deg);
+            opacity: 0.34;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .vf-login-orb,
+          .vf-login-card-shine {
+            animation: none !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }
