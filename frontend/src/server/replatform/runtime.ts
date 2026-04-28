@@ -19,13 +19,19 @@ export const getReplatformRuntimeSummary = () => {
 
   return {
     active: true,
-    mode: backend.configured ? 'compatibility-shim' : 'nextjs-first',
+    mode: 'cloudflare-native',
+    deploymentTarget: 'cloudflare-workers',
     nextRuntime,
     nodeEnv: String(process.env.NODE_ENV || '').trim() || 'development',
-    cloudRun: {
+    cloudflareWorkers: {
       supported: true,
       standaloneOutput: true,
     },
+    cloudRun: {
+      supported: false,
+      standaloneOutput: true,
+    },
+    nativeLaunchReady: true,
     legacyProxyBase: LEGACY_PROXY_BASE,
     legacyProxyConfigured: backend.configured,
     legacyProxyLocalDevFallbackEnabled: backend.localDevFallbackEnabled,

@@ -8,10 +8,13 @@ export const APP_ROUTE_PATHS = {
   novel: '/app/novel',
   library: '/app/library',
   reader: '/app/reader',
+  readerV2: '/app/reader-v2',
   voices: '/app/voices',
   runs: '/app/runs',
   admin: '/app/admin',
   billing: '/app/billing',
+  settings: '/app/settings',
+  account: '/app/account',
   login: '/app/login',
   onboarding: '/app/onboarding',
   userIdSetup: '/app/user-id-setup',
@@ -33,14 +36,18 @@ const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.novel,
   APP_ROUTE_PATHS.library,
   APP_ROUTE_PATHS.reader,
+  APP_ROUTE_PATHS.readerV2,
   APP_ROUTE_PATHS.voices,
   APP_ROUTE_PATHS.runs,
   APP_ROUTE_PATHS.admin,
   APP_ROUTE_PATHS.billing,
+  APP_ROUTE_PATHS.settings,
+  APP_ROUTE_PATHS.account,
   PUBLIC_ROUTE_PATHS.billing,
   APP_ROUTE_PATHS.onboarding,
   APP_ROUTE_PATHS.profile,
   APP_ROUTE_PATHS.userIdSetup,
+  APP_ROUTE_PATHS.novel,
 ]);
 
 const INTERNAL_NEXT_PATH_PATTERNS = [
@@ -117,15 +124,19 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.novel:
     case APP_ROUTE_PATHS.library:
     case APP_ROUTE_PATHS.reader:
+    case APP_ROUTE_PATHS.readerV2:
     case APP_ROUTE_PATHS.voices:
     case APP_ROUTE_PATHS.runs:
     case APP_ROUTE_PATHS.billing:
     case APP_ROUTE_PATHS.admin:
+    case APP_ROUTE_PATHS.settings:
+    case APP_ROUTE_PATHS.account:
     case APP_ROUTE_PATHS.main:
       return AppScreen.MAIN;
     default:
       if (safePath.startsWith(`${APP_ROUTE_PATHS.library}/`)) return AppScreen.MAIN;
       if (safePath.startsWith(`${APP_ROUTE_PATHS.reader}/`)) return AppScreen.MAIN;
+      if (safePath.startsWith(`${APP_ROUTE_PATHS.readerV2}/`)) return AppScreen.MAIN;
       return null;
   }
 };

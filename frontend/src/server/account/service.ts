@@ -2,12 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 
 import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 
 import type { AccountBillingProfile, AccountEntitlements, AccountUserProfile, SupportConversation, SupportMessage } from '../../../services/accountService';
 import type { NotificationWireItem } from '../../../services/notificationService';
 import { BILLING_PLAN_ROWS } from '../../features/billing/catalog';
 import type { ServerAuthedUserContext } from '../auth/requestAuth.ts';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../firebaseAdmin';
+import { deleteReaderLegalAck } from './readerLegalAck';
 import { analyzeSupportRequest } from '../support/automation';
 
 const firestore = () => getFirebaseAdminFirestore();
@@ -334,23 +336,21 @@ const reserveUserId = async (uid: string, requestedUserId: string, currentUserId
   const normalized = assertValidUserId(requestedUserId);
   if (normalized === currentUserId) return normalized;
 
-  await firestore().runTransaction(async (transaction) => {
-    const nextIndexRef = getUserIdIndexRef(normalized);
-    const existing = await transaction.get(nextIndexRef);
-    const existingUid = asString(existing.data()?.uid);
-    if (existing.exists && existingUid && existingUid !== uid) {
-      throw new Error('That user ID is already taken.');
-    }
+  const existingUid = await readPersistedUserIdOwner(normalized);
+  if (existingUid && existingUid !== uid) {
+    throw new Error('That user ID is already taken.');
+  }
 
-    if (currentUserId && currentUserId !== normalized) {
-      transaction.delete(getUserIdIndexRef(currentUserId));
+  if (currentUserId && currentUserId !== normalized) {
+    const db = await getAccountBillingD1Database();
+    if (db) {
+      await ensureAccountBillingD1Schema(db);
+      await deleteD1UserIdIndex(db, currentUserId, uid);
     }
-    transaction.set(nextIndexRef, {
-      uid,
-      userId: normalized,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  });
+    await getUserIdIndexRef(currentUserId).delete().catch(() => undefined);
+  }
+
+  await writePersistedUserIdIndex(uid, normalized);
 
   return normalized;
 };
@@ -360,13 +360,9 @@ const resolveUniqueBootstrapUserId = async (uid: string, baseCandidate: string):
   for (let attempt = 0; attempt < 25; attempt += 1) {
     const suffix = attempt === 0 ? '' : String(attempt + 1);
     const next = `${candidate}${suffix}`.slice(0, 24);
-    const snapshot = await getUserIdIndexRef(next).get();
-    if (!snapshot.exists || asString(snapshot.data()?.uid) === uid) {
-      await getUserIdIndexRef(next).set({
-        uid,
-        userId: next,
-        updatedAt: new Date().toISOString(),
-      }, { merge: true });
+    const owner = await readPersistedUserIdOwner(next);
+    if (!owner || owner === uid) {
+      await writePersistedUserIdIndex(uid, next);
       return next;
     }
   }
@@ -377,11 +373,11 @@ const ensureAccountProfile = async (
   user: ServerAuthedUserContext,
   options: { autoBootstrap?: boolean } = {}
 ): Promise<AccountUserProfile> => {
-  const profileSnapshot = await getUserProfileRef(user.uid).get();
-  let profile = mergeProfile(user, profileSnapshot.data() as Record<string, unknown> | null);
+  const profileRecord = await readPersistedProfileRecord(user.uid);
+  let profile = mergeProfile(user, profileRecord);
   const nowIso = new Date().toISOString();
 
-  if (!profileSnapshot.exists) {
+  if (!profileRecord) {
     let bootstrappedUserId = '';
     if (!isAdminUser(user) && options.autoBootstrap === true) {
       bootstrappedUserId = await resolveUniqueBootstrapUserId(user.uid, buildSuggestedUserId(user));
@@ -393,7 +389,7 @@ const ensureAccountProfile = async (
       createdAt: nowIso,
       updatedAt: nowIso,
     });
-    await getUserProfileRef(user.uid).set(serializeAccountProfileForFirestore(profile), { merge: true });
+    await writePersistedProfileRecord(profile);
     await syncUserDocument(user.uid, profile);
     return profile;
   }
@@ -411,11 +407,11 @@ const ensureAccountProfile = async (
     patch.status = 'admin';
   }
   if (Object.keys(patch).length > 0) {
-    await getUserProfileRef(user.uid).set(patch, { merge: true });
     profile = {
       ...profile,
       ...(patch as Partial<AccountUserProfile>),
     };
+    await writePersistedProfileRecord(profile);
   }
   await syncUserDocument(user.uid, profile);
   return profile;
@@ -464,6 +460,680 @@ const defaultEntitlementDoc = (uid: string, planKey: PlanConfig['key'] = 'free')
   };
 };
 
+const ACCOUNT_BILLING_D1_TABLES = Object.freeze({
+  profiles: 'account_profiles',
+  userIdIndex: 'account_user_id_index',
+  entitlements: 'account_entitlements',
+  notificationPreferences: 'account_notification_preferences',
+  supportConversations: 'account_support_conversations',
+  supportMessages: 'account_support_messages',
+} as const);
+
+const ACCOUNT_BILLING_D1_SCHEMA = `
+CREATE TABLE IF NOT EXISTS account_profiles (
+  uid TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_user_id_index (
+  user_id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_entitlements (
+  uid TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_notification_preferences (
+  uid TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_support_conversations (
+  conversation_id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS account_support_conversations_uid_updated_at_idx
+  ON account_support_conversations (uid, updated_at DESC, conversation_id DESC);
+CREATE TABLE IF NOT EXISTS account_support_messages (
+  message_id TEXT PRIMARY KEY NOT NULL,
+  conversation_id TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS account_support_messages_conversation_created_at_idx
+  ON account_support_messages (conversation_id, created_at ASC, message_id ASC);
+`;
+
+type AccountBillingD1Statement = {
+  bind: (...values: unknown[]) => AccountBillingD1Statement;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
+  run: () => Promise<unknown>;
+};
+
+type AccountBillingD1Database = {
+  prepare: (sql: string) => AccountBillingD1Statement;
+  exec: (sql: string) => Promise<unknown>;
+};
+
+let accountBillingD1DatabasePromise: Promise<AccountBillingD1Database | null> | null = null;
+let accountBillingD1SchemaPromise: Promise<void> | null = null;
+
+const parsePersistedJsonRecord = (value: string | null | undefined): Record<string, unknown> | null => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const getAccountBillingD1Database = async (): Promise<AccountBillingD1Database | null> => {
+  if (!accountBillingD1DatabasePromise) {
+    accountBillingD1DatabasePromise = (async () => {
+      try {
+        const { env } = await getCloudflareContext({ async: true });
+        const db = (env as { DB?: AccountBillingD1Database }).DB;
+        return db && typeof db.prepare === 'function' ? db : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return accountBillingD1DatabasePromise;
+};
+
+const ensureAccountBillingD1Schema = async (db: AccountBillingD1Database): Promise<void> => {
+  if (!accountBillingD1SchemaPromise) {
+    accountBillingD1SchemaPromise = db.exec(ACCOUNT_BILLING_D1_SCHEMA).then(() => undefined).catch((error: unknown) => {
+      accountBillingD1SchemaPromise = null;
+      throw error;
+    });
+  }
+  await accountBillingD1SchemaPromise;
+};
+
+const readD1JsonRecord = async (
+  db: AccountBillingD1Database,
+  table: string,
+  keyColumn: string,
+  keyValue: string
+): Promise<Record<string, unknown> | null> => {
+  const row = await db.prepare(`SELECT payload_json FROM ${table} WHERE ${keyColumn} = ? LIMIT 1`)
+    .bind(keyValue)
+    .first<{ payload_json?: string }>();
+  return parsePersistedJsonRecord(row?.payload_json || null);
+};
+
+const readD1JsonRows = async (
+  db: AccountBillingD1Database,
+  sql: string,
+  ...values: unknown[]
+): Promise<Record<string, unknown>[]> => {
+  const response = await db.prepare(sql).bind(...values).all<Record<string, unknown>>();
+  return Array.isArray(response?.results) ? response.results : [];
+};
+
+const readD1IndexUid = async (
+  db: AccountBillingD1Database,
+  userId: string
+): Promise<string> => {
+  const row = await db.prepare(`SELECT uid FROM ${ACCOUNT_BILLING_D1_TABLES.userIdIndex} WHERE user_id = ? LIMIT 1`)
+    .bind(userId)
+    .first<{ uid?: string }>();
+  return asString(row?.uid);
+};
+
+const writeD1JsonRecord = async (
+  db: AccountBillingD1Database,
+  table: string,
+  keyColumn: string,
+  keyValue: string,
+  payload: Record<string, unknown>,
+  updatedAt = new Date().toISOString()
+): Promise<void> => {
+  await db.prepare(`
+    INSERT INTO ${table} (${keyColumn}, payload_json, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(${keyColumn}) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at
+  `)
+    .bind(keyValue, JSON.stringify(payload), updatedAt)
+    .run();
+};
+
+const deleteD1JsonRecord = async (
+  db: AccountBillingD1Database,
+  table: string,
+  keyColumn: string,
+  keyValue: string
+): Promise<void> => {
+  await db.prepare(`DELETE FROM ${table} WHERE ${keyColumn} = ?`)
+    .bind(keyValue)
+    .run();
+};
+
+const writeD1UserIdIndex = async (db: AccountBillingD1Database, uid: string, userId: string, updatedAt = new Date().toISOString()): Promise<void> => {
+  await db.prepare(`
+    INSERT INTO ${ACCOUNT_BILLING_D1_TABLES.userIdIndex} (user_id, uid, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      uid = excluded.uid,
+      updated_at = excluded.updated_at
+  `)
+    .bind(userId, uid, updatedAt)
+    .run();
+};
+
+const deleteD1UserIdIndex = async (db: AccountBillingD1Database, userId: string, uid: string): Promise<void> => {
+  await db.prepare(`
+    DELETE FROM ${ACCOUNT_BILLING_D1_TABLES.userIdIndex}
+    WHERE user_id = ? AND uid = ?
+  `)
+    .bind(userId, uid)
+    .run();
+};
+
+const buildNotificationPreferencesDefaults = (user: ServerAuthedUserContext): Record<string, unknown> => ({
+  uid: user.uid,
+  emailAsyncJobs: true,
+  emailBilling: true,
+  emailSupport: true,
+  emailAdminAlerts: isAdminUser(user),
+  updatedAt: new Date().toISOString(),
+});
+
+const normalizeNotificationPreferencesRecord = (
+  user: ServerAuthedUserContext,
+  value: Record<string, unknown> | null | undefined
+): Record<string, unknown> => {
+  const defaults = buildNotificationPreferencesDefaults(user);
+  if (!value) return defaults;
+  return {
+    uid: user.uid,
+    emailAsyncJobs: value.emailAsyncJobs === undefined ? defaults.emailAsyncJobs : Boolean(value.emailAsyncJobs),
+    emailBilling: value.emailBilling === undefined ? defaults.emailBilling : Boolean(value.emailBilling),
+    emailSupport: value.emailSupport === undefined ? defaults.emailSupport : Boolean(value.emailSupport),
+    emailAdminAlerts: value.emailAdminAlerts === undefined
+      ? defaults.emailAdminAlerts
+      : (isAdminUser(user) && Boolean(value.emailAdminAlerts)),
+    updatedAt: asString(value.updatedAt) || asString(value.updated_at) || defaults.updatedAt,
+  };
+};
+
+const readPersistedNotificationPreferences = async (user: ServerAuthedUserContext): Promise<Record<string, unknown>> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Record = await readD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.notificationPreferences, 'uid', user.uid);
+    if (d1Record) {
+      const normalized = normalizeNotificationPreferencesRecord(user, d1Record);
+      await firestore().collection(COLLECTIONS.notificationPreferences).doc(user.uid).set(normalized, { merge: true });
+      return normalized;
+    }
+  }
+
+  const snapshot = await firestore().collection(COLLECTIONS.notificationPreferences).doc(user.uid).get();
+  const firestoreRecord = snapshot.exists ? (snapshot.data() as Record<string, unknown>) : null;
+  if (db && firestoreRecord) {
+    const normalized = normalizeNotificationPreferencesRecord(user, firestoreRecord);
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.notificationPreferences, 'uid', user.uid, normalized, asString(normalized.updatedAt) || new Date().toISOString());
+    return normalized;
+  }
+
+  return normalizeNotificationPreferencesRecord(user, firestoreRecord);
+};
+
+const persistNotificationPreferences = async (user: ServerAuthedUserContext, preferences: Record<string, unknown>): Promise<Record<string, unknown>> => {
+  const normalized = normalizeNotificationPreferencesRecord(user, preferences);
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.notificationPreferences, 'uid', user.uid, normalized, asString(normalized.updatedAt) || new Date().toISOString());
+  }
+  await firestore().collection(COLLECTIONS.notificationPreferences).doc(user.uid).set(normalized, { merge: true });
+  return normalized;
+};
+
+const deletePersistedNotificationPreferences = async (uid: string): Promise<number> => {
+  let deletedCount = 0;
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Record = await readD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.notificationPreferences, 'uid', uid);
+    if (d1Record) {
+      deletedCount = 1;
+    }
+    await deleteD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.notificationPreferences, 'uid', uid);
+  }
+  const snapshot = await firestore().collection(COLLECTIONS.notificationPreferences).doc(uid).get();
+  if (snapshot.exists) {
+    deletedCount = 1;
+    await firestore().collection(COLLECTIONS.notificationPreferences).doc(uid).delete().catch(() => undefined);
+  }
+  return deletedCount;
+};
+
+const normalizeSupportConversationRecord = (
+  conversationId: string,
+  data: Record<string, unknown>
+): SupportConversation => ({
+  conversationId,
+  uid: asString(data.uid),
+  userId: asString(data.userId),
+  status: asString(data.status) || 'open',
+  priority: asString(data.priority) || 'yellow',
+  lastMessageAt: toIsoString(data.lastMessageAt) || undefined,
+  assignedTo: asString(data.assignedTo) || undefined,
+  updatedAt: toIsoString(data.updatedAt) || undefined,
+});
+
+const normalizeSupportMessageRecord = (
+  messageId: string,
+  data: Record<string, unknown>
+): SupportMessage => ({
+  messageId,
+  conversationId: asString(data.conversationId),
+  fromType: asString(data.fromType) || 'user',
+  uid: asString(data.uid) || undefined,
+  userId: asString(data.userId) || undefined,
+  text: asString(data.text),
+  createdAt: toIsoString(data.createdAt) || undefined,
+});
+
+const readPersistedSupportConversationById = async (conversationId: string): Promise<SupportConversation | null> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const row = await db.prepare(`SELECT conversation_id, uid, payload_json, updated_at FROM ${ACCOUNT_BILLING_D1_TABLES.supportConversations} WHERE conversation_id = ? LIMIT 1`)
+      .bind(conversationId)
+      .first<{ conversation_id?: string; uid?: string; payload_json?: string; updated_at?: string }>();
+    const payload = parsePersistedJsonRecord(row?.payload_json || null);
+    if (payload && row?.conversation_id) {
+      const conversation = normalizeSupportConversationRecord(row.conversation_id, payload);
+      await firestore().collection(COLLECTIONS.supportConversations).doc(conversationId).set({
+        ...payload,
+        updatedAt: conversation.updatedAt || asString(row.updated_at) || new Date().toISOString(),
+      }, { merge: true });
+      return conversation;
+    }
+  }
+
+  const snapshot = await firestore().collection(COLLECTIONS.supportConversations).doc(conversationId).get();
+  if (!snapshot.exists) return null;
+  const data = snapshot.data() as Record<string, unknown>;
+  const conversation = normalizeSupportConversationRecord(conversationId, data);
+  if (db) {
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.supportConversations, 'conversation_id', conversationId, {
+      ...data,
+      updatedAt: conversation.updatedAt || new Date().toISOString(),
+    }, conversation.updatedAt || new Date().toISOString());
+  }
+  return conversation;
+};
+
+const readPersistedSupportConversations = async (user: ServerAuthedUserContext, limit: number): Promise<SupportConversation[]> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT conversation_id, uid, payload_json, updated_at FROM ${ACCOUNT_BILLING_D1_TABLES.supportConversations} WHERE uid = ? ORDER BY updated_at DESC, conversation_id DESC LIMIT ?`,
+      user.uid,
+      limit
+    );
+    if (rows.length > 0) {
+      const conversations = rows
+        .map((row) => {
+          const conversationId = asString(row.conversation_id);
+          const payload = parsePersistedJsonRecord(asString(row.payload_json));
+          return conversationId && payload ? normalizeSupportConversationRecord(conversationId, payload) : null;
+        })
+        .filter((item): item is SupportConversation => Boolean(item));
+      await Promise.all(conversations.map(async (conversation) => {
+        const payload = rows.find((row) => asString(row.conversation_id) === conversation.conversationId);
+        const parsed = parsePersistedJsonRecord(asString(payload?.payload_json));
+        if (parsed) {
+          await firestore().collection(COLLECTIONS.supportConversations).doc(conversation.conversationId).set({
+            ...parsed,
+            updatedAt: conversation.updatedAt || new Date().toISOString(),
+          }, { merge: true });
+        }
+      }));
+      return conversations;
+    }
+  }
+
+  const snapshot = await firestore().collection(COLLECTIONS.supportConversations).where('uid', '==', user.uid).limit(limit).get();
+  const conversations = snapshot.docs
+    .map((doc) => normalizeSupportConversation(doc as QueryDocumentSnapshot))
+    .sort((left, right) => asNumber(Date.parse(String(right.updatedAt || ''))) - asNumber(Date.parse(String(left.updatedAt || ''))));
+  if (db && conversations.length > 0) {
+    await Promise.all(conversations.map((conversation) => writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.supportConversations, 'conversation_id', conversation.conversationId, {
+      uid: conversation.uid,
+      userId: conversation.userId || '',
+      status: conversation.status,
+      priority: conversation.priority,
+      lastMessageAt: conversation.lastMessageAt || null,
+      assignedTo: conversation.assignedTo || null,
+      updatedAt: conversation.updatedAt || new Date().toISOString(),
+    }, conversation.updatedAt || new Date().toISOString())));
+  }
+  return conversations;
+};
+
+const readPersistedSupportMessages = async (conversationId: string): Promise<SupportMessage[]> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT message_id, conversation_id, uid, payload_json, created_at FROM ${ACCOUNT_BILLING_D1_TABLES.supportMessages} WHERE conversation_id = ? ORDER BY created_at ASC, message_id ASC`,
+      conversationId
+    );
+    if (rows.length > 0) {
+      const messages = rows
+        .map((row) => {
+          const messageId = asString(row.message_id);
+          const payload = parsePersistedJsonRecord(asString(row.payload_json));
+          return messageId && payload ? normalizeSupportMessageRecord(messageId, payload) : null;
+        })
+        .filter((item): item is SupportMessage => Boolean(item));
+      await Promise.all(messages.map((message) => firestore().collection(COLLECTIONS.supportMessages).doc(message.messageId).set({
+        conversationId: message.conversationId,
+        uid: message.uid || '',
+        userId: message.userId || '',
+        fromType: message.fromType,
+        text: message.text,
+        createdAt: message.createdAt || new Date().toISOString(),
+      }, { merge: true })));
+      return messages;
+    }
+  }
+
+  const snapshot = await firestore().collection(COLLECTIONS.supportMessages).where('conversationId', '==', conversationId).get();
+  const messages = snapshot.docs
+    .map((doc) => normalizeSupportMessage(doc as QueryDocumentSnapshot))
+    .sort((left, right) => asNumber(Date.parse(String(left.createdAt || ''))) - asNumber(Date.parse(String(right.createdAt || ''))));
+  if (db && messages.length > 0) {
+    await Promise.all(messages.map((message) => writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.supportMessages, 'message_id', message.messageId, {
+      conversationId: message.conversationId,
+      uid: message.uid || '',
+      userId: message.userId || '',
+      fromType: message.fromType,
+      text: message.text,
+      createdAt: message.createdAt || new Date().toISOString(),
+    }, message.createdAt || new Date().toISOString())));
+  }
+  return messages;
+};
+
+const persistSupportConversation = async (
+  conversationId: string,
+  payload: Record<string, unknown>
+): Promise<void> => {
+  const normalizedPayload = {
+    ...payload,
+    updatedAt: asString(payload.updatedAt) || new Date().toISOString(),
+  };
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.supportConversations, 'conversation_id', conversationId, normalizedPayload, asString(normalizedPayload.updatedAt) || new Date().toISOString());
+  }
+  await firestore().collection(COLLECTIONS.supportConversations).doc(conversationId).set(normalizedPayload, { merge: true });
+};
+
+const persistSupportMessage = async (
+  messageId: string,
+  payload: Record<string, unknown>
+): Promise<void> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.supportMessages, 'message_id', messageId, payload, asString(payload.createdAt) || new Date().toISOString());
+  }
+  await firestore().collection(COLLECTIONS.supportMessages).doc(messageId).set(payload, { merge: true });
+};
+
+const deletePersistedSupportConversations = async (uid: string): Promise<number> => {
+  let deletedCount = 0;
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT conversation_id, uid, payload_json, updated_at FROM ${ACCOUNT_BILLING_D1_TABLES.supportConversations} WHERE uid = ?`,
+      uid
+    );
+    deletedCount = rows.length;
+    await db.prepare(`DELETE FROM ${ACCOUNT_BILLING_D1_TABLES.supportConversations} WHERE uid = ?`)
+      .bind(uid)
+      .run();
+  }
+  const snapshot = await firestore().collection(COLLECTIONS.supportConversations).where('uid', '==', uid).get();
+  if (!snapshot.empty) {
+    deletedCount = Math.max(deletedCount, snapshot.docs.length);
+    await Promise.all(snapshot.docs.map((doc) => doc.ref.delete().catch(() => undefined)));
+  }
+  return deletedCount;
+};
+
+const deletePersistedSupportMessages = async (uid: string): Promise<number> => {
+  let deletedCount = 0;
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT message_id, conversation_id, uid, payload_json, created_at FROM ${ACCOUNT_BILLING_D1_TABLES.supportMessages} WHERE uid = ?`,
+      uid
+    );
+    deletedCount = rows.length;
+    await db.prepare(`DELETE FROM ${ACCOUNT_BILLING_D1_TABLES.supportMessages} WHERE uid = ?`)
+      .bind(uid)
+      .run();
+  }
+  const snapshot = await firestore().collection(COLLECTIONS.supportMessages).where('uid', '==', uid).get();
+  if (!snapshot.empty) {
+    deletedCount = Math.max(deletedCount, snapshot.docs.length);
+    await Promise.all(snapshot.docs.map((doc) => doc.ref.delete().catch(() => undefined)));
+  }
+  return deletedCount;
+};
+
+const readPersistedProfileRecord = async (uid: string): Promise<Record<string, unknown> | null> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Record = await readD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.profiles, 'uid', uid);
+    if (d1Record) {
+      await getUserProfileRef(uid).set(d1Record, { merge: true });
+      return d1Record;
+    }
+  }
+
+  const snapshot = await getUserProfileRef(uid).get();
+  const firestoreRecord = snapshot.exists ? (snapshot.data() as Record<string, unknown>) : null;
+  if (db && firestoreRecord) {
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.profiles, 'uid', uid, firestoreRecord, asString(firestoreRecord.updatedAt) || new Date().toISOString());
+  }
+  return firestoreRecord;
+};
+
+const writePersistedProfileRecord = async (profile: AccountUserProfile): Promise<void> => {
+  const payload = serializeAccountProfileForFirestore(profile);
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.profiles, 'uid', profile.uid, payload, profile.updatedAt || new Date().toISOString());
+  }
+  await getUserProfileRef(profile.uid).set(payload, { merge: true });
+};
+
+const readPersistedUserIdOwner = async (userId: string): Promise<string> => {
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Owner = await readD1IndexUid(db, userId);
+    if (d1Owner) {
+      await getUserIdIndexRef(userId).set({
+        uid: d1Owner,
+        userId,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      return d1Owner;
+    }
+  }
+
+  const snapshot = await getUserIdIndexRef(userId).get();
+  const firestoreOwner = snapshot.exists ? asString(snapshot.data()?.uid) : '';
+  if (db && firestoreOwner) {
+    await writeD1UserIdIndex(db, firestoreOwner, userId, asString(snapshot.data()?.updatedAt) || new Date().toISOString());
+  }
+  return firestoreOwner;
+};
+
+const writePersistedUserIdIndex = async (uid: string, userId: string): Promise<void> => {
+  const updatedAt = new Date().toISOString();
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    await writeD1UserIdIndex(db, uid, userId, updatedAt);
+  }
+  await getUserIdIndexRef(userId).set({
+    uid,
+    userId,
+    updatedAt,
+  }, { merge: true });
+};
+
+const deletePersistedUserIdIndex = async (uid: string, userId: string): Promise<number> => {
+  let deletedCount = 0;
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Owner = await readD1IndexUid(db, userId);
+    if (d1Owner === uid) {
+      deletedCount = 1;
+    }
+    await deleteD1UserIdIndex(db, userId, uid);
+  }
+  const snapshot = await getUserIdIndexRef(userId).get();
+  if (snapshot.exists) {
+    deletedCount = 1;
+    await getUserIdIndexRef(userId).delete().catch(() => undefined);
+  }
+  return deletedCount;
+};
+
+const deletePersistedProfileRecord = async (uid: string): Promise<number> => {
+  let deletedCount = 0;
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Record = await readD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.profiles, 'uid', uid);
+    if (d1Record) {
+      deletedCount = 1;
+    }
+    await deleteD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.profiles, 'uid', uid);
+  }
+  const snapshot = await getUserProfileRef(uid).get();
+  if (snapshot.exists) {
+    deletedCount = 1;
+    await getUserProfileRef(uid).delete().catch(() => undefined);
+  }
+  return deletedCount;
+};
+
+const deletePersistedEntitlementRecord = async (uid: string): Promise<number> => {
+  let deletedCount = 0;
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Record = await readD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.entitlements, 'uid', uid);
+    if (d1Record) {
+      deletedCount = 1;
+    }
+    await deleteD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.entitlements, 'uid', uid);
+  }
+  const snapshot = await firestore().collection(COLLECTIONS.entitlements).doc(uid).get();
+  if (snapshot.exists) {
+    deletedCount = 1;
+    await firestore().collection(COLLECTIONS.entitlements).doc(uid).delete().catch(() => undefined);
+  }
+  return deletedCount;
+};
+
+const persistEntitlementRecord = async (uid: string, entitlementDoc: Record<string, unknown>): Promise<void> => {
+  const updatedAt = asString(entitlementDoc.updatedAt) || new Date().toISOString();
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.entitlements, 'uid', uid, entitlementDoc, updatedAt);
+  }
+  await firestore().collection(COLLECTIONS.entitlements).doc(uid).set(entitlementDoc, { merge: true });
+};
+
+const readPersistedEntitlementRecord = async (
+  uid: string,
+  planFallback: PlanConfig['key']
+): Promise<Record<string, unknown>> => {
+  const defaultDoc = defaultEntitlementDoc(uid, planFallback);
+  const db = await getAccountBillingD1Database();
+  if (db) {
+    await ensureAccountBillingD1Schema(db);
+    const d1Record = await readD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.entitlements, 'uid', uid);
+    if (d1Record) {
+      const merged = { ...defaultDoc, ...d1Record };
+      await firestore().collection(COLLECTIONS.entitlements).doc(uid).set(merged, { merge: true });
+      return merged;
+    }
+  }
+
+  const snapshot = await firestore().collection(COLLECTIONS.entitlements).doc(uid).get();
+  const firestoreRecord = snapshot.exists ? (snapshot.data() || {}) as Record<string, unknown> : null;
+  if (firestoreRecord) {
+    const merged = { ...defaultDoc, ...firestoreRecord };
+    if (db) {
+      await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.entitlements, 'uid', uid, merged, asString(merged.updatedAt) || new Date().toISOString());
+    }
+    return merged;
+  }
+
+  if (db) {
+    await writeD1JsonRecord(db, ACCOUNT_BILLING_D1_TABLES.entitlements, 'uid', uid, defaultDoc, asString(defaultDoc.updatedAt) || new Date().toISOString());
+  }
+  await firestore().collection(COLLECTIONS.entitlements).doc(uid).set(defaultDoc, { merge: true });
+  return defaultDoc;
+};
+
+export const updateAccountEntitlements = async (
+  uid: string,
+  patch: Record<string, unknown>,
+  planFallback: PlanConfig['key'] = 'free'
+): Promise<Record<string, unknown>> => {
+  const current = await readPersistedEntitlementRecord(uid, planFallback);
+  const next = {
+    ...current,
+    ...patch,
+    uid,
+    updatedAt: new Date().toISOString(),
+  };
+  await persistEntitlementRecord(uid, next);
+  return next;
+};
+
 const readUsageDocForPeriod = async (
   collectionName: string,
   uid: string,
@@ -496,14 +1166,7 @@ const normalizeByEngineUsage = (value: unknown): Record<'VECTOR' | 'PRIME', { ch
 export const getAccountEntitlements = async (user: ServerAuthedUserContext): Promise<AccountEntitlements> => {
   const now = currentUtc();
   const planFallback = getPlanConfig(user.userData?.plan);
-  const entitlementsRef = firestore().collection(COLLECTIONS.entitlements).doc(user.uid);
-  const snapshot = await entitlementsRef.get();
-  const entitlementDoc: Record<string, unknown> = snapshot.exists
-    ? { ...defaultEntitlementDoc(user.uid, planFallback.key), ...(snapshot.data() || {}) }
-    : defaultEntitlementDoc(user.uid, planFallback.key);
-  if (!snapshot.exists) {
-    await entitlementsRef.set(entitlementDoc, { merge: true });
-  }
+  const entitlementDoc = await readPersistedEntitlementRecord(user.uid, planFallback.key);
 
   const plan = getPlanConfig(entitlementDoc.plan);
   const monthKey = toMonthKey(now);
@@ -776,20 +1439,7 @@ export const dismissAllNotifications = async (user: ServerAuthedUserContext): Pr
   patchAllNotifications(user.uid, { dismissedAt: new Date().toISOString() });
 
 export const getNotificationPreferences = async (user: ServerAuthedUserContext): Promise<Record<string, unknown>> => {
-  const defaults = {
-    uid: user.uid,
-    emailAsyncJobs: true,
-    emailBilling: true,
-    emailSupport: true,
-    emailAdminAlerts: isAdminUser(user),
-    updatedAt: new Date().toISOString(),
-  };
-  const snapshot = await firestore().collection(COLLECTIONS.notificationPreferences).doc(user.uid).get();
-  return {
-    ...defaults,
-    ...(snapshot.data() || {}),
-    uid: user.uid,
-  };
+  return readPersistedNotificationPreferences(user);
 };
 
 export const patchNotificationPreferences = async (
@@ -805,53 +1455,27 @@ export const patchNotificationPreferences = async (
     emailAdminAlerts: patch.emailAdminAlerts === undefined ? current.emailAdminAlerts : (isAdminUser(user) && Boolean(patch.emailAdminAlerts)),
     updatedAt: new Date().toISOString(),
   };
-  await firestore().collection(COLLECTIONS.notificationPreferences).doc(user.uid).set(next, { merge: true });
-  return next;
+  return persistNotificationPreferences(user, next);
 };
 
-const normalizeSupportConversation = (snapshot: QueryDocumentSnapshot): SupportConversation => {
-  const data = snapshot.data() as Record<string, unknown>;
-  return {
-    conversationId: snapshot.id,
-    uid: asString(data.uid),
-    userId: asString(data.userId),
-    status: asString(data.status) || 'open',
-    priority: asString(data.priority) || 'yellow',
-    lastMessageAt: toIsoString(data.lastMessageAt) || undefined,
-    assignedTo: asString(data.assignedTo) || undefined,
-    updatedAt: toIsoString(data.updatedAt) || undefined,
-  };
-};
+const normalizeSupportConversation = (snapshot: QueryDocumentSnapshot): SupportConversation =>
+  normalizeSupportConversationRecord(snapshot.id, snapshot.data() as Record<string, unknown>);
 
-const normalizeSupportMessage = (snapshot: QueryDocumentSnapshot): SupportMessage => {
-  const data = snapshot.data() as Record<string, unknown>;
-  return {
-    messageId: snapshot.id,
-    conversationId: asString(data.conversationId),
-    fromType: asString(data.fromType) || 'user',
-    uid: asString(data.uid) || undefined,
-    userId: asString(data.userId) || undefined,
-    text: asString(data.text),
-    createdAt: toIsoString(data.createdAt) || undefined,
-  };
-};
+const normalizeSupportMessage = (snapshot: QueryDocumentSnapshot): SupportMessage =>
+  normalizeSupportMessageRecord(snapshot.id, snapshot.data() as Record<string, unknown>);
 
 export const listSupportConversations = async (user: ServerAuthedUserContext, limit = 100): Promise<SupportConversation[]> => {
   const safeLimit = Math.max(1, Math.min(300, asPositiveInt(limit, 100)));
-  const snapshot = await firestore().collection(COLLECTIONS.supportConversations).where('uid', '==', user.uid).limit(safeLimit).get();
-  return snapshot.docs
-    .map((doc) => normalizeSupportConversation(doc))
-    .sort((left, right) => asNumber(Date.parse(String(right.updatedAt || ''))) - asNumber(Date.parse(String(left.updatedAt || ''))));
+  return readPersistedSupportConversations(user, safeLimit);
 };
 
-const assertConversationOwnership = async (uid: string, conversationId: string): Promise<QueryDocumentSnapshot | null> => {
-  const ref = firestore().collection(COLLECTIONS.supportConversations).doc(conversationId);
-  const snapshot = await ref.get();
-  if (!snapshot.exists) return null;
-  if (asString(snapshot.data()?.uid) !== uid) {
+const assertConversationOwnership = async (uid: string, conversationId: string): Promise<SupportConversation | null> => {
+  const conversation = await readPersistedSupportConversationById(conversationId);
+  if (!conversation) return null;
+  if (asString(conversation.uid) !== uid) {
     throw new Error('Support conversation not found.');
   }
-  return snapshot as QueryDocumentSnapshot;
+  return conversation;
 };
 
 export const createSupportMessage = async (
@@ -874,21 +1498,20 @@ export const createSupportMessage = async (
     ],
   });
   const conversationId = asString(input.conversationId) || randomUUID();
-  const conversationRef = firestore().collection(COLLECTIONS.supportConversations).doc(conversationId);
-  const existing = await conversationRef.get();
-  if (existing.exists && asString(existing.data()?.uid) !== user.uid) {
+  const existing = await readPersistedSupportConversationById(conversationId);
+  if (existing && asString(existing.uid) !== user.uid) {
     throw new Error('Support conversation not found.');
   }
 
   const nowIso = new Date().toISOString();
-  await conversationRef.set({
+  const conversationPayload = {
     uid: user.uid,
     userId: userProfile.userId || '',
-    status: existing.exists
-      ? (asString(existing.data()?.status) || (automation.needsHuman ? 'needs_human' : 'open'))
+    status: existing
+      ? (asString(existing.status) || (automation.needsHuman ? 'needs_human' : 'open'))
       : (automation.needsHuman ? 'needs_human' : 'open'),
-    priority: existing.exists
-      ? (asString(existing.data()?.priority) || automation.priority)
+    priority: existing
+      ? (asString(existing.priority) || automation.priority)
       : automation.priority,
     category: automation.category,
     lastMessagePreview: text.slice(0, 240),
@@ -910,26 +1533,24 @@ export const createSupportMessage = async (
     automationUpdatedAt: nowIso,
     updatedAt: nowIso,
     lastMessageAt: nowIso,
-  }, { merge: true });
+  };
+  await persistSupportConversation(conversationId, conversationPayload);
 
   const messageRef = firestore().collection(COLLECTIONS.supportMessages).doc(randomUUID());
-  await messageRef.set({
+  const messagePayload = {
     conversationId,
     uid: user.uid,
     userId: userProfile.userId || '',
     fromType: 'user',
     text,
     createdAt: nowIso,
-  }, { merge: true });
+  };
+  await persistSupportMessage(messageRef.id, messagePayload);
 
-  const messagesSnapshot = await firestore().collection(COLLECTIONS.supportMessages).where('conversationId', '==', conversationId).get();
-  const messages = messagesSnapshot.docs
-    .map((doc) => normalizeSupportMessage(doc))
-    .sort((left, right) => asNumber(Date.parse(String(left.createdAt || ''))) - asNumber(Date.parse(String(right.createdAt || ''))));
-
-  const conversationDoc = await conversationRef.get();
+  const messages = await readPersistedSupportMessages(conversationId);
+  const conversationDoc = await readPersistedSupportConversationById(conversationId);
   return {
-    conversation: normalizeSupportConversation(conversationDoc as QueryDocumentSnapshot),
+    conversation: conversationDoc || normalizeSupportConversationRecord(conversationId, conversationPayload),
     messages,
     aiMode: automation.mode,
     aiReason: automation.reason,
@@ -940,15 +1561,16 @@ export const markConversationStillUnresolved = async (
   user: ServerAuthedUserContext,
   conversationId: string
 ): Promise<SupportConversation | null> => {
-  const snapshot = await assertConversationOwnership(user.uid, conversationId);
-  if (!snapshot) return null;
-  await snapshot.ref.set({
+  const conversation = await assertConversationOwnership(user.uid, conversationId);
+  if (!conversation) return null;
+  await persistSupportConversation(conversationId, {
+    ...conversation,
     status: 'needs_human',
     priority: 'yellow',
     updatedAt: new Date().toISOString(),
-  }, { merge: true });
-  const next = await snapshot.ref.get();
-  return next.exists ? normalizeSupportConversation(next as QueryDocumentSnapshot) : null;
+  });
+  const next = await readPersistedSupportConversationById(conversationId);
+  return next;
 };
 
 const deleteDirectDoc = async (collectionName: string, docId: string): Promise<number> => {
@@ -1007,22 +1629,22 @@ export const deleteUserAccount = async (
     }
   };
 
-  await track(COLLECTIONS.entitlements, () => deleteDirectDoc(COLLECTIONS.entitlements, user.uid));
+  await track(COLLECTIONS.entitlements, () => deletePersistedEntitlementRecord(user.uid));
   await track(COLLECTIONS.users, () => deleteDirectDoc(COLLECTIONS.users, user.uid));
-  await track(COLLECTIONS.userProfiles, () => deleteDirectDoc(COLLECTIONS.userProfiles, user.uid));
+  await track(COLLECTIONS.userProfiles, () => deletePersistedProfileRecord(user.uid));
   await track(COLLECTIONS.generationHistory, () => deleteDirectDoc(COLLECTIONS.generationHistory, user.uid));
-  await track(COLLECTIONS.notificationPreferences, () => deleteDirectDoc(COLLECTIONS.notificationPreferences, user.uid));
+  await track(COLLECTIONS.notificationPreferences, () => deletePersistedNotificationPreferences(user.uid));
   await track(COLLECTIONS.notificationInbox, () => deleteNotificationInbox(user.uid));
-  await track(COLLECTIONS.readerLegalAck, () => deleteDirectDoc(COLLECTIONS.readerLegalAck, user.uid));
-  await track(COLLECTIONS.userIdIndex, async () => (userId ? deleteDirectDoc(COLLECTIONS.userIdIndex, userId) : 0));
+  await track(COLLECTIONS.readerLegalAck, () => deleteReaderLegalAck(user.uid));
+  await track(COLLECTIONS.userIdIndex, async () => (userId ? deletePersistedUserIdIndex(user.uid, userId) : 0));
+  await track(COLLECTIONS.supportConversations, () => deletePersistedSupportConversations(user.uid));
+  await track(COLLECTIONS.supportMessages, () => deletePersistedSupportMessages(user.uid));
 
   const uidCollections = [
     COLLECTIONS.usageMonthly,
     COLLECTIONS.usageDaily,
     COLLECTIONS.usageEvents,
     COLLECTIONS.notificationEmailOutbox,
-    COLLECTIONS.supportConversations,
-    COLLECTIONS.supportMessages,
     COLLECTIONS.readerPreferences,
     COLLECTIONS.readerOfflineMetadata,
     COLLECTIONS.readerUploads,

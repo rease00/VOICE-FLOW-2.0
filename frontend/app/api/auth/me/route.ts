@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { getFirebaseAdminAuth } from '../../../../src/server/firebaseAdmin';
+import { getD1AuthService } from '../../../../src/server/auth/d1Auth';
 
 export const runtime = 'nodejs';
 const SESSION_COOKIE_NAME = '__session';
@@ -18,7 +18,6 @@ const readBearerToken = (request: Request): string => {
   }
   return authHeader.slice(7).trim();
 };
-
 const readCookieValue = (request: Request, cookieName: string): string => {
   const cookieHeader = String(request.headers.get('cookie') || '').trim();
   if (!cookieHeader) return '';
@@ -30,54 +29,37 @@ const readCookieValue = (request: Request, cookieName: string): string => {
   return '';
 };
 
-const resolveDecodedToken = async (
-  request: Request,
-): Promise<{ uid: string } | null> => {
-  const bearerToken = readBearerToken(request);
-  const sessionCookie = readCookieValue(request, SESSION_COOKIE_NAME);
-  if (!bearerToken && !sessionCookie) {
-    return null;
-  }
-
-  const auth = getFirebaseAdminAuth();
-  if (sessionCookie) {
-    try {
-      return await auth.verifySessionCookie(sessionCookie, true);
-    } catch {
-      // Fall back to bearer verification for callers that send an explicit token.
-    }
-  }
-
-  if (bearerToken) {
-    try {
-      return await auth.verifyIdToken(bearerToken);
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-};
-
 export const GET = async (request: Request): Promise<Response> => {
   try {
-    const decoded = await resolveDecodedToken(request);
-    if (!decoded) {
+    const auth = getD1AuthService();
+    const cookieToken = readCookieValue(request, SESSION_COOKIE_NAME);
+    const bearerToken = readBearerToken(request);
+
+    const context = cookieToken
+      ? await auth.resolveSessionToken(cookieToken)
+      : null;
+    const resolvedContext = context || (bearerToken ? await auth.resolveSessionToken(bearerToken) : null);
+
+    if (!resolvedContext) {
       return buildJsonResponse({ error: 'Unauthorized' }, 401);
     }
 
-    const auth = getFirebaseAdminAuth();
-    const userRecord = await auth.getUser(decoded.uid);
-    if (!userRecord) {
+    if (!resolvedContext.userExists) {
       return buildJsonResponse({ error: 'User not found' }, 404);
     }
 
     return buildJsonResponse({
-      uid: userRecord.uid,
-      email: userRecord.email,
-      displayName: userRecord.displayName,
-      photoURL: userRecord.photoURL,
-      emailVerified: userRecord.emailVerified,
+      uid: resolvedContext.uid,
+      email: String((resolvedContext.userData as Record<string, unknown> | null)?.email || resolvedContext.decodedToken.email || ''),
+      displayName: (resolvedContext.userData as Record<string, unknown> | null)?.displayName
+        || (resolvedContext.userData as Record<string, unknown> | null)?.name
+        || resolvedContext.decodedToken.name
+        || null,
+      photoURL: (resolvedContext.userData as Record<string, unknown> | null)?.photoURL
+        || (resolvedContext.userData as Record<string, unknown> | null)?.photoUrl
+        || resolvedContext.decodedToken.picture
+        || null,
+      emailVerified: Boolean((resolvedContext.userData as Record<string, unknown> | null)?.emailVerified ?? resolvedContext.decodedToken.email_verified),
     });
   } catch (error) {
     console.error('Get user error:', error);

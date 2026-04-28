@@ -47,7 +47,7 @@ test.describe('prime access runtime strip', () => {
     await page.setContent(renderRuntimeStripFixture(['VECTOR']));
 
     await expect(page.getByTestId('prime-locked-copy')).toHaveText(`Locked: ${PRIME_ACCESS_LOCK_MESSAGE}`);
-    await expect(page.locator('button')).toHaveCount(3);
+    await expect(page.locator('button')).toHaveCount(2);
     await expect(page.locator('button[disabled]')).toHaveCount(1);
     await expect(page.getByRole('button', { name: /Prime runtime/i })).toBeVisible();
   });
@@ -56,7 +56,7 @@ test.describe('prime access runtime strip', () => {
     await page.setContent(renderRuntimeStripFixture(['VECTOR', 'PRIME']));
 
     await expect(page.getByTestId('prime-locked-copy')).toHaveText('');
-    await expect(page.locator('button')).toHaveCount(3);
+    await expect(page.locator('button')).toHaveCount(2);
     await expect(page.locator('button[disabled]')).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Prime runtime/i })).toBeVisible();
   });

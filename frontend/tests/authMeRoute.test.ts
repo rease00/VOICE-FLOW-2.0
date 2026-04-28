@@ -1,14 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const verifyIdTokenMock = vi.hoisted(() => vi.fn());
-const verifySessionCookieMock = vi.hoisted(() => vi.fn());
-const getUserMock = vi.hoisted(() => vi.fn());
+const resolveSessionTokenMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../src/server/firebaseAdmin', () => ({
-  getFirebaseAdminAuth: () => ({
-    verifyIdToken: (...args: unknown[]) => verifyIdTokenMock(...args),
-    verifySessionCookie: (...args: unknown[]) => verifySessionCookieMock(...args),
-    getUser: (...args: unknown[]) => getUserMock(...args),
+vi.mock('../src/server/auth/d1Auth', () => ({
+  getD1AuthService: () => ({
+    resolveSessionToken: (...args: unknown[]) => resolveSessionTokenMock(...args),
   }),
 }));
 
@@ -19,7 +15,7 @@ describe('/api/auth/me', () => {
   });
 
   it('returns 401 for an invalid bearer token instead of surfacing a 500', async () => {
-    verifyIdTokenMock.mockRejectedValueOnce(new Error('invalid token'));
+    resolveSessionTokenMock.mockResolvedValueOnce(null);
     const { GET } = await import('../app/api/auth/me/route');
 
     const response = await GET(
@@ -32,17 +28,28 @@ describe('/api/auth/me', () => {
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ error: 'Unauthorized' });
-    expect(getUserMock).not.toHaveBeenCalled();
+    expect(resolveSessionTokenMock).toHaveBeenCalledWith('bad-token');
   });
 
   it('prefers a valid session cookie over an invalid bearer token', async () => {
-    verifySessionCookieMock.mockResolvedValueOnce({ uid: 'session-user' });
-    getUserMock.mockResolvedValueOnce({
+    resolveSessionTokenMock.mockResolvedValueOnce({
       uid: 'session-user',
-      email: 'admin1@voiceflow.local',
-      displayName: 'Admin',
-      photoURL: null,
-      emailVerified: true,
+      decodedToken: {
+        uid: 'session-user',
+        email: 'admin1@voiceflow.local',
+        name: 'Admin',
+        picture: null,
+        email_verified: true,
+      },
+      userRef: { id: 'session-user' },
+      userData: {
+        uid: 'session-user',
+        email: 'admin1@voiceflow.local',
+        displayName: 'Admin',
+        photoURL: null,
+        emailVerified: true,
+      },
+      userExists: true,
     });
     const { GET } = await import('../app/api/auth/me/route');
 
@@ -60,7 +67,6 @@ describe('/api/auth/me', () => {
       uid: 'session-user',
       email: 'admin1@voiceflow.local',
     });
-    expect(verifyIdTokenMock).not.toHaveBeenCalled();
-    expect(verifySessionCookieMock).toHaveBeenCalledWith('session-cookie-token', true);
+    expect(resolveSessionTokenMock).toHaveBeenCalledWith('session-cookie-token');
   });
 });

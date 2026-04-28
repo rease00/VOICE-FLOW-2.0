@@ -1,5 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { ensureStudioSmokeAuthenticated, resolveStudioSmokeCredentials } from './smokeAuth';
+import { getLegalDocuments } from '../../src/features/legal/legalContent';
 
 const ROUTE_TIMEOUT_MS = 20_000;
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
@@ -72,14 +73,41 @@ const LANDING_SURFACE_TEST_IDS = [
   'landing-ai-director',
 ] as const;
 
-const expectLandingChrome = async (page: Page, activeLabel: string): Promise<void> => {
+const expectLandingChrome = async (page: Page): Promise<void> => {
   await expect(page.getByTestId('brand-logo').first()).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
   await expect(page.getByTestId('marketing-landing')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-  await expect(page.getByTestId('landing-tab-bar')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByRole('navigation', { name: /Landing navigation/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
   await expect(page.getByTestId('landing-next-nav')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-  await expect(page.locator('[data-testid="landing-tab-bar"] a[aria-current="page"]')).toHaveText(activeLabel, { timeout: ROUTE_TIMEOUT_MS });
   await expectNoHorizontalBleed(page);
 };
+
+const expectLoginSurface = async (page: Page): Promise<void> => {
+  await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByText('Sign in to continue to your workspace.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByText(/^Login$/i)).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByText(/^Signup\s*\(Paused\)$/i)).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+};
+
+const expectLibrarySurface = async (page: Page): Promise<void> => {
+  await Promise.any([
+    page.getByTestId('readers-subnav').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    page.getByRole('heading', { name: /^Library$/i }).first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+  ]);
+};
+
+const expectAdminSurface = async (page: Page): Promise<void> => {
+  await expect(page.getByRole('heading', { name: /Admin Console/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+};
+
+const legalRouteCases: RouteAssertion[] = getLegalDocuments().map((document) => ({
+  path: document.path,
+  title: `legal ${document.id}`,
+  expect: async (page: Page) => {
+    await expect(page.getByRole('heading', { name: document.title, exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+    await expect(page.getByText(`Last updated ${document.lastUpdated}`, { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+  },
+}));
 
 const expectOnlyActiveLandingSurface = async (
   page: Page,
@@ -178,7 +206,7 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/landing',
     title: 'landing overview page',
     expect: async (page) => {
-      await expectLandingChrome(page, 'Overview');
+      await expectLandingChrome(page);
       await expectOnlyActiveLandingSurface(page, 'landing-home');
       await expect(page.getByTestId('landing-home-hero')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByRole('heading', { name: /Audition voices/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
@@ -190,7 +218,7 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/landing/single-voice',
     title: 'landing single voice page',
     expect: async (page) => {
-      await expectLandingChrome(page, 'Single Voice');
+      await expectLandingChrome(page);
       await expectOnlyActiveLandingSurface(page, 'landing-single-speaker');
       await expect(page.getByText('Hear short reads before you commit the scene.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByRole('link', { name: /Next: Prime Scenes/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
@@ -201,7 +229,7 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/landing/prime-scenes',
     title: 'landing prime scenes page',
     expect: async (page) => {
-      await expectLandingChrome(page, 'Prime Scenes');
+      await expectLandingChrome(page);
       await expectOnlyActiveLandingSurface(page, 'landing-multi-speaker');
       await expect(page.getByText('Prime Scenes are where Voice Flow stops sounding like isolated clips and starts sounding like a finished scene.')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByRole('link', { name: /Next: AI Direction/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
@@ -212,7 +240,7 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/landing/direction',
     title: 'landing ai direction page',
     expect: async (page) => {
-      await expectLandingChrome(page, 'AI Direction');
+      await expectLandingChrome(page);
       await expectOnlyActiveLandingSurface(page, 'landing-ai-director');
       await expect(page.getByTestId('landing-ai-director-prompt')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByRole('link', { name: /Open the Studio/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
@@ -225,14 +253,6 @@ const routeSmokeCases: RouteAssertion[] = [
     expect: async (page) => {
       await expect(page.getByRole('heading', { name: /Legal Center/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByText('All policy pages', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-    },
-  },
-  {
-    path: '/legal/privacy',
-    title: 'legal privacy document',
-    expect: async (page) => {
-      await expect(page.getByRole('heading', { name: /Privacy Policy/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText(/Last updated/i)).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -268,17 +288,14 @@ const routeSmokeCases: RouteAssertion[] = [
     requiresAuth: true,
     expect: async (page) => {
       await expect(page).toHaveURL(/\/app\/admin(?:\/|$|\?)/);
-      await expect(page.locator('body')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectAdminSurface(page);
     },
   },
   {
     path: '/app/login',
     title: 'login',
     expect: async (page) => {
-      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('button', { name: 'Sign Up', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectLoginSurface(page);
     },
   },
   {
@@ -286,8 +303,7 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'onboarding',
     expect: async (page) => {
       await expect(page).toHaveURL(/\/app\/login(?:\?.*next=%2Fapp%2Fonboarding.*)?$/);
-      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectLoginSurface(page);
     },
   },
   {
@@ -295,8 +311,7 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'profile',
     expect: async (page) => {
       await expect(page).toHaveURL(/\/app\/login(?:\?.*next=%2Fapp%2Fprofile.*)?$/);
-      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectLoginSurface(page);
     },
   },
   {
@@ -304,10 +319,44 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'user id setup',
     expect: async (page) => {
       await expect(page).toHaveURL(/\/app\/login(?:\?.*)?$/);
-      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expectLoginSurface(page);
     },
   },
+  {
+    path: '/app/account',
+    title: 'account redirect',
+    requiresAuth: true,
+    expect: async (page) => {
+      await expect(page).toHaveURL(/\/app\/profile(?:\/|$|\?)/);
+      await expect(page.getByRole('heading', { name: /Account Center/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+    },
+  },
+  {
+    path: '/app/billing',
+    title: 'billing app surface',
+    requiresAuth: true,
+    expect: async (page) => {
+      await expect(page).toHaveURL(/\/app\/billing(?:\/|$|\?)/);
+      await expect(page.getByRole('heading', { name: /Manage billing, credits, and checkout/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+    },
+  },
+  {
+    path: '/app/reader',
+    title: 'reader redirect',
+    requiresAuth: true,
+    expect: async (page) => {
+      await expect(page).toHaveURL(/\/app\/library(?:\/|$|\?)/);
+      await expectLibrarySurface(page);
+    },
+  },
+  {
+    path: '/app/library',
+    title: 'library surface',
+    expect: async (page) => {
+      await expectLibrarySurface(page);
+    },
+  },
+  ...legalRouteCases,
 ];
 
 for (const routeCase of routeSmokeCases) {

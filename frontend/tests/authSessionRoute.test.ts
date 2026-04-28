@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const verifyIdTokenMock = vi.hoisted(() => vi.fn(async () => ({ uid: 'user-1' })));
-const createSessionCookieMock = vi.hoisted(() => vi.fn(async () => 'session-cookie-value'));
+const resolveSessionTokenMock = vi.hoisted(() => vi.fn(async () => ({
+  uid: 'user-1',
+  decodedToken: { uid: 'user-1' },
+  userRef: { id: 'user-1' },
+  userData: { uid: 'user-1' },
+  userExists: true,
+})));
+const revokeSessionTokenMock = vi.hoisted(() => vi.fn(async () => true));
 
-vi.mock('../src/server/firebaseAdmin', () => ({
-  getFirebaseAdminAuth: () => ({
-    verifyIdToken: (...args: unknown[]) => verifyIdTokenMock(...args),
-    createSessionCookie: (...args: unknown[]) => createSessionCookieMock(...args),
+vi.mock('../src/server/auth/d1Auth', () => ({
+  getD1AuthService: () => ({
+    resolveSessionToken: (token: string) => (resolveSessionTokenMock as unknown as (value: string) => unknown)(token),
+    revokeSessionToken: (token: string) => (revokeSessionTokenMock as unknown as (value: string) => unknown)(token),
   }),
 }));
 
@@ -42,8 +48,9 @@ describe('auth session route cookie policy', () => {
 
     expect(response.status).toBe(200);
     const setCookie = response.headers.get('set-cookie') || '';
-    expect(setCookie).toContain('__session=session-cookie-value');
+    expect(setCookie).toContain('__session=token-123');
     expect(setCookie).not.toContain('Secure');
+    expect(resolveSessionTokenMock).toHaveBeenCalledWith('token-123');
   });
 
   it('keeps the Secure flag for public https requests', async () => {
@@ -56,20 +63,23 @@ describe('auth session route cookie policy', () => {
 
     expect(response.status).toBe(200);
     const setCookie = response.headers.get('set-cookie') || '';
-    expect(setCookie).toContain('__session=session-cookie-value');
+    expect(setCookie).toContain('__session=token-123');
     expect(setCookie).toContain('Secure');
   });
 
   it('omits the Secure flag when deleting localhost production QA cookies over http', async () => {
     const { DELETE } = await import('../app/api/auth/session/route');
     const response = await DELETE(
-      buildRequest('http://127.0.0.1:3000/api/auth/session', {}, 'DELETE'),
+      buildRequest('http://127.0.0.1:3000/api/auth/session', {
+        cookie: '__session=token-123',
+      }, 'DELETE'),
     );
 
     expect(response.status).toBe(200);
     const setCookie = response.headers.get('set-cookie') || '';
     expect(setCookie).toContain('__session=');
     expect(setCookie).not.toContain('Secure');
+    expect(revokeSessionTokenMock).toHaveBeenCalledWith('token-123');
   });
 
   it('keeps the Secure flag when deleting public https cookies', async () => {
@@ -80,6 +90,7 @@ describe('auth session route cookie policy', () => {
         {
           'x-forwarded-proto': 'https',
           'x-forwarded-host': 'app.voiceflow.local',
+          cookie: '__session=token-123',
         },
         'DELETE',
       ),

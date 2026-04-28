@@ -11,8 +11,6 @@ import {
   createUserWithEmailAndPassword,
   deleteUser,
   getAdditionalUserInfo,
-  onIdTokenChanged,
-  onAuthStateChanged,
   sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
@@ -76,7 +74,12 @@ import {
   getSessionClonedVoices,
   setSessionClonedVoices,
 } from '../services/clonedVoiceSessionStore';
-import { clearFirebaseSession, syncFirebaseSession } from '../services/authSessionService';
+import {
+  clearFirebaseSession,
+  fetchCurrentAuthSessionUser,
+  loginWithEmailAndPassword,
+  syncFirebaseSession,
+} from '../services/authSessionService';
 import { authFetch } from '../services/authHttpClient';
 
 interface ExtendedUserContextType extends Omit<UserContextType, 'deleteAccount'> {
@@ -549,6 +552,37 @@ export const mapFirebaseUserToProfile = async (firebaseUserOverride?: typeof fir
   };
 };
 
+const mapSessionUserToProfile = async (sessionUser: {
+  uid: string;
+  email?: string | null;
+  displayName?: string | null;
+  photoURL?: string | null;
+  emailVerified?: boolean | null;
+}): Promise<UserProfile> => {
+  const uid = String(sessionUser.uid || '').trim();
+  if (!uid) return BLANK_USER;
+  const email = String(sessionUser.email || '').trim();
+  const envOrClaimAdmin = isAdminIdentity(uid, email || undefined, false);
+  let firestoreAdmin = false;
+  if (!envOrClaimAdmin && shouldAllowFirestoreAdminRoleFallback()) {
+    firestoreAdmin = await resolveWithTimeout(readFirestoreAdminStatus(uid), 750, false);
+  }
+  const isAdmin = envOrClaimAdmin || firestoreAdmin;
+  return {
+    uid,
+    googleId: uid,
+    name: String(sessionUser.displayName || '').trim() || email || 'V FLOW AI User',
+    email: email || `${uid}@session.vflowai`,
+    userId: undefined,
+    avatarUrl: sessionUser.photoURL || undefined,
+    phoneNumber: undefined,
+    role: isAdmin ? 'admin' : 'user',
+    isAdmin,
+    providers: ['password'],
+    adminActor: null,
+  };
+};
+
 const resolveFirebaseConfigIssue = (): string =>
   String(firebaseConfigIssue || '').trim() ||
   'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart the frontend server.';
@@ -695,8 +729,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [clonedVoices]);
 
   const refreshEntitlements = useCallback(async () => {
-    const firebaseUser = firebaseAuth.currentUser;
-    if (!firebaseUser) {
+    const currentUid = String(user.uid || '').trim();
+    if (!currentUid) {
       setStats(INITIAL_STATS);
       return;
     }
@@ -706,11 +740,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch {
       // Keep the current stats if backend is not reachable.
     }
-  }, []);
+  }, [user.uid]);
 
   const refreshAdminActor = useCallback(async () => {
-    const firebaseUser = firebaseAuth.currentUser;
-    const currentUid = String(firebaseUser?.uid || '').trim();
+    const currentUid = String(user.uid || '').trim();
     if (!currentUid) {
       setUser((prev) => (prev.adminActor ? { ...prev, adminActor: null } : prev));
       return;
@@ -743,11 +776,11 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       });
     }
-  }, []);
+  }, [user.uid]);
 
   const loadHistory = useCallback(async (limit = 30) => {
-    const firebaseUser = firebaseAuth.currentUser;
-    if (!firebaseUser) {
+    const currentUid = String(user.uid || '').trim();
+    if (!currentUid) {
       setHistory([]);
       return;
     }
@@ -760,7 +793,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch {
       // Keep current in-memory history when backend is unavailable.
     }
-  }, []);
+  }, [user.uid]);
 
   const clearHistoryRemote = async () => {
     try {
@@ -815,85 +848,49 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const authReadyFallbackTimer = typeof window !== 'undefined'
       ? window.setTimeout(markAuthReady, 3500)
       : null;
-    const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
+
+    const bootstrapSession = async () => {
       try {
-        if (!firebaseUser) {
-          setSessionCookieReady(false);
+        const sessionUser = await fetchCurrentAuthSessionUser();
+        if (!isMounted) return;
+
+        if (!sessionUser) {
           if (charactersUnsubscribeRef.current) {
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
           }
           clearDriveTokenCache();
           removeStorageKey(STORAGE_KEYS.settings);
-          setUser(BLANK_USER);
-          setCharacterLibrary(DEFAULT_CHARACTERS);
-          setStats(INITIAL_STATS);
-          setHistory([]);
-          return;
-        }
-        if (requiresEmailVerificationForUser(firebaseUser)) {
-          await waitForAuthUserReload(firebaseUser);
-        }
-        if (requiresEmailVerificationForUser(firebaseUser)) {
-          if (charactersUnsubscribeRef.current) {
-            charactersUnsubscribeRef.current();
-            charactersUnsubscribeRef.current = null;
-          }
           setSessionCookieReady(false);
-          await signOut(firebaseAuth).catch(() => undefined);
-          clearDriveTokenCache();
-          removeStorageKey(STORAGE_KEYS.settings);
           setUser(BLANK_USER);
           setCharacterLibrary(DEFAULT_CHARACTERS);
           setStats(INITIAL_STATS);
           setHistory([]);
           return;
         }
-        const profile = await mapFirebaseUserToProfile(firebaseUser);
+
+        const profile = await mapSessionUserToProfile(sessionUser);
+        if (!isMounted) return;
         setUser(profile);
-        void bootstrapCharacterSync(firebaseUser.uid);
+        setSessionCookieReady(true);
+        void bootstrapCharacterSync(sessionUser.uid);
+      } catch (error) {
+        if (!isMounted) return;
+        console.warn('[UserContext] session bootstrap failed', error);
+        setSessionCookieReady(false);
       } finally {
         markAuthReady();
       }
-    });
+    };
+
+    void bootstrapSession();
+
     return () => {
       isMounted = false;
       if (authReadyFallbackTimer !== null) {
         window.clearTimeout(authReadyFallbackTimer);
       }
-      unsubscribe();
       if (charactersUnsubscribeRef.current) charactersUnsubscribeRef.current();
-    };
-  }, [refreshAdminActor, refreshEntitlements]);
-
-  useEffect(() => {
-    const unsubscribe = onIdTokenChanged(firebaseAuth, async (firebaseUser) => {
-      try {
-        if (!firebaseUser) {
-          setSessionCookieReady(false);
-          lastSessionTokenRef.current = '';
-          await clearFirebaseSession();
-          return;
-        }
-
-        const idToken = await firebaseUser.getIdToken();
-        if (!idToken || lastSessionTokenRef.current === idToken) {
-          setSessionCookieReady(Boolean(idToken));
-          return;
-        }
-
-        await syncFirebaseSession(idToken);
-        lastSessionTokenRef.current = idToken;
-        setSessionCookieReady(true);
-      } catch (error) {
-        setSessionCookieReady(false);
-        lastSessionTokenRef.current = '';
-        console.warn('[UserContext] session sync failed', error);
-      }
-    });
-
-    return () => {
-      unsubscribe();
     };
   }, []);
 
@@ -950,10 +947,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const signInWithEmail = useCallback<UserContextType['signInWithEmail']>(async (email, password) => {
     const rawEmail = String(email || '').trim();
-    const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
-    if (firebaseAuthConfigIssue) {
-      return { ok: false, error: firebaseAuthConfigIssue };
-    }
 
     try {
       if (!rawEmail.includes('@')) {
@@ -962,29 +955,32 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: 'Use a full email address to sign in.',
         };
       }
-      const credential = await signInWithEmailAndPassword(firebaseAuth, rawEmail, String(password || ''));
-      if (requiresEmailVerificationForUser(credential.user)) {
-        await waitForAuthUserReload(credential.user);
-      }
-      if (requiresEmailVerificationForUser(credential.user)) {
-        await signOut(firebaseAuth).catch(() => undefined);
-        return buildUnverifiedEmailSignInResult();
-      }
-      const sessionResult = await finalizeFirebaseSignIn(credential.user);
+      const sessionResult = await loginWithEmailAndPassword(rawEmail, String(password || ''));
       if (!sessionResult.ok) {
-        return sessionResult;
+        const errorCode = String(sessionResult.code || '').trim().toLowerCase();
+        const provisioningHint = resolveAdminProvisioningHint(rawEmail, errorCode);
+        return {
+          ...sessionResult,
+          ...(provisioningHint ? { provisioningHint } : {}),
+        };
       }
+
+      const profile = await mapSessionUserToProfile(sessionResult.user);
+      setUser(profile);
+      setSessionCookieReady(true);
+      lastSessionTokenRef.current = sessionResult.token;
+      setAuthReady(true);
       return { ok: true };
     } catch (error: any) {
       const errorCode = String(error?.code || '').trim().toLowerCase();
       const provisioningHint = resolveAdminProvisioningHint(rawEmail, errorCode);
       return {
         ok: false,
-        error: mapFirebaseAuthError(error),
+        error: String(error?.message || 'Sign-in failed. Please check your details and try again.'),
         ...(provisioningHint ? { provisioningHint } : {}),
       };
     }
-  }, [finalizeFirebaseSignIn]);
+  }, []);
 
   const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName) => {
     if (isSignupTemporarilyDisabled()) {

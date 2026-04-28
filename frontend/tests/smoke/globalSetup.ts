@@ -13,24 +13,19 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   const page = await browser.newPage();
 
   try {
-    await page.goto(`${baseUrl}/app/writing`, {
+    await page.goto(`${baseUrl}/app/login`, {
       waitUntil: 'domcontentloaded',
       timeout: ROUTE_TIMEOUT_MS,
     });
-    const writingWorkspace = page.getByTestId('novel-workspace').first();
-    const writingHeading = page.getByRole('heading', { name: /Novel Workspace/i }).first();
-    const writingAuthGate = page.getByRole('heading', { name: /Sign in to open Writing/i }).first();
-    const loginShell = page.locator('[data-testid="auth-shell"]').first();
-    const loginHeading = page.getByRole('heading', { name: /Welcome back|Create your V FLOW AI account/i }).first();
+    const loginShell = page.locator('.auth-shell').first();
+    const loginHeading = page.getByRole('heading', { name: /Welcome back/i }).first();
+    const loginSubtitle = page.getByText('Sign in to continue to your workspace.', { exact: true }).first();
+    const loginTabs = page.getByRole('tablist', { name: /Authentication mode/i }).first();
     await Promise.any([
-      writingWorkspace.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      writingHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      page.locator('.vf-topbar').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      page.locator('.vf-editor-shell').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      page.locator('.vf-studio-grid').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
-      writingAuthGate.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       loginShell.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       loginHeading.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      loginSubtitle.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      loginTabs.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
       page.waitForURL(/\/app\/login(?:\/|$|\?)/, { timeout: ROUTE_TIMEOUT_MS }),
     ]);
   } finally {

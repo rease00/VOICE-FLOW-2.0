@@ -1,8 +1,8 @@
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import type { DocumentData, DocumentReference } from 'firebase-admin/firestore';
 
-import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../firebaseAdmin.ts';
 import { readEnvBoolean } from '../../shared/runtime/env.ts';
+import { getD1AuthService } from './d1Auth.ts';
 
 export interface ServerAuthedUserContext {
   uid: string;
@@ -56,62 +56,79 @@ const isDevUidHeaderEnabled = (): boolean => {
   return configured === true;
 };
 
-const readDevUid = (headers: HeaderSource): string => {
-  if (!isDevUidHeaderEnabled()) return '';
-  return readHeaderValue(headers, 'x-dev-uid');
+const resolveDevContext = (headers: HeaderSource): DecodedIdToken | null => {
+  if (!isDevUidHeaderEnabled()) return null;
+  const uid = readHeaderValue(headers, 'x-dev-uid');
+  if (!uid) return null;
+  const email = readHeaderValue(headers, 'x-dev-email') || undefined;
+  const isAdmin = readHeaderValue(headers, 'x-dev-admin').toLowerCase() === 'true'
+    || readHeaderValue(headers, 'x-dev-role').toLowerCase() === 'admin';
+  return {
+    uid,
+    email,
+    name: undefined,
+    picture: undefined,
+    email_verified: true,
+    admin: isAdmin,
+    role: isAdmin ? 'admin' : 'dev',
+    roles: isAdmin ? ['admin'] : ['dev'],
+  } as unknown as DecodedIdToken;
+};
+
+const toRequest = (headers: HeaderSource): Request => {
+  const normalizedHeaders = new Headers();
+  if (typeof (headers as Pick<Headers, 'get'>).get === 'function') {
+    const headerNames = ['authorization', 'cookie', 'x-dev-uid', 'x-dev-email', 'x-dev-admin', 'x-dev-role'];
+    for (const headerName of headerNames) {
+      const value = readHeaderValue(headers, headerName);
+      if (value) normalizedHeaders.set(headerName, value);
+    }
+    return new Request('http://localhost/api/auth/resolve', { headers: normalizedHeaders });
+  }
+
+  for (const [key, value] of Object.entries(headers as Record<string, string | string[] | undefined>)) {
+    if (Array.isArray(value)) {
+      if (value.length > 0) normalizedHeaders.set(key, String(value[0] || ''));
+      continue;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      normalizedHeaders.set(key, value.trim());
+    }
+  }
+
+  return new Request('http://localhost/api/auth/resolve', { headers: normalizedHeaders });
 };
 
 export const verifyFirebaseSessionCookie = async (sessionCookie: string): Promise<DecodedIdToken> => {
-  return getFirebaseAdminAuth().verifySessionCookie(String(sessionCookie || '').trim(), true);
+  const context = await getD1AuthService().resolveSessionToken(String(sessionCookie || '').trim());
+  if (!context) {
+    throw new Error('Invalid session token');
+  }
+  return context.decodedToken;
 };
 
 export const verifyFirebaseHeaders = async (headers: HeaderSource): Promise<DecodedIdToken> => {
-  try {
-    const token = extractBearerToken(readHeaderValue(headers, 'authorization'));
-    return getFirebaseAdminAuth().verifyIdToken(token);
-  } catch (bearerError) {
-    const sessionCookie = readCookieValueFromHeader(readHeaderValue(headers, 'cookie'), SESSION_COOKIE_NAME);
-    if (sessionCookie) {
-      try {
-        return await verifyFirebaseSessionCookie(sessionCookie);
-      } catch (sessionError) {
-        const devUid = readDevUid(headers);
-        if (!devUid) {
-          throw sessionError;
-        }
-        return {
-          uid: devUid,
-          email: readHeaderValue(headers, 'x-dev-email') || undefined,
-        } as DecodedIdToken;
-      }
-    }
-
-    const devUid = readDevUid(headers);
-    if (!devUid) {
-      throw bearerError;
-    }
-    return {
-      uid: devUid,
-      email: readHeaderValue(headers, 'x-dev-email') || undefined,
-    } as DecodedIdToken;
+  const request = toRequest(headers);
+  const context = await getD1AuthService().resolveRequestUser(request, { preferCookie: false });
+  if (context) {
+    return context.decodedToken;
   }
+
+  const devContext = resolveDevContext(headers);
+  if (devContext) return devContext;
+  throw new Error('Missing authorization');
 };
 
 export const verifyFirebaseRequest = async (request: Request): Promise<DecodedIdToken> => {
-  return verifyFirebaseHeaders(request.headers);
+  const context = await getD1AuthService().resolveRequestUser(request, { preferCookie: false });
+  if (context) return context.decodedToken;
+  throw new Error('Missing authorization');
 };
 
 export const requireServerUser = async (request: Request): Promise<ServerAuthedUserContext> => {
-  const decodedToken = await verifyFirebaseRequest(request);
-  const firestore = getFirebaseAdminFirestore();
-  const userRef = firestore.collection('users').doc(decodedToken.uid);
-  const userSnapshot = await userRef.get();
-
-  return {
-    uid: decodedToken.uid,
-    decodedToken,
-    userRef,
-    userData: userSnapshot.data() ?? null,
-    userExists: userSnapshot.exists,
-  };
+  const context = await getD1AuthService().resolveRequestUser(request, { preferCookie: false });
+  if (!context) {
+    throw new Error('Missing authorization');
+  }
+  return context;
 };

@@ -1,12 +1,8 @@
 import { NextResponse } from 'next/server';
 
-import { getFirebaseAdminAuth } from '../../../../src/server/firebaseAdmin';
-import jwt from 'jsonwebtoken';
+import { D1AuthError, getD1AuthService } from '../../../../src/server/auth/d1Auth';
 
 export const runtime = 'nodejs';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'default-secret';
-const JWT_EXPIRY_DAYS = '7d';
 
 const buildJsonResponse = (body: Record<string, unknown>, status: number = 200): NextResponse =>
   NextResponse.json(body, {
@@ -21,7 +17,6 @@ const validateLogin = (body: Record<string, string>): { error: string | null } =
   }
   return { error: null };
 };
-
 export const POST = async (request: Request): Promise<Response> => {
   try {
     const { email, password } = await request.json();
@@ -30,41 +25,31 @@ export const POST = async (request: Request): Promise<Response> => {
       return buildJsonResponse({ error: validation.error }, 400);
     }
 
-    const auth = getFirebaseAdminAuth();
+    const auth = getD1AuthService();
+    await auth.ensureAdminSeeds();
+    const result = await auth.loginWithEmailAndPassword(String(email).trim(), String(password));
 
-    // Get user by email
-    let userRecord;
-    try {
-      userRecord = await auth.getUserByEmail(email);
-    } catch (e) {
-      return buildJsonResponse({ error: 'Invalid credentials' }, 401);
-    }
-
-    // Verify password (Firebase Admin should handle this in createUser)
-    // Note: Firebase Auth stores password securely, we just need to check if account exists
-    // and is email verified if required by app logic
-    if (!userRecord.emailVerified) {
-      return buildJsonResponse({ error: 'Email not verified' }, 401);
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { uid: userRecord.uid, email: userRecord.email },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRY_DAYS }
-    );
-
-    return buildJsonResponse({ 
-      message: 'Login successful', 
-      uid: userRecord.uid,
-      token,
+    return buildJsonResponse({
+      message: 'Login successful',
+      uid: result.uid,
+      token: result.token,
       user: {
-        email: userRecord.email,
-        displayName: userRecord.displayName,
-        photoURL: userRecord.photoURL,
-      }
+        email: result.user.email,
+        displayName: result.user.displayName,
+        photoURL: result.user.photoURL,
+      },
     });
   } catch (error) {
+    if (error instanceof D1AuthError || (error && typeof error === 'object' && 'code' in error)) {
+      const code = String((error as { code?: unknown }).code || '').trim();
+      const message = String((error as { message?: unknown }).message || 'Invalid credentials').trim() || 'Invalid credentials';
+      const status = error instanceof D1AuthError ? error.status : 401;
+      return buildJsonResponse({
+        error: message,
+        code,
+      }, status);
+    }
+
     console.error('Login error:', error);
     return buildJsonResponse({ error: 'Login failed' }, 500);
   }

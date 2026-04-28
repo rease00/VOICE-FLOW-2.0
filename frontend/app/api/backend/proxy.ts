@@ -313,10 +313,28 @@ const toUpstreamFailureMessage = (target: URL, error: unknown): string => {
   return `${base} ${reason}`;
 };
 
-const applyLegacyProxyHeaders = (headers: Headers, pathname: string): Headers => {
+const resolveCanonicalApiBase = (pathname: string): string => {
+  const root = (String(pathname ?? '')
+    .trim()
+    .replace(/^\/+/, '')
+    .split('/', 1)[0] || '')
+    .toLowerCase();
+
+  if (['account', 'auth', 'kyc', 'withdrawal'].includes(root)) return '/api/v1/account';
+  if (root === 'billing') return '/api/v1/billing';
+  if (['ai', 'health', 'routing', 'runtime', 'tts', 'translate'].includes(root)) return '/api/v1/studio';
+  if (['reader', 'library'].includes(root)) return '/api/v1/library';
+  if (['books', 'publishing'].includes(root)) return '/api/v1/publishing';
+  if (['voice-clone', 'voice-lab'].includes(root)) return '/api/v1/voice-clone';
+  if (root === 'admin') return '/api/v1/admin';
+  if (root === 'ops') return '/api/v1/ops';
+  return '/api/v1';
+};
+
+const applyLegacyProxyHeaders = (headers: Headers, pathname: string, canonicalApiBase = '/api/v1'): Headers => {
   headers.set('x-vf-legacy-proxy', 'true');
-  headers.set('x-vf-legacy-proxy-mode', 'compatibility-shim');
-  headers.set('x-vf-canonical-api-base', '/api/v1');
+  headers.set('x-vf-legacy-proxy-mode', 'compatibility-fallback');
+  headers.set('x-vf-canonical-api-base', canonicalApiBase);
   headers.set('x-vf-legacy-path', String(pathname || '/'));
   return headers;
 };
@@ -332,6 +350,7 @@ const buildMissingBackendProxyResponse = (pathname: string): Response => {
       headers: applyLegacyProxyHeaders(
         new Headers({ 'content-type': 'application/json; charset=utf-8' }),
         pathname,
+        resolveCanonicalApiBase(pathname),
       ),
     }
   );
@@ -357,19 +376,19 @@ export const proxyBackendRequest = async (
   if (!pathMatchesPrefix(normalizedPath, allowedPathPrefixes)) {
     return new Response('Backend path is not allowed by proxy policy.', {
       status: 403,
-      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
+      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath, resolveCanonicalApiBase(normalizedPath)),
     });
   }
   if (UNSAFE_METHODS.has(method) && !pathMatchesPrefix(normalizedPath, unsafeMethodPrefixes)) {
     return new Response('Backend method is not allowed by proxy policy.', {
       status: 405,
-      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
+      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath, resolveCanonicalApiBase(normalizedPath)),
     });
   }
   if (UNSAFE_METHODS.has(method) && !(await hasVerifiedAuthContext(request))) {
     return new Response('Backend proxy requires authentication for write methods.', {
       status: 401,
-      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath),
+      headers: applyLegacyProxyHeaders(new Headers(), normalizedPath, resolveCanonicalApiBase(normalizedPath)),
     });
   }
 
@@ -407,7 +426,7 @@ export const proxyBackendRequest = async (
       if (candidate.region && candidate.region !== 'default') {
         responseHeaders.set('x-v-flow-ai-backend-region', candidate.region);
       }
-      applyLegacyProxyHeaders(responseHeaders, normalizedPath);
+      applyLegacyProxyHeaders(responseHeaders, normalizedPath, resolveCanonicalApiBase(normalizedPath));
       return new Response(upstream.body, {
         status: upstream.status,
         statusText: upstream.statusText,
@@ -434,6 +453,7 @@ export const proxyBackendRequest = async (
       headers: applyLegacyProxyHeaders(
         new Headers({ 'content-type': 'application/json; charset=utf-8' }),
         normalizedPath,
+        resolveCanonicalApiBase(normalizedPath),
       ),
     }
   );

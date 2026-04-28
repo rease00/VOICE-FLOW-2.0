@@ -1,40 +1,75 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const jobRecordStore = vi.hoisted(() => new Map<string, any>());
 const getDomainJobRecordMock = vi.hoisted(() => vi.fn());
 const getFirebaseAdminFirestoreMock = vi.hoisted(() => vi.fn());
 const headAudioNovelObjectMock = vi.hoisted(() => vi.fn());
 const getAudioNovelSignedUrlMock = vi.hoisted(() => vi.fn(async (key: string) => `https://signed.example/${key}`));
 const readAudioNovelObjectMock = vi.hoisted(() => vi.fn());
 const streamAudioNovelBidiMock = vi.hoisted(() => vi.fn());
-const synthesizeAudioNovelRunMock = vi.hoisted(() => vi.fn(async () => Buffer.alloc(960, 7)));
+const synthesizeAudioNovelRunMock = vi.hoisted(() => vi.fn(async () => Buffer.alloc(1200, 7)));
 const verifyFirebaseRequestMock = vi.hoisted(() => vi.fn(async () => ({ uid: 'user-1' })));
+const saveDomainJobRecordMock = vi.hoisted(() => vi.fn(async (record: any) => {
+  jobRecordStore.set(record.id, record);
+  return record;
+}));
+const createDomainJobRecordIfAbsentMock = vi.hoisted(() => vi.fn(async (record: any) => {
+  const existing = jobRecordStore.get(record.id);
+  if (existing) {
+    return { record: existing, created: false };
+  }
+  jobRecordStore.set(record.id, record);
+  return { record, created: true };
+}));
 
 vi.mock('../src/server/jobs/domainJobStore.ts', () => ({
   createDomainJobRecord: vi.fn(),
-  createDomainJobRecordIfAbsent: vi.fn(async (record: unknown) => ({ record, created: true })),
-  getDomainJobRecord: (...args: unknown[]) => getDomainJobRecordMock(...args),
-  saveDomainJobRecord: vi.fn(),
+  createDomainJobRecordIfAbsent: createDomainJobRecordIfAbsentMock,
+  getDomainJobRecord: getDomainJobRecordMock,
+  saveDomainJobRecord: saveDomainJobRecordMock,
 }));
 
 vi.mock('../src/server/firebaseAdmin.ts', () => ({
-  getFirebaseAdminFirestore: (...args: unknown[]) => getFirebaseAdminFirestoreMock(...args),
+  getFirebaseAdminFirestore: getFirebaseAdminFirestoreMock,
 }));
 
 vi.mock('../src/server/auth/requestAuth.ts', () => ({
-  verifyFirebaseRequest: (...args: unknown[]) => verifyFirebaseRequestMock(...args),
+  verifyFirebaseRequest: verifyFirebaseRequestMock,
 }));
 
 vi.mock('../src/server/audioNovel/storage.ts', () => ({
-  getAudioNovelSignedUrl: (...args: unknown[]) => getAudioNovelSignedUrlMock(...args),
-  headAudioNovelObject: (...args: unknown[]) => headAudioNovelObjectMock(...args),
-  readAudioNovelObject: (...args: unknown[]) => readAudioNovelObjectMock(...args),
+  getAudioNovelSignedUrl: getAudioNovelSignedUrlMock,
+  headAudioNovelObject: headAudioNovelObjectMock,
+  readAudioNovelObject: readAudioNovelObjectMock,
   writeAudioNovelObject: vi.fn(),
+}));
+
+vi.mock('../src/server/audioNovel/compress.ts', () => ({
+  compressToRuns: vi.fn((lines: Array<{ speaker: string; text: string; index: number }>) => lines.length > 0
+    ? [{
+        runIndex: 0,
+        speaker: lines[0]?.speaker || 'Narrator',
+        voice: 'Kore',
+        emotion: 'narration',
+        mergedText: lines.map((line) => line.text).join(' '),
+        rawLines: lines.map((line) => line.text),
+        lineIndices: lines.map((line) => line.index),
+        firstLine: lines[0]?.index || 0,
+        lastLine: lines[lines.length - 1]?.index || 0,
+        charCount: lines.map((line) => line.text).join(' ').length,
+      }]
+    : []),
+}));
+
+vi.mock('../src/server/audioNovel/voice.ts', () => ({
+  resolveVoice: vi.fn(async () => 'Kore'),
+  resolveVoiceSync: vi.fn(() => 'Kore'),
 }));
 
 vi.mock('../src/server/audioNovel/synthesizer.ts', () => ({
   getAudioNovelSilenceBuffer: () => Buffer.alloc(480),
-  streamAudioNovelBidi: (...args: unknown[]) => streamAudioNovelBidiMock(...args),
-  synthesizeAudioNovelRun: (...args: unknown[]) => synthesizeAudioNovelRunMock(...args),
+  streamAudioNovelBidi: streamAudioNovelBidiMock,
+  synthesizeAudioNovelRun: synthesizeAudioNovelRunMock,
 }));
 
 describe('audio novel backend contracts', () => {
@@ -42,6 +77,7 @@ describe('audio novel backend contracts', () => {
     vi.clearAllMocks();
     vi.resetModules();
     verifyFirebaseRequestMock.mockResolvedValue({ uid: 'user-1' });
+    jobRecordStore.clear();
   });
 
   it('only marks queued job cacheHit when the stored result came from R2 cache', async () => {
@@ -157,6 +193,47 @@ describe('audio novel backend contracts', () => {
       error: 'Unauthorized',
       code: 'UNAUTHORIZED',
     });
+  });
+
+  it('finishes a queued job on status polling when background processing has not caught up yet', async () => {
+    const queuedRecord = {
+      id: 'audio-novel_queued',
+      domain: 'audioNovel',
+      status: 'queued',
+      ownerUid: 'user-1',
+      payload: {
+        mode: 'novel',
+        bookId: 'book-1',
+        chapterId: 'ch-1',
+        text: 'Narrator: Hello there.',
+      },
+      createdAt: new Date('2026-04-28T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-28T00:00:00.000Z').toISOString(),
+    };
+    jobRecordStore.set(queuedRecord.id, queuedRecord);
+    getDomainJobRecordMock.mockImplementation(async (jobId: string) => jobRecordStore.get(jobId) || null);
+    getFirebaseAdminFirestoreMock.mockImplementation(() => null);
+    headAudioNovelObjectMock.mockResolvedValue(false);
+    readAudioNovelObjectMock.mockResolvedValue(null);
+
+    const { handleAudioNovelJobStatusRoute } = await import('../src/server/audioNovel/service');
+    const response = await handleAudioNovelJobStatusRoute(
+      new Request('http://localhost/audio-novel/jobs/audio-novel_queued'),
+      'audio-novel_queued',
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      jobId: 'audio-novel_queued',
+      status: 'completed',
+      cacheHit: false,
+      result: {
+        generated: true,
+        storage: 'r2',
+        source: 'generated',
+      },
+    });
+    expect(jobRecordStore.get('audio-novel_queued')?.status).toBe('completed');
   });
 
   it('avoids a duplicate run fallback after bidi audio has already started streaming', async () => {

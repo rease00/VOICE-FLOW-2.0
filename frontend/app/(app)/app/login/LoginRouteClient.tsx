@@ -1,5 +1,6 @@
 'use client';
 
+import React from 'react';
 import type { AuthRouteMode } from '../../../../src/app/navigation';
 import { RouteLoginScreen } from './RouteLoginScreen';
 

@@ -23,7 +23,7 @@ import { readEnvNumber, readEnvValue } from '../../shared/runtime/env';
 import { BILLING_CHECKOUT_LOCK_MESSAGE, isBillingCheckoutLocked } from '../../shared/billing/checkoutLock';
 import type { ServerAuthedUserContext } from '../auth/requestAuth.ts';
 import { getFirebaseAdminFirestore } from '../firebaseAdmin';
-import { getAccountEntitlements, getAccountProfile } from '../account/service';
+import { getAccountEntitlements, getAccountProfile, updateAccountEntitlements } from '../account/service';
 
 const firestore = () => getFirebaseAdminFirestore();
 
@@ -215,21 +215,13 @@ const buildStripeCustomerIdempotencyKey = (uid: string): string => (
   `stripe-customer:${normalizeOperationToken(uid) || 'anonymous'}`
 );
 
-const readEntitlementSnapshot = async (uid: string): Promise<Record<string, unknown>> => {
-  const snapshot = await getEntitlementsRef(uid).get();
-  return (snapshot.data() || {}) as Record<string, unknown>;
-};
-
 const updateEntitlement = async (uid: string, patch: Record<string, unknown>): Promise<void> => {
-  await getEntitlementsRef(uid).set({
-    ...patch,
-    updatedAt: currentIso(),
-  }, { merge: true });
+  await updateAccountEntitlements(uid, patch);
 };
 
 const ensureStripeCustomer = async (user: ServerAuthedUserContext): Promise<string> => {
-  const currentEntitlement = await readEntitlementSnapshot(user.uid);
-  const existing = asString(currentEntitlement.stripeCustomerId);
+  const entitlements = await getAccountEntitlements(user);
+  const existing = asString(entitlements.billing?.stripeCustomerId);
   if (existing) return existing;
 
   const { profile } = await getAccountProfile(user);
@@ -700,6 +692,9 @@ export const redeemCoupon = async (
   const existingRedemption = await redemptionRef.get();
   if (existingRedemption.exists) throwHttpError(409, 'Coupon already redeemed by this user.');
 
+  const entitlements = await getAccountEntitlements(user);
+  const nextPaidVfBalance = asPositiveNumber(entitlements.wallet?.paidVfBalance) + creditedVf;
+
   await firestore().runTransaction(async (transaction) => {
     const entRef = getEntitlementsRef(user.uid);
     const entSnap = await transaction.get(entRef);
@@ -728,6 +723,9 @@ export const redeemCoupon = async (
       createdAt: currentIso(),
     }, { merge: true });
   });
+  await updateAccountEntitlements(user.uid, {
+    paidVfBalance: nextPaidVfBalance,
+  });
 
   return {
     ok: true,
@@ -747,6 +745,10 @@ export const convertWalletVfToVc = async (
   const replayToken = normalizeOperationToken(input.idempotencyKey || input.requestId);
   const operationId = replayToken ? `vf_to_vc:${normalizeOperationToken(user.uid)}:${replayToken}` : '';
   const operationRef = operationId ? getBillingOperationRef(operationId) : null;
+  const entitlements = await getAccountEntitlements(user);
+  const nextPaidVfBalance = asPositiveNumber(entitlements.wallet?.paidVfBalance) - vfAmount;
+  const nextVcPaidBalance = asPositiveNumber(entitlements.wallet?.vcPaidBalance) + (vfAmount * rate);
+  const nextVcSpendableBalance = asPositiveNumber(entitlements.wallet?.vcSpendableBalance) + (vfAmount * rate);
 
   const outcome = await firestore().runTransaction(async (transaction) => {
     const entRef = getEntitlementsRef(user.uid);
@@ -756,6 +758,7 @@ export const convertWalletVfToVc = async (
     ]);
     if (operationSnap?.exists) {
       return {
+        alreadyProcessed: true,
         vfDebited: asPositiveNumber(operationSnap.get('vfDebited')),
         vcCredited: asPositiveNumber(operationSnap.get('vcCredited')),
       };
@@ -794,8 +797,15 @@ export const convertWalletVfToVc = async (
         updatedAt: currentIso(),
       }, { merge: true });
     }
-    return { vfDebited: vfAmount, vcCredited };
+    return { alreadyProcessed: false, vfDebited: vfAmount, vcCredited };
   });
+  if (!outcome.alreadyProcessed) {
+    await updateAccountEntitlements(user.uid, {
+      paidVfBalance: nextPaidVfBalance,
+      vcPaidBalance: nextVcPaidBalance,
+      vcSpendableBalance: nextVcSpendableBalance,
+    });
+  }
 
   return {
     ok: true,
@@ -838,43 +848,57 @@ const processCheckoutCompletion = async (session: Record<string, unknown>): Prom
   }
 
   if (kind === 'token-pack') {
+    let nextPaidVfBalance = 0;
     await firestore().runTransaction(async (transaction) => {
       const entRef = getEntitlementsRef(uid);
       const entSnap = await transaction.get(entRef);
       const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
+      nextPaidVfBalance = asPositiveNumber(entitlement.paidVfBalance) + asPositiveNumber(metadata.packVf);
       transaction.set(entRef, {
-        paidVfBalance: asPositiveNumber(entitlement.paidVfBalance) + asPositiveNumber(metadata.packVf),
+        paidVfBalance: nextPaidVfBalance,
         updatedAt: currentIso(),
       }, { merge: true });
     });
+    await updateAccountEntitlements(uid, { paidVfBalance: nextPaidVfBalance });
     return;
   }
 
   if (kind === 'vc-token-pack') {
+    let nextVcPaidBalance = 0;
+    let nextVcSpendableBalance = 0;
     await firestore().runTransaction(async (transaction) => {
       const entRef = getEntitlementsRef(uid);
       const entSnap = await transaction.get(entRef);
       const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
       const credited = asPositiveNumber(metadata.packVc);
+      nextVcPaidBalance = asPositiveNumber(entitlement.vcPaidBalance) + credited;
+      nextVcSpendableBalance = asPositiveNumber(entitlement.vcSpendableBalance) + credited;
       transaction.set(entRef, {
-        vcPaidBalance: asPositiveNumber(entitlement.vcPaidBalance) + credited,
-        vcSpendableBalance: asPositiveNumber(entitlement.vcSpendableBalance) + credited,
+        vcPaidBalance: nextVcPaidBalance,
+        vcSpendableBalance: nextVcSpendableBalance,
         updatedAt: currentIso(),
       }, { merge: true });
+    });
+    await updateAccountEntitlements(uid, {
+      vcPaidBalance: nextVcPaidBalance,
+      vcSpendableBalance: nextVcSpendableBalance,
     });
     return;
   }
 
   if (kind === 'vn-token-pack') {
+    let nextVnBalance = 0;
     await firestore().runTransaction(async (transaction) => {
       const entRef = getEntitlementsRef(uid);
       const entSnap = await transaction.get(entRef);
       const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
+      nextVnBalance = asPositiveNumber(entitlement.vnBalance) + asPositiveNumber(metadata.packVn);
       transaction.set(entRef, {
-        vnBalance: asPositiveNumber(entitlement.vnBalance) + asPositiveNumber(metadata.packVn),
+        vnBalance: nextVnBalance,
         updatedAt: currentIso(),
       }, { merge: true });
     });
+    await updateAccountEntitlements(uid, { vnBalance: nextVnBalance });
   }
 };
 

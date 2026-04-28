@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 
-import { getFirebaseAdminAuth } from '../../../../src/server/firebaseAdmin';
+import { getD1AuthService } from '../../../../src/server/auth/d1Auth';
 
 export const runtime = 'nodejs';
 
 const SESSION_COOKIE_NAME = '__session';
-const SESSION_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const buildJsonResponse = (body: Record<string, unknown>, status: number = 200): NextResponse =>
   NextResponse.json(body, {
@@ -20,18 +20,15 @@ const readBearerToken = (request: Request): string => {
   }
   return authHeader.slice(7).trim();
 };
-
-const resolveRequestHostname = (request: Request): string => {
-  const forwardedHost = String(request.headers.get('x-forwarded-host') || '').trim();
-  const rawHost = (forwardedHost.split(',')[0] || '').trim();
-  if (rawHost) {
-    return rawHost.replace(/:\d+$/, '').trim().toLowerCase();
+const readCookieValue = (request: Request, cookieName: string): string => {
+  const cookieHeader = String(request.headers.get('cookie') || '').trim();
+  if (!cookieHeader) return '';
+  for (const entry of cookieHeader.split(';')) {
+    const [name, ...rawValue] = entry.split('=');
+    if (String(name || '').trim() !== cookieName) continue;
+    return decodeURIComponent(rawValue.join('=').trim());
   }
-  try {
-    return new URL(request.url).hostname.trim().toLowerCase();
-  } catch {
-    return '';
-  }
+  return '';
 };
 
 const resolveRequestProtocol = (request: Request): string => {
@@ -41,6 +38,19 @@ const resolveRequestProtocol = (request: Request): string => {
   }
   try {
     return new URL(request.url).protocol.replace(':', '').trim().toLowerCase();
+  } catch {
+    return '';
+  }
+};
+
+const resolveRequestHostname = (request: Request): string => {
+  const forwardedHost = String(request.headers.get('x-forwarded-host') || '').trim();
+  const rawHost = (forwardedHost.split(',')[0] || '').trim();
+  if (rawHost) {
+    return rawHost.replace(/:\d+$/, '').trim().toLowerCase();
+  }
+  try {
+    return new URL(request.url).hostname.trim().toLowerCase();
   } catch {
     return '';
   }
@@ -64,26 +74,30 @@ export const POST = async (request: Request): Promise<Response> => {
     return buildJsonResponse({ ok: false }, 401);
   }
 
-  try {
-    const auth = getFirebaseAdminAuth();
-    await auth.verifyIdToken(idToken);
-    const sessionCookie = await auth.createSessionCookie(idToken, { expiresIn: SESSION_MAX_AGE_MS });
-
-    const response = buildJsonResponse({ ok: true });
-    response.cookies.set(SESSION_COOKIE_NAME, sessionCookie, {
-      httpOnly: true,
-      secure: shouldUseSecureSessionCookie(request),
-      sameSite: 'lax',
-      path: '/',
-      maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
-    });
-    return response;
-  } catch {
+  const auth = getD1AuthService();
+  const context = await auth.resolveSessionToken(idToken);
+  if (!context) {
     return buildJsonResponse({ ok: false }, 401);
   }
+
+  const response = buildJsonResponse({ ok: true });
+  response.cookies.set(SESSION_COOKIE_NAME, idToken, {
+    httpOnly: true,
+    secure: shouldUseSecureSessionCookie(request),
+    sameSite: 'lax',
+    path: '/',
+    maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
+  });
+  return response;
 };
 
 export const DELETE = async (request: Request): Promise<Response> => {
+  const auth = getD1AuthService();
+  const idToken = readBearerToken(request) || readCookieValue(request, SESSION_COOKIE_NAME);
+  if (idToken) {
+    await auth.revokeSessionToken(idToken).catch(() => undefined);
+  }
+
   const response = buildJsonResponse({ ok: true });
   response.cookies.set(SESSION_COOKIE_NAME, '', {
     httpOnly: true,

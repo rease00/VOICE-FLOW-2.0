@@ -3,6 +3,18 @@ import { getFirebaseAdminFirestore } from '../firebaseAdmin.ts';
 const DEFAULT_DOMAIN_JOB_COLLECTION = 'domainJobs';
 const memoryDomainJobs = new Map<string, DomainJobRecord<any, any, any>>();
 
+type NativeDomainJobStoreAdapter = {
+  getRecord: (id: string) => Promise<DomainJobRecord | null> | DomainJobRecord | null;
+  saveRecord: (record: DomainJobRecord) => Promise<DomainJobRecord> | DomainJobRecord;
+  createRecordIfAbsent: (
+    record: DomainJobRecord,
+  ) => Promise<{ record: DomainJobRecord; created: boolean }> | { record: DomainJobRecord; created: boolean };
+};
+
+type RuntimeBindings = {
+  domainJobStore?: NativeDomainJobStoreAdapter | null;
+};
+
 export type DomainJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface DomainJobRecord<TPayload = Record<string, unknown>, TResult = Record<string, unknown>, TProgress = Record<string, unknown>> {
@@ -34,6 +46,41 @@ const getFirestoreHandle = () => {
   }
 };
 
+const getRuntimeBindings = (): RuntimeBindings | null => {
+  const bindings = (globalThis as Record<string, unknown>).__vfRuntimeBindings;
+  if (!bindings || typeof bindings !== 'object') {
+    return null;
+  }
+
+  return bindings as RuntimeBindings;
+};
+
+const resolveNativeDomainJobStore = (): NativeDomainJobStoreAdapter | null => {
+  const store = getRuntimeBindings()?.domainJobStore;
+  if (!store || typeof store !== 'object') {
+    return null;
+  }
+
+  if (
+    typeof store.getRecord !== 'function'
+    || typeof store.saveRecord !== 'function'
+    || typeof store.createRecordIfAbsent !== 'function'
+  ) {
+    return null;
+  }
+
+  return store;
+};
+
+const normalizeJobRecord = <TPayload = Record<string, unknown>, TResult = Record<string, unknown>, TProgress = Record<string, unknown>>(
+  record: DomainJobRecord<TPayload, TResult, TProgress>,
+): DomainJobRecord<TPayload, TResult, TProgress> => ({
+  ...record,
+  id: String(record.id || '').trim(),
+  domain: String(record.domain || '').trim(),
+  updatedAt: record.updatedAt || new Date().toISOString(),
+});
+
 export const createDomainJobRecord = <TPayload = Record<string, unknown>>(
   input: {
     id: string;
@@ -62,6 +109,11 @@ export const getDomainJobRecord = async <
   const safeId = String(id || '').trim();
   if (!safeId) return null;
 
+  const nativeStore = resolveNativeDomainJobStore();
+  if (nativeStore) {
+    return (await nativeStore.getRecord(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | null) || null;
+  }
+
   const firestore = getFirestoreHandle();
   if (!firestore) {
     return (memoryDomainJobs.get(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
@@ -79,12 +131,12 @@ export const saveDomainJobRecord = async <
   TResult = Record<string, unknown>,
   TProgress = Record<string, unknown>,
 >(record: DomainJobRecord<TPayload, TResult, TProgress>): Promise<DomainJobRecord<TPayload, TResult, TProgress>> => {
-  const safeRecord: DomainJobRecord<TPayload, TResult, TProgress> = {
-    ...record,
-    id: String(record.id || '').trim(),
-    domain: String(record.domain || '').trim(),
-    updatedAt: record.updatedAt || new Date().toISOString(),
-  };
+  const safeRecord = normalizeJobRecord(record);
+
+  const nativeStore = resolveNativeDomainJobStore();
+  if (nativeStore) {
+    return (await nativeStore.saveRecord(safeRecord as DomainJobRecord) as DomainJobRecord<TPayload, TResult, TProgress>) || safeRecord;
+  }
 
   const firestore = getFirestoreHandle();
   if (!firestore) {
@@ -104,12 +156,16 @@ export const createDomainJobRecordIfAbsent = async <
   record: DomainJobRecord<TPayload, TResult, TProgress>;
   created: boolean;
 }> => {
-  const safeRecord: DomainJobRecord<TPayload, TResult, TProgress> = {
-    ...record,
-    id: String(record.id || '').trim(),
-    domain: String(record.domain || '').trim(),
-    updatedAt: record.updatedAt || new Date().toISOString(),
-  };
+  const safeRecord = normalizeJobRecord(record);
+
+  const nativeStore = resolveNativeDomainJobStore();
+  if (nativeStore) {
+    const result = await nativeStore.createRecordIfAbsent(safeRecord as DomainJobRecord);
+    return (result as { record: DomainJobRecord<TPayload, TResult, TProgress>; created: boolean }) || {
+      record: safeRecord,
+      created: true,
+    };
+  }
 
   const firestore = getFirestoreHandle();
   if (!firestore) {

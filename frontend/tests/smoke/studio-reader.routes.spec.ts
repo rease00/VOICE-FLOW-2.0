@@ -66,6 +66,24 @@ test('reader route loads dock controls and flash runtime details', async ({ page
   await expect(page.getByTestId('reader-dock')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
   await expect(page.getByTestId('reader-compact-transport')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
 
+  const dismissCookieBanner = async (): Promise<void> => {
+    const candidateLabels = [
+      /Essential only/i,
+      /Accept all/i,
+      /Accept cookies/i,
+      /Continue/i,
+    ];
+
+    for (const label of candidateLabels) {
+      const button = page.getByRole('button', { name: label }).first();
+      if (!(await button.isVisible().catch(() => false))) continue;
+      await button.click({ force: true });
+      await page.waitForTimeout(250);
+      return;
+    }
+  };
+
+  await dismissCookieBanner();
   await page.getByTestId('dock-action-tts').click();
   await expect(page.getByTestId('reader-dock-popup')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
   await expect(page.getByTestId('reader-tts-runtime-card')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });

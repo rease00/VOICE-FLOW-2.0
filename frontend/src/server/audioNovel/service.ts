@@ -45,6 +45,12 @@ const AUDIO_NOVEL_UNAUTHORIZED_ERROR = {
 
 const activeJobPromises = new Map<string, Promise<void>>();
 
+const stripUndefinedRecordValues = <T extends Record<string, unknown>>(record: T): T => (
+  Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined),
+  ) as T
+);
+
 const getDb = () => {
   try {
     return getFirebaseAdminFirestore();
@@ -119,6 +125,18 @@ const buildJobId = (request: AudioNovelJobRequest): string => {
     ].join('|'))
     .digest('hex');
   return `${AUDIO_NOVEL_JOB_PREFIX}_${fingerprint.slice(0, 24)}`;
+};
+
+const saveAudioNovelJobRecord = async (
+  record: DomainJobRecord<Record<string, unknown>, Record<string, unknown>, Record<string, unknown>>,
+): Promise<void> => {
+  await saveDomainJobRecord(
+    stripUndefinedRecordValues(record as unknown as Record<string, unknown>) as unknown as DomainJobRecord<
+      Record<string, unknown>,
+      Record<string, unknown>,
+      Record<string, unknown>
+    >,
+  );
 };
 
 const buildAudioKey = (bookId: string, chapterId: string, hash: string): string => `audio/${bookId}/${chapterId}/${hash}.mp3`;
@@ -313,26 +331,24 @@ const processJob = async (jobId: string, request: AudioNovelJobRequest): Promise
     payload: request as unknown as Record<string, unknown>,
   });
 
-  await saveDomainJobRecord({
+  await saveAudioNovelJobRecord({
     ...baseRecord,
     status: 'running',
     startedAt: baseRecord.startedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    error: undefined,
   });
 
   try {
     const result = await generatePublishedChapterAudio(request);
-    await saveDomainJobRecord({
+    await saveAudioNovelJobRecord({
       ...baseRecord,
       status: 'completed',
       result: result as unknown as Record<string, unknown>,
       completedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      error: undefined,
     });
   } catch (error) {
-    await saveDomainJobRecord({
+    await saveAudioNovelJobRecord({
       ...baseRecord,
       status: 'failed',
       error: error instanceof Error ? error.message : String(error),
@@ -341,12 +357,38 @@ const processJob = async (jobId: string, request: AudioNovelJobRequest): Promise
   }
 };
 
-const kickOffJob = (jobId: string, request: AudioNovelJobRequest): void => {
-  if (activeJobPromises.has(jobId)) return;
-  const promise = processJob(jobId, request).finally(() => {
-    activeJobPromises.delete(jobId);
+const scheduleJobProcessing = (jobId: string, request: AudioNovelJobRequest): Promise<void> => {
+  const existing = activeJobPromises.get(jobId);
+  if (existing) return existing;
+  const promise = new Promise<void>((resolve, reject) => {
+    queueMicrotask(() => {
+      processJob(jobId, request)
+        .then(() => resolve(), reject)
+        .finally(() => {
+          activeJobPromises.delete(jobId);
+        });
+    });
   });
   activeJobPromises.set(jobId, promise);
+  return promise;
+};
+
+const kickOffJob = (jobId: string, request: AudioNovelJobRequest): void => {
+  void scheduleJobProcessing(jobId, request);
+};
+
+const ensureAudioNovelJobProcessing = async (
+  jobId: string,
+  request: AudioNovelJobRequest | null | undefined,
+): Promise<void> => {
+  const existing = activeJobPromises.get(jobId);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  if (!request) return;
+  await scheduleJobProcessing(jobId, request);
 };
 
 const toJobResponse = (record: DomainJobRecord | null, jobId: string): AudioNovelJobResponse => {
@@ -434,9 +476,10 @@ export const handleAudioNovelJobCreateRoute = async (request: Request): Promise<
   const { record, created } = await createDomainJobRecordIfAbsent(initialRecord);
   if (!created) {
     if (record.status === 'queued' || record.status === 'running') {
-      kickOffJob(jobId, normalized);
+      await ensureAudioNovelJobProcessing(jobId, record.payload as AudioNovelJobRequest | undefined);
     }
-    return Response.json(toJobResponse(record, jobId));
+    const refreshed = await getDomainJobRecord(jobId) || record;
+    return Response.json(toJobResponse(refreshed, jobId));
   }
 
   kickOffJob(jobId, normalized);
@@ -455,7 +498,11 @@ export const handleAudioNovelJobStatusRoute = async (request: Request, jobId: st
   if (!record || record.domain !== AUDIO_NOVEL_DOMAIN) {
     return Response.json({ error: 'Audio novel job not found.' }, { status: 404 });
   }
-  return Response.json(toJobResponse(record, jobId));
+  if (record.status === 'queued' || record.status === 'running') {
+    await ensureAudioNovelJobProcessing(jobId, record.payload as AudioNovelJobRequest | undefined);
+  }
+  const refreshed = await getDomainJobRecord(jobId) || record;
+  return Response.json(toJobResponse(refreshed, jobId));
 };
 
 export const handleLibraryBookChapterAudioRoute = async (

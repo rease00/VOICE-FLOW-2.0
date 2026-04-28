@@ -1,4 +1,5 @@
 import { firebaseAuth } from './firebaseClient';
+import { readStoredAuthSessionState } from './authSessionService';
 import { resolveAuthHeaders } from '../src/shared/auth/tokenPolicy';
 import { readEnvBoolean } from '../src/shared/runtime/env';
 import { fetchWithRequestDedup } from '../src/shared/api/requestDeduper';
@@ -176,10 +177,23 @@ const mapTokenReadFailure = (error: Error): string => {
   return 'Authentication session could not be refreshed. Sign in again.';
 };
 
+const readStoredSessionToken = (): { token: string; uid: string } => {
+  const state = readStoredAuthSessionState();
+  return {
+    token: String(state?.token || '').trim(),
+    uid: String(state?.uid || '').trim(),
+  };
+};
+
 const getCurrentIdTokenWithRefresh = async (
   forceRefresh: boolean,
   signal?: AbortSignal
 ): Promise<TokenResolution> => {
+  const storedSession = readStoredSessionToken();
+  if (storedSession.token) {
+    return { token: storedSession.token, hadCurrentUser: true, error: null };
+  }
+
   const user = firebaseAuth.currentUser;
   if (!user) {
     return { token: '', hadCurrentUser: false, error: null };
@@ -283,6 +297,7 @@ export const authFetch = async (
     }
     const currentUser = firebaseAuth.currentUser;
     const firebaseUid = String(currentUser?.uid || '').trim();
+    const storedSession = readStoredSessionToken();
     const requestSignal = options.signal ?? (init.signal === null ? undefined : init.signal);
     const tokenResult = await getCurrentIdTokenWithRefresh(forceTokenRefresh, requestSignal);
     const token = tokenResult.token;
@@ -292,8 +307,9 @@ export const authFetch = async (
 
     // In local/dev backend mode (VF_AUTH_ENFORCE=0), backend UID comes from x-dev-uid.
     // Keep this header aligned with Firebase UID so per-user admin mapping works consistently.
-    if (DEV_UID_HEADER_ENABLED && firebaseUid && !headers.has('x-dev-uid')) {
-      headers.set('x-dev-uid', firebaseUid);
+    const effectiveDevUid = firebaseUid || storedSession.uid;
+    if (DEV_UID_HEADER_ENABLED && effectiveDevUid && !headers.has('x-dev-uid')) {
+      headers.set('x-dev-uid', effectiveDevUid);
     }
 
     if (!hasAuth && options.requireAuth) {
@@ -340,6 +356,7 @@ export const authFetch = async (
       const fetchInit: RequestInit = {
         ...init,
         headers: attempt.headers,
+        credentials: init.credentials || 'same-origin',
       };
       if (controller?.signal) {
         fetchInit.signal = controller.signal;

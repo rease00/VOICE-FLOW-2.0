@@ -49,6 +49,6 @@ export const resolveLegacyBackendSummary = () => {
     configured: Boolean(configuredValue),
     localDevFallbackEnabled: Boolean(localDevFallback),
     localDevFallbackOrigin: localDevFallback,
-    launchReady: Boolean(configuredValue),
+    launchReady: Boolean(configuredValue || localDevFallback),
   };
 };

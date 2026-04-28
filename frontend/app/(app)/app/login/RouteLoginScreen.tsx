@@ -1,89 +1,20 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import {
-  AlertCircle,
-  ArrowRight,
-  Eye,
-  EyeOff,
-  Lock,
-  Mail,
-} from 'lucide-react';
-import {
-  GoogleAuthProvider,
-  deleteUser,
-  getAdditionalUserInfo,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
+import React, { useMemo, useState } from 'react';
+import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, Mail } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 import { APP_ROUTE_PATHS, resolveSafeInternalNextPath } from '../../../../src/app/navigation';
 import { sanitizeUiText } from '../../../../src/shared/ui/terminology';
-import { resolveAdminProvisioningHint } from '../../../../src/shared/auth/adminProvisioning';
+import { useUser } from '../../../../src/features/auth/context/UserContext';
 import {
-  SIGNUP_DISABLED_API_MESSAGE,
   SIGNUP_DISABLED_DETAIL,
   SIGNUP_DISABLED_TITLE,
 } from '../../../../src/shared/auth/signupLock';
-import {
-  firebaseAuth,
-  firebaseConfigIssue,
-  googleProvider,
-  isAdminIdentity,
-  isFirebaseConfigured,
-} from '../../../../services/firebaseClient';
-import { clearFirebaseSession, syncFirebaseSession } from '../../../../services/authSessionService';
-import { warmDriveTokenFromGoogleSignIn } from '../../../../services/driveAuthService';
 
 interface RouteLoginScreenProps {
   nextPath?: string | null;
 }
-
-const resolveFirebaseConfigIssueMessage = (): string =>
-  String(firebaseConfigIssue || '').trim()
-  || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart the frontend server.';
-
-const mapAuthError = (error: unknown, context: 'signin' | 'google' | 'reset' = 'signin'): string => {
-  const code = String((error as { code?: unknown } | null)?.code || '').trim().toLowerCase();
-  const rawMessage = String((error as { message?: unknown } | null)?.message || '').trim();
-  const loweredMessage = rawMessage.toLowerCase();
-
-  if (code === 'auth/api-key-not-valid' || code === 'auth/invalid-api-key') {
-    return resolveFirebaseConfigIssueMessage();
-  }
-  if (code === 'auth/invalid-email') {
-    return 'Use a valid email address.';
-  }
-  if (code === 'auth/network-request-failed' || loweredMessage.includes('network-request-failed')) {
-    return 'Cannot reach authentication service right now. Check your connection, then retry.';
-  }
-  if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
-    return 'Invalid email or password.';
-  }
-  if (code === 'auth/too-many-requests') {
-    return 'Too many attempts. Wait a minute and retry.';
-  }
-  if (code === 'auth/unauthorized-domain') {
-    return 'Google sign-in requires localhost in local development. Open the app at http://localhost:3000 and retry.';
-  }
-  if (context === 'reset') {
-    return 'Could not request password reset.';
-  }
-  if (context === 'google') {
-    return 'Google sign-in failed. Please try again.';
-  }
-  return 'Sign-in failed. Please check your details and try again.';
-};
-
-const requiresEmailVerification = (user: { uid?: string | null; email?: string | null; emailVerified?: boolean | null }): boolean => {
-  const email = String(user.email || '').trim();
-  if (!email) return false;
-  if (isAdminIdentity(user.uid, user.email, false)) return false;
-  return user.emailVerified !== true;
-};
 
 function LogoLockup({ mobile = false }: { mobile?: boolean }) {
   return (
@@ -93,9 +24,7 @@ function LogoLockup({ mobile = false }: { mobile?: boolean }) {
         alt=""
         aria-hidden="true"
         draggable={false}
-        className={`shrink-0 select-none object-contain ${
-          mobile ? 'h-14 w-14' : 'h-[4.5rem] w-[4.5rem]'
-        }`}
+        className={`shrink-0 select-none object-contain ${mobile ? 'h-14 w-14' : 'h-[4.5rem] w-[4.5rem]'}`}
       />
       <div className="min-w-0">
         <div className={`truncate font-black tracking-[-0.05em] text-white ${mobile ? 'text-[22px]' : 'text-[28px]'}`}>
@@ -171,6 +100,7 @@ function BrandPanel() {
 
 export function RouteLoginScreen({ nextPath }: RouteLoginScreenProps) {
   const router = useRouter();
+  const { signInWithEmail, requestPasswordReset } = useUser();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -184,93 +114,32 @@ export function RouteLoginScreen({ nextPath }: RouteLoginScreenProps) {
     [nextPath],
   );
 
-  const finalizeSignIn = async (user: { getIdToken: (forceRefresh?: boolean) => Promise<string> }) => {
-    try {
-      const idToken = await user.getIdToken();
-      if (!idToken) {
-        throw new Error('Missing Firebase ID token.');
-      }
-      await syncFirebaseSession(idToken);
-      router.replace(safeNextPath);
-      return true;
-    } catch {
-      await clearFirebaseSession().catch(() => undefined);
-      await signOut(firebaseAuth).catch(() => undefined);
-      setErrorMsg('Signed in, but the app could not finish starting your secure session. Please try again.');
-      return false;
-    }
-  };
-
   const handleEmailSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg(null);
     setInfoMsg(null);
 
-    if (!isFirebaseConfigured) {
-      setErrorMsg(resolveFirebaseConfigIssueMessage());
-      return;
-    }
-
     setIsLoading(true);
     try {
-      const normalizedEmail = String(email || '').trim();
-      const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
-
-      if (requiresEmailVerification(credential.user)) {
-        await signOut(firebaseAuth).catch(() => undefined);
-        setInfoMsg('Verify your email before signing in. Check your inbox or spam folder, then try again.');
+      const result = await signInWithEmail(email, password);
+      if (!result.ok) {
+        const message = sanitizeUiText(result.error || 'Sign-in failed. Please check your details and try again.');
+        if (result.requiresEmailVerification) {
+          setInfoMsg(message);
+          return;
+        }
+        setErrorMsg(message);
+        const provisioningHint = String(result.provisioningHint || '').trim();
+        if (provisioningHint) {
+          setErrorMsg(`${message} ${sanitizeUiText(provisioningHint)}`);
+        }
         return;
       }
 
-      const completed = await finalizeSignIn(credential.user);
-      if (completed) {
-        setInfoMsg('Signed in successfully.');
-      }
+      setInfoMsg('Signed in successfully.');
+      router.replace(safeNextPath);
     } catch (error) {
-      const normalizedEmail = String(email || '').trim();
-      const errorCode = String((error as { code?: unknown } | null)?.code || '').trim().toLowerCase();
-      const provisioningHint = resolveAdminProvisioningHint(normalizedEmail, errorCode);
-      const baseMessage = mapAuthError(error, 'signin');
-      setErrorMsg(provisioningHint ? `${baseMessage} ${provisioningHint}` : baseMessage);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGoogleSignIn = async () => {
-    setErrorMsg(null);
-    setInfoMsg(null);
-
-    if (!isFirebaseConfigured) {
-      setErrorMsg(resolveFirebaseConfigIssueMessage());
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const result = await signInWithPopup(firebaseAuth, googleProvider);
-      const providerUserInfo = getAdditionalUserInfo(result);
-      if (providerUserInfo?.isNewUser) {
-        await deleteUser(result.user).catch(() => undefined);
-        await signOut(firebaseAuth).catch(() => undefined);
-        setErrorMsg(SIGNUP_DISABLED_API_MESSAGE);
-        return;
-      }
-
-      if (requiresEmailVerification(result.user)) {
-        await signOut(firebaseAuth).catch(() => undefined);
-        setInfoMsg('Verify your email before signing in. Check your inbox or spam folder, then try again.');
-        return;
-      }
-
-      const completed = await finalizeSignIn(result.user);
-      if (completed) {
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        warmDriveTokenFromGoogleSignIn(credential);
-        setInfoMsg('Signed in with Google.');
-      }
-    } catch (error) {
-      setErrorMsg(sanitizeUiText(mapAuthError(error, 'google')));
+      setErrorMsg(sanitizeUiText(String((error as { message?: unknown } | null)?.message || 'Sign-in failed. Please check your details and try again.')));
     } finally {
       setIsLoading(false);
     }
@@ -285,17 +154,17 @@ export function RouteLoginScreen({ nextPath }: RouteLoginScreenProps) {
       setErrorMsg('Enter your email first.');
       return;
     }
-    if (!isFirebaseConfigured) {
-      setErrorMsg(resolveFirebaseConfigIssueMessage());
-      return;
-    }
 
     setIsResetting(true);
     try {
-      await sendPasswordResetEmail(firebaseAuth, normalizedEmail);
+      const result = await requestPasswordReset(normalizedEmail);
+      if (!result.ok) {
+        setErrorMsg(sanitizeUiText(result.error || 'Could not request password reset.'));
+        return;
+      }
       setInfoMsg('If an account exists for this email, a reset link has been sent.');
     } catch (error) {
-      setErrorMsg(sanitizeUiText(mapAuthError(error, 'reset')));
+      setErrorMsg(sanitizeUiText(String((error as { message?: unknown } | null)?.message || 'Could not request password reset.')));
     } finally {
       setIsResetting(false);
     }
@@ -423,21 +292,6 @@ export function RouteLoginScreen({ nextPath }: RouteLoginScreenProps) {
                   {!isLoading ? <ArrowRight size={16} /> : null}
                 </button>
               </form>
-
-              <div className="my-5 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
-                <hr className="vf-auth-divider h-px flex-1 border-none" />
-                Or continue with
-                <hr className="vf-auth-divider h-px flex-1 border-none" />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="inline-flex min-h-12 w-full items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-6 py-3 text-sm font-semibold text-slate-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Sign in with Google
-              </button>
             </div>
           </section>
         </div>
@@ -522,195 +376,75 @@ export function RouteLoginScreen({ nextPath }: RouteLoginScreenProps) {
 
         .vf-login-brand__mesh {
           position: absolute;
-          inset: auto -8% -8% 14%;
-          height: 18rem;
-          opacity: 0.5;
-          background-image:
-            repeating-radial-gradient(ellipse at center, rgba(79, 124, 255, 0.24) 0 1px, transparent 1px 13px);
-          transform: translate3d(0, 0, 0) rotate(-10deg) scale(1.22, 0.6);
-          mask-image: linear-gradient(90deg, transparent 0%, black 18%, black 84%, transparent 100%);
-          animation: vfLoginWave 14s ease-in-out infinite alternate;
+          inset: 0;
+          opacity: 0.09;
+          background:
+            radial-gradient(circle at 22% 22%, rgba(255, 255, 255, 0.30), transparent 18%),
+            radial-gradient(circle at 72% 58%, rgba(255, 255, 255, 0.18), transparent 16%),
+            radial-gradient(circle at 52% 36%, rgba(255, 255, 255, 0.16), transparent 12%);
+          filter: blur(2px);
+          transform: scale(1.05);
         }
 
         .vf-login-wave {
-          position: relative;
-          height: 15rem;
-          opacity: 0.42;
-          background-image:
-            repeating-radial-gradient(ellipse at center, rgba(71, 214, 202, 0.16) 0 1px, transparent 1px 13px);
-          transform: translate3d(10%, 0, 0) rotate(-10deg) scale(1.22, 0.6);
-          mask-image: linear-gradient(90deg, transparent 0%, black 24%, black 80%, transparent 100%);
-          animation: vfLoginWave 12s ease-in-out infinite alternate;
+          height: 8rem;
+          opacity: 0.9;
+          background: radial-gradient(circle at 50% 45%, rgba(71, 214, 202, 0.16), transparent 58%);
+          mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.72) 18%, rgba(0, 0, 0, 0));
         }
 
         .vf-login-ambient {
           position: absolute;
           border-radius: 999px;
-          filter: blur(56px);
-          opacity: 0.72;
-          will-change: transform, opacity;
+          filter: blur(32px);
+          opacity: 0.45;
+          pointer-events: none;
         }
 
         .vf-login-ambient--a {
-          left: -7rem;
-          top: -6rem;
-          width: 20rem;
-          height: 20rem;
-          background: radial-gradient(circle, rgba(71, 214, 202, 0.18), transparent 66%);
-          animation: vfLoginAmbientA 18s ease-in-out infinite alternate;
+          left: -5rem;
+          top: 12%;
+          width: 18rem;
+          height: 18rem;
+          background: radial-gradient(circle, rgba(71, 214, 202, 0.18), transparent 65%);
         }
 
         .vf-login-ambient--b {
-          right: -6rem;
-          top: 2rem;
+          right: -2rem;
+          top: 18%;
           width: 22rem;
           height: 22rem;
-          background: radial-gradient(circle, rgba(96, 72, 255, 0.18), transparent 68%);
-          animation: vfLoginAmbientB 22s ease-in-out infinite alternate;
+          background: radial-gradient(circle, rgba(79, 124, 255, 0.14), transparent 68%);
         }
 
         .vf-login-ambient--c {
-          left: 16%;
-          bottom: -7rem;
+          right: 22%;
+          bottom: -4rem;
           width: 18rem;
           height: 18rem;
-          background: radial-gradient(circle, rgba(243, 184, 107, 0.08), transparent 66%);
-          animation: vfLoginAmbientC 24s ease-in-out infinite alternate;
+          background: radial-gradient(circle, rgba(139, 92, 246, 0.12), transparent 64%);
         }
 
         .vf-login-topline {
           position: absolute;
-          inset: 0 0 auto 0;
+          left: 50%;
+          top: 0;
+          width: min(52rem, 82vw);
           height: 1px;
-          background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.28), transparent);
-          opacity: 0.8;
+          transform: translateX(-50%);
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.24), transparent);
+          opacity: 0.7;
         }
 
         .vf-login-backdrop-grid {
           position: absolute;
           inset: 0;
-          opacity: 0.16;
+          opacity: 0.15;
           background-image:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 16%),
-            linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
-          background-size: 100% 100%, 42px 42px, 42px 42px;
-          mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.85), transparent 122%);
-        }
-
-        .vf-login-card-shine {
-          animation: vfLoginSheen 11s ease-in-out infinite alternate;
-          will-change: transform, opacity;
-        }
-
-        @keyframes vfLoginGlowA {
-          from {
-            transform: translate3d(-1rem, -1rem, 0) scale(1);
-            opacity: 0.76;
-          }
-          to {
-            transform: translate3d(2rem, 1rem, 0) scale(1.06);
-            opacity: 0.98;
-          }
-        }
-
-        @keyframes vfLoginGlowB {
-          from {
-            transform: translate3d(0, 0, 0) scale(1);
-            opacity: 0.56;
-          }
-          to {
-            transform: translate3d(-2rem, 1.5rem, 0) scale(1.05);
-            opacity: 0.82;
-          }
-        }
-
-        @keyframes vfLoginWave {
-          from {
-            transform: translate3d(0, 0, 0) rotate(-10deg) scale(1.18, 0.58);
-            opacity: 0.34;
-          }
-          to {
-            transform: translate3d(2rem, -1rem, 0) rotate(-8deg) scale(1.26, 0.64);
-            opacity: 0.54;
-          }
-        }
-
-        @keyframes vfLoginAmbientA {
-          from {
-            transform: translate3d(-1rem, -0.5rem, 0) scale(1);
-            opacity: 0.7;
-          }
-          to {
-            transform: translate3d(2rem, 1rem, 0) scale(1.08);
-            opacity: 0.94;
-          }
-        }
-
-        @keyframes vfLoginAmbientB {
-          from {
-            transform: translate3d(0, 0, 0) scale(1);
-            opacity: 0.56;
-          }
-          to {
-            transform: translate3d(-2rem, 1rem, 0) scale(1.05);
-            opacity: 0.84;
-          }
-        }
-
-        @keyframes vfLoginAmbientC {
-          from {
-            transform: translate3d(0, 0, 0) scale(1);
-            opacity: 0.18;
-          }
-          to {
-            transform: translate3d(1rem, -1rem, 0) scale(1.08);
-            opacity: 0.34;
-          }
-        }
-
-        @keyframes vfLoginSheen {
-          from {
-            transform: translateX(-18%) rotate(-5deg);
-            opacity: 0.26;
-          }
-          50% {
-            opacity: 0.52;
-          }
-          to {
-            transform: translateX(18%) rotate(-5deg);
-            opacity: 0.32;
-          }
-        }
-
-        @media (max-width: 1023px) {
-          .vf-login-shell-card {
-            max-width: 404px;
-            border-radius: 22px;
-          }
-
-          .vf-login-brand {
-            display: none;
-          }
-
-          .vf-login-topline,
-          .vf-login-backdrop-grid {
-            opacity: 0.12;
-          }
-
-          .vf-login-wave {
-            display: none;
-          }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .vf-login-ambient,
-          .vf-login-brand__glow,
-          .vf-login-brand__mesh,
-          .vf-login-wave,
-          .vf-login-card-shine {
-            animation: none !important;
-          }
+            linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+          background-size: 44px 44px;
+          mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.82), transparent 115%);
         }
       `}</style>
     </main>
