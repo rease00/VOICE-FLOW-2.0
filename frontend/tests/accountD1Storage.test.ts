@@ -395,4 +395,31 @@ describe('account server D1 storage', () => {
       priority: 'yellow',
     });
   });
+
+  it('forces userId updates through the D1 profile and user-id index mirrors', async () => {
+    const { upsertAccountProfile } = await import('../src/server/account/service');
+
+    const profile = await upsertAccountProfile({ uid: 'uid-1', decodedToken: {}, userData: null } as any, {
+      userId: 'reader_two',
+      forceUserId: true,
+    });
+
+    expect(profile).toMatchObject({
+      uid: 'uid-1',
+      userId: 'reader_two',
+    });
+    expect(accountTables.userIdIndex.has('reader_one')).toBe(false);
+    expect(accountTables.userIdIndex.get('reader_two')).toMatchObject({
+      user_id: 'reader_two',
+      uid: 'uid-1',
+    });
+    expect(JSON.parse(String(accountTables.profiles.get('uid-1')?.payload_json || '{}'))).toMatchObject({
+      uid: 'uid-1',
+      userId: 'reader_two',
+    });
+    expect(firestoreCollections.get('user_profiles')?.get('uid-1')).toMatchObject({
+      uid: 'uid-1',
+      userId: 'reader_two',
+    });
+  });
 });

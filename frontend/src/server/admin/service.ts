@@ -6,7 +6,13 @@ import type { NextRequest } from 'next/server';
 import { proxyBackendRequest } from '../../../app/api/backend/proxy';
 import { ACCOUNT_DELETE_CONFIRM_PHRASE } from '../../../services/accountService';
 import { handleVoiceCloneRoute } from '../voiceClone/service';
-import { getAccountEntitlements, deleteUserAccount } from '../account/service';
+import {
+  deleteUserAccount,
+  getAccountEntitlements,
+  getAccountProfile,
+  updateAccountEntitlements,
+  upsertAccountProfile,
+} from '../account/service';
 import { verifyFirebaseRequest } from '../auth/requestAuth.ts';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../firebaseAdmin';
 import { getReplatformRuntimeSummary } from '../replatform/runtime';
@@ -437,6 +443,20 @@ const getUserEntitlements = async (uid: string, userData: AnyRecord | null): Pro
   } as never) as unknown as AnyRecord;
 };
 
+const getAdminAccountProfile = async (uid: string, userData: AnyRecord | null): Promise<AnyRecord> => {
+  const profile = await getAccountProfile({
+    uid,
+    decodedToken: {
+      uid,
+      email: asString(userData?.email) || undefined,
+    } as never,
+    userRef: null as never,
+    userData,
+    userExists: Boolean(userData),
+  } as never);
+  return profile.profile as AnyRecord;
+};
+
 const isDevUidHeaderEnabled = (): boolean => Boolean(readEnvBoolean(
   process.env.VF_DEV_UID_HEADER_ENABLED,
   process.env.NEXT_PUBLIC_ENABLE_DEV_UID_HEADER,
@@ -680,12 +700,13 @@ const listSupportMessagesByConversation = async (conversationId: string): Promis
 };
 
 const buildAdminUserSummary = async (uid: string, userData: AnyRecord | null): Promise<AnyRecord> => {
+  const profile = await getAdminAccountProfile(uid, userData);
   const entitlements = await getUserEntitlements(uid, userData);
   return {
     uid,
-    userId: asString(userData?.userId) || undefined,
-    email: asString(userData?.email),
-    displayName: asString(userData?.displayName || userData?.name),
+    userId: asString(profile.userId || userData?.userId) || undefined,
+    email: asString(profile.email || userData?.email),
+    displayName: asString(profile.displayName || userData?.displayName || userData?.name),
     disabled: asBoolean(userData?.disabled),
     admin: asBoolean(userData?.isAdmin) || asLower(userData?.role) === 'admin' || Boolean(await readRecord(COLLECTIONS.adminRbacAssignments, uid)),
     role: asString(userData?.role) || undefined,
@@ -733,19 +754,18 @@ const patchAdminUserHandler = async (request: NextRequest, uid: string): Promise
   await requireUnlockForMutation(request, context);
   const input = await readJsonBody(request);
   const beforeUser = await readRecord(COLLECTIONS.users, uid);
-  const beforeEntitlements = await readRecord(COLLECTIONS.entitlements, uid);
+  const beforeEntitlements = await getUserEntitlements(uid, beforeUser);
   const plan = input.plan === undefined ? normalizePlanName(beforeEntitlements?.plan || beforeUser?.plan) : normalizePlanName(input.plan);
   const meta = PLAN_META[plan];
-  await writeRecord(COLLECTIONS.entitlements, uid, {
+  await updateAccountEntitlements(uid, {
     plan: meta.plan,
     status: meta.status,
     monthlyVfLimit: meta.monthlyVfLimit,
     maxCharsPerGeneration: meta.maxCharsPerGeneration,
     earlyAccess: meta.earlyAccess,
-    paidVfBalance: asPositiveNumber(beforeEntitlements?.paidVfBalance) + asNumber(input.paidVfDelta),
-    vffBalance: asPositiveNumber(beforeEntitlements?.vffBalance) + asNumber(input.vffDelta),
-    updatedAt: nowIso(),
-  }, true);
+    paidVfBalance: asPositiveNumber(beforeEntitlements.wallet?.paidVfBalance) + asNumber(input.paidVfDelta),
+    vffBalance: asPositiveNumber(beforeEntitlements.wallet?.vffBalance) + asNumber(input.vffDelta),
+  }, asLower(plan) as never);
   if (input.disabled !== undefined) {
     await writeRecord(COLLECTIONS.users, uid, { disabled: Boolean(input.disabled), updatedAt: nowIso() }, true);
     try {
@@ -754,7 +774,7 @@ const patchAdminUserHandler = async (request: NextRequest, uid: string): Promise
       // Best effort only.
     }
   }
-  const afterEntitlements = await getUserEntitlements(uid, await readRecord(COLLECTIONS.users, uid));
+  const afterEntitlements = await getUserEntitlements(uid, beforeUser);
   await recordAuditEvent(context, {
     action: 'admin.users.patch',
     resourceType: 'user',
@@ -774,14 +794,28 @@ const forceAdminUserIdHandler = async (request: NextRequest, uid: string): Promi
   const input = await readJsonBody(request);
   const nextUserId = asLower(input.userId).replace(/[^a-z0-9_]+/g, '_');
   if (!nextUserId) httpError(400, 'userId is required.');
-  const beforeProfile = await readRecord(COLLECTIONS.userProfiles, uid);
-  const previousUserId = asString(beforeProfile?.userId);
-  if (previousUserId && previousUserId !== nextUserId) {
-    await deleteRecord(COLLECTIONS.userIdIndex, previousUserId);
-  }
-  await writeRecord(COLLECTIONS.userIdIndex, nextUserId, { uid, userId: nextUserId, updatedAt: nowIso() }, true);
-  await writeRecord(COLLECTIONS.userProfiles, uid, { uid, userId: nextUserId, updatedAt: nowIso() }, true);
-  await writeRecord(COLLECTIONS.users, uid, { userId: nextUserId, updatedAt: nowIso() }, true);
+  const beforeUser = await readRecord(COLLECTIONS.users, uid);
+  const beforeProfile = await getAdminAccountProfile(uid, beforeUser);
+  const targetUserData = beforeUser
+    ? {
+        ...beforeUser,
+        isAdmin: false,
+        role: asLower(beforeUser.role) === 'admin' ? 'user' : beforeUser.role,
+      }
+    : null;
+  const nextProfile = await upsertAccountProfile({
+    uid,
+    decodedToken: {
+      uid,
+      email: asString(beforeProfile?.email || beforeUser?.email) || undefined,
+    } as never,
+    userRef: null as never,
+    userData: targetUserData,
+    userExists: Boolean(beforeUser),
+  } as never, {
+    userId: nextUserId,
+    forceUserId: true,
+  });
   await recordAuditEvent(context, {
     action: 'admin.users.force_user_id',
     resourceType: 'user',
@@ -789,10 +823,10 @@ const forceAdminUserIdHandler = async (request: NextRequest, uid: string): Promi
     subjectUid: uid,
     subjectUserId: nextUserId,
     before: beforeProfile || undefined,
-    after: { userId: nextUserId },
+    after: nextProfile,
     meta: input,
   });
-  return json({ profile: { uid, userId: nextUserId } });
+  return json({ profile: nextProfile });
 };
 
 const resetAdminUserPasswordHandler = async (request: NextRequest, uid: string): Promise<Response> => {

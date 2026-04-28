@@ -68,10 +68,12 @@ const resolveNativeR2Bucket = (): NativeR2Bucket | null => {
   return bucket;
 };
 
+const hasNativeR2Bucket = (): boolean => Boolean(resolveNativeR2Bucket());
+
 export const isR2StorageConfigured = (): boolean => Boolean(isR2Configured || resolveNativeR2Bucket());
 
 export const warnIfR2NotConfigured = (feature: string): boolean => {
-  if (isR2Configured) {
+  if (isR2Configured || hasNativeR2Bucket()) {
     return false;
   }
 
@@ -167,19 +169,7 @@ export const getR2PublicObjectUrl = (objectKey: string): string => {
   return `${R2_PUBLIC_URL_BASE}/${safeKey}`;
 };
 
-export const headR2Object = async (objectKey: string): Promise<boolean> => {
-  const safeKey = normalizeR2ObjectKey(objectKey);
-  if (!safeKey) return false;
-
-  const nativeBucket = resolveNativeR2Bucket();
-  if (nativeBucket) {
-    try {
-      return Boolean(await nativeBucket.head(safeKey));
-    } catch {
-      return false;
-    }
-  }
-
+const headR2ObjectViaS3 = async (safeKey: string): Promise<boolean> => {
   if (!isR2Configured) return false;
 
   try {
@@ -191,6 +181,47 @@ export const headR2Object = async (objectKey: string): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+export const headR2Object = async (objectKey: string): Promise<boolean> => {
+  const safeKey = normalizeR2ObjectKey(objectKey);
+  if (!safeKey) return false;
+
+  const nativeBucket = resolveNativeR2Bucket();
+  if (nativeBucket) {
+    try {
+      const exists = Boolean(await nativeBucket.head(safeKey));
+      if (exists) {
+        return true;
+      }
+    } catch {
+      if (isR2Configured) {
+        return headR2ObjectViaS3(safeKey);
+      }
+      return false;
+    }
+  }
+
+  return headR2ObjectViaS3(safeKey);
+};
+
+const writeR2ObjectViaS3 = async (
+  safeKey: string,
+  normalizedBody: Buffer,
+  contentType: string,
+  cacheControl: string,
+): Promise<void> => {
+  if (!isR2Configured) {
+    throw new Error('Cloudflare R2 is not configured.');
+  }
+
+  await r2Client.send(new PutObjectCommand({
+    Bucket: R2_BUCKET_NAME,
+    Key: safeKey,
+    Body: normalizedBody,
+    ContentType: contentType,
+    CacheControl: cacheControl,
+  }));
 };
 
 export const writeR2Object = async (
@@ -207,50 +238,29 @@ export const writeR2Object = async (
 
   const nativeBucket = resolveNativeR2Bucket();
   if (nativeBucket) {
-    await nativeBucket.put(safeKey, normalizedBody, {
-      httpMetadata: {
-        contentType,
-        cacheControl,
-      },
-    });
-    return;
-  }
-
-  if (!isR2Configured) {
-    throw new Error('Cloudflare R2 is not configured.');
-  }
-
-  await r2Client.send(new PutObjectCommand({
-    Bucket: R2_BUCKET_NAME,
-    Key: safeKey,
-    Body: normalizedBody,
-    ContentType: contentType,
-    CacheControl: cacheControl,
-  }));
-};
-
-export const readR2Object = async (
-  objectKey: string,
-): Promise<{ body: Buffer; contentType: string } | null> => {
-  const safeKey = normalizeR2ObjectKey(objectKey);
-  if (!safeKey) return null;
-
-  const nativeBucket = resolveNativeR2Bucket();
-  if (nativeBucket) {
     try {
-      const response = await nativeBucket.get(safeKey);
-      if (!response) return null;
-      const body = await readBodyToBuffer(response.body ?? response);
-      if (!body) return null;
-      return {
-        body,
-        contentType: response.httpMetadata?.contentType || response.contentType || 'application/octet-stream',
-      };
+      await nativeBucket.put(safeKey, normalizedBody, {
+        httpMetadata: {
+          contentType,
+          cacheControl,
+        },
+      });
+      return;
     } catch {
-      return null;
+      if (!isR2Configured) {
+        throw new Error('Cloudflare R2 is not configured.');
+      }
+      await writeR2ObjectViaS3(safeKey, normalizedBody, contentType, cacheControl);
+      return;
     }
   }
 
+  await writeR2ObjectViaS3(safeKey, normalizedBody, contentType, cacheControl);
+};
+
+const readR2ObjectViaS3 = async (
+  safeKey: string,
+): Promise<{ body: Buffer; contentType: string } | null> => {
   if (!isR2Configured) return null;
 
   try {
@@ -268,6 +278,35 @@ export const readR2Object = async (
   } catch {
     return null;
   }
+};
+
+export const readR2Object = async (
+  objectKey: string,
+): Promise<{ body: Buffer; contentType: string } | null> => {
+  const safeKey = normalizeR2ObjectKey(objectKey);
+  if (!safeKey) return null;
+
+  const nativeBucket = resolveNativeR2Bucket();
+  if (nativeBucket) {
+    try {
+      const response = await nativeBucket.get(safeKey);
+      if (!response) {
+        return readR2ObjectViaS3(safeKey);
+      }
+      const body = await readBodyToBuffer(response.body ?? response);
+      if (!body) {
+        return readR2ObjectViaS3(safeKey);
+      }
+      return {
+        body,
+        contentType: response.httpMetadata?.contentType || response.contentType || 'application/octet-stream',
+      };
+    } catch {
+      return readR2ObjectViaS3(safeKey);
+    }
+  }
+
+  return readR2ObjectViaS3(safeKey);
 };
 
 export const getR2SignedObjectUrl = async (

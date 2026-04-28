@@ -72,6 +72,30 @@ const resolveNativeDomainJobStore = (): NativeDomainJobStoreAdapter | null => {
   return store;
 };
 
+const isDomainJobRecordLike = (value: unknown): value is DomainJobRecord => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Partial<DomainJobRecord>;
+  return Boolean(
+    typeof record.id === 'string'
+    && typeof record.domain === 'string'
+    && typeof record.status === 'string'
+    && typeof record.createdAt === 'string'
+    && typeof record.updatedAt === 'string',
+  );
+};
+
+const isCreateRecordResultLike = (value: unknown): value is { record: DomainJobRecord; created: boolean } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const result = value as { record?: unknown; created?: unknown };
+  return Boolean(isDomainJobRecordLike(result.record) && typeof result.created === 'boolean');
+};
+
 const normalizeJobRecord = <TPayload = Record<string, unknown>, TResult = Record<string, unknown>, TProgress = Record<string, unknown>>(
   record: DomainJobRecord<TPayload, TResult, TProgress>,
 ): DomainJobRecord<TPayload, TResult, TProgress> => ({
@@ -80,6 +104,74 @@ const normalizeJobRecord = <TPayload = Record<string, unknown>, TResult = Record
   domain: String(record.domain || '').trim(),
   updatedAt: record.updatedAt || new Date().toISOString(),
 });
+
+const readLegacyDomainJobRecord = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(safeId: string): Promise<DomainJobRecord<TPayload, TResult, TProgress> | null> => {
+  const firestore = getFirestoreHandle();
+  if (!firestore) {
+    return (memoryDomainJobs.get(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
+  }
+
+  const snapshot = await firestore.collection(getJobCollectionName()).doc(safeId).get();
+  if (!snapshot.exists) {
+    return null;
+  }
+  return (snapshot.data() as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
+};
+
+const saveLegacyDomainJobRecord = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(safeRecord: DomainJobRecord<TPayload, TResult, TProgress>): Promise<DomainJobRecord<TPayload, TResult, TProgress>> => {
+  const firestore = getFirestoreHandle();
+  if (!firestore) {
+    memoryDomainJobs.set(safeRecord.id, safeRecord);
+    return safeRecord;
+  }
+
+  await firestore.collection(getJobCollectionName()).doc(safeRecord.id).set(safeRecord, { merge: true });
+  return safeRecord;
+};
+
+const createLegacyDomainJobRecordIfAbsent = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(safeRecord: DomainJobRecord<TPayload, TResult, TProgress>): Promise<{
+  record: DomainJobRecord<TPayload, TResult, TProgress>;
+  created: boolean;
+}> => {
+  const firestore = getFirestoreHandle();
+  if (!firestore) {
+    const existing = memoryDomainJobs.get(safeRecord.id) as DomainJobRecord<TPayload, TResult, TProgress> | undefined;
+    if (existing) {
+      return { record: existing, created: false };
+    }
+    memoryDomainJobs.set(safeRecord.id, safeRecord);
+    return { record: safeRecord, created: true };
+  }
+
+  const docRef = firestore.collection(getJobCollectionName()).doc(safeRecord.id);
+  let created = false;
+  let resolvedRecord: DomainJobRecord<TPayload, TResult, TProgress> = safeRecord;
+  await firestore.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(docRef);
+    if (snapshot.exists) {
+      resolvedRecord = (snapshot.data() as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || safeRecord;
+      created = false;
+      return;
+    }
+    transaction.set(docRef, safeRecord, { merge: false });
+    resolvedRecord = safeRecord;
+    created = true;
+  });
+
+  return { record: resolvedRecord, created };
+};
 
 export const createDomainJobRecord = <TPayload = Record<string, unknown>>(
   input: {
@@ -111,19 +203,20 @@ export const getDomainJobRecord = async <
 
   const nativeStore = resolveNativeDomainJobStore();
   if (nativeStore) {
-    return (await nativeStore.getRecord(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | null) || null;
+    try {
+      const nativeRecord = await nativeStore.getRecord(safeId);
+      if (nativeRecord == null) {
+        return readLegacyDomainJobRecord(safeId);
+      }
+      if (isDomainJobRecordLike(nativeRecord)) {
+        return nativeRecord as DomainJobRecord<TPayload, TResult, TProgress>;
+      }
+    } catch {
+      // Fall through to the legacy store.
+    }
   }
 
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    return (memoryDomainJobs.get(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
-  }
-
-  const snapshot = await firestore.collection(getJobCollectionName()).doc(safeId).get();
-  if (!snapshot.exists) {
-    return null;
-  }
-  return (snapshot.data() as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
+  return readLegacyDomainJobRecord(safeId);
 };
 
 export const saveDomainJobRecord = async <
@@ -135,17 +228,17 @@ export const saveDomainJobRecord = async <
 
   const nativeStore = resolveNativeDomainJobStore();
   if (nativeStore) {
-    return (await nativeStore.saveRecord(safeRecord as DomainJobRecord) as DomainJobRecord<TPayload, TResult, TProgress>) || safeRecord;
+    try {
+      const nativeRecord = await nativeStore.saveRecord(safeRecord as DomainJobRecord);
+      if (isDomainJobRecordLike(nativeRecord)) {
+        return nativeRecord as DomainJobRecord<TPayload, TResult, TProgress>;
+      }
+    } catch {
+      // Fall through to the legacy store.
+    }
   }
 
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    memoryDomainJobs.set(safeRecord.id, safeRecord);
-    return safeRecord;
-  }
-
-  await firestore.collection(getJobCollectionName()).doc(safeRecord.id).set(safeRecord, { merge: true });
-  return safeRecord;
+  return saveLegacyDomainJobRecord(safeRecord);
 };
 
 export const createDomainJobRecordIfAbsent = async <
@@ -160,37 +253,15 @@ export const createDomainJobRecordIfAbsent = async <
 
   const nativeStore = resolveNativeDomainJobStore();
   if (nativeStore) {
-    const result = await nativeStore.createRecordIfAbsent(safeRecord as DomainJobRecord);
-    return (result as { record: DomainJobRecord<TPayload, TResult, TProgress>; created: boolean }) || {
-      record: safeRecord,
-      created: true,
-    };
+    try {
+      const result = await nativeStore.createRecordIfAbsent(safeRecord as DomainJobRecord);
+      if (isCreateRecordResultLike(result)) {
+        return result as { record: DomainJobRecord<TPayload, TResult, TProgress>; created: boolean };
+      }
+    } catch {
+      // Fall through to the legacy store.
+    }
   }
 
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    const existing = memoryDomainJobs.get(safeRecord.id) as DomainJobRecord<TPayload, TResult, TProgress> | undefined;
-    if (existing) {
-      return { record: existing, created: false };
-    }
-    memoryDomainJobs.set(safeRecord.id, safeRecord);
-    return { record: safeRecord, created: true };
-  }
-
-  const docRef = firestore.collection(getJobCollectionName()).doc(safeRecord.id);
-  let created = false;
-  let resolvedRecord: DomainJobRecord<TPayload, TResult, TProgress> = safeRecord;
-  await firestore.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef);
-    if (snapshot.exists) {
-      resolvedRecord = (snapshot.data() as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || safeRecord;
-      created = false;
-      return;
-    }
-    transaction.set(docRef, safeRecord, { merge: false });
-    resolvedRecord = safeRecord;
-    created = true;
-  });
-
-  return { record: resolvedRecord, created };
+  return createLegacyDomainJobRecordIfAbsent(safeRecord);
 };

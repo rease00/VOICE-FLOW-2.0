@@ -1699,6 +1699,7 @@ export const upsertAccountProfile = async (
     userId?: string;
     displayName?: string;
     billingProfile?: AccountBillingProfile | null;
+    forceUserId?: boolean;
   }
 ): Promise<AccountUserProfile> => {
   if (isAdminUser(user)) {
@@ -1707,7 +1708,7 @@ export const upsertAccountProfile = async (
   const existing = await ensureAccountProfile(user, { autoBootstrap: false });
   const normalizedExistingUserId = asString(existing.userId);
   const requestedUserId = input.userId === undefined ? normalizedExistingUserId : assertValidUserId(input.userId);
-  if (normalizedExistingUserId && requestedUserId && requestedUserId !== normalizedExistingUserId) {
+  if (normalizedExistingUserId && requestedUserId && requestedUserId !== normalizedExistingUserId && !input.forceUserId) {
     throw new Error('User ID is already set and cannot be changed.');
   }
   const nextUserId = requestedUserId
@@ -1726,9 +1727,7 @@ export const upsertAccountProfile = async (
     createdAt: existing.createdAt || nowIso,
   };
 
-  await getUserProfileRef(user.uid).set({
-    ...serializeAccountProfileForFirestore(nextProfile),
-  }, { merge: true });
+  await writePersistedProfileRecord(nextProfile);
   await syncUserDocument(user.uid, nextProfile);
   return nextProfile;
 };
