@@ -30,11 +30,44 @@ function toArray(value) {
   return [value];
 }
 
-function normalizeSeedUser(entry) {
+function resolveBootstrapEnv(env = {}) {
+  const processEnv = globalThis?.process?.env ?? {};
+  const envObject = env && typeof env === 'object' ? env : {};
+  return {
+    ...processEnv,
+    ...envObject,
+  };
+}
+
+function resolveSharedAdminCredentials(env = {}) {
+  const envObject = resolveBootstrapEnv(env);
+  const passwordHash = toText(
+    envObject.BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH ||
+    envObject.BOOTSTRAP_SHARED_ADMIN_PASSWORD_HASH ||
+    ''
+  );
+  const password = passwordHash
+    ? ''
+    : toText(
+        envObject.BOOTSTRAP_ADMIN_SHARED_PASSWORD ||
+        envObject.BOOTSTRAP_SHARED_ADMIN_PASSWORD ||
+        envObject.BOOTSTRAP_ADMIN_PASSWORD ||
+        ''
+      );
+
+  return {
+    passwordHash: passwordHash || null,
+    password: password || null,
+  };
+}
+
+function normalizeSeedUser(entry, defaults = {}) {
   if (typeof entry === 'string') {
     return {
       email: entry,
       roles: ['admin'],
+      password: defaults.password || null,
+      passwordHash: defaults.passwordHash || null,
     };
   }
 
@@ -51,8 +84,8 @@ function normalizeSeedUser(entry) {
     id: entry.id || null,
     email,
     displayName: entry.displayName || entry.name || null,
-    password: entry.password || entry.passwordPlaintext || null,
-    passwordHash: entry.passwordHash || entry.password_hash || null,
+    password: entry.password || entry.passwordPlaintext || defaults.password || null,
+    passwordHash: entry.passwordHash || entry.password_hash || defaults.passwordHash || null,
     roles: toArray(entry.roles).filter(Boolean),
     status: entry.status || 'active',
     metadata: entry.metadata || null,
@@ -130,7 +163,8 @@ function parseSeedPayload(raw) {
 }
 
 export function loadBootstrapSeedConfig(env = globalThis?.process?.env ?? {}) {
-  const envObject = env && typeof env === 'object' ? env : {};
+  const envObject = resolveBootstrapEnv(env);
+  const sharedCredentials = resolveSharedAdminCredentials(envObject);
   const seedJson =
     envObject.BOOTSTRAP_SEED_JSON ||
     envObject.BOOTSTRAP_AUTH_SEED_JSON ||
@@ -145,10 +179,12 @@ export function loadBootstrapSeedConfig(env = globalThis?.process?.env ?? {}) {
     .filter(Boolean);
 
   const adminUsersFromJson = toArray(parsedSeed.admins || parsedSeed.users || parsedSeed.adminUsers)
-    .map(normalizeSeedUser)
+    .map((entry) => normalizeSeedUser(entry, sharedCredentials))
     .filter(Boolean);
 
-  const adminUsersFromEnv = adminEmails.map((email) => normalizeSeedUser(email)).filter(Boolean);
+  const adminUsersFromEnv = adminEmails
+    .map((email) => normalizeSeedUser(email, sharedCredentials))
+    .filter(Boolean);
 
   const roles = toArray(parsedSeed.roles || parsedSeed.adminRoles || parsedSeed.bootstrapRoles)
     .map(normalizeSeedRole)
@@ -198,7 +234,7 @@ export async function setBootstrapState(dbLike, key, value, options = {}) {
 
 export async function bootstrapAuthStorage(dbLike, options = {}) {
   const db = resolveDatabase(dbLike);
-  const env = options.env || globalThis?.process?.env || {};
+  const env = resolveBootstrapEnv(options.env);
   const seedConfig = options.seeds || loadBootstrapSeedConfig(env);
   const now = toIsoString(options.now);
   const source = options.source || seedConfig.source || 'env';
@@ -344,10 +380,11 @@ export async function importBootstrapConfig(dbLike, config, options = {}) {
   const normalizedConfig = parseSeedPayload(config) || config || {};
   return bootstrapAuthStorage(db, {
     ...options,
+    env: options.env || globalThis?.process?.env || {},
     seeds: {
       source: options.source || normalizedConfig.source || 'json',
       admins: toArray(normalizedConfig.admins || normalizedConfig.users || normalizedConfig.adminUsers)
-        .map(normalizeSeedUser)
+        .map((entry) => normalizeSeedUser(entry, resolveSharedAdminCredentials(options.env)))
         .filter(Boolean),
       roles: toArray(normalizedConfig.roles || normalizedConfig.adminRoles || normalizedConfig.bootstrapRoles)
         .map(normalizeSeedRole)

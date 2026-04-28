@@ -27,6 +27,7 @@ const candidateModulePaths = [
 ].filter(Boolean);
 
 const accountModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/account.js')).href);
+const authModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/auth.js')).href);
 
 const toAbsolutePath = (candidate) => (
   path.isAbsolute(candidate) ? candidate : path.resolve(REPO_ROOT, candidate)
@@ -352,6 +353,22 @@ test('tts route contract is stable', async () => {
 
   const payload = await expectJsonResponse(response, 400);
   assert.equal(typeof payload.error, 'string');
+});
+
+test('admin routes require a signed-in admin session', async () => {
+  const { response } = await requestFirstMatch(backend.app, ['/api/v1/admin/users', '/admin/users'], {
+    method: 'GET',
+  });
+
+  const payload = await expectJsonResponse(response, 401);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, 'session_required');
+});
+
+test('bootstrap password hashing tolerates null policy input', async () => {
+  const { createPasswordHash } = await authModulePromise;
+  const hash = await createPasswordHash('rease1999', null);
+  assert.match(hash, /^pbkdf2_sha256\$/);
 });
 
 test('payload helpers resolve uid-backed entitlements rows', async () => {

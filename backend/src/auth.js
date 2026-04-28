@@ -17,7 +17,7 @@ import {
 } from './db.js';
 
 const PASSWORD_ALGORITHM = 'pbkdf2_sha256';
-const DEFAULT_PASSWORD_ITERATIONS = 210000;
+const DEFAULT_PASSWORD_ITERATIONS = 100000;
 const DEFAULT_PASSWORD_KEY_LENGTH = 32;
 const DEFAULT_PASSWORD_SALT_LENGTH = 16;
 
@@ -69,16 +69,18 @@ function parsePasswordHash(encoded) {
 }
 
 export function normalizeAuthPasswordPolicy(input = {}) {
+  const policy = input && typeof input === 'object' ? input : {};
   return {
-    iterations: Number.isFinite(input.iterations) && input.iterations > 0 ? Math.floor(input.iterations) : DEFAULT_PASSWORD_ITERATIONS,
-    keyLength: Number.isFinite(input.keyLength) && input.keyLength > 0 ? Math.floor(input.keyLength) : DEFAULT_PASSWORD_KEY_LENGTH,
-    saltLength: Number.isFinite(input.saltLength) && input.saltLength > 0 ? Math.floor(input.saltLength) : DEFAULT_PASSWORD_SALT_LENGTH,
+    iterations: Number.isFinite(policy.iterations) && policy.iterations > 0 ? Math.floor(policy.iterations) : DEFAULT_PASSWORD_ITERATIONS,
+    keyLength: Number.isFinite(policy.keyLength) && policy.keyLength > 0 ? Math.floor(policy.keyLength) : DEFAULT_PASSWORD_KEY_LENGTH,
+    saltLength: Number.isFinite(policy.saltLength) && policy.saltLength > 0 ? Math.floor(policy.saltLength) : DEFAULT_PASSWORD_SALT_LENGTH,
   };
 }
 
 export async function hashPassword(password, options = {}) {
-  const policy = normalizeAuthPasswordPolicy(options);
-  const saltBytes = options.saltBytes instanceof Uint8Array ? options.saltBytes : await randomBytes(policy.saltLength);
+  const policyInput = options && typeof options === 'object' ? options : {};
+  const policy = normalizeAuthPasswordPolicy(policyInput);
+  const saltBytes = policyInput.saltBytes instanceof Uint8Array ? policyInput.saltBytes : await randomBytes(policy.saltLength);
   const hashBytes = await pbkdf2Sha256(password, saltBytes, policy.iterations, policy.keyLength);
   return [
     PASSWORD_ALGORITHM,

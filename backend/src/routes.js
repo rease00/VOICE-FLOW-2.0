@@ -100,6 +100,61 @@ function getRequestUserId(c, deps = {}) {
   return normalizeUserId(resolveActorId(c, deps));
 }
 
+async function requireAdminSession(c, deps = {}) {
+  const token = readSessionToken(c);
+  if (!token) {
+    return {
+      ok: false,
+      response: buildAuthFailure(c, 'session_required', 'A valid session is required.'),
+    };
+  }
+
+  const db = getDb(c, deps);
+  if (!db) {
+    return {
+      ok: false,
+      response: buildAuthFailure(c, 'auth_store_unavailable', 'D1 binding is required.', 503),
+    };
+  }
+
+  const session = await authenticateSessionRequest(db, {
+    token,
+    touch: false,
+    ipAddress: c.req.header('cf-connecting-ip') || null,
+    userAgent: c.req.header('user-agent') || null,
+  });
+
+  if (!session.ok) {
+    return {
+      ok: false,
+      response: buildAuthFailure(c, 'session_required', 'A valid session is required.'),
+    };
+  }
+
+  const hasAdminRole = Array.isArray(session.roles) && session.roles.some((role) => {
+    const slug = String(role?.slug || role?.role || role?.name || '').trim().toLowerCase();
+    return slug === 'admin' || slug === 'superadmin';
+  });
+
+  if (!hasAdminRole) {
+    return {
+      ok: false,
+      response: buildAuthFailure(c, 'admin_required', 'Admin privileges are required.', 403),
+    };
+  }
+
+  c.set('userId', session.user?.id || null);
+  c.set('actorId', session.user?.id || null);
+  c.set('sessionUser', session.user);
+  c.set('sessionRoles', session.roles);
+
+  return {
+    ok: true,
+    db,
+    session,
+  };
+}
+
 function readSessionToken(c) {
   const authHeader = String(c.req.header('authorization') || '').trim();
   if (authHeader.toLowerCase().startsWith('bearer ')) {
@@ -227,6 +282,7 @@ function createAuthRoutes(deps = {}) {
     const summary = await importBootstrapConfig(db, seed, {
       source: body.source || 'request',
       assignedByUserId: getRequestUserId(c, deps),
+      env: getEnv(c, deps),
       now: Date.now(),
     });
 
@@ -667,6 +723,15 @@ function createBillingRoutes(deps = {}) {
 
 function createAdminRoutes(deps = {}) {
   const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    const gate = await requireAdminSession(c, deps);
+    if (!gate.ok) {
+      return gate.response;
+    }
+
+    return next();
+  });
 
   app.get('/users', async (c) => {
     const db = getDb(c, deps);
