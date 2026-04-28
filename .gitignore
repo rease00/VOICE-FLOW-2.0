@@ -1,2 +1,13 @@
 node_modules/
 .DS_Store
+*.log
+.playwright-mcp/
+test-results/
+backend/.wrangler/
+frontend/.wrangler/
+frontend/build/
+frontend/.react-router/
+frontend/tsconfig.tsbuildinfo
+frontend/virtual-react-router.d.ts
+frontend/worker-configuration.d.ts
+reader-library.png

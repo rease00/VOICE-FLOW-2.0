@@ -80,6 +80,24 @@ const DEFAULT_ROUTE_MAP = Object.freeze({
   ops: '/api/v1/ops',
 });
 
+const LOCAL_CORS_ORIGIN_PATTERN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
+
+function buildLocalCorsHeaders(c) {
+  const origin = String(c.req.header('origin') || '').trim();
+  if (!origin || !LOCAL_CORS_ORIGIN_PATTERN.test(origin)) {
+    return null;
+  }
+
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-credentials': 'true',
+    'access-control-allow-methods': 'GET,HEAD,POST,PATCH,PUT,DELETE,OPTIONS',
+    'access-control-allow-headers': 'content-type,accept,authorization,x-dev-session-token,x-session-token',
+    'access-control-max-age': '86400',
+    vary: 'Origin',
+  };
+}
+
 function getDb(c, deps = {}) {
   return c?.env?.DB || deps.db || null;
 }
@@ -446,7 +464,7 @@ function createAccountRoutes(deps = {}) {
     return jsonResponse(c, await readAccountProfile(db, userId));
   });
 
-  app.patch('/profile', async (c) => {
+  const handleProfileWrite = async (c) => {
     const db = getDb(c, deps);
     const userId = getRequestUserId(c, deps);
     if (!userId) {
@@ -467,7 +485,10 @@ function createAccountRoutes(deps = {}) {
     }
 
     return jsonResponse(c, await writeAccountProfile(db, userId, body));
-  });
+  };
+
+  app.post('/profile', handleProfileWrite);
+  app.patch('/profile', handleProfileWrite);
 
   app.get('/entitlements', async (c) => {
     const db = getDb(c, deps);
@@ -619,7 +640,7 @@ function createBillingRoutes(deps = {}) {
       return buildAuthFailure(c, 'invalid_json', body.__error, 400);
     }
 
-    const returnUrl = String(body.returnUrl || '/app/billing').trim();
+    const returnUrl = String(body.returnUrl || '/app/billing').trim() || '/app/billing';
     const sessionId = `portal_${userId}_${Date.now().toString(36)}`;
     const url = `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}portalSession=${encodeURIComponent(sessionId)}`;
     const payload = {
@@ -1032,7 +1053,6 @@ function createJobsRoutes(deps = {}) {
   const app = new Hono();
 
   app.post('/jobs', async (c) => {
-    const db = getDb(c, deps);
     const env = getEnv(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
@@ -1056,15 +1076,19 @@ function createJobsRoutes(deps = {}) {
       },
     });
 
-    if (db && env.JOB_QUEUE?.send) {
-      const enqueued = await submitJob(env, job);
-      return jsonResponse(c, {
-        ok: true,
-        jobId: enqueued.jobId,
-        status: enqueued.status,
-        cacheHit: false,
-        job: enqueued,
-      });
+    if (env.JOB_QUEUE?.send) {
+      try {
+        const enqueued = await submitJob(env, job);
+        return jsonResponse(c, {
+          ok: true,
+          jobId: enqueued.jobId,
+          status: enqueued.status,
+          cacheHit: false,
+          job: enqueued,
+        });
+      } catch (error) {
+        return errorResponse(c, 503, 'job_queue_unavailable', error instanceof Error ? error.message : String(error));
+      }
     }
 
     return jsonResponse(c, {
@@ -1085,29 +1109,58 @@ function createJobsRoutes(deps = {}) {
     });
   });
 
-  app.post('/jobs/:jobId/status', async (c) => {
+  const handleJobStatus = async (c) => {
     const body = await readRequestBody(c);
     if (body.__error) {
       return errorResponse(c, 400, 'invalid_json', body.__error, 400);
     }
 
+    const jobId = String(c.req.param('jobId') || '').trim();
+    const job = createJobStatus({
+      ...body,
+      jobId,
+      status: body.status || 'queued',
+      metadata: {
+        route: c.req.path,
+        ...(body.metadata || {}),
+      },
+    });
+
     return jsonResponse(c, {
       ok: true,
-      jobId: String(c.req.param('jobId') || '').trim(),
-      status: body.status || 'queued',
+      jobId: job.jobId,
+      status: job.status,
+      job,
     });
-  });
+  };
+
+  app.post('/jobs/:jobId/status', handleJobStatus);
+  app.patch('/jobs/:jobId/status', handleJobStatus);
 
   app.post('/jobs/:jobId/cancel', async (c) => jsonResponse(c, {
     ok: true,
     jobId: String(c.req.param('jobId') || '').trim(),
     status: 'canceled',
+    job: createJobStatus({
+      jobId: String(c.req.param('jobId') || '').trim(),
+      status: 'canceled',
+      metadata: {
+        route: c.req.path,
+      },
+    }),
   }));
 
   app.post('/jobs/:jobId/claim', async (c) => jsonResponse(c, {
     ok: true,
     jobId: String(c.req.param('jobId') || '').trim(),
     status: 'claimed',
+    job: createJobStatus({
+      jobId: String(c.req.param('jobId') || '').trim(),
+      status: 'claimed',
+      metadata: {
+        route: c.req.path,
+      },
+    }),
   }));
 
   app.get('/jobs/next', async (c) => jsonResponse(c, {
@@ -1195,6 +1248,21 @@ function createOpsRoutes(deps = {}) {
 
 export function createBackendApp(deps = {}) {
   const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    const corsHeaders = buildLocalCorsHeaders(c);
+    if (c.req.method.toUpperCase() === 'OPTIONS') {
+      return corsHeaders ? new Response(null, { status: 204, headers: corsHeaders }) : new Response(null, { status: 204 });
+    }
+
+    await next();
+
+    if (corsHeaders) {
+      for (const [name, value] of Object.entries(corsHeaders)) {
+        c.header(name, value);
+      }
+    }
+  });
 
   app.onError((error, c) => {
     const message = error instanceof Error ? error.message : String(error);

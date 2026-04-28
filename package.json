@@ -6,9 +6,11 @@
   "scripts": {
     "check": "node --check server.mjs",
     "dev": "node server.mjs",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "test:parity": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "eslint": "^9.0.0"
   }
 }

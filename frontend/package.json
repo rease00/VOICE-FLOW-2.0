@@ -1,0 +1,30 @@
+{
+  "name": "voice-flow-cloudflare-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "cf-typegen": "wrangler types",
+    "deploy": "npm run build && wrangler deploy",
+    "dev": "react-router dev",
+    "typecheck": "npm run cf-typegen && react-router typegen && tsc -b"
+  },
+  "dependencies": {
+    "@react-router/cloudflare": "7.6.3",
+    "@react-router/fs-routes": "7.6.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-router": "7.6.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.7.5",
+    "@cloudflare/workers-types": "^4.20250425.0",
+    "@react-router/dev": "7.6.3",
+    "@types/node": "24.0.4",
+    "@types/react": "19.0.10",
+    "@types/react-dom": "19.0.4",
+    "typescript": "5.8.3",
+    "vite": "^6.0.0",
+    "wrangler": "4.21.x"
+  }
+}

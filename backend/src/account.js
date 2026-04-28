@@ -548,7 +548,7 @@ function defaultBillingSummaryPayload(userId, patch = {}) {
 function defaultConversationPayload(userId, patch = {}) {
   return deepMerge(
     {
-      id: patch.id || makeId('conversation'),
+      id: patch.id || patch.conversationId || makeId('conversation'),
       userId,
       subject: 'Support request',
       status: 'open',
@@ -674,7 +674,10 @@ async function listSupportConversations(db, userId, limit = 50) {
     `SELECT * FROM ${TABLES.conversations} WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?`,
     [userId, limit]
   );
-  const items = rows.map((row) => defaultConversationPayload(userId, parsePayloadRow(row) || {}));
+  const items = rows.map((row) => defaultConversationPayload(userId, {
+    ...(parsePayloadRow(row) || {}),
+    conversationId: row.conversation_id,
+  }));
   return { items };
 }
 
@@ -699,7 +702,10 @@ async function createSupportMessage(db, userId, patch = {}) {
   }
 
   const conversationRow = await readPayloadRecord(db, TABLES.conversations, 'conversation_id', message.conversationId);
-  const conversation = defaultConversationPayload(userId, conversationRow?.payload || {});
+  const conversation = defaultConversationPayload(userId, {
+    ...(conversationRow?.payload || {}),
+    conversationId: message.conversationId,
+  });
   const nextConversation = {
     ...conversation,
     subject: message.subject || conversation.subject,

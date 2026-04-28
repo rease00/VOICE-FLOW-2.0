@@ -1,0 +1,7 @@
+import { type RouteConfig } from "@react-router/dev/routes";
+import { flatRoutes } from "@react-router/fs-routes";
+
+export default flatRoutes({
+  rootDirectory: "./routes",
+  ignoredRouteFiles: ["**/_shared.tsx"]
+}) satisfies RouteConfig;

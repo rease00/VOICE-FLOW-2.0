@@ -70,7 +70,12 @@ async function handleBillingPortalSessionCreate(c, deps = {}) {
   if (!db) return errorResponse(c, 500, 'missing_db', 'D1 binding is required.');
   if (!userId) return errorResponse(c, 401, 'missing_user', 'User id is required.');
 
-  const body = await readJsonBody(c.req);
+  let body;
+  try {
+    body = await readJsonBody(c.req);
+  } catch (error) {
+    return errorResponse(c, 400, 'invalid_json', error?.message || 'Request body must be valid JSON.');
+  }
   const returnUrl = String(body.returnUrl || '').trim() || '/app/billing';
   const sessionId = `portal_${userId}_${Date.now().toString(36)}`;
   const url = `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}portalSession=${encodeURIComponent(sessionId)}`;
