@@ -67,9 +67,9 @@ const readerAliasLoadingPage = `<!doctype html>
         color: var(--text);
         font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-      body {
-        display: grid;
-        place-items: center;
+  body {
+    display: grid;
+    place-items: center;
         min-height: 100vh;
         padding: 24px;
         box-sizing: border-box;
@@ -222,6 +222,55 @@ const readerAliasLoadingPage = `<!doctype html>
     </main>
   </body>
 </html>`;
+const installBannerChunkSuffix = path.join('_next', 'static', 'chunks', 'app', '(app)', 'app', 'layout-90172a04be9e20fc.js');
+const cookieBannerChunkSuffix = path.join('_next', 'static', 'chunks', 'app', 'layout-47f86afcb4ba45c6.js');
+
+const rewriteSnapshotAsset = (candidate, data) => {
+  const source = data.toString('utf8');
+  if (candidate.endsWith(installBannerChunkSuffix)) {
+    const bannerStart = source.indexOf('function m(){let e=(0,l.usePathname)(),t=n(d),r=n(e=>e.install),i=n(e=>e.status);return((0,s.useEffect)(()=>{let e=e=>{n.getState().capture(e)};return window.addEventListener("beforeinstallprompt",e),()=>window.removeEventListener("beforeinstallprompt",e)},[]),!t||x(e))?null:');
+    const bannerEnd = source.indexOf('function u(){', bannerStart);
+
+    if (bannerStart === -1 || bannerEnd === -1) return data;
+    return Buffer.from(`${source.slice(0, bannerStart)}function m(){return null}${source.slice(bannerEnd)}`, 'utf8');
+  }
+
+  if (candidate.endsWith(cookieBannerChunkSuffix)) {
+    const compacted = source
+      .replace(
+        'className:"fixed inset-x-3 bottom-3 z-[10000] mx-auto max-w-3xl rounded-2xl border border-white/12 bg-slate-950/95 p-4 text-sm text-slate-100 shadow-2xl shadow-black/35 backdrop-blur md:inset-x-auto md:right-4 md:max-w-xl"',
+        'className:"fixed inset-x-3 bottom-3 z-[10000] mx-auto max-w-sm rounded-xl border border-white/12 bg-slate-950/90 p-3 text-xs text-slate-100 shadow-lg shadow-black/25 backdrop-blur md:inset-x-auto md:right-3 md:max-w-sm"'
+      )
+      .replace(
+        'className:"flex flex-col gap-3 md:flex-row md:items-start md:justify-between"',
+        'className:"flex flex-col gap-2 md:flex-row md:items-center md:justify-between"'
+      )
+      .replace(
+        'className:"mt-1 leading-6 text-slate-300"',
+        'className:"mt-1 leading-5 text-slate-300"'
+      )
+      .replace(
+        'className:"mt-2 inline-flex min-h-10 items-center text-xs font-semibold text-cyan-200 underline underline-offset-4"',
+        'className:"mt-1 inline-flex min-h-9 items-center text-[11px] font-semibold text-cyan-200 underline underline-offset-4"'
+      )
+      .replace(
+        'className:"flex shrink-0 flex-wrap gap-2 md:justify-end"',
+        'className:"flex shrink-0 flex-wrap gap-1.5 md:justify-end"'
+      )
+      .replace(
+        'className:"min-h-11 rounded-xl border border-white/14 px-4 py-2 text-xs font-semibold text-slate-100 hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"',
+        'className:"min-h-9 rounded-lg border border-white/14 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"'
+      )
+      .replace(
+        'className:"min-h-11 rounded-xl bg-cyan-300 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100"',
+        'className:"min-h-9 rounded-lg bg-cyan-300 px-3 py-1.5 text-[11px] font-bold text-slate-950 hover:bg-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100"'
+      );
+
+    return compacted === source ? data : Buffer.from(compacted, 'utf8');
+  }
+
+  return data;
+};
 
 const exists = async (targetPath) => {
   try {
@@ -365,7 +414,7 @@ const serve = async (req, res) => {
 
     const ext = path.extname(candidate).toLowerCase();
     const contentType = contentTypes.get(ext) || 'application/octet-stream';
-    const data = await fs.readFile(candidate);
+    const data = rewriteSnapshotAsset(candidate, await fs.readFile(candidate));
     res.writeHead(200, {
       'content-type': contentType,
       'cache-control': 'no-store',
