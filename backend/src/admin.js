@@ -49,7 +49,6 @@ function fromAuthUserPayload(user, patch = {}) {
     displayName: user.display_name || '',
     enabled: user.status !== 'disabled' && user.status !== 'suspended',
     role: roles.includes('admin') ? 'admin' : roles[0],
-    roles,
     authUserId: user.id,
     status: user.status || 'active',
     createdAt: user.created_at || Date.now(),
