@@ -4,20 +4,6 @@ import { promises as fs } from 'node:fs';
 
 const rootDir = process.cwd();
 const port = Number(process.env.PORT || 3000);
-const upstreamOrigin = process.env.UPSTREAM_ORIGIN || 'https://v-flow-ai.1wasim9851229685.workers.dev';
-const upstreamBase = new URL(upstreamOrigin);
-const hopByHopHeaders = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
-const upstreamRequestHeaderBlocklist = new Set(['accept-encoding', 'content-length', 'expect']);
-const upstreamResponseHeaderBlocklist = new Set(['content-encoding', 'content-length']);
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -287,69 +273,6 @@ const safeJoin = (...segments) => {
   return resolved;
 };
 
-const isApiPath = (pathname) => pathname === '/api' || pathname.startsWith('/api/');
-
-const readRequestBody = (req) => new Promise((resolve, reject) => {
-  const chunks = [];
-  req.on('data', (chunk) => chunks.push(chunk));
-  req.on('end', () => resolve(Buffer.concat(chunks)));
-  req.on('error', reject);
-});
-
-const formatErrorWithCause = (error) => {
-  if (!(error instanceof Error)) return String(error);
-  if (error.cause instanceof Error) return `${error.message} | cause: ${error.cause.message}`;
-  return error.message;
-};
-
-const proxyToUpstream = async (req, res, pathnameWithQuery) => {
-  const url = new URL(pathnameWithQuery, upstreamBase);
-  const method = req.method || 'GET';
-  const headers = new Headers();
-
-  for (const [name, value] of Object.entries(req.headers)) {
-    const lower = name.toLowerCase();
-    if (hopByHopHeaders.has(lower) || upstreamRequestHeaderBlocklist.has(lower) || typeof value === 'undefined') continue;
-    if (Array.isArray(value)) {
-      headers.set(name, value.join(', '));
-    } else {
-      headers.set(name, String(value));
-    }
-  }
-
-  headers.set('host', upstreamBase.host);
-
-  const body = method === 'GET' || method === 'HEAD' ? undefined : await readRequestBody(req);
-  let upstreamResponse;
-  try {
-    upstreamResponse = await fetch(url, {
-      method,
-      headers,
-      body,
-      redirect: 'manual',
-    });
-  } catch (error) {
-    throw new Error(`Proxy fetch failed for ${method} ${url.pathname}: ${formatErrorWithCause(error)}`);
-  }
-
-  const responseHeaders = {};
-  upstreamResponse.headers.forEach((value, name) => {
-    const lower = name.toLowerCase();
-    if (!hopByHopHeaders.has(lower) && !upstreamResponseHeaderBlocklist.has(lower)) {
-      responseHeaders[name] = value;
-    }
-  });
-
-  if (typeof upstreamResponse.headers.getSetCookie === 'function') {
-    const setCookies = upstreamResponse.headers.getSetCookie();
-    if (setCookies.length) responseHeaders['set-cookie'] = setCookies;
-  }
-
-  responseHeaders['cache-control'] = responseHeaders['cache-control'] || 'no-store';
-  res.writeHead(upstreamResponse.status, responseHeaders);
-  res.end(Buffer.from(await upstreamResponse.arrayBuffer()));
-};
-
 const resolveCandidatePath = async (urlPathname) => {
   const pathname = decodeURIComponent(urlPathname.split('?')[0] || '/');
   const cleanPath = pathname.replace(/\/+$/, '') || '/';
@@ -394,12 +317,6 @@ const serveReaderAliasPage = (req, res) => {
 const serve = async (req, res) => {
   try {
     const requestPath = req.url || '/';
-    const pathname = decodeURIComponent(requestPath.split('?')[0] || '/');
-
-    if (isApiPath(pathname)) {
-      await proxyToUpstream(req, res, requestPath);
-      return;
-    }
 
     if (isReaderAliasPath(requestPath)) {
       serveReaderAliasPage(req, res);
@@ -408,7 +325,8 @@ const serve = async (req, res) => {
 
     const candidate = await resolveCandidatePath(requestPath);
     if (!candidate) {
-      await proxyToUpstream(req, res, requestPath);
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('Not found');
       return;
     }
 
@@ -427,5 +345,5 @@ const serve = async (req, res) => {
 };
 
 http.createServer(serve).listen(port, () => {
-  console.log(`v-flow snapshot dev server: http://localhost:${port}`);
+  console.log(`v-flow cloudflare-native snapshot server: http://localhost:${port}`);
 });
