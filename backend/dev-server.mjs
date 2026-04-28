@@ -1,9 +1,36 @@
 import http from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
-import { fetch, createMockEnv } from './src/index.js';
+import { createBackendApp } from './src/routes.js';
+import { bootstrapAuthStorage } from './src/bootstrap.js';
+import { createMemoryD1Database, createMemoryQueue, createMemoryR2Bucket } from './src/dev-bindings.js';
 
 const port = Number(process.env.PORT || 8787);
-const env = createMockEnv();
+
+const readWranglerVars = async () => {
+  try {
+    const config = JSON.parse(await readFile(new URL('./wrangler.jsonc', import.meta.url), 'utf8'));
+    return config.vars || {};
+  } catch {
+    return {};
+  }
+};
+
+const db = createMemoryD1Database();
+const env = {
+  ...(await readWranglerVars()),
+  DB: db,
+  ARTIFACTS_BUCKET: createMemoryR2Bucket(),
+  JOB_QUEUE: createMemoryQueue(),
+};
+const app = createBackendApp({ env });
+
+await db.exec(await readFile(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'));
+await bootstrapAuthStorage(db, {
+  env,
+  source: 'dev-server',
+  now: Date.now(),
+});
 
 const toRequest = async (req) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || `127.0.0.1:${port}`}`);
@@ -32,7 +59,7 @@ const toRequest = async (req) => {
 const server = http.createServer(async (req, res) => {
   try {
     const request = await toRequest(req);
-    const response = await fetch(request, env, {});
+    const response = await app.fetch(request, env, {});
     const body = await response.arrayBuffer();
 
     res.writeHead(response.status, Object.fromEntries(response.headers.entries()));

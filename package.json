@@ -7,7 +7,8 @@
     "check": "node --check server.mjs",
     "dev": "node server.mjs",
     "start": "node server.mjs",
-    "test:parity": "playwright test"
+    "test:parity": "playwright test",
+    "test:deep": "playwright test tests/frozen-surfaces.spec.mjs tests/deep-live.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

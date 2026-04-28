@@ -164,6 +164,8 @@ export const createTtsBrokerClient = (env = {}, options = {}) => {
   };
 
   const request = async (method, path, body, extra = {}) => {
+    const { headers: extraHeadersInput, ...requestInit } = extra || {};
+    const extraHeaders = extraHeadersInput && typeof extraHeadersInput === 'object' ? extraHeadersInput : {};
     const response = await brokerFetch(
       fetchImpl,
       endpoint(path),
@@ -173,10 +175,10 @@ export const createTtsBrokerClient = (env = {}, options = {}) => {
           accept: 'application/json',
           'content-type': 'application/json',
           ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
-          ...(extra.headers ?? {}),
+          ...extraHeaders,
         },
         body: body == null ? undefined : JSON.stringify(body),
-        ...extra,
+        ...requestInit,
       },
       config.timeoutMs
     );
@@ -228,4 +230,3 @@ export const buildTtsCallbackPayload = (input = {}) => ({
   receivedAtMs: input.receivedAtMs ?? Date.now(),
   metadata: coerceObject(input.metadata, {}),
 });
-

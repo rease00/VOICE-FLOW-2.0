@@ -113,7 +113,6 @@ async function handleBillingSubscriptionCancel(c, deps = {}) {
       status: 'cancelled',
       cancelAtPeriodEnd: true,
       cancelledAt: Date.now(),
-      renewedAt: null,
     },
   });
 

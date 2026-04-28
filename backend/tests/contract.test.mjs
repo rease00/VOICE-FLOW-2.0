@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import test from 'node:test';
@@ -27,11 +28,15 @@ const candidateModulePaths = [
 ].filter(Boolean);
 
 const accountModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/account.js')).href);
+const adminModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/admin.js')).href);
 const billingModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/billing.js')).href);
 const authModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/auth.js')).href);
 const bootstrapModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/bootstrap.js')).href);
+const devBindingsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/dev-bindings.js')).href);
 const profileModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/profile.js')).href);
 const routesModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/routes.js')).href);
+const sessionsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/sessions.js')).href);
+const ttsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/tts.js')).href);
 
 const toAbsolutePath = (candidate) => (
   path.isAbsolute(candidate) ? candidate : path.resolve(REPO_ROOT, candidate)
@@ -506,6 +511,36 @@ test('billing subscription cancel and resume route contracts are stable', async 
   assert.equal(typeof resumed.summary.subscription.resumedAt, 'number');
 });
 
+test('billing subscription cancel helper stamps the cancellation timestamp contract', async () => {
+  const { handleBillingSubscriptionCancel } = await billingModulePromise;
+  const db = createSchemaAwareMockDb({
+    schemaByTable: {
+      account_entitlements: [
+        { cid: 0, name: 'user_id', pk: 1 },
+        { cid: 1, name: 'payload', pk: 0 },
+        { cid: 2, name: 'created_at', pk: 0 },
+        { cid: 3, name: 'updated_at', pk: 0 },
+      ],
+      billing_accounts: [
+        { cid: 0, name: 'user_id', pk: 1 },
+        { cid: 1, name: 'payload', pk: 0 },
+        { cid: 2, name: 'created_at', pk: 0 },
+        { cid: 3, name: 'updated_at', pk: 0 },
+      ],
+    },
+  });
+
+  const response = await handleBillingSubscriptionCancel(createMockContext(db, 'contract_user'), {});
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.summary.subscription.status, 'cancelled');
+  assert.equal(payload.summary.subscription.cancelAtPeriodEnd, true);
+  assert.equal(typeof payload.summary.subscription.cancelledAt, 'number');
+  assert.equal('renewedAt' in payload.summary.subscription, false);
+});
+
 test('storage route contract is stable', async () => {
   const { response } = await requestFirstMatch(backend.app, storageCandidates, {
     method: 'GET',
@@ -530,6 +565,17 @@ test('job route contract is stable', async () => {
   assert.equal(typeof payload.jobId, 'string');
   assert.equal(typeof payload.status, 'string');
   assert.equal(typeof payload.cacheHit, 'boolean');
+});
+
+test('job next route is not shadowed by job id lookup', async () => {
+  const response = await callApp(backend.app, 'GET', '/api/v1/library/audio-novel/jobs/next', {
+    headers: withDevUid(),
+  });
+
+  const payload = await expectJsonResponse(response, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.job, null);
+  assert.equal('jobId' in payload, false);
 });
 
 test('job route submits to queue without requiring D1 and exposes a status patch alias', async () => {
@@ -588,6 +634,71 @@ test('tts route contract is stable', async () => {
   assert.equal(typeof payload.error, 'string');
 });
 
+test('tts broker client merges caller headers without dropping defaults', async () => {
+  const { createTtsBrokerClient } = await ttsModulePromise;
+  const requests = [];
+  const client = createTtsBrokerClient(
+    {
+      VF_TTS_BROKER_URL: 'https://broker.example.invalid/api/',
+      VF_TTS_BROKER_API_KEY: 'secret-token',
+    },
+    {
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return new Response(JSON.stringify({
+          requestId: 'broker-request-1',
+          status: 'queued',
+        }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+          },
+        });
+      },
+    }
+  );
+
+  const response = await client.submit(
+    {
+      text: 'Hello world',
+      voiceId: 'nova',
+    },
+    {
+      headers: {
+        'x-trace-id': 'trace-123',
+      },
+    }
+  );
+
+  assert.equal(response.requestId, 'broker-request-1');
+  assert.equal(requests.length, 1);
+  assert.equal(new URL(requests[0].url).pathname, '/api/requests');
+  assert.equal(requests[0].init.method, 'POST');
+  assert.equal(requests[0].init.headers.accept, 'application/json');
+  assert.equal(requests[0].init.headers['content-type'], 'application/json');
+  assert.equal(requests[0].init.headers.authorization, 'Bearer secret-token');
+  assert.equal(requests[0].init.headers['x-trace-id'], 'trace-123');
+  assert.equal(JSON.parse(requests[0].init.body).text, 'Hello world');
+});
+
+test('job and TTS routes reject malformed JSON with stable error codes', async () => {
+  const jobResponse = await requestFirstMatch(backend.app, jobCreateCandidates, {
+    method: 'POST',
+    headers: withDevUid({ 'content-type': 'application/json' }),
+    body: '{',
+  });
+  const jobPayload = await expectJsonResponse(jobResponse.response, 400);
+  assert.equal(jobPayload.error.code, 'invalid_json');
+
+  const ttsResponse = await requestFirstMatch(backend.app, ttsCandidates, {
+    method: 'POST',
+    headers: withDevUid({ 'content-type': 'application/json' }),
+    body: '{',
+  });
+  const ttsPayload = await expectJsonResponse(ttsResponse.response, 400);
+  assert.equal(ttsPayload.error.code, 'invalid_json');
+});
+
 test('admin routes require a signed-in admin session', async () => {
   const { response } = await requestFirstMatch(backend.app, ['/api/v1/admin/users', '/admin/users'], {
     method: 'GET',
@@ -632,6 +743,83 @@ test('canonical admin bootstrap seed resolves the shared password and four admin
   );
   assert.ok(seed.admins.every((admin) => admin.password === 'rease1999'));
   assert.ok(seed.admins.every((admin) => Array.isArray(admin.roles) && admin.roles.includes('admin')));
+});
+
+test('dev D1 bootstrap supports a full seeded admin sign-in session', async () => {
+  const { createMemoryD1Database } = await devBindingsModulePromise;
+  const { bootstrapAuthStorage } = await bootstrapModulePromise;
+  const { signInWithPassword } = await sessionsModulePromise;
+  const wrangler = {
+    vars: {
+      BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
+      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: 'pbkdf2_sha256$100000$Pm4y5avQB7IDdLEbjMLhUQ$IQ1TKWZHEHRWgr2Rp7DApljIKNmIG0JvhsiTF56kEW8',
+      BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
+        admins: [
+          { email: 'admin1@vflowai.com', roles: ['admin'] },
+        ],
+      }),
+    },
+  };
+
+  const db = createMemoryD1Database();
+  await db.exec(await readFile(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
+  const summary = await bootstrapAuthStorage(db, {
+    env: wrangler.vars,
+    source: 'dev-server',
+    now: Date.now(),
+  });
+  const login = await signInWithPassword(db, {
+    email: 'admin1@vflowai.com',
+    password: 'rease1999',
+    now: Date.now(),
+  });
+
+  assert.equal(summary.applied, true);
+  assert.equal(login.ok, true);
+  assert.equal(login.user.email_normalized, 'admin1@vflowai.com');
+  assert.equal(login.session && typeof login.session.id === 'string', true);
+  assert.equal(login.session.revoked_at, null);
+});
+
+test('admin user list reads seeded D1 auth users and roles', async () => {
+  const { createMemoryD1Database } = await devBindingsModulePromise;
+  const { bootstrapAuthStorage } = await bootstrapModulePromise;
+  const { listAdminUsers, readAdminUser } = await adminModulePromise;
+  const db = createMemoryD1Database();
+
+  await db.exec(await readFile(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
+  await bootstrapAuthStorage(db, {
+    env: {
+      BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
+      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: 'pbkdf2_sha256$100000$Pm4y5avQB7IDdLEbjMLhUQ$IQ1TKWZHEHRWgr2Rp7DApljIKNmIG0JvhsiTF56kEW8',
+      BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
+        admins: [
+          { email: 'admin1@vflowai.com', roles: ['admin'] },
+          { email: 'admin2@vflowai.com', roles: ['admin'] },
+          { email: 'admin3@vflowai.com', roles: ['admin'] },
+          { email: 'admin4@vflowai.com', roles: ['admin'] },
+        ],
+      }),
+    },
+    source: 'dev-server',
+    now: Date.now(),
+  });
+
+  const listed = await listAdminUsers(db);
+  const emails = listed.items.map((item) => item.email_normalized || item.email);
+
+  assert.equal(listed.count, 4);
+  assert.deepEqual(emails.sort(), [
+    'admin1@vflowai.com',
+    'admin2@vflowai.com',
+    'admin3@vflowai.com',
+    'admin4@vflowai.com',
+  ]);
+  assert.ok(listed.items.every((item) => item.roles.includes('admin')));
+
+  const read = await readAdminUser(db, listed.items[0].userId);
+  assert.equal(read.user.email_normalized, listed.items[0].email_normalized);
+  assert.ok(read.user.roles.includes('admin'));
 });
 
 test('payload helpers resolve uid-backed entitlements rows', async () => {

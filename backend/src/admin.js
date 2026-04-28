@@ -15,6 +15,11 @@ import {
   makeId,
   run,
 } from './account.js';
+import {
+  getUserById as getAuthUserById,
+  listUserRoles as listAuthUserRoles,
+  listUsersWithRoles as listAuthUsersWithRoles,
+} from './auth.js';
 
 function getDb(c, deps) {
   return c.env?.DB || deps.db;
@@ -28,15 +33,67 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function toRoleSlugs(roles) {
+  const slugs = asArray(roles)
+    .map((role) => (typeof role === 'string' ? role : role?.slug || role?.name))
+    .map((role) => String(role || '').trim())
+    .filter(Boolean);
+  return slugs.length ? [...new Set(slugs)] : ['user'];
+}
+
+function fromAuthUserPayload(user, patch = {}) {
+  const roles = toRoleSlugs(patch.roles || user?.roles);
+  return defaultAdminUserPayload(user.id, {
+    email: user.email_normalized || user.email || '',
+    email_normalized: user.email_normalized || user.email || '',
+    displayName: user.display_name || '',
+    enabled: user.status !== 'disabled' && user.status !== 'suspended',
+    role: roles.includes('admin') ? 'admin' : roles[0],
+    roles,
+    authUserId: user.id,
+    status: user.status || 'active',
+    createdAt: user.created_at || Date.now(),
+    updatedAt: user.updated_at || Date.now(),
+    ...patch,
+    roles,
+  });
+}
+
 async function listAdminUsers(db, limit = 100) {
   await ensureSchema(db);
   const rows = await queryAll(db, `SELECT * FROM ${TABLES.adminUsers} ORDER BY updated_at DESC LIMIT ?`, [limit]);
-  const items = rows.map((row) => defaultAdminUserPayload(row.user_id, row.payload || {}));
-  return { items, count: items.length };
+  const overlays = new Map(rows.map((row) => [row.user_id, row.payload || {}]));
+  const authUsers = await listAuthUsersWithRoles(db);
+  const items = [];
+  const seen = new Set();
+
+  for (const authUser of authUsers) {
+    const overlay = overlays.get(authUser.id) || {};
+    const item = fromAuthUserPayload(authUser, overlay);
+    items.push(item);
+    seen.add(item.userId);
+  }
+
+  for (const row of rows) {
+    if (seen.has(row.user_id)) continue;
+    items.push(defaultAdminUserPayload(row.user_id, row.payload || {}));
+  }
+
+  return { items: items.slice(0, limit), count: items.length };
 }
 
 async function readAdminUser(db, userId) {
   const row = await readPayloadRecord(db, TABLES.adminUsers, 'user_id', userId);
+  const authUser = await getAuthUserById(db, userId);
+  if (authUser) {
+    return {
+      user: fromAuthUserPayload(authUser, {
+        ...(row?.payload || {}),
+        roles: await listAuthUserRoles(db, authUser.id),
+      }),
+    };
+  }
+
   return {
     user: defaultAdminUserPayload(userId, row?.payload || {}),
   };

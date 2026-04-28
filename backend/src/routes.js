@@ -1056,7 +1056,7 @@ function createJobsRoutes(deps = {}) {
     const env = getEnv(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
-      return errorResponse(c, 400, 'invalid_json', body.__error, 400);
+      return errorResponse(c, 400, 'invalid_json', body.__error);
     }
 
     const text = String(body.text || '').trim();
@@ -1100,6 +1100,11 @@ function createJobsRoutes(deps = {}) {
     });
   });
 
+  app.get('/jobs/next', async (c) => jsonResponse(c, {
+    ok: true,
+    job: null,
+  }));
+
   app.get('/jobs/:jobId', async (c) => {
     return jsonResponse(c, {
       ok: true,
@@ -1112,7 +1117,7 @@ function createJobsRoutes(deps = {}) {
   const handleJobStatus = async (c) => {
     const body = await readRequestBody(c);
     if (body.__error) {
-      return errorResponse(c, 400, 'invalid_json', body.__error, 400);
+      return errorResponse(c, 400, 'invalid_json', body.__error);
     }
 
     const jobId = String(c.req.param('jobId') || '').trim();
@@ -1163,11 +1168,6 @@ function createJobsRoutes(deps = {}) {
     }),
   }));
 
-  app.get('/jobs/next', async (c) => jsonResponse(c, {
-    ok: true,
-    job: null,
-  }));
-
   return app;
 }
 
@@ -1178,7 +1178,7 @@ function createTtsRoutes(deps = {}) {
     const env = getEnv(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
-      return errorResponse(c, 400, 'invalid_json', body.__error, 400);
+      return errorResponse(c, 400, 'invalid_json', body.__error);
     }
 
     const request = normalizeTtsRequest(body);

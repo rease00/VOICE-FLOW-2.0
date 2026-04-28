@@ -108,13 +108,14 @@ export async function createSession(dbLike, input) {
     `INSERT INTO sessions (
        id, user_id, token_hash, created_at, expires_at, revoked_at, last_seen_at,
        ip_address, user_agent, metadata_json
-     ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       createId('session'),
       userId,
       tokenHash,
       now,
       expiresAt,
+      null,
       now,
       input?.ipAddress ?? null,
       input?.userAgent ?? null,
