@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "voice-flow-cloudflare-backend",
+  "main": "src/index.js",
+  "compatibility_date": "2026-04-28",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "../assets",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "v-flow-native-backend-db-current",
+      "database_id": "34913ed3-8f57-42ef-8289-c9d457a7d977"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS_BUCKET",
+      "bucket_name": "voice-flow-cloudflare-backend-artifacts"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOB_QUEUE",
+        "queue": "v-flow-domain-jobs"
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "JOB_COORDINATOR",
+        "class_name": "JobCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-job-coordinator",
+      "new_sqlite_classes": [
+        "JobCoordinator"
+      ]
+    }
+  ]
+}
