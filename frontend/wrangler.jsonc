@@ -6,6 +6,21 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "assets": {
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/__snapshots/*",
+      "/_next/*",
+      "/assets/*",
+      "/audio/*",
+      "/favicon.ico",
+      "/icon.svg",
+      "/manifest.json",
+      "/manifest.webmanifest",
+      "/og-landing.png",
+      "/sw.js"
+    ]
+  },
   "observability": {
     "enabled": true
   },

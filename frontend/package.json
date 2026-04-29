@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "react-router build",
+    "build": "react-router build && node scripts/sync-public-snapshots.mjs",
     "cf-typegen": "wrangler types",
     "deploy": "npm run build && wrangler deploy",
     "dev": "react-router dev",

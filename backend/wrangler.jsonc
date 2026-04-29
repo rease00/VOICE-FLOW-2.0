@@ -9,7 +9,15 @@
   "vars": {
     "BOOTSTRAP_SEED_SOURCE": "wrangler-canonical-admins",
     "BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH": "pbkdf2_sha256$100000$dmYtYWRtaW4tc2VlZC12MQ$aR2Q9Us6DOkajGyGDYSbTMppp2Q87ApZzwVuJ5ggTr0",
-    "BOOTSTRAP_ADMIN_USERS_JSON": "{\"admins\":[{\"email\":\"admin1@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin2@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin3@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin4@vflowai.com\",\"roles\":[\"admin\"]}]}"
+    "BOOTSTRAP_ADMIN_USERS_JSON": "{\"admins\":[{\"email\":\"admin1@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin2@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin3@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin4@vflowai.com\",\"roles\":[\"admin\"]}]}",
+    "VF_READER_STORAGE_BACKEND": "r2",
+    "VF_READER_STORAGE_BUCKET_BINDING": "ARTIFACTS_BUCKET",
+    "VF_TTS_PROVIDER": "openai-compatible",
+    "VF_TTS_OPENAI_BASE_URL": "https://api.deepinfra.com/v1/openai",
+    "VF_TTS_OPENAI_MODEL": "ResembleAI/chatterbox-multilingual",
+    "VF_TTS_OPENAI_VOICE": "None",
+    "VF_TTS_DEFAULT_ENGINE": "ResembleAI/chatterbox-multilingual",
+    "VF_TTS_CALLBACK_BASE_URL": "https://voice-flow-cloudflare-frontend.1wasim9851229685.workers.dev"
   },
   "assets": {
     "directory": "../assets",

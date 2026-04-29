@@ -33,6 +33,7 @@ const billingModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'sr
 const authModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/auth.js')).href);
 const bootstrapModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/bootstrap.js')).href);
 const devBindingsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/dev-bindings.js')).href);
+const envModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/env.js')).href);
 const profileModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/profile.js')).href);
 const routesModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/routes.js')).href);
 const sessionsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/sessions.js')).href);
@@ -334,6 +335,22 @@ test('health route contract is stable', async () => {
   }
 });
 
+test('normalizeEnv preserves Worker vars and secrets while normalizing bindings', async () => {
+  const { normalizeEnv } = await envModulePromise;
+  const rawEnv = {
+    DB: { prepare() {} },
+    R2_ARTIFACTS: { get() {}, put() {} },
+    VF_TTS_OPENAI_API_KEY: 'provider-token',
+    VF_TTS_OPENAI_BASE_URL: 'https://api.example/v1',
+  };
+
+  const env = normalizeEnv(rawEnv);
+  assert.equal(env.DB, rawEnv.DB);
+  assert.equal(env.ARTIFACTS_BUCKET, rawEnv.R2_ARTIFACTS);
+  assert.equal(env.VF_TTS_OPENAI_API_KEY, 'provider-token');
+  assert.equal(env.VF_TTS_OPENAI_BASE_URL, 'https://api.example/v1');
+});
+
 test('auth/session bootstrap route contract is stable', async () => {
   const { response } = await requestFirstMatch(backend.app, authCandidates, {
     method: 'POST',
@@ -345,6 +362,26 @@ test('auth/session bootstrap route contract is stable', async () => {
 
   const payload = await expectJsonResponse(response, 401);
   assert.equal(payload.ok, false);
+});
+
+test('auth session route rate limits repeated attempts by client IP', async () => {
+  let lastResponse = null;
+  for (let index = 0; index < 21; index += 1) {
+    lastResponse = await callApp(backend.app, 'POST', '/api/auth/session', {
+      headers: {
+        'content-type': 'application/json',
+        'cf-connecting-ip': '203.0.113.44',
+      },
+      body: JSON.stringify({
+        email: 'missing@example.invalid',
+        password: 'wrong-password',
+      }),
+    });
+  }
+
+  const payload = await expectJsonResponse(lastResponse, 429);
+  assert.equal(payload.error.code, 'rate_limited');
+  assert.equal(typeof payload.error.retryAfterSeconds, 'number');
 });
 
 test('account bootstrap and billing summary route contracts are stable', async () => {
@@ -627,6 +664,23 @@ test('public mutation routes require an authenticated actor in production-like r
   }));
   const devEchoPayload = await expectJsonResponse(devEcho, 404);
   assert.equal(devEchoPayload.error.code, 'not_found');
+
+  const envProbe = await app.fetch(new Request('https://voice-flow.example/api/env'));
+  const envPayload = await expectJsonResponse(envProbe, 404);
+  assert.equal(envPayload.error.code, 'not_found');
+});
+
+test('backend responses include production correlation and security headers', async () => {
+  const response = await callApp(backend.app, 'GET', '/healthz', {
+    headers: {
+      'x-request-id': 'contract-request-id',
+    },
+  });
+
+  await expectJsonResponse(response, 200);
+  assert.equal(response.headers.get('x-request-id'), 'contract-request-id');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
 });
 
 test('job route contract is stable', async () => {
@@ -781,6 +835,92 @@ test('tts broker client merges caller headers without dropping defaults', async 
   assert.equal(requests[0].init.headers.authorization, 'Bearer secret-token');
   assert.equal(requests[0].init.headers['x-trace-id'], 'trace-123');
   assert.equal(JSON.parse(requests[0].init.body).text, 'Hello world');
+});
+
+test('OpenAI-compatible TTS adapter calls external speech API without changing the route contract', async () => {
+  const { synthesizeOpenAiSpeech } = await ttsModulePromise;
+  const requests = [];
+  const response = await synthesizeOpenAiSpeech(
+    {
+      VF_TTS_OPENAI_BASE_URL: 'https://api.deepinfra.example/v1/openai',
+      VF_TTS_OPENAI_API_KEY: 'provider-token',
+      VF_TTS_OPENAI_MODEL: 'ResembleAI/chatterbox-multilingual',
+      VF_TTS_OPENAI_VOICE: 'None',
+    },
+    {
+      requestId: 'ttsreq-contract-openai',
+      text: 'Hello from contract tests.',
+      format: 'mp3',
+    },
+    {
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: {
+            'content-type': 'audio/mpeg',
+            'x-request-id': 'provider-request-1',
+          },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.requestId, 'ttsreq-contract-openai');
+  assert.equal(response.status, 'succeeded');
+  assert.equal(response.providerRequestId, 'provider-request-1');
+  assert.equal(response.contentType, 'audio/mpeg');
+  assert.equal(response.audioBytes.byteLength, 3);
+  assert.equal(requests.length, 1);
+  assert.equal(new URL(requests[0].url).pathname, '/v1/openai/audio/speech');
+  assert.equal(requests[0].init.method, 'POST');
+  assert.equal(requests[0].init.headers.authorization, 'Bearer provider-token');
+  assert.equal(JSON.parse(requests[0].init.body).model, 'ResembleAI/chatterbox-multilingual');
+});
+
+test('TTS route stores OpenAI-compatible provider audio in R2 when provider env is configured', async () => {
+  const { createBackendApp } = await routesModulePromise;
+  const { createMemoryR2Bucket } = await devBindingsModulePromise;
+  const originalFetch = globalThis.fetch;
+  const bucket = createMemoryR2Bucket();
+
+  globalThis.fetch = async () => new Response(new Uint8Array([9, 8, 7, 6]), {
+    status: 200,
+    headers: {
+      'content-type': 'audio/mpeg',
+    },
+  });
+
+  try {
+    const app = createBackendApp({
+      env: {
+        ARTIFACTS_BUCKET: bucket,
+        VF_TTS_OPENAI_BASE_URL: 'https://api.deepinfra.example/v1/openai',
+        VF_TTS_OPENAI_API_KEY: 'provider-token',
+        VF_TTS_OPENAI_MODEL: 'ResembleAI/chatterbox-multilingual',
+        VF_TTS_OPENAI_VOICE: 'None',
+      },
+    });
+
+    const response = await app.fetch(new Request('https://voice-flow.example/api/v1/studio/tts/synthesize', {
+      method: 'POST',
+      headers: withDevUid({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        requestId: 'ttsreq-route-openai',
+        text: 'Store this audio.',
+      }),
+    }));
+    const payload = await expectJsonResponse(response, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.status, 'succeeded');
+    assert.equal(payload.artifactKey, 'tts/ttsreq-route-openai/ttsreq-route-openai.mp3');
+    assert.match(payload.audioUrl, /\/api\/v1\/storage\/object\?key=tts%2Fttsreq-route-openai%2Fttsreq-route-openai\.mp3$/);
+
+    const stored = await bucket.get(payload.artifactKey);
+    assert.equal(stored.size, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('job and TTS routes reject malformed JSON with stable error codes', async () => {

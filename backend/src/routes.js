@@ -41,6 +41,7 @@ import {
 } from './jobs.js';
 import {
   STORAGE_ENV_KEYS,
+  buildArtifactKey,
   normalizeArtifactKey,
   resolveArtifactBucket,
   getArtifact,
@@ -51,7 +52,9 @@ import {
 import {
   createTtsBrokerClient,
   normalizeTtsRequest,
+  resolveOpenAiTtsConfig,
   resolveTtsBrokerConfig,
+  synthesizeOpenAiSpeech,
   TTS_ENV_KEYS,
 } from './tts.js';
 import {
@@ -81,6 +84,13 @@ const DEFAULT_ROUTE_MAP = Object.freeze({
 });
 
 const LOCAL_CORS_ORIGIN_PATTERN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
+const rateLimitBuckets = new Map();
+
+const RATE_LIMITS = Object.freeze({
+  auth: { limit: 20, windowMs: 10 * 60 * 1000 },
+  jobs: { limit: 60, windowMs: 60 * 1000 },
+  tts: { limit: 30, windowMs: 60 * 1000 },
+});
 
 function buildLocalCorsHeaders(c) {
   const origin = String(c.req.header('origin') || '').trim();
@@ -96,6 +106,22 @@ function buildLocalCorsHeaders(c) {
     'access-control-max-age': '86400',
     vary: 'Origin',
   };
+}
+
+function setSecurityHeaders(c) {
+  c.header('x-content-type-options', 'nosniff');
+  c.header('referrer-policy', 'strict-origin-when-cross-origin');
+  c.header('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+  c.header('cache-control', 'no-store');
+  if (isHttpsRequest(c)) {
+    c.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+  }
+}
+
+function makeRequestId() {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function getDb(c, deps = {}) {
@@ -130,6 +156,40 @@ function isLocalUrl(c) {
   } catch {
     return false;
   }
+}
+
+function getClientIp(c) {
+  return String(
+    c.req.header('cf-connecting-ip')
+      || c.req.header('x-forwarded-for')?.split(',')[0]
+      || 'unknown'
+  ).trim() || 'unknown';
+}
+
+function enforceRateLimit(c, bucketName, options = {}) {
+  const limit = Number(options.limit || RATE_LIMITS[bucketName]?.limit || 60);
+  const windowMs = Number(options.windowMs || RATE_LIMITS[bucketName]?.windowMs || 60000);
+  const nowMs = Date.now();
+  const key = `${bucketName}:${getClientIp(c)}`;
+  const current = rateLimitBuckets.get(key);
+
+  if (!current || current.resetAtMs <= nowMs) {
+    rateLimitBuckets.set(key, {
+      count: 1,
+      resetAtMs: nowMs + windowMs,
+    });
+    return null;
+  }
+
+  current.count += 1;
+  if (current.count <= limit) {
+    return null;
+  }
+
+  const retryAfterSeconds = Math.max(1, Math.ceil((current.resetAtMs - nowMs) / 1000));
+  return errorResponse(c, 429, 'rate_limited', 'Too many requests. Please retry later.', {
+    retryAfterSeconds,
+  });
 }
 
 async function requireAdminSession(c, deps = {}) {
@@ -253,11 +313,12 @@ function readSessionToken(c) {
     return decodeURIComponent(cookieMatch[1]);
   }
 
-  return (
-    c.req.header('x-dev-session-token') ||
-    c.req.header('x-session-token') ||
-    null
-  );
+  const devSessionToken = c.req.header('x-dev-session-token');
+  if (devSessionToken && isDevEndpointAllowed(c)) {
+    return devSessionToken;
+  }
+
+  return c.req.header('x-session-token') || null;
 }
 
 function buildAuthFailure(c, code, message, status = 401) {
@@ -277,6 +338,7 @@ async function readRequestBody(c) {
 function buildRuntimeStatus(c, deps = {}) {
   const env = getEnv(c, deps);
   const ttsBroker = resolveTtsBrokerConfig(env);
+  const openAiTts = resolveOpenAiTtsConfig(env);
   return {
     bindings: {
       DB: Boolean(getDb(c, deps)),
@@ -291,21 +353,38 @@ function buildRuntimeStatus(c, deps = {}) {
         apiKey: Boolean(ttsBroker.apiKey),
         defaultEngine: Boolean(ttsBroker.defaultEngine),
         callbackBaseUrl: Boolean(ttsBroker.callbackBaseUrl),
+        openAiBaseUrl: Boolean(openAiTts.baseUrl),
+        openAiApiKey: Boolean(openAiTts.apiKey),
+        openAiModel: Boolean(openAiTts.model),
+        ready: Boolean(ttsBroker.brokerUrl || openAiTts.enabled),
       },
       readerStorage: {
         backend: String(env[STORAGE_ENV_KEYS.backend] || 'r2'),
         publicBaseUrl: Boolean(env[STORAGE_ENV_KEYS.publicBaseUrl]),
         bucketBinding: Boolean(env[STORAGE_ENV_KEYS.bucketBinding]),
+        ready: Boolean(env.ARTIFACTS_BUCKET || resolveArtifactBucket(env)),
       },
     },
     envKeys: {
       ttsBrokerUrl: TTS_ENV_KEYS.brokerUrl,
       ttsBrokerApiKey: TTS_ENV_KEYS.brokerApiKey,
+      ttsOpenAiBaseUrl: TTS_ENV_KEYS.openAiBaseUrl,
+      ttsOpenAiApiKey: TTS_ENV_KEYS.openAiApiKey,
+      ttsOpenAiModel: TTS_ENV_KEYS.openAiModel,
+      ttsOpenAiVoice: TTS_ENV_KEYS.openAiVoice,
       readerStorageBackend: STORAGE_ENV_KEYS.backend,
       readerStoragePublicBaseUrl: STORAGE_ENV_KEYS.publicBaseUrl,
       readerStorageBucketBinding: STORAGE_ENV_KEYS.bucketBinding,
     },
   };
+}
+
+function buildStorageObjectUrl(c, key) {
+  const url = new URL(c.req.url);
+  url.pathname = '/api/v1/storage/object';
+  url.search = '';
+  url.searchParams.set('key', normalizeArtifactKey(key));
+  return url.toString();
 }
 
 function createAuthRoutes(deps = {}) {
@@ -338,6 +417,11 @@ function createAuthRoutes(deps = {}) {
   });
 
   app.post('/session', async (c) => {
+    const limited = enforceRateLimit(c, 'auth');
+    if (limited) {
+      return limited;
+    }
+
     const db = getDb(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
@@ -385,6 +469,11 @@ function createAuthRoutes(deps = {}) {
   });
 
   app.post('/session/bootstrap', async (c) => {
+    const limited = enforceRateLimit(c, 'auth');
+    if (limited) {
+      return limited;
+    }
+
     const db = getDb(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
@@ -1177,6 +1266,11 @@ function createJobsRoutes(deps = {}) {
   const app = new Hono();
 
   app.post('/jobs', async (c) => {
+    const limited = enforceRateLimit(c, 'jobs');
+    if (limited) {
+      return limited;
+    }
+
     const actor = await requireActor(c, deps);
     if (!actor.ok) {
       return actor.response;
@@ -1326,6 +1420,11 @@ function createTtsRoutes(deps = {}) {
   const app = new Hono();
 
   const handleSynthesize = async (c) => {
+    const limited = enforceRateLimit(c, 'tts');
+    if (limited) {
+      return limited;
+    }
+
     const actor = await requireActor(c, deps);
     if (!actor.ok) {
       return actor.response;
@@ -1360,6 +1459,40 @@ function createTtsRoutes(deps = {}) {
         });
       } catch (error) {
         return errorResponse(c, 502, 'tts_broker_error', error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    const openAiConfig = resolveOpenAiTtsConfig(env);
+    if (openAiConfig.enabled) {
+      try {
+        const response = await synthesizeOpenAiSpeech(env, request);
+        const format = String(request.format || 'mp3').trim().replace(/[^a-z0-9]+/gi, '').toLowerCase() || 'mp3';
+        const artifactKey = buildArtifactKey({
+          namespace: 'tts',
+          jobId: request.jobId || response.requestId,
+          filename: `${response.requestId}.${format}`,
+        });
+        await putArtifact(env, artifactKey, response.audioBytes, {
+          contentType: response.contentType || 'audio/mpeg',
+          httpMetadata: {
+            contentType: response.contentType || 'audio/mpeg',
+          },
+          customMetadata: {
+            requestId: response.requestId,
+            userId: actor.userId,
+            provider: 'openai-compatible',
+          },
+        });
+
+        return jsonResponse(c, {
+          ok: true,
+          ...response,
+          audioBytes: undefined,
+          artifactKey,
+          audioUrl: buildStorageObjectUrl(c, artifactKey),
+        });
+      } catch (error) {
+        return errorResponse(c, 502, 'tts_provider_error', error instanceof Error ? error.message : String(error));
       }
     }
 
@@ -1414,12 +1547,19 @@ export function createBackendApp(deps = {}) {
   const app = new Hono();
 
   app.use('*', async (c, next) => {
+    const requestId = c.req.header('x-request-id') || makeRequestId();
+    c.set('requestId', requestId);
     const corsHeaders = buildLocalCorsHeaders(c);
     if (c.req.method.toUpperCase() === 'OPTIONS') {
-      return corsHeaders ? new Response(null, { status: 204, headers: corsHeaders }) : new Response(null, { status: 204 });
+      const headers = new Headers(corsHeaders || undefined);
+      headers.set('x-request-id', requestId);
+      return new Response(null, { status: 204, headers });
     }
 
     await next();
+
+    setSecurityHeaders(c);
+    c.header('x-request-id', requestId);
 
     if (corsHeaders) {
       for (const [name, value] of Object.entries(corsHeaders)) {
@@ -1433,10 +1573,12 @@ export function createBackendApp(deps = {}) {
     console.error(JSON.stringify({
       level: 'error',
       code: 'internal_error',
+      requestId: c.get('requestId') || null,
       path: c.req.path,
       method: c.req.method,
       message,
     }));
+    c.header('x-request-id', c.get('requestId') || makeRequestId());
     return errorResponse(c, 500, 'internal_error', 'Internal server error.');
   });
 
@@ -1461,6 +1603,10 @@ export function createBackendApp(deps = {}) {
   });
 
   app.get('/api/env', (c) => {
+    if (!isDevEndpointAllowed(c, deps)) {
+      return errorResponse(c, 404, 'not_found', 'Not found', 404);
+    }
+
     const runtime = buildRuntimeStatus(c, deps);
     return jsonResponse(c, {
       ok: true,

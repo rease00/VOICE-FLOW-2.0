@@ -43,6 +43,7 @@ export const hasDurableObjectBinding = (binding) => Boolean(
 );
 
 export const normalizeEnv = (env = {}) => ({
+  ...env,
   DB: env.DB ?? null,
   ASSETS: env.ASSETS ?? null,
   ARTIFACTS_BUCKET: env.ARTIFACTS_BUCKET ?? env.R2 ?? env.ARTIFACTS ?? env.R2_ARTIFACTS ?? null,

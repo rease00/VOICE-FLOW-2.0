@@ -21,50 +21,50 @@ const LEGAL_PAGES: Record<string, LegalPage> = {
     title: "Acceptable Use Policy",
     description: "Rules for safe, lawful, and responsible use of V FLOW AI.",
     canonical: "https://v-flow-ai.com/legal/acceptable-use",
-    snapshotPath: "/legal/acceptable-use/index.html",
+    snapshotPath: "/__snapshots/legal/acceptable-use/",
   },
   "billing-refunds": {
     slug: "billing-refunds",
     title: "Billing and Refund Policy",
     description: "How billing, renewals, and refunds work for V FLOW AI plans.",
     canonical: "https://v-flow-ai.com/legal/billing-refunds",
-    snapshotPath: "/legal/billing-refunds/index.html",
+    snapshotPath: "/__snapshots/legal/billing-refunds/",
   },
   cookies: {
     slug: "cookies",
     title: "Cookie Policy",
     description: "How cookies and similar technologies are used on V FLOW AI properties.",
     canonical: "https://v-flow-ai.com/legal/cookies",
-    snapshotPath: "/legal/cookies/index.html",
+    snapshotPath: "/__snapshots/legal/cookies/",
   },
   copyright: {
     slug: "copyright",
     title: "Copyright and IP Notice",
     description: "Copyright ownership expectations, reporting flow, and takedown process.",
     canonical: "https://v-flow-ai.com/legal/copyright",
-    snapshotPath: "/legal/copyright/index.html",
+    snapshotPath: "/__snapshots/legal/copyright/",
   },
   privacy: {
     slug: "privacy",
     title: "Privacy Policy",
     description: "How V FLOW AI collects, uses, stores, and protects personal data.",
     canonical: "https://v-flow-ai.com/legal/privacy",
-    snapshotPath: "/legal/privacy/index.html",
+    snapshotPath: "/__snapshots/legal/privacy/",
   },
   terms: {
     slug: "terms",
     title: "Terms of Service",
     description: "Rules for accessing and using V FLOW AI services, products, and websites.",
     canonical: "https://v-flow-ai.com/legal/terms",
-    snapshotPath: "/legal/terms/index.html",
+    snapshotPath: "/__snapshots/legal/terms/",
   },
 };
 
 export const PUBLIC_SNAPSHOT_PATHS = {
-  landing: "/landing/index.html",
-  login: "/app/login/index.html",
-  onboarding: "/app/onboarding/index.html",
-  billing: "/billing/index.html",
+  landing: "/__snapshots/landing/",
+  login: "/__snapshots/app/login/",
+  onboarding: "/__snapshots/app/onboarding/",
+  billing: "/__snapshots/billing/",
 } as const;
 
 export function getPublicSnapshotSrc(pathname: string, search = "") {

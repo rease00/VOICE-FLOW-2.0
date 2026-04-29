@@ -4,6 +4,11 @@ export const TTS_ENV_KEYS = Object.freeze({
   timeoutMs: 'VF_TTS_BROKER_TIMEOUT_MS',
   defaultEngine: 'VF_TTS_DEFAULT_ENGINE',
   callbackBaseUrl: 'VF_TTS_CALLBACK_BASE_URL',
+  provider: 'VF_TTS_PROVIDER',
+  openAiBaseUrl: 'VF_TTS_OPENAI_BASE_URL',
+  openAiApiKey: 'VF_TTS_OPENAI_API_KEY',
+  openAiModel: 'VF_TTS_OPENAI_MODEL',
+  openAiVoice: 'VF_TTS_OPENAI_VOICE',
 });
 
 export const TTS_STATUSES = Object.freeze({
@@ -118,6 +123,23 @@ export const resolveTtsBrokerConfig = (env = {}, options = {}) => {
   };
 };
 
+export const resolveOpenAiTtsConfig = (env = {}, options = {}) => {
+  const baseUrl = cleanString(options.baseUrl || env?.[TTS_ENV_KEYS.openAiBaseUrl]);
+  const apiKey = cleanString(options.apiKey || env?.[TTS_ENV_KEYS.openAiApiKey]);
+  const model = cleanString(options.model || env?.[TTS_ENV_KEYS.openAiModel] || env?.[TTS_ENV_KEYS.defaultEngine]);
+  const voice = cleanString(options.voice || env?.[TTS_ENV_KEYS.openAiVoice]) || 'None';
+  const timeoutMs = coerceNumber(options.timeoutMs ?? env?.[TTS_ENV_KEYS.timeoutMs], 30000);
+
+  return {
+    baseUrl,
+    apiKey,
+    model,
+    voice,
+    timeoutMs,
+    enabled: Boolean(baseUrl && apiKey && model),
+  };
+};
+
 export const requireTtsBrokerConfig = (env = {}, options = {}) => {
   const config = resolveTtsBrokerConfig(env, options);
   if (!config.brokerUrl) {
@@ -204,6 +226,71 @@ export const createTtsBrokerClient = (env = {}, options = {}) => {
     status: (requestId, extra = {}) => request('GET', `requests/${encodeURIComponent(cleanString(requestId))}`, null, extra),
     cancel: (requestId, extra = {}) => request('POST', `requests/${encodeURIComponent(cleanString(requestId))}/cancel`, null, extra),
     request,
+  };
+};
+
+export const synthesizeOpenAiSpeech = async (env = {}, ttsRequest, options = {}) => {
+  const request = normalizeTtsRequest(ttsRequest);
+  const config = resolveOpenAiTtsConfig(env, options);
+  if (!config.enabled) {
+    throw new Error(`Missing OpenAI-compatible TTS config. Set ${TTS_ENV_KEYS.openAiBaseUrl}, ${TTS_ENV_KEYS.openAiApiKey}, and ${TTS_ENV_KEYS.openAiModel}.`);
+  }
+
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('A fetch implementation is required to talk to the external TTS provider.');
+  }
+
+  const url = new URL(config.baseUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/audio/speech`;
+  const format = cleanString(request.format) || 'mp3';
+  const response = await brokerFetch(
+    fetchImpl,
+    url.toString(),
+    {
+      method: 'POST',
+      headers: {
+        accept: format === 'mp3' ? 'audio/mpeg' : '*/*',
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: request.engine || config.model,
+        voice: request.voiceId || config.voice,
+        input: request.text,
+        response_format: format,
+        ...(request.speed ? { speed: request.speed } : {}),
+      }),
+    },
+    config.timeoutMs
+  );
+
+  if (!response.ok) {
+    const message = await readErrorText(response);
+    const error = new Error(message || `OpenAI-compatible TTS request failed with status ${response.status}.`);
+    error.status = response.status;
+    error.body = message || null;
+    throw error;
+  }
+
+  const audioBytes = await response.arrayBuffer();
+  const contentType = response.headers.get('content-type') || (format === 'mp3' ? 'audio/mpeg' : 'application/octet-stream');
+  return {
+    ...createTtsResponse({
+      requestId: request.requestId,
+      jobId: request.jobId,
+      providerRequestId: response.headers.get('x-request-id') || null,
+      status: TTS_STATUSES.succeeded,
+      contentType,
+      mimeType: contentType,
+      metadata: {
+        ...(request.metadata || {}),
+        provider: 'openai-compatible',
+        model: request.engine || config.model,
+        voice: request.voiceId || config.voice,
+      },
+    }),
+    audioBytes,
   };
 };
 

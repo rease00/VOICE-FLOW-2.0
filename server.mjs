@@ -295,6 +295,19 @@ const safeJoin = (...segments) => {
 const resolveCandidatePath = async (urlPathname) => {
   const pathname = decodeURIComponent(urlPathname.split('?')[0] || '/');
   const cleanPath = pathname.replace(/\/+$/, '') || '/';
+  if (cleanPath === '/__snapshots' || cleanPath.startsWith('/__snapshots/')) {
+    const snapshotRelativePath = cleanPath.slice('/__snapshots'.length) || '/';
+    const snapshotCandidate = safeJoin(`.${snapshotRelativePath}`);
+    if (snapshotCandidate && await exists(snapshotCandidate)) {
+      const stat = await fs.stat(snapshotCandidate);
+      if (stat.isFile()) return snapshotCandidate;
+      if (stat.isDirectory()) {
+        const indexCandidate = path.join(snapshotCandidate, 'index.html');
+        if (await exists(indexCandidate)) return indexCandidate;
+      }
+    }
+  }
+
   const directCandidate = safeJoin(`.${cleanPath}`);
   if (!directCandidate) return null;
 
