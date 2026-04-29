@@ -102,6 +102,11 @@ function uniqueOrdered(values) {
   return [...new Set(values.filter((value) => typeof value === 'string' && value.trim()))];
 }
 
+function defaultEmailForUserId(userId) {
+  const value = String(userId || '').trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value : '';
+}
+
 function normalizeUserId(input) {
   const value = String(input || '').trim();
   return value || null;
@@ -440,7 +445,7 @@ async function deleteRecord(db, table, keyColumn, keyValue) {
 }
 
 function defaultProfilePayload(userId, patch = {}) {
-  return deepMerge(
+  const payload = deepMerge(
     {
       userId,
       displayName: '',
@@ -483,6 +488,14 @@ function defaultProfilePayload(userId, patch = {}) {
     },
     patch
   );
+  const fallbackEmail = defaultEmailForUserId(userId);
+  if (fallbackEmail && !payload.email) {
+    payload.email = fallbackEmail;
+  }
+  if (fallbackEmail && payload.billingProfile && !payload.billingProfile.email) {
+    payload.billingProfile.email = fallbackEmail;
+  }
+  return payload;
 }
 
 function defaultEntitlementsPayload(userId, patch = {}) {
@@ -553,7 +566,7 @@ function defaultSettingsPayload(userId, patch = {}) {
 }
 
 function defaultBillingSummaryPayload(userId, patch = {}) {
-  return deepMerge(
+  const payload = deepMerge(
     {
       userId,
       account: {
@@ -585,6 +598,14 @@ function defaultBillingSummaryPayload(userId, patch = {}) {
     },
     patch
   );
+  const fallbackEmail = defaultEmailForUserId(userId);
+  if (fallbackEmail && payload.account && !payload.account.email) {
+    payload.account.email = fallbackEmail;
+  }
+  if (fallbackEmail && payload.billingProfile && !payload.billingProfile.email) {
+    payload.billingProfile.email = fallbackEmail;
+  }
+  return payload;
 }
 
 function defaultConversationPayload(userId, patch = {}) {
@@ -622,7 +643,7 @@ function defaultSupportMessagePayload(userId, patch = {}) {
 }
 
 function defaultAdminUserPayload(userId, patch = {}) {
-  return deepMerge(
+  const payload = deepMerge(
     {
       userId,
       email: '',
@@ -641,6 +662,14 @@ function defaultAdminUserPayload(userId, patch = {}) {
     },
     patch
   );
+  const fallbackEmail = defaultEmailForUserId(userId);
+  if (fallbackEmail && !payload.email) {
+    payload.email = fallbackEmail;
+  }
+  if (fallbackEmail && payload.billingProfile && !payload.billingProfile.email) {
+    payload.billingProfile.email = fallbackEmail;
+  }
+  return payload;
 }
 
 function defaultAdminRolePayload(roleId, patch = {}) {

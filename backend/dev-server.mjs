@@ -1,9 +1,15 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { createBackendApp } from './src/routes.js';
 import { bootstrapAuthStorage } from './src/bootstrap.js';
-import { createMemoryD1Database, createMemoryQueue, createMemoryR2Bucket } from './src/dev-bindings.js';
+import { JobCoordinator } from './src/do/JobCoordinator.js';
+import {
+  createMemoryD1Database,
+  createMemoryDurableObjectNamespace,
+  createMemoryQueue,
+  createMemoryR2Bucket,
+} from './src/dev-bindings.js';
 
 const port = Number(process.env.PORT || 8787);
 
@@ -16,16 +22,29 @@ const readWranglerVars = async () => {
   }
 };
 
+const applyMigrations = async (database) => {
+  const migrationsUrl = new URL('./migrations/', import.meta.url);
+  const entries = await readdir(migrationsUrl);
+  const migrationFiles = entries
+    .filter((entry) => /^\d+_.+\.sql$/i.test(entry))
+    .sort((a, b) => a.localeCompare(b));
+
+  for (const migrationFile of migrationFiles) {
+    await database.exec(await readFile(new URL(migrationFile, migrationsUrl), 'utf8'));
+  }
+};
+
 const db = createMemoryD1Database();
 const env = {
   ...(await readWranglerVars()),
   DB: db,
   ARTIFACTS_BUCKET: createMemoryR2Bucket(),
+  JOB_COORDINATOR: createMemoryDurableObjectNamespace(JobCoordinator),
   JOB_QUEUE: createMemoryQueue(),
 };
 const app = createBackendApp({ env });
 
-await db.exec(await readFile(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'));
+await applyMigrations(db);
 await bootstrapAuthStorage(db, {
   env,
   source: 'dev-server',

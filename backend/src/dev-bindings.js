@@ -390,3 +390,50 @@ export function createMemoryQueue() {
     },
   };
 }
+
+function createMemoryDurableObjectState() {
+  const storage = new Map();
+  return {
+    storage: {
+      async get(key) {
+        return storage.get(String(key));
+      },
+      async put(key, value) {
+        storage.set(String(key), value);
+      },
+      async delete(key) {
+        storage.delete(String(key));
+      },
+      async list() {
+        return new Map(storage);
+      },
+    },
+    blockConcurrencyWhile(task) {
+      return task();
+    },
+  };
+}
+
+export function createMemoryDurableObjectNamespace(DurableObjectClass) {
+  const instances = new Map();
+
+  return {
+    idFromName(name) {
+      return String(name || 'default');
+    },
+    get(id) {
+      const key = String(id || 'default');
+      if (!instances.has(key)) {
+        const state = createMemoryDurableObjectState();
+        instances.set(key, new DurableObjectClass(state, {}));
+      }
+
+      const instance = instances.get(key);
+      return {
+        fetch(request) {
+          return instance.fetch(request);
+        },
+      };
+    },
+  };
+}

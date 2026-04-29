@@ -8,7 +8,6 @@ import {
   defaultProfilePayload,
   defaultSettingsPayload,
   defaultSupportMessagePayload,
-  deepMerge,
   errorResponse,
   jsonResponse,
   makeId,
@@ -41,6 +40,7 @@ import {
   submitJob,
 } from './jobs.js';
 import {
+  STORAGE_ENV_KEYS,
   normalizeArtifactKey,
   resolveArtifactBucket,
   getArtifact,
@@ -52,7 +52,7 @@ import {
   createTtsBrokerClient,
   normalizeTtsRequest,
   resolveTtsBrokerConfig,
-  submitTtsRequest,
+  TTS_ENV_KEYS,
 } from './tts.js';
 import {
   listAdminUsers,
@@ -116,6 +116,20 @@ function isHttpsRequest(c) {
 
 function getRequestUserId(c, deps = {}) {
   return normalizeUserId(resolveActorId(c, deps));
+}
+
+function isTruthy(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function isLocalUrl(c) {
+  try {
+    const hostname = new URL(c.req.url).hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
 }
 
 async function requireAdminSession(c, deps = {}) {
@@ -206,6 +220,27 @@ async function attachSessionActor(c, deps = {}) {
   return session;
 }
 
+async function requireActor(c, deps = {}) {
+  await attachSessionActor(c, deps);
+  const userId = getRequestUserId(c, deps);
+  if (!userId) {
+    return {
+      ok: false,
+      response: buildAuthFailure(c, 'session_required', 'A valid session is required.'),
+    };
+  }
+
+  return {
+    ok: true,
+    userId,
+  };
+}
+
+function isDevEndpointAllowed(c, deps = {}) {
+  const env = getEnv(c, deps);
+  return isLocalUrl(c) || isTruthy(env.VF_DEV_ENDPOINTS_ENABLED);
+}
+
 function readSessionToken(c) {
   const authHeader = String(c.req.header('authorization') || '').trim();
   if (authHeader.toLowerCase().startsWith('bearer ')) {
@@ -237,6 +272,40 @@ async function readRequestBody(c) {
       __error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function buildRuntimeStatus(c, deps = {}) {
+  const env = getEnv(c, deps);
+  const ttsBroker = resolveTtsBrokerConfig(env);
+  return {
+    bindings: {
+      DB: Boolean(getDb(c, deps)),
+      ASSETS: Boolean(env.ASSETS),
+      ARTIFACTS_BUCKET: Boolean(env.ARTIFACTS_BUCKET || resolveArtifactBucket(env)),
+      JOB_QUEUE: Boolean(env.JOB_QUEUE),
+      JOB_COORDINATOR: Boolean(env.JOB_COORDINATOR),
+    },
+    external: {
+      tts: {
+        brokerUrl: Boolean(ttsBroker.brokerUrl),
+        apiKey: Boolean(ttsBroker.apiKey),
+        defaultEngine: Boolean(ttsBroker.defaultEngine),
+        callbackBaseUrl: Boolean(ttsBroker.callbackBaseUrl),
+      },
+      readerStorage: {
+        backend: String(env[STORAGE_ENV_KEYS.backend] || 'r2'),
+        publicBaseUrl: Boolean(env[STORAGE_ENV_KEYS.publicBaseUrl]),
+        bucketBinding: Boolean(env[STORAGE_ENV_KEYS.bucketBinding]),
+      },
+    },
+    envKeys: {
+      ttsBrokerUrl: TTS_ENV_KEYS.brokerUrl,
+      ttsBrokerApiKey: TTS_ENV_KEYS.brokerApiKey,
+      readerStorageBackend: STORAGE_ENV_KEYS.backend,
+      readerStoragePublicBaseUrl: STORAGE_ENV_KEYS.publicBaseUrl,
+      readerStorageBucketBinding: STORAGE_ENV_KEYS.bucketBinding,
+    },
+  };
 }
 
 function createAuthRoutes(deps = {}) {
@@ -1033,12 +1102,19 @@ function createStorageRoutes(deps = {}) {
       return errorResponse(c, 400, 'invalid_key', error instanceof Error ? error.message : String(error));
     }
 
+    const method = c.req.method.toUpperCase();
+
+    if (method !== 'GET' && method !== 'HEAD') {
+      const actor = await requireActor(c, deps);
+      if (!actor.ok) {
+        return actor.response;
+      }
+    }
+
     const bucket = ensureBucket(c);
     if (bucket instanceof Response) {
       return bucket;
     }
-
-    const method = c.req.method.toUpperCase();
 
     if (method === 'GET' || method === 'HEAD') {
       const artifact = await getArtifact(getEnv(c, deps), key);
@@ -1101,6 +1177,11 @@ function createJobsRoutes(deps = {}) {
   const app = new Hono();
 
   app.post('/jobs', async (c) => {
+    const actor = await requireActor(c, deps);
+    if (!actor.ok) {
+      return actor.response;
+    }
+
     const env = getEnv(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
@@ -1119,7 +1200,7 @@ function createJobsRoutes(deps = {}) {
       status: 'queued',
       payload: body,
       metadata: {
-        userId: getRequestUserId(c, deps),
+        userId: actor.userId,
         route: c.req.path,
       },
     });
@@ -1163,6 +1244,11 @@ function createJobsRoutes(deps = {}) {
   });
 
   const handleJobStatus = async (c) => {
+    const actor = await requireActor(c, deps);
+    if (!actor.ok) {
+      return actor.response;
+    }
+
     const body = await readRequestBody(c);
     if (body.__error) {
       return errorResponse(c, 400, 'invalid_json', body.__error);
@@ -1174,6 +1260,7 @@ function createJobsRoutes(deps = {}) {
       jobId,
       status: body.status || 'queued',
       metadata: {
+        userId: actor.userId,
         route: c.req.path,
         ...(body.metadata || {}),
       },
@@ -1190,31 +1277,47 @@ function createJobsRoutes(deps = {}) {
   app.post('/jobs/:jobId/status', handleJobStatus);
   app.patch('/jobs/:jobId/status', handleJobStatus);
 
-  app.post('/jobs/:jobId/cancel', async (c) => jsonResponse(c, {
-    ok: true,
-    jobId: String(c.req.param('jobId') || '').trim(),
-    status: 'canceled',
-    job: createJobStatus({
+  app.post('/jobs/:jobId/cancel', async (c) => {
+    const actor = await requireActor(c, deps);
+    if (!actor.ok) {
+      return actor.response;
+    }
+
+    return jsonResponse(c, {
+      ok: true,
       jobId: String(c.req.param('jobId') || '').trim(),
       status: 'canceled',
-      metadata: {
-        route: c.req.path,
-      },
-    }),
-  }));
+      job: createJobStatus({
+        jobId: String(c.req.param('jobId') || '').trim(),
+        status: 'canceled',
+        metadata: {
+          userId: actor.userId,
+          route: c.req.path,
+        },
+      }),
+    });
+  });
 
-  app.post('/jobs/:jobId/claim', async (c) => jsonResponse(c, {
-    ok: true,
-    jobId: String(c.req.param('jobId') || '').trim(),
-    status: 'claimed',
-    job: createJobStatus({
+  app.post('/jobs/:jobId/claim', async (c) => {
+    const actor = await requireActor(c, deps);
+    if (!actor.ok) {
+      return actor.response;
+    }
+
+    return jsonResponse(c, {
+      ok: true,
       jobId: String(c.req.param('jobId') || '').trim(),
       status: 'claimed',
-      metadata: {
-        route: c.req.path,
-      },
-    }),
-  }));
+      job: createJobStatus({
+        jobId: String(c.req.param('jobId') || '').trim(),
+        status: 'claimed',
+        metadata: {
+          userId: actor.userId,
+          route: c.req.path,
+        },
+      }),
+    });
+  });
 
   return app;
 }
@@ -1223,6 +1326,11 @@ function createTtsRoutes(deps = {}) {
   const app = new Hono();
 
   const handleSynthesize = async (c) => {
+    const actor = await requireActor(c, deps);
+    if (!actor.ok) {
+      return actor.response;
+    }
+
     const env = getEnv(c, deps);
     const body = await readRequestBody(c);
     if (body.__error) {
@@ -1230,6 +1338,10 @@ function createTtsRoutes(deps = {}) {
     }
 
     const request = normalizeTtsRequest(body);
+    request.metadata = {
+      ...(request.metadata || {}),
+      userId: actor.userId,
+    };
     if (!request.text) {
       return jsonResponse(c, {
         ok: false,
@@ -1273,18 +1385,22 @@ function createTtsRoutes(deps = {}) {
 function createOpsRoutes(deps = {}) {
   const app = new Hono();
 
-  app.get('/health', (c) => jsonResponse(c, {
-    ok: true,
-    service: 'voice-flow-cloudflare-backend',
-    runtime: {
-      kind: 'cloudflare-worker',
-      backend: 'hono',
-      d1: Boolean(getDb(c, deps)),
-      r2: Boolean(resolveArtifactBucket(getEnv(c, deps))),
-      queue: Boolean(getEnv(c, deps).JOB_QUEUE),
-      durableObject: Boolean(getEnv(c, deps).JOB_COORDINATOR),
-    },
-  }));
+  app.get('/health', (c) => {
+    const runtime = buildRuntimeStatus(c, deps);
+    return jsonResponse(c, {
+      ok: true,
+      service: 'voice-flow-cloudflare-backend',
+      runtime: {
+        kind: 'cloudflare-worker',
+        backend: 'hono',
+        d1: runtime.bindings.DB,
+        r2: runtime.bindings.ARTIFACTS_BUCKET,
+        queue: runtime.bindings.JOB_QUEUE,
+        durableObject: runtime.bindings.JOB_COORDINATOR,
+        external: runtime.external,
+      },
+    });
+  });
 
   app.get('/contracts', (c) => jsonResponse(c, {
     ok: true,
@@ -1314,7 +1430,14 @@ export function createBackendApp(deps = {}) {
 
   app.onError((error, c) => {
     const message = error instanceof Error ? error.message : String(error);
-    return errorResponse(c, 500, 'internal_error', message, 500);
+    console.error(JSON.stringify({
+      level: 'error',
+      code: 'internal_error',
+      path: c.req.path,
+      method: c.req.method,
+      message,
+    }));
+    return errorResponse(c, 500, 'internal_error', 'Internal server error.');
   });
 
   app.notFound((c) => errorResponse(c, 404, 'not_found', 'Not found', 404));
@@ -1328,29 +1451,30 @@ export function createBackendApp(deps = {}) {
     },
   }));
 
-  app.get('/healthz', (c) => jsonResponse(c, {
-    ok: true,
-    env: {
-      DB: Boolean(getDb(c, deps)),
-      ASSETS: Boolean(getEnv(c, deps).ASSETS),
-      ARTIFACTS_BUCKET: Boolean(getEnv(c, deps).ARTIFACTS_BUCKET),
-      JOB_QUEUE: Boolean(getEnv(c, deps).JOB_QUEUE),
-      JOB_COORDINATOR: Boolean(getEnv(c, deps).JOB_COORDINATOR),
-    },
-  }));
+  app.get('/healthz', (c) => {
+    const runtime = buildRuntimeStatus(c, deps);
+    return jsonResponse(c, {
+      ok: true,
+      env: runtime.bindings,
+      external: runtime.external,
+    });
+  });
 
-  app.get('/api/env', (c) => jsonResponse(c, {
-    ok: true,
-    bindings: {
-      DB: Boolean(getDb(c, deps)),
-      ASSETS: Boolean(getEnv(c, deps).ASSETS),
-      ARTIFACTS_BUCKET: Boolean(getEnv(c, deps).ARTIFACTS_BUCKET),
-      JOB_QUEUE: Boolean(getEnv(c, deps).JOB_QUEUE),
-      JOB_COORDINATOR: Boolean(getEnv(c, deps).JOB_COORDINATOR),
-    },
-  }));
+  app.get('/api/env', (c) => {
+    const runtime = buildRuntimeStatus(c, deps);
+    return jsonResponse(c, {
+      ok: true,
+      bindings: runtime.bindings,
+      external: runtime.external,
+      envKeys: runtime.envKeys,
+    });
+  });
 
   app.post('/api/dev/echo', async (c) => {
+    if (!isDevEndpointAllowed(c, deps)) {
+      return errorResponse(c, 404, 'not_found', 'Not found', 404);
+    }
+
     const contentType = c.req.header('content-type') || '';
     if (contentType.includes('application/json')) {
       const body = await c.req.json().catch(() => null);

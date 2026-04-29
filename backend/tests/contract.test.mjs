@@ -554,6 +554,81 @@ test('storage route contract is stable', async () => {
   assert.equal(typeof payload.error, 'string');
 });
 
+test('D1 migrations declare account, billing, support, and admin payload tables', async () => {
+  const migration = await readFile(new URL('../migrations/0002_account_billing_admin_payloads.sql', import.meta.url), 'utf8');
+  for (const table of [
+    'account_profiles',
+    'account_entitlements',
+    'account_settings',
+    'support_conversations',
+    'support_messages',
+    'billing_accounts',
+    'billing_sessions',
+    'billing_events',
+    'admin_users',
+    'admin_roles',
+    'admin_user_roles',
+  ]) {
+    assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`, 'i'));
+  }
+});
+
+test('public mutation routes require an authenticated actor in production-like requests', async () => {
+  const { createBackendApp } = await routesModulePromise;
+  const { createMemoryR2Bucket } = await devBindingsModulePromise;
+  const app = createBackendApp({
+    env: {
+      ARTIFACTS_BUCKET: createMemoryR2Bucket(),
+      VF_DEV_UID_HEADER_ENABLED: 'false',
+    },
+  });
+
+  const storageWrite = await app.fetch(new Request('https://voice-flow.example/api/v1/storage/object?key=audit/object.txt', {
+    method: 'PUT',
+    headers: {
+      'content-type': 'text/plain',
+    },
+    body: 'blocked',
+  }));
+  const storagePayload = await expectJsonResponse(storageWrite, 401);
+  assert.equal(storagePayload.error.code, 'session_required');
+
+  const jobCreate = await app.fetch(new Request('https://voice-flow.example/api/v1/library/audio-novel/jobs', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      bookId: 'public-mutation-blocked',
+      text: 'This should not queue anonymously.',
+    }),
+  }));
+  const jobPayload = await expectJsonResponse(jobCreate, 401);
+  assert.equal(jobPayload.error.code, 'session_required');
+
+  const ttsCreate = await app.fetch(new Request('https://voice-flow.example/api/v1/studio/tts/synthesize', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      text: 'This should not synthesize anonymously.',
+    }),
+  }));
+  const ttsPayload = await expectJsonResponse(ttsCreate, 401);
+  assert.equal(ttsPayload.error.code, 'session_required');
+
+  const devEcho = await app.fetch(new Request('https://voice-flow.example/api/dev/echo', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ ok: true }),
+  }));
+  const devEchoPayload = await expectJsonResponse(devEcho, 404);
+  assert.equal(devEchoPayload.error.code, 'not_found');
+});
+
 test('job route contract is stable', async () => {
   const { response } = await requestFirstMatch(backend.app, jobCreateCandidates, {
     method: 'POST',
@@ -624,6 +699,30 @@ test('job route submits to queue without requiring D1 and exposes a status patch
   assert.equal(statusPayload.status, 'running');
   assert.equal(statusPayload.job.progress, 50);
   assert.equal(statusPayload.job.message, 'Halfway there');
+});
+
+test('local Durable Object mock supports queue coordination contracts', async () => {
+  const { createMemoryDurableObjectNamespace } = await devBindingsModulePromise;
+  const { JobCoordinator } = await import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/do/JobCoordinator.js')).href);
+  const namespace = createMemoryDurableObjectNamespace(JobCoordinator);
+  const stub = namespace.get(namespace.idFromName('default'));
+
+  const enqueueResponse = await stub.fetch(new Request('http://job-coordinator/jobs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jobId: 'local-do-job',
+      text: 'Local Durable Object parity test.',
+    }),
+  }));
+  const enqueuePayload = await expectJsonResponse(enqueueResponse, 202);
+  assert.equal(enqueuePayload.ok, true);
+  assert.equal(enqueuePayload.job.jobId, 'local-do-job');
+
+  const readResponse = await stub.fetch(new Request('http://job-coordinator/jobs/local-do-job'));
+  const readPayload = await expectJsonResponse(readResponse, 200);
+  assert.equal(readPayload.ok, true);
+  assert.equal(readPayload.job.status, 'queued');
 });
 
 test('tts route contract is stable', async () => {

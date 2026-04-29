@@ -4,17 +4,11 @@ import { useLoaderData } from 'react-router';
 import { backendFetch, type BackendEnv } from '../lib/backend';
 
 export const AUTH_SESSION_ENDPOINTS = ['/api/auth/session', '/auth/session'] as const;
-export const BILLING_SUMMARY_ENDPOINTS = ['/api/v1/billing/account-summary', '/billing/account-summary'] as const;
-export const ACCOUNT_PROFILE_ENDPOINTS = ['/api/v1/account/profile', '/account/profile'] as const;
-export const BILLING_PORTAL_SESSION_ENDPOINTS = ['/api/v1/billing/portal-session', '/billing/portal-session'] as const;
-export const BILLING_SUBSCRIPTION_CANCEL_ENDPOINTS = [
-  '/api/v1/billing/subscription/cancel',
-  '/billing/subscription/cancel',
-] as const;
-export const BILLING_SUBSCRIPTION_RESUME_ENDPOINTS = [
-  '/api/v1/billing/subscription/resume',
-  '/billing/subscription/resume',
-] as const;
+export const BILLING_SUMMARY_ENDPOINTS = ['/api/v1/billing/account-summary'] as const;
+export const ACCOUNT_PROFILE_ENDPOINTS = ['/api/v1/account/profile'] as const;
+export const BILLING_PORTAL_SESSION_ENDPOINTS = ['/api/v1/billing/portal-session'] as const;
+export const BILLING_SUBSCRIPTION_CANCEL_ENDPOINTS = ['/api/v1/billing/subscription/cancel'] as const;
+export const BILLING_SUBSCRIPTION_RESUME_ENDPOINTS = ['/api/v1/billing/subscription/resume'] as const;
 export const STUDIO_NEXT_ROUTE = '/app/studio';
 
 export type AuthSessionUser = {
@@ -134,6 +128,27 @@ async function readJsonBody<T>(response: Response): Promise<T | null> {
   }
 }
 
+function readErrorMessage(data: unknown, fallback: string) {
+  if (data && typeof data === 'object') {
+    const error = (data as { error?: unknown }).error;
+    if (error && typeof error === 'object') {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === 'string' && message.trim()) {
+        return message.trim();
+      }
+    }
+    if (typeof error === 'string' && error.trim()) {
+      return error.trim();
+    }
+    const message = (data as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  return fallback;
+}
+
 export async function fetchFirstJson<T>(
   request: Request,
   candidates: readonly string[],
@@ -177,11 +192,7 @@ export async function fetchFirstJson<T>(
         };
       }
 
-      const message =
-        typeof data === 'object' && data && 'error' in data
-          ? String((data as { error?: unknown }).error || response.statusText || 'Request failed')
-          : response.statusText || 'Request failed';
-      lastError = message;
+      lastError = readErrorMessage(data, response.statusText || 'Request failed');
     } catch (error) {
       lastError = error instanceof Error ? error.message : 'Request failed';
     }
@@ -253,11 +264,7 @@ export async function postFirstJson<T>(
         };
       }
 
-      const message =
-        typeof data === 'object' && data && 'error' in data
-          ? String((data as { error?: unknown }).error || response.statusText || 'Request failed')
-          : response.statusText || 'Request failed';
-      lastError = message;
+      lastError = readErrorMessage(data, response.statusText || 'Request failed');
     } catch (error) {
       lastError = error instanceof Error ? error.message : 'Request failed';
     }
@@ -307,7 +314,7 @@ export function ShellRoot({
     >
       <div className="vf-live-wallpaper" aria-hidden="true" />
       <div className="relative z-[1]">
-        <div className="ap-shell overflow-hidden" role="status" aria-live="polite" aria-label={ariaLabel}>
+        <div className="ap-shell overflow-hidden" aria-label={ariaLabel}>
           <div className="ap-grid" aria-hidden="true" />
           <div className="ap-aurora ap-aurora--a" aria-hidden="true" />
           <div className="ap-aurora ap-aurora--b" aria-hidden="true" />
@@ -397,7 +404,7 @@ export function AppHandoffView() {
 export function CommandPaletteButton() {
   return (
     <button
-      aria-label="Open command palette (⌘K)"
+      aria-label="Open command palette (Ctrl+K)"
       className="fixed right-4 top-3 z-[9985] hidden items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-[var(--vf-color-text-muted)] backdrop-blur-sm transition-all hover:border-white/20 hover:text-[var(--vf-color-text-primary)] lg:flex"
       type="button"
     >
@@ -417,8 +424,8 @@ export function CommandPaletteButton() {
         <path d="m21 21-4.34-4.34" />
         <circle cx="11" cy="11" r="8" />
       </svg>
-      <span>Search…</span>
-      <kbd className="inline-flex h-5 items-center rounded border border-white/15 bg-white/8 px-1.5 font-mono text-[10px] text-[var(--vf-color-text-muted)]">⌘K</kbd>
+      <span>Search...</span>
+      <kbd className="inline-flex h-5 items-center rounded border border-white/15 bg-white/8 px-1.5 font-mono text-[10px] text-[var(--vf-color-text-muted)]">Ctrl+K</kbd>
     </button>
   );
 }

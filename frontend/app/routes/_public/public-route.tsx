@@ -94,7 +94,7 @@ export function legalRouteMeta(slug: string | undefined) {
   }
 
   return [
-    { title: `${page.title} | V FLOW AI | V FLOW AI` },
+    { title: `${page.title} | V FLOW AI` },
     { name: "description", content: page.description },
     { name: "application-name", content: "V FLOW AI" },
     { rel: "canonical", href: page.canonical },

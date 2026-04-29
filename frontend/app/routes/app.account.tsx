@@ -91,6 +91,7 @@ export function Component() {
   const support = summary?.support ?? {};
   const sessionState = session as SessionStateLike;
   const user = sessionState?.data?.user ?? sessionState?.user ?? null;
+  const profileLoadError = profile?.ok ? null : profile?.error || 'Account profile could not be loaded.';
   const initialDraft = useMemo(
     () => buildInitialDraft(account, billingProfile, profileRecord, user),
     [account, billingProfile, profileRecord, user]
@@ -111,6 +112,12 @@ export function Component() {
   }, [initialDraft]);
 
   useEffect(() => {
+    if (profileLoadError) {
+      setSaveState('error');
+      setSaveMessage(profileLoadError);
+      return;
+    }
+
     const snapshot = serializeDraft(draft);
     if (snapshot === lastSavedSnapshotRef.current) {
       if (saveState !== 'error') {
@@ -161,7 +168,7 @@ export function Component() {
     }, AUTOSAVE_DELAY_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [draft, revalidator]);
+  }, [draft, profileLoadError, revalidator]);
 
   const accountStateLabel =
     saveState === 'saving'
@@ -582,7 +589,7 @@ function KeyValue({ label, value }: { label: string; value: string }) {
 }
 
 const fieldInputClass =
-  'w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-300/40 focus:bg-white/[0.06]';
+  'w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-300/40 focus:bg-white/[0.06] focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950';
 
 function formatDate(value: string | number | null | undefined) {
   if (value == null || value === '') return 'Not set';

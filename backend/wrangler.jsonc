@@ -34,6 +34,14 @@
         "binding": "JOB_QUEUE",
         "queue": "v-flow-domain-jobs"
       }
+    ],
+    "consumers": [
+      {
+        "queue": "v-flow-domain-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3
+      }
     ]
   },
   "durable_objects": {
