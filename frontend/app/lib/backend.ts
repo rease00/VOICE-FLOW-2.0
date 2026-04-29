@@ -118,6 +118,25 @@ export type BackendFetchOptions = Omit<RequestInit, "body" | "headers"> & {
   origin?: string;
 };
 
+function isDevRuntime(): boolean {
+  const viteDev = (typeof import.meta !== "undefined" ? import.meta.env?.DEV : false) as boolean | undefined;
+  const processEnv = (typeof process !== "undefined" ? process.env : undefined) as Record<string, string | undefined> | undefined;
+  return Boolean(viteDev || processEnv?.NODE_ENV === "development");
+}
+
+function canFallbackToLocalOrigin(origin: string): boolean {
+  return origin === DEFAULT_BACKEND_ORIGIN || origin.startsWith("http://127.0.0.1:") || origin.startsWith("http://localhost:");
+}
+
+async function isMissingLocalBindingResponse(response: Response): Promise<boolean> {
+  if (response.status !== 503 && response.status !== 500) {
+    return false;
+  }
+
+  const text = await response.clone().text().catch(() => "");
+  return text.includes("Worker \"voice-flow-cloudflare-backend\" not found");
+}
+
 export async function backendFetch(input: string | URL, options: BackendFetchOptions = {}): Promise<Response> {
   const transport = options.env ? resolveBackendTransport(options.env) : resolveBackendTransport();
   const origin = options.origin || (transport.kind === "binding" ? DEFAULT_BACKEND_ORIGIN : transport.origin);
@@ -139,7 +158,20 @@ export async function backendFetch(input: string | URL, options: BackendFetchOpt
   const target = buildTargetUrl(input, origin);
 
   if (transport.kind === "binding") {
-    return transport.binding.fetch(target, init);
+    try {
+      const response = await transport.binding.fetch(target, init);
+      if (canFallbackToLocalOrigin(origin) && await isMissingLocalBindingResponse(response)) {
+        return fetch(target, init);
+      }
+
+      return response;
+    } catch (error) {
+      if (!isDevRuntime() && !canFallbackToLocalOrigin(origin)) {
+        throw error;
+      }
+
+      return fetch(target, init);
+    }
   }
 
   return fetch(target, init);

@@ -305,7 +305,7 @@ export function ShellRoot({
 }) {
   return (
     <div
-      className="vf-app-layout relative isolate min-h-screen overflow-hidden bg-[color:var(--vf-bg)] text-[color:var(--vf-text)]"
+      className="vf-app-layout relative isolate min-h-dvh overflow-hidden bg-[color:var(--vf-bg)] text-[color:var(--vf-text)]"
       data-vf-app-shell="true"
       data-vf-visual-ready="false"
       data-vf-brand-theme="aurora"
@@ -314,16 +314,22 @@ export function ShellRoot({
     >
       <div className="vf-live-wallpaper" aria-hidden="true" />
       <div className="relative z-[1]">
-        <div className="ap-shell overflow-hidden" aria-label={ariaLabel}>
+        <main className="ap-shell overflow-hidden" aria-label={ariaLabel}>
           <div className="ap-grid" aria-hidden="true" />
           <div className="ap-aurora ap-aurora--a" aria-hidden="true" />
           <div className="ap-aurora ap-aurora--b" aria-hidden="true" />
           <div className="ap-aurora ap-aurora--c" aria-hidden="true" />
           {children}
-        </div>
+        </main>
       </div>
-      <CommandPaletteButton />
-      <section aria-label="Notifications alt+T" tabIndex={-1} aria-live="polite" aria-relevant="additions text" aria-atomic="false" />
+      <div
+        className="vf-screen-reader-only"
+        role="status"
+        tabIndex={-1}
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-atomic="false"
+      />
     </div>
   );
 }
@@ -331,13 +337,13 @@ export function ShellRoot({
 export function AppHandoffView() {
   return (
     <ShellRoot ariaLabel="Opening Studio">
-      <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-8">
+      <div className="relative z-10 flex min-h-[100dvh] items-start justify-center px-4 py-8 sm:items-center">
         <div className="ap-card w-full max-w-lg p-6 sm:p-8">
           <span className="ap-eyebrow">
             <span className="ap-live-dot" style={{ height: 6, width: 6 }} />
             Workspace handoff
           </span>
-          <div className="mt-6 flex items-start justify-between gap-4">
+          <div className="mt-6 flex flex-col items-start justify-between gap-4 sm:flex-row">
             <div className="min-w-0 flex-1">
               <BrandMark />
               <h1 className="mt-4 text-2xl font-black tracking-tight text-white sm:text-3xl">Opening Studio</h1>
@@ -345,7 +351,7 @@ export function AppHandoffView() {
                 We&apos;re checking your session and sending you to the right starting point.
               </p>
             </div>
-            <div className="ap-wave-loader shrink-0 pt-1" aria-hidden="true">
+            <div className="ap-wave-loader self-start pt-1 sm:shrink-0" aria-hidden="true">
               <span className="ap-wave-bar" style={{ height: '55.00000000000001%', animationDelay: '0ms' }} />
               <span className="ap-wave-bar" style={{ height: '82%', animationDelay: '120ms' }} />
               <span className="ap-wave-bar" style={{ height: '48%', animationDelay: '240ms' }} />
@@ -373,9 +379,9 @@ export function AppHandoffView() {
               <p className="ap-status-item__value">Waiting</p>
             </div>
           </div>
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400">
-            <span>Checking session and route</span>
-            <span className="flex items-center gap-1 text-cyan-300">
+          <div className="mt-4 flex flex-col items-start justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400 sm:flex-row sm:items-center">
+            <span className="min-w-0 break-words">Checking session and route</span>
+            <span className="flex shrink-0 items-center gap-1 text-cyan-300">
               Keep this tab open
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -686,7 +692,7 @@ export function ReaderHandoffView({
 
   return (
     <main
-      className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_top,rgba(77,212,255,0.14),transparent_40%),linear-gradient(180deg,#040713_0%,#050816_100%)] px-6 py-8 text-[#e5eefb]"
+      className="grid min-h-dvh place-items-center bg-[radial-gradient(circle_at_top,rgba(77,212,255,0.14),transparent_40%),linear-gradient(180deg,#040713_0%,#050816_100%)] px-6 py-8 text-[#e5eefb]"
     >
       <section className="w-full max-w-[420px] rounded-[20px] border border-white/10 bg-[rgba(10,14,26,0.9)] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
         <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(77,212,255,0.24)] px-3 py-1.5 text-[12px] font-bold uppercase tracking-[0.08em] text-[#4dd4ff]">

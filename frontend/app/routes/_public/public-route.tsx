@@ -159,14 +159,14 @@ export function PublicSnapshotFrame({ src, title, className, frameRef }: PublicS
   }, [iframeRef]);
 
   return (
-    <div className={className ?? "min-h-screen w-full overflow-hidden bg-black"}>
+    <div className={className ?? "vf-public-snapshot-frame"}>
       <iframe
         ref={iframeRef}
         src={src}
         title={title}
         loading="eager"
         referrerPolicy="same-origin"
-        className="block h-screen w-full border-0"
+        className="vf-public-snapshot-frame__iframe"
       />
     </div>
   );

@@ -15,7 +15,8 @@ export default function Root() {
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <link rel="stylesheet" href="/_next/static/css/4e529f7ea76dcb3a.css" data-vf-source-app-styles="true" />
         <Meta />
         <Links />
       </head>
@@ -42,8 +43,9 @@ export function ErrorBoundary() {
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <title>{`${title} | V FLOW AI`}</title>
+        <link rel="stylesheet" href="/_next/static/css/4e529f7ea76dcb3a.css" data-vf-source-app-styles="true" />
         <Meta />
         <Links />
       </head>

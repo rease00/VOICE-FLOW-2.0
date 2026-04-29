@@ -119,7 +119,7 @@ export default function AppLibraryIndexRoute() {
   }, []);
 
   return (
-    <main className="mx-auto flex min-h-[calc(100vh-0px)] w-full max-w-6xl flex-col gap-5 px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
+    <main className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-5 px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
       <header className="rounded-3xl border border-white/10 bg-slate-950/80 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
@@ -181,7 +181,7 @@ export default function AppLibraryIndexRoute() {
                 </span>
               </div>
 
-              <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                 <div>
                   <dt className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Key</dt>
                   <dd className="mt-1 break-words text-slate-200">{item.key}</dd>

@@ -161,7 +161,7 @@ export function Component() {
 
   return (
     <ShellRoot ariaLabel="Billing overview">
-      <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-8">
+      <div className="relative z-10 flex min-h-[100dvh] items-start justify-center px-4 py-8 sm:items-center">
         <div className="ap-card w-full max-w-2xl p-6 sm:p-8">
           <span className="ap-eyebrow">
             <span className="ap-live-dot" style={{ height: 6, width: 6 }} />
@@ -177,10 +177,10 @@ export function Component() {
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-2.5">
-            <div className="rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
+            <div className="min-w-0 break-words rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
               {displayName}
             </div>
-            <div className="rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
+            <div className="min-w-0 break-all rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
               {email}
             </div>
             <div className="rounded-full border border-emerald-300/20 bg-emerald-500/10 px-3 py-2 text-[11px] font-semibold text-emerald-100">
@@ -191,11 +191,11 @@ export function Component() {
             <div className="rounded-2xl border border-white/10 bg-slate-950/48 px-3 py-3">
               <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Portal</div>
               <div className="mt-1 text-lg font-semibold text-white">{portalEnabled ? 'Enabled' : 'Pending'}</div>
-              <div className="mt-1 text-xs leading-5 text-slate-400">{portalUrl}</div>
+              <div className="mt-1 break-all text-xs leading-5 text-slate-400">{portalUrl}</div>
             </div>
             <div className="rounded-2xl border border-white/10 bg-slate-950/48 px-3 py-3">
               <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Support</div>
-              <div className="mt-1 text-lg font-semibold text-white">{supportEmail}</div>
+              <div className="mt-1 break-all text-lg font-semibold text-white">{supportEmail}</div>
               <div className="mt-1 text-xs leading-5 text-slate-400">{supportTopic}</div>
             </div>
           </div>
@@ -204,15 +204,15 @@ export function Component() {
             <StatCard label="VF" value={String(wallet?.vfBalance ?? 0)} />
             <StatCard label="VC" value={String(wallet?.vcSpendableBalance ?? wallet?.vcPaidBalance ?? 0)} />
           </div>
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400">
-            <span>
+          <div className="mt-4 flex flex-col items-start justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400 sm:flex-row sm:items-center">
+            <span className="min-w-0 break-words">
               {portalEnabled ? 'Portal is ready' : 'Portal is pending'}
               {' - '}
               {contactName}
               {' - '}
               {companyName}
             </span>
-            <span className="flex items-center gap-1 text-cyan-300">
+            <span className="flex shrink-0 items-center gap-1 text-cyan-300">
               {country}
               <svg
                 xmlns="http://www.w3.org/2000/svg"

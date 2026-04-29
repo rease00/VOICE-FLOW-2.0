@@ -75,6 +75,7 @@ type BillingProfileDraft = {
 type ProfileRecord = NonNullable<NonNullable<AccountLoaderData['profile']>['data']>['profile'];
 
 const AUTOSAVE_DELAY_MS = 650;
+const EMPTY_LOADER_RECORD = Object.freeze({}) as Record<string, never>;
 
 export default function AppAccountRoute() {
   return <Component />;
@@ -84,11 +85,11 @@ export function Component() {
   const { session, billing, profile } = useRouteData<AccountLoaderData>();
   const summary = billing?.data?.summary ?? null;
   const profileRecord = profile?.data?.profile ?? null;
-  const account = summary?.account ?? {};
-  const billingProfile = summary?.billingProfile ?? {};
-  const subscription = summary?.subscription ?? {};
-  const portal = summary?.portal ?? {};
-  const support = summary?.support ?? {};
+  const account = summary?.account ?? EMPTY_LOADER_RECORD;
+  const billingProfile = summary?.billingProfile ?? EMPTY_LOADER_RECORD;
+  const subscription = summary?.subscription ?? EMPTY_LOADER_RECORD;
+  const portal = summary?.portal ?? EMPTY_LOADER_RECORD;
+  const support = summary?.support ?? EMPTY_LOADER_RECORD;
   const sessionState = session as SessionStateLike;
   const user = sessionState?.data?.user ?? sessionState?.user ?? null;
   const profileLoadError = profile?.ok ? null : profile?.error || 'Account profile could not be loaded.';
@@ -200,7 +201,7 @@ export function Component() {
 
   return (
     <ShellRoot ariaLabel="Account overview">
-      <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-8">
+      <div className="relative z-10 flex min-h-[100dvh] items-start justify-center px-4 py-8 sm:items-center">
         <div className="ap-card w-full max-w-2xl p-6 sm:p-8">
           <span className="ap-eyebrow">
             <span className="ap-live-dot" style={{ height: 6, width: 6 }} />
@@ -216,10 +217,10 @@ export function Component() {
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-2.5">
-            <div className="rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
+            <div className="min-w-0 break-words rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
               {displayName}
             </div>
-            <div className="rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
+            <div className="min-w-0 break-all rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-100">
               {email}
             </div>
             <div className="rounded-full border border-emerald-300/20 bg-emerald-500/10 px-3 py-2 text-[11px] font-semibold text-emerald-100">
@@ -382,9 +383,9 @@ export function Component() {
               </dl>
             </section>
           </div>
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400">
-            <span>Checking session and billing - {saveMessage}</span>
-            <span className="flex items-center gap-1 text-cyan-300">
+          <div className="mt-4 flex flex-col items-start justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-slate-400 sm:flex-row sm:items-center">
+            <span className="min-w-0 break-words">Checking session and billing - {saveMessage}</span>
+            <span className="flex shrink-0 items-center gap-1 text-cyan-300">
               Keep this tab open
               <svg
                 xmlns="http://www.w3.org/2000/svg"

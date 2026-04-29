@@ -130,7 +130,7 @@ export default function AdminRoute() {
 }
 
 const pageStyle: React.CSSProperties = {
-  minHeight: '100vh',
+  minHeight: '100dvh',
   padding: '32px 20px',
   background: 'linear-gradient(180deg, #050816 0%, #0a1024 100%)',
   color: '#f5f7ff',
@@ -145,6 +145,7 @@ const shellStyle: React.CSSProperties = {
 
 const heroStyle: React.CSSProperties = {
   display: 'flex',
+  flexWrap: 'wrap',
   justifyContent: 'space-between',
   gap: 20,
   alignItems: 'end',
@@ -178,7 +179,9 @@ const subtitleStyle: React.CSSProperties = {
 };
 
 const statStyle: React.CSSProperties = {
-  minWidth: 132,
+  flex: '1 1 132px',
+  maxWidth: 180,
+  minWidth: 0,
   padding: '18px 20px',
   borderRadius: 20,
   background: 'linear-gradient(180deg, rgba(34,197,94,0.14), rgba(34,197,94,0.06))',
@@ -257,6 +260,7 @@ const secondaryButtonStyle: React.CSSProperties = {
 
 const sectionHeaderStyle: React.CSSProperties = {
   display: 'flex',
+  flexWrap: 'wrap',
   justifyContent: 'space-between',
   gap: 16,
   alignItems: 'center',

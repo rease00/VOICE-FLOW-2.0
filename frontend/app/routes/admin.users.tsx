@@ -167,7 +167,7 @@ const formatDate = (value: unknown) => {
 };
 
 const pageStyle: React.CSSProperties = {
-  minHeight: '100vh',
+  minHeight: '100dvh',
   padding: '32px 20px',
   background: 'linear-gradient(180deg, #050816 0%, #0a1024 100%)',
   color: '#f5f7ff',
@@ -182,6 +182,7 @@ const shellStyle: React.CSSProperties = {
 
 const heroStyle: React.CSSProperties = {
   display: 'flex',
+  flexWrap: 'wrap',
   justifyContent: 'space-between',
   gap: 20,
   alignItems: 'end',
@@ -256,7 +257,7 @@ const bodySubtleStyle: React.CSSProperties = {
 const listStyle: React.CSSProperties = {
   display: 'grid',
   gap: 16,
-  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))',
 };
 
 const cardStyle: React.CSSProperties = {
@@ -270,6 +271,7 @@ const cardStyle: React.CSSProperties = {
 
 const cardHeaderStyle: React.CSSProperties = {
   display: 'flex',
+  flexWrap: 'wrap',
   justifyContent: 'space-between',
   gap: 16,
   alignItems: 'start',
@@ -302,7 +304,7 @@ const statusPillStyle: React.CSSProperties = {
 const metaGridStyle: React.CSSProperties = {
   display: 'grid',
   gap: 12,
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
   margin: 0,
 };
 
