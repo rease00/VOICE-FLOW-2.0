@@ -19,6 +19,25 @@ function getUserId(c, deps) {
   return normalizeUserId(resolveActorId(c, deps));
 }
 
+function normalizeBillingReturnUrl(value) {
+  const fallback = '/app/billing';
+  const text = String(value || '').trim();
+  if (!text) {
+    return fallback;
+  }
+
+  if (text.startsWith('/')) {
+    return text.startsWith('/app/') ? text : fallback;
+  }
+
+  try {
+    const parsed = new URL(text);
+    return parsed.pathname.startsWith('/app/') ? `${parsed.pathname}${parsed.search}${parsed.hash}` : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function readBillingSummary(db, userId) {
   const row = await readPayloadRecord(db, TABLES.billingAccounts, 'user_id', userId);
   const entitlements = await readAccountEntitlements(db, userId);
@@ -76,7 +95,7 @@ async function handleBillingPortalSessionCreate(c, deps = {}) {
   } catch (error) {
     return errorResponse(c, 400, 'invalid_json', error?.message || 'Request body must be valid JSON.');
   }
-  const returnUrl = String(body.returnUrl || '').trim() || '/app/billing';
+  const returnUrl = normalizeBillingReturnUrl(body.returnUrl);
   const sessionId = `portal_${userId}_${Date.now().toString(36)}`;
   const url = `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}portalSession=${encodeURIComponent(sessionId)}`;
   const payload = {
@@ -159,6 +178,7 @@ export {
   handleBillingSummaryRead,
   handleBillingSubscriptionCancel,
   handleBillingSubscriptionResume,
+  normalizeBillingReturnUrl,
   registerBillingRoutes,
   readBillingSummary,
   writeBillingSummary,

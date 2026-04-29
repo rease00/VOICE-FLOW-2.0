@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "react-router build && node scripts/sync-public-snapshots.mjs",
-    "cf-typegen": "wrangler types",
-    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types --config wrangler.jsonc",
+    "deploy": "npm run build && wrangler deploy --config build/server/wrangler.json",
     "dev": "react-router dev",
     "typecheck": "npm run cf-typegen && react-router typegen && tsc -b"
   },

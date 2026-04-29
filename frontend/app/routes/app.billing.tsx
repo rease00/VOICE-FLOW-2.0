@@ -157,6 +157,10 @@ export function Component() {
   const cancelAtPeriodEnd = Boolean(subscription?.cancelAtPeriodEnd);
   const canResume = cancelAtPeriodEnd || subscriptionStatus.toLowerCase() === 'cancelled';
   const isSubmitting = navigation.state === 'submitting';
+  const pendingIntent = isSubmitting ? String(navigation.formData?.get('intent') || '') : '';
+  const isPortalSubmitting = pendingIntent === 'portal-session';
+  const isCancelSubmitting = pendingIntent === 'subscription-cancel';
+  const isResumeSubmitting = pendingIntent === 'subscription-resume';
   const statusMessage = actionData?.message || '';
 
   return (
@@ -237,19 +241,19 @@ export function Component() {
             <div className="flex flex-wrap gap-2">
               <BillingFormButton
                 intent="portal-session"
-                label="Open portal session"
+                label={isPortalSubmitting ? 'Opening portal session...' : 'Open portal session'}
                 disabled={isSubmitting}
                 className="border border-cyan-300/20 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/15"
               />
               <BillingFormButton
                 intent="subscription-cancel"
-                label={cancelAtPeriodEnd ? 'Cancellation pending' : 'Cancel subscription'}
+                label={isCancelSubmitting ? 'Cancelling...' : cancelAtPeriodEnd ? 'Cancellation pending' : 'Cancel subscription'}
                 disabled={isSubmitting || subscriptionStatus.toLowerCase() === 'cancelled'}
                 className="border border-rose-300/20 bg-rose-500/10 text-rose-100 hover:bg-rose-500/15"
               />
               <BillingFormButton
                 intent="subscription-resume"
-                label={canResume ? 'Resume subscription' : 'Resume unavailable'}
+                label={isResumeSubmitting ? 'Resuming...' : canResume ? 'Resume subscription' : 'Resume unavailable'}
                 disabled={isSubmitting || !canResume}
                 className="border border-emerald-300/20 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/15"
               />
@@ -315,6 +319,9 @@ function safeRedirectTarget(url: string) {
 
   try {
     const parsed = new URL(text, 'http://localhost');
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
     if (parsed.origin === 'http://localhost' && parsed.pathname.startsWith('/')) {
       return `${parsed.pathname}${parsed.search}${parsed.hash}`;
     }

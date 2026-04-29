@@ -20,7 +20,7 @@ export default function Root() {
         <Meta />
         <Links />
       </head>
-      <body>
+      <body className="min-h-dvh bg-[color:var(--vf-bg,#020617)] text-[color:var(--vf-text,#e5eefb)] antialiased">
         <Outlet />
         <ScrollRestoration />
         <Scripts />
@@ -49,7 +49,7 @@ export function ErrorBoundary() {
         <Meta />
         <Links />
       </head>
-      <body>
+      <body className="min-h-dvh bg-[color:var(--vf-bg,#020617)] text-[color:var(--vf-text,#e5eefb)] antialiased">
         <main className="min-h-dvh bg-slate-950 px-6 py-16 text-slate-100">
           <section className="mx-auto max-w-xl rounded-3xl border border-white/10 bg-white/[0.04] p-8 shadow-2xl shadow-black/30">
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">Error {status}</p>

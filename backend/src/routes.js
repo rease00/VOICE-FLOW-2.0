@@ -68,6 +68,7 @@ import {
   writeRole,
 } from './admin.js';
 import {
+  normalizeBillingReturnUrl,
   readBillingSummary,
   writeBillingSummary,
 } from './billing.js';
@@ -88,6 +89,7 @@ const rateLimitBuckets = new Map();
 
 const RATE_LIMITS = Object.freeze({
   auth: { limit: 20, windowMs: 10 * 60 * 1000 },
+  billing: { limit: 30, windowMs: 60 * 1000 },
   jobs: { limit: 60, windowMs: 60 * 1000 },
   tts: { limit: 30, windowMs: 60 * 1000 },
 });
@@ -835,6 +837,11 @@ function createBillingRoutes(deps = {}) {
   });
 
   app.post('/portal-session', async (c) => {
+    const limited = enforceRateLimit(c, 'billing');
+    if (limited) {
+      return limited;
+    }
+
     const db = getDb(c, deps);
     const userId = getRequestUserId(c, deps);
     if (!userId) {
@@ -846,7 +853,7 @@ function createBillingRoutes(deps = {}) {
       return buildAuthFailure(c, 'invalid_json', body.__error, 400);
     }
 
-    const returnUrl = String(body.returnUrl || '/app/billing').trim() || '/app/billing';
+    const returnUrl = normalizeBillingReturnUrl(body.returnUrl);
     const sessionId = `portal_${userId}_${Date.now().toString(36)}`;
     const url = `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}portalSession=${encodeURIComponent(sessionId)}`;
     const payload = {
@@ -872,6 +879,11 @@ function createBillingRoutes(deps = {}) {
   });
 
   app.post('/subscription/cancel', async (c) => {
+    const limited = enforceRateLimit(c, 'billing');
+    if (limited) {
+      return limited;
+    }
+
     const db = getDb(c, deps);
     const userId = getRequestUserId(c, deps);
     if (!userId) {
@@ -909,6 +921,11 @@ function createBillingRoutes(deps = {}) {
   });
 
   app.post('/subscription/resume', async (c) => {
+    const limited = enforceRateLimit(c, 'billing');
+    if (limited) {
+      return limited;
+    }
+
     const db = getDb(c, deps);
     const userId = getRequestUserId(c, deps);
     if (!userId) {

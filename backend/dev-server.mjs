@@ -13,9 +13,15 @@ import {
 
 const port = Number(process.env.PORT || 8787);
 
+const stripJsonComments = (value) =>
+  value
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
 const readWranglerVars = async () => {
   try {
-    const config = JSON.parse(await readFile(new URL('./wrangler.jsonc', import.meta.url), 'utf8'));
+    const raw = await readFile(new URL('./wrangler.jsonc', import.meta.url), 'utf8');
+    const config = JSON.parse(stripJsonComments(raw));
     return config.vars || {};
   } catch {
     return {};

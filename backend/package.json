@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node dev-server.mjs",
-    "dev:worker": "wrangler dev",
+    "start": "node dev-server.mjs",
+    "dev:worker": "wrangler dev --config wrangler.jsonc",
+    "deploy": "wrangler deploy --config wrangler.jsonc",
     "check": "node --check src/index.js && node --check src/env.js && node --check src/routes.js && node --check dev-server.mjs",
     "test": "node --test tests/contract.test.mjs"
   },

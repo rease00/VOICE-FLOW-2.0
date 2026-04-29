@@ -335,6 +335,27 @@ test('health route contract is stable', async () => {
   }
 });
 
+test('ops/contracts exposes the canonical Cloudflare route inventory', async () => {
+  const { pathname, response } = await requestFirstMatch(backend.app, ['/api/v1/ops/contracts'], {
+    method: 'GET',
+  });
+
+  assert.equal(pathname, '/api/v1/ops/contracts');
+
+  const payload = await expectJsonResponse(response, 200);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.routes, {
+    auth: ['/api/auth', '/auth'],
+    account: '/api/v1/account',
+    billing: '/api/v1/billing',
+    admin: '/api/v1/admin',
+    storage: ['/api/v1/storage', '/api/v1/library/reader'],
+    jobs: ['/api/v1/library/audio-novel', '/api/v1/studio/tts/novel'],
+    tts: ['/api/v1/studio/tts', '/api/v1/tts'],
+    ops: '/api/v1/ops',
+  });
+});
+
 test('normalizeEnv preserves Worker vars and secrets while normalizing bindings', async () => {
   const { normalizeEnv } = await envModulePromise;
   const rawEnv = {
@@ -511,6 +532,21 @@ test('billing portal session contract is stable', async () => {
   const url = new URL(payload.url, 'http://localhost');
   assert.equal(url.searchParams.has('portalSession'), true);
   assert.equal(url.pathname, '/app/billing');
+});
+
+test('billing portal session normalizes external return urls back to the app shell', async () => {
+  const { response } = await requestFirstMatch(backend.app, billingPortalSessionCandidates, {
+    method: 'POST',
+    headers: withDevUid({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ returnUrl: 'https://evil.example/steal?x=1' }),
+  });
+
+  const payload = await expectJsonResponse(response, 200);
+  const url = new URL(payload.url, 'http://localhost');
+  assert.equal(url.pathname, '/app/billing');
+  assert.equal(url.origin, 'http://localhost');
+  assert.equal(url.searchParams.has('portalSession'), true);
+  assert.equal(url.searchParams.get('x'), null);
 });
 
 test('billing portal session rejects malformed JSON with a stable error shape', async () => {

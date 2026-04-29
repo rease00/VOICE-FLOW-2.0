@@ -6,6 +6,7 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  // Keep only non-secret bootstrap defaults here; rotate real credentials with `wrangler secret put`.
   "vars": {
     "BOOTSTRAP_SEED_SOURCE": "wrangler-canonical-admins",
     "BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH": "pbkdf2_sha256$100000$dmYtYWRtaW4tc2VlZC12MQ$aR2Q9Us6DOkajGyGDYSbTMppp2Q87ApZzwVuJ5ggTr0",

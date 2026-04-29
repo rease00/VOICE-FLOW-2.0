@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { LoaderFunctionArgs } from 'react-router';
-import { Link, useLoaderData } from 'react-router';
+import { Link, useLoaderData, useLocation } from 'react-router';
 import { resolveReaderHandoffTarget } from './_shared';
 import { backendFetch } from '../lib/backend';
 
@@ -111,12 +111,13 @@ export async function loader({ request, context }: LoaderFunctionArgs): Promise<
 
 export default function AppLibraryIndexRoute() {
   const data = useLoaderData() as LoaderData;
+  const { search } = useLocation();
   const [continueTarget, setContinueTarget] = useState<string | null>(null);
 
   useEffect(() => {
-    const resolution = resolveReaderHandoffTarget('');
+    const resolution = resolveReaderHandoffTarget(search);
     setContinueTarget(resolution.bookId ? resolution.targetPath : null);
-  }, []);
+  }, [search]);
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-5 px-4 py-8 text-slate-100 sm:px-6 lg:px-8">

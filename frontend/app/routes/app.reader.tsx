@@ -1,5 +1,7 @@
+import { useOutlet } from 'react-router';
 import { ReaderHandoffView } from './_shared';
 
 export default function AppReaderRoute() {
-  return <ReaderHandoffView />;
+  const outlet = useOutlet();
+  return outlet ?? <ReaderHandoffView />;
 }

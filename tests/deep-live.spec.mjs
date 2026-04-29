@@ -32,8 +32,26 @@ test('backend health, seeded admin login, session read, and admin gate are live'
 
   const contracts = await expectJson(await request.get(backendUrl('/api/v1/ops/contracts')));
   expect(contracts.routes.auth).toContain('/api/auth');
+  expect(contracts.routes.account).toBe('/api/v1/account');
+  expect(contracts.routes.billing).toBe('/api/v1/billing');
+  expect(contracts.routes.admin).toBe('/api/v1/admin');
   expect(contracts.routes.storage).toContain('/api/v1/storage');
   expect(contracts.routes.tts).toContain('/api/v1/studio/tts');
+  const bootstrap = await expectJson(await request.get(backendUrl('/api/v1/account/bootstrap'), {
+    headers: devHeaders(),
+  }));
+  expect(bootstrap.routes).toMatchObject({
+    landing: '/',
+    login: '/app/login',
+    studio: '/app/studio',
+    admin: '/app/admin',
+    account: '/app/account',
+    billing: '/app/billing',
+    reader: '/app/reader',
+    library: '/app/library',
+    legal: '/legal/terms',
+    onboarding: '/app/onboarding',
+  });
 
   const loginResponse = await request.post(backendUrl('/api/auth/session'), {
     data: {

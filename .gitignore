@@ -1,7 +1,9 @@
 node_modules/
 .DS_Store
 *.log
+.wrangler/
 .playwright-mcp/
+qa-*.png
 test-results/
 backend/.wrangler/
 frontend/.wrangler/

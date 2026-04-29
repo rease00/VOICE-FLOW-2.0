@@ -104,6 +104,17 @@ export default function AdminUsersRoute() {
             <h2 style={sectionTitleStyle}>Admin users unavailable</h2>
             <p style={bodyStyle}>{data.error?.message || 'A valid admin session is required.'}</p>
             <p style={bodySubtleStyle}>Status {data.error?.status || 401}{data.error?.code ? `, code ${data.error.code}` : ''}</p>
+            <div style={actionsRowStyle}>
+              <Link to="/app/login?mode=login&next=%2Fapp%2Fadmin" style={primaryButtonStyle}>
+                Sign in
+              </Link>
+              <Link to="/app/admin" style={secondaryButtonStyle}>
+                Back to admin
+              </Link>
+              <Link to="/app/library" style={secondaryButtonStyle}>
+                Back to library
+              </Link>
+            </div>
           </section>
         ) : data.items.length === 0 ? (
           <section style={panelStyle}>
@@ -252,6 +263,39 @@ const bodySubtleStyle: React.CSSProperties = {
   margin: '12px 0 0',
   color: 'rgba(148,163,184,0.9)',
   fontSize: 13,
+};
+
+const actionsRowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 10,
+  flexWrap: 'wrap',
+  marginTop: 18,
+};
+
+const primaryButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minHeight: 42,
+  padding: '0 14px',
+  borderRadius: 999,
+  background: 'linear-gradient(90deg, #22d3ee 0%, #4f7cff 100%)',
+  color: '#fff',
+  textDecoration: 'none',
+  fontWeight: 700,
+};
+
+const secondaryButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minHeight: 42,
+  padding: '0 14px',
+  borderRadius: 999,
+  border: '1px solid rgba(255,255,255,0.1)',
+  color: '#e2e8f0',
+  textDecoration: 'none',
+  fontWeight: 700,
 };
 
 const listStyle: React.CSSProperties = {

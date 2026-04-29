@@ -409,10 +409,9 @@ export function AppHandoffView() {
 
 export function CommandPaletteButton() {
   return (
-    <button
-      aria-label="Open command palette (Ctrl+K)"
-      className="fixed right-4 top-3 z-[9985] hidden items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-[var(--vf-color-text-muted)] backdrop-blur-sm transition-all hover:border-white/20 hover:text-[var(--vf-color-text-primary)] lg:flex"
-      type="button"
+    <div
+      className="fixed right-4 top-3 z-[9985] hidden items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-[var(--vf-color-text-muted)] backdrop-blur-sm lg:flex"
+      aria-hidden="true"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -432,7 +431,7 @@ export function CommandPaletteButton() {
       </svg>
       <span>Search...</span>
       <kbd className="inline-flex h-5 items-center rounded border border-white/15 bg-white/8 px-1.5 font-mono text-[10px] text-[var(--vf-color-text-muted)]">Ctrl+K</kbd>
-    </button>
+    </div>
   );
 }
 
@@ -672,15 +671,22 @@ export function resolveReaderHandoffTarget(search = '', fallbackPath = READER_HI
 
 export function ReaderHandoffView({
   fallbackPath = READER_HIDDEN_FALLBACK_PATH,
+  targetPath,
   heading = 'Loading reader',
   statusLabel = 'Reader handoff',
 }: {
   fallbackPath?: string;
+  targetPath?: string | null;
   heading?: string;
   statusLabel?: string;
 }) {
   useEffect(() => {
-    const resolution = resolveReaderHandoffTarget(window.location.search, fallbackPath);
+    const resolution = targetPath
+      ? {
+          bookId: null,
+          targetPath,
+        }
+      : resolveReaderHandoffTarget(window.location.search, fallbackPath);
     if (window.location.pathname === resolution.targetPath) {
       return;
     }
@@ -688,7 +694,7 @@ export function ReaderHandoffView({
     window.setTimeout(() => {
       window.location.replace(resolution.targetPath);
     }, 0);
-  }, [fallbackPath]);
+  }, [fallbackPath, targetPath]);
 
   return (
     <main

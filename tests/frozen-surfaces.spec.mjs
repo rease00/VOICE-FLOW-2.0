@@ -127,6 +127,7 @@ const routeInventory = [
   { route: '/legal/copyright', kind: 'page', assertions: legalSnapshotAssertions('Copyright and IP Notice', 'Copyright') },
   { route: '/app/library', kind: 'page', assertions: {} },
   { route: '/app/reader', kind: 'page', assertions: {} },
+  { route: '/app/reader/demo-book', kind: 'stub', assertions: { initialContains: ['Reader handoff', 'Loading reader', 'Checking local storage...'], redirectPath: '/app/library/demo-book/read' } },
   { route: '/app/library/demo-book/read', kind: 'page', assertions: {} },
   {
     route: '/app/account',
