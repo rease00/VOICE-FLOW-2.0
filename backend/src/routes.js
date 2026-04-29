@@ -173,6 +173,39 @@ async function requireAdminSession(c, deps = {}) {
   };
 }
 
+async function attachSessionActor(c, deps = {}) {
+  if (c && typeof c.get === 'function') {
+    const existing = c.get('userId') || c.get('actorId');
+    if (existing) {
+      return null;
+    }
+  }
+
+  const token = readSessionToken(c);
+  const db = getDb(c, deps);
+  if (!token || !db) {
+    return null;
+  }
+
+  const session = await authenticateSessionRequest(db, {
+    token,
+    touch: false,
+    ipAddress: c.req.header('cf-connecting-ip') || null,
+    userAgent: c.req.header('user-agent') || null,
+  });
+
+  if (!session.ok) {
+    return null;
+  }
+
+  c.set('userId', session.user?.id || null);
+  c.set('actorId', session.user?.id || null);
+  c.set('sessionUser', session.user);
+  c.set('sessionRoles', session.roles);
+
+  return session;
+}
+
 function readSessionToken(c) {
   const authHeader = String(c.req.header('authorization') || '').trim();
   if (authHeader.toLowerCase().startsWith('bearer ')) {
@@ -297,9 +330,14 @@ function createAuthRoutes(deps = {}) {
       return buildAuthFailure(c, 'auth_store_unavailable', 'D1 binding is required.', 503);
     }
 
+    const adminSession = await requireAdminSession(c, deps);
+    if (!adminSession.ok) {
+      return adminSession.response;
+    }
+
     const summary = await importBootstrapConfig(db, seed, {
       source: body.source || 'request',
-      assignedByUserId: getRequestUserId(c, deps),
+      assignedByUserId: adminSession.session.user?.id || getRequestUserId(c, deps),
       env: getEnv(c, deps),
       now: Date.now(),
     });
@@ -365,6 +403,11 @@ function createAuthRoutes(deps = {}) {
 
 function createAccountRoutes(deps = {}) {
   const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    await attachSessionActor(c, deps);
+    return next();
+  });
 
   const buildBootstrapPayload = async (c) => {
     const db = getDb(c, deps);
@@ -611,6 +654,11 @@ function createAccountRoutes(deps = {}) {
 
 function createBillingRoutes(deps = {}) {
   const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    await attachSessionActor(c, deps);
+    return next();
+  });
 
   app.get('/account-summary', async (c) => {
     const db = getDb(c, deps);

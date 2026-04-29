@@ -107,10 +107,57 @@ function normalizeUserId(input) {
   return value || null;
 }
 
+function isTruthyFlag(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+function readDevHeaderFlag(env) {
+  if (!env || typeof env !== 'object') {
+    return undefined;
+  }
+
+  for (const key of ['VF_DEV_UID_HEADER_ENABLED', 'NEXT_PUBLIC_ENABLE_DEV_UID_HEADER', 'VITE_ENABLE_DEV_UID_HEADER']) {
+    if (Object.prototype.hasOwnProperty.call(env, key)) {
+      return env[key];
+    }
+  }
+
+  return undefined;
+}
+
+function isLocalRequest(c) {
+  try {
+    const hostname = new URL(c?.req?.url || '').hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function areDevIdentityHeadersEnabled(c, deps = {}) {
+  const explicitRuntimeFlag = readDevHeaderFlag(c?.env) ?? readDevHeaderFlag(deps.env);
+  if (explicitRuntimeFlag !== undefined) {
+    return isTruthyFlag(explicitRuntimeFlag);
+  }
+
+  const processFlag = readDevHeaderFlag(globalThis?.process?.env);
+  if (processFlag !== undefined) {
+    return isTruthyFlag(processFlag);
+  }
+
+  return isLocalRequest(c);
+}
+
 function resolveActorId(c, deps = {}) {
   if (typeof deps.getUserId === 'function') {
     const resolved = deps.getUserId(c);
     if (resolved) return normalizeUserId(resolved);
+  }
+
+  if (c && typeof c.get === 'function') {
+    const stored = normalizeUserId(c.get('userId') || c.get('actorId') || c.get('uid'));
+    if (stored) return stored;
   }
 
   const headerSources = [
@@ -121,16 +168,11 @@ function resolveActorId(c, deps = {}) {
   ];
 
   const req = c?.req;
-  if (req && typeof req.header === 'function') {
+  if (areDevIdentityHeadersEnabled(c, deps) && req && typeof req.header === 'function') {
     for (const header of headerSources) {
       const value = normalizeUserId(req.header(header));
       if (value) return value;
     }
-  }
-
-  if (c && typeof c.get === 'function') {
-    const stored = normalizeUserId(c.get('userId') || c.get('actorId') || c.get('uid'));
-    if (stored) return stored;
   }
 
   return null;

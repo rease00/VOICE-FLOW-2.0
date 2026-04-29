@@ -4,7 +4,7 @@ const BACKEND_URL = process.env.PLAYWRIGHT_BACKEND_URL || 'http://127.0.0.1:8787
 const SNAPSHOT_URL = process.env.PLAYWRIGHT_SNAPSHOT_URL || 'http://127.0.0.1:3001';
 const DEV_UID = 'deep_live_user';
 const ADMIN_EMAIL = 'admin1@vflowai.com';
-const ADMIN_PASSWORD = 'rease1999';
+const ADMIN_PASSWORD = 'rease1999.';
 
 const backendUrl = (path) => `${BACKEND_URL}${path}`;
 const snapshotUrl = (path) => `${SNAPSHOT_URL}${path}`;

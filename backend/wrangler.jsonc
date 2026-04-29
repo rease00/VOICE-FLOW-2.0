@@ -8,7 +8,7 @@
   ],
   "vars": {
     "BOOTSTRAP_SEED_SOURCE": "wrangler-canonical-admins",
-    "BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH": "pbkdf2_sha256$100000$Pm4y5avQB7IDdLEbjMLhUQ$IQ1TKWZHEHRWgr2Rp7DApljIKNmIG0JvhsiTF56kEW8",
+    "BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH": "pbkdf2_sha256$100000$dmYtYWRtaW4tc2VlZC12MQ$aR2Q9Us6DOkajGyGDYSbTMppp2Q87ApZzwVuJ5ggTr0",
     "BOOTSTRAP_ADMIN_USERS_JSON": "{\"admins\":[{\"email\":\"admin1@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin2@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin3@vflowai.com\",\"roles\":[\"admin\"]},{\"email\":\"admin4@vflowai.com\",\"roles\":[\"admin\"]}]}"
   },
   "assets": {

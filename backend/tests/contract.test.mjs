@@ -38,6 +38,9 @@ const routesModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src
 const sessionsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/sessions.js')).href);
 const ttsModulePromise = import(pathToFileURL(path.resolve(BACKEND_ROOT, 'src/tts.js')).href);
 
+const CANONICAL_ADMIN_PASSWORD = 'rease1999.';
+const CANONICAL_ADMIN_PASSWORD_HASH = 'pbkdf2_sha256$100000$dmYtYWRtaW4tc2VlZC12MQ$aR2Q9Us6DOkajGyGDYSbTMppp2Q87ApZzwVuJ5ggTr0';
+
 const toAbsolutePath = (candidate) => (
   path.isAbsolute(candidate) ? candidate : path.resolve(REPO_ROOT, candidate)
 );
@@ -711,7 +714,7 @@ test('admin routes require a signed-in admin session', async () => {
 
 test('bootstrap password hashing tolerates null policy input', async () => {
   const { createPasswordHash } = await authModulePromise;
-  const hash = await createPasswordHash('rease1999', null);
+  const hash = await createPasswordHash(CANONICAL_ADMIN_PASSWORD, null);
   assert.match(hash, /^pbkdf2_sha256\$/);
 });
 
@@ -719,7 +722,7 @@ test('canonical admin bootstrap seed resolves the shared password and four admin
   const { loadBootstrapSeedConfig } = await bootstrapModulePromise;
   const seed = loadBootstrapSeedConfig({
     BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
-    BOOTSTRAP_ADMIN_SHARED_PASSWORD: 'rease1999',
+    BOOTSTRAP_ADMIN_SHARED_PASSWORD: CANONICAL_ADMIN_PASSWORD,
     BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
       admins: [
         { email: 'admin1@vflowai.com', roles: ['admin'] },
@@ -741,8 +744,130 @@ test('canonical admin bootstrap seed resolves the shared password and four admin
       'admin4@vflowai.com',
     ]
   );
-  assert.ok(seed.admins.every((admin) => admin.password === 'rease1999'));
+  assert.ok(seed.admins.every((admin) => admin.password === CANONICAL_ADMIN_PASSWORD));
   assert.ok(seed.admins.every((admin) => Array.isArray(admin.roles) && admin.roles.includes('admin')));
+});
+
+test('auth bootstrap import requires a signed-in admin session when seed data is supplied', async () => {
+  const { createMemoryD1Database } = await devBindingsModulePromise;
+  const { bootstrapAuthStorage } = await bootstrapModulePromise;
+  const { createBackendApp } = await routesModulePromise;
+  const db = createMemoryD1Database();
+
+  await db.exec(await readFile(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
+  await bootstrapAuthStorage(db, {
+    env: {
+      BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
+      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: CANONICAL_ADMIN_PASSWORD_HASH,
+      BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
+        admins: [
+          { email: 'admin1@vflowai.com', roles: ['admin'] },
+        ],
+      }),
+    },
+    source: 'test-bootstrap-lock',
+    now: Date.now(),
+  });
+
+  const app = createBackendApp({ db });
+  const seedBody = JSON.stringify({
+    seed: {
+      admins: [
+        { email: 'new-admin@vflowai.com', roles: ['admin'] },
+      ],
+    },
+  });
+  const blocked = await callApp(app, 'POST', '/api/auth/session/bootstrap', {
+    headers: { 'content-type': 'application/json' },
+    body: seedBody,
+  });
+  const blockedPayload = await expectJsonResponse(blocked, 401);
+  assert.equal(blockedPayload.error.code, 'session_required');
+
+  const login = await callApp(app, 'POST', '/api/auth/session', {
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: 'admin1@vflowai.com',
+      password: CANONICAL_ADMIN_PASSWORD,
+    }),
+  });
+  const loginPayload = await expectJsonResponse(login, 200);
+  assert.equal(loginPayload.ok, true);
+  assert.equal('password_hash' in loginPayload.user, false);
+  assert.equal('token_hash' in loginPayload.session, false);
+
+  const allowed = await callApp(app, 'POST', '/api/auth/session/bootstrap', {
+    headers: {
+      'content-type': 'application/json',
+      cookie: login.headers.get('set-cookie'),
+    },
+    body: seedBody,
+  });
+  const allowedPayload = await expectJsonResponse(allowed, 200);
+  assert.equal(allowedPayload.ok, true);
+  assert.equal(allowedPayload.applied, true);
+});
+
+test('production account routes ignore spoofed user headers and accept the signed-in session actor', async () => {
+  const { createMemoryD1Database } = await devBindingsModulePromise;
+  const { bootstrapAuthStorage } = await bootstrapModulePromise;
+  const { createBackendApp } = await routesModulePromise;
+  const db = createMemoryD1Database();
+
+  await db.exec(await readFile(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
+  await bootstrapAuthStorage(db, {
+    env: {
+      BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
+      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: CANONICAL_ADMIN_PASSWORD_HASH,
+      BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
+        admins: [
+          { email: 'admin1@vflowai.com', roles: ['admin'] },
+        ],
+      }),
+    },
+    source: 'test-account-session-actor',
+    now: Date.now(),
+  });
+
+  const app = createBackendApp({
+    db,
+    env: {
+      VF_DEV_UID_HEADER_ENABLED: 'false',
+    },
+  });
+
+  const spoofed = await app.fetch(new Request('https://voice-flow.example/api/v1/account/profile/bootstrap', {
+    headers: {
+      'x-user-id': 'spoofed-user',
+    },
+  }));
+  const spoofedPayload = await expectJsonResponse(spoofed, 401);
+  assert.equal(spoofedPayload.error.code, 'missing_user');
+
+  const login = await app.fetch(new Request('https://voice-flow.example/api/auth/session', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      email: 'admin1@vflowai.com',
+      password: CANONICAL_ADMIN_PASSWORD,
+    }),
+  }));
+  const loginPayload = await expectJsonResponse(login, 200);
+  assert.equal(loginPayload.ok, true);
+  assert.equal('password_hash' in loginPayload.user, false);
+  assert.equal('token_hash' in loginPayload.session, false);
+
+  const sessionProfile = await app.fetch(new Request('https://voice-flow.example/api/v1/account/profile/bootstrap', {
+    headers: {
+      cookie: login.headers.get('set-cookie'),
+      'x-user-id': 'spoofed-user',
+    },
+  }));
+  const sessionPayload = await expectJsonResponse(sessionProfile, 200);
+  assert.equal(sessionPayload.profile.userId, loginPayload.user.id);
+  assert.notEqual(sessionPayload.profile.userId, 'spoofed-user');
 });
 
 test('dev D1 bootstrap supports a full seeded admin sign-in session', async () => {
@@ -752,7 +877,7 @@ test('dev D1 bootstrap supports a full seeded admin sign-in session', async () =
   const wrangler = {
     vars: {
       BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
-      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: 'pbkdf2_sha256$100000$Pm4y5avQB7IDdLEbjMLhUQ$IQ1TKWZHEHRWgr2Rp7DApljIKNmIG0JvhsiTF56kEW8',
+      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: CANONICAL_ADMIN_PASSWORD_HASH,
       BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
         admins: [
           { email: 'admin1@vflowai.com', roles: ['admin'] },
@@ -770,12 +895,14 @@ test('dev D1 bootstrap supports a full seeded admin sign-in session', async () =
   });
   const login = await signInWithPassword(db, {
     email: 'admin1@vflowai.com',
-    password: 'rease1999',
+    password: CANONICAL_ADMIN_PASSWORD,
     now: Date.now(),
   });
 
   assert.equal(summary.applied, true);
   assert.equal(login.ok, true);
+  assert.equal('password_hash' in login.user, false);
+  assert.equal('token_hash' in login.session, false);
   assert.equal(login.user.email_normalized, 'admin1@vflowai.com');
   assert.equal(login.session && typeof login.session.id === 'string', true);
   assert.equal(login.session.revoked_at, null);
@@ -791,7 +918,7 @@ test('admin user list reads seeded D1 auth users and roles', async () => {
   await bootstrapAuthStorage(db, {
     env: {
       BOOTSTRAP_SEED_SOURCE: 'wrangler-canonical-admins',
-      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: 'pbkdf2_sha256$100000$Pm4y5avQB7IDdLEbjMLhUQ$IQ1TKWZHEHRWgr2Rp7DApljIKNmIG0JvhsiTF56kEW8',
+      BOOTSTRAP_ADMIN_SHARED_PASSWORD_HASH: CANONICAL_ADMIN_PASSWORD_HASH,
       BOOTSTRAP_ADMIN_USERS_JSON: JSON.stringify({
         admins: [
           { email: 'admin1@vflowai.com', roles: ['admin'] },

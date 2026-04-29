@@ -190,7 +190,7 @@ test('login bridge signs in with the seeded admin account and reaches studio', a
   await expect(page.locator('form#login-form')).toBeVisible();
 
   await page.locator('#route-login-email').fill('admin1@vflowai.com');
-  await page.locator('#route-login-password').fill('rease1999');
+  await page.locator('#route-login-password').fill('rease1999.');
   await page.locator('#login-form').evaluate((form) => form.requestSubmit());
 
   await expect.poll(

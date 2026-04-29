@@ -35,6 +35,30 @@ function safeJson(value) {
   return stringifyJson(value);
 }
 
+export function sanitizeSessionUser(user) {
+  if (!user || typeof user !== 'object') {
+    return user;
+  }
+
+  const {
+    password_hash: _passwordHash,
+    ...safeUser
+  } = user;
+  return safeUser;
+}
+
+export function sanitizeSessionRecord(session) {
+  if (!session || typeof session !== 'object') {
+    return session;
+  }
+
+  const {
+    token_hash: _tokenHash,
+    ...safeSession
+  } = session;
+  return safeSession;
+}
+
 export async function generateSessionToken(byteLength = 32) {
   return bytesToBase64Url(await randomBytes(byteLength));
 }
@@ -270,8 +294,8 @@ export async function authenticateSessionRequest(dbLike, { token, touch = true, 
 
   return {
     ok: true,
-    user: context.user,
-    session: context.session,
+    user: sanitizeSessionUser(context.user),
+    session: sanitizeSessionRecord(context.session),
     roles: context.roles,
   };
 }
@@ -309,8 +333,8 @@ export async function signInWithPassword(dbLike, { email, password, now, ipAddre
 
   return {
     ok: true,
-    user: login.user,
-    session: session.session,
+    user: sanitizeSessionUser(login.user),
+    session: sanitizeSessionRecord(session.session),
     token: session.token,
     roles: login.roles,
     needsRehash: login.needsRehash,
