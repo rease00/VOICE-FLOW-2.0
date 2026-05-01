@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../../../../../src/server/firebaseAdmin';
 
 async function verifyRequest(req: NextRequest): Promise<{ uid: string }> {
@@ -59,7 +60,7 @@ export async function POST(
       .get();
 
     let totalChars = 0;
-    chaptersSnap.docs.forEach((doc) => {
+    chaptersSnap.docs.forEach((doc: QueryDocumentSnapshot) => {
       totalChars += doc.data().characterCount ?? 0;
     });
 

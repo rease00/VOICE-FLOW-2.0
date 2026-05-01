@@ -1,5 +1,5 @@
 /**
- * Aurora v2 feature-flag shape stored at Firestore `feature_flags/ui_v2`.
+ * Aurora v2 feature-flag shape.
  *
  *   {
  *     enabled: boolean,        // master kill switch
@@ -16,10 +16,8 @@
  * Resolution priority:
  *   blocked > allowed > rolloutPct (hash) > default false
  *
- * The Firestore read is cached in localStorage for 5 minutes to avoid
- * one Firestore read per navigation. Edge runtime callers should read
- * from the user's auth claims (set by a scheduled Cloud Run job) rather
- * than calling Firestore directly.
+ * Feature flags are currently disabled pending D1-backed API setup.
+ * The localStorage cache layer is preserved for future use.
  */
 
 export interface UiV2Flag {
@@ -101,35 +99,7 @@ export function writeCachedFlag(flag: UiV2Flag): void {
   }
 }
 
-/**
- * Fetch the `feature_flags/ui_v2` document from Firestore and write it into
- * the localStorage cache. Returns the fetched flag on success or null when
- * Firestore is unavailable / the document doesn't exist yet.
- *
- * Import is deferred so this never bloats the SSR bundle.
- */
+/** Returns null — feature flags are disabled until a D1-backed API is set up. */
 export async function fetchUiV2Flag(): Promise<UiV2Flag | null> {
-  try {
-    const { db } = await import("../../lib/firebase");
-    if (!db) return null;
-    const { doc, getDoc } = await import("firebase/firestore");
-    const snap = await getDoc(doc(db, "feature_flags", "ui_v2"));
-    if (!snap.exists()) return null;
-    const data = snap.data() as Partial<UiV2Flag>;
-    const flag: UiV2Flag = {
-      enabled: Boolean(data.enabled),
-      rolloutPct: typeof data.rolloutPct === "number" ? data.rolloutPct : 0,
-      allowedUids: Array.isArray(data.allowedUids) ? data.allowedUids : [],
-      blockedUids: Array.isArray(data.blockedUids) ? data.blockedUids : [],
-      surfaces: {
-        studio: Boolean(data.surfaces?.studio),
-        reader: Boolean(data.surfaces?.reader),
-        library: Boolean(data.surfaces?.library),
-      },
-    };
-    writeCachedFlag(flag);
-    return flag;
-  } catch {
-    return null;
-  }
+  return null;
 }

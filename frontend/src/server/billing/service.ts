@@ -24,8 +24,63 @@ import { BILLING_CHECKOUT_LOCK_MESSAGE, isBillingCheckoutLocked } from '../../sh
 import type { ServerAuthedUserContext } from '../auth/requestAuth.ts';
 import { getFirebaseAdminFirestore } from '../firebaseAdmin';
 import { getAccountEntitlements, getAccountProfile, updateAccountEntitlements } from '../account/service';
+import { getD1Database, ensureD1Schema, readD1JsonRecord, writeD1JsonRecord, deleteD1JsonRecord, readD1JsonRows } from '../d1/util';
 
 const firestore = () => getFirebaseAdminFirestore();
+
+const BILLING_D1_TABLES = Object.freeze({
+  operations: 'billing_operations',
+  webhookEvents: 'billing_webhook_events',
+  stripeCustomers: 'billing_stripe_customers',
+  coupons: 'billing_coupons',
+  couponRedemptions: 'billing_coupon_redemptions',
+  walletTransactions: 'billing_wallet_transactions',
+} as const);
+
+const BILLING_D1_SCHEMA = `
+CREATE TABLE IF NOT EXISTS billing_operations (
+  id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS billing_webhook_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS billing_stripe_customers (
+  customer_id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS billing_coupons (
+  code TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS billing_coupon_redemptions (
+  redemption_id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  coupon_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS billing_wallet_transactions (
+  transaction_id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+`;
+
+const getBillingD1Db = async () => {
+  const db = await getD1Database();
+  if (db) await ensureD1Schema(db, BILLING_D1_SCHEMA);
+  return db;
+};
 
 const BILLING_PROVIDER_STRIPE = 'stripe';
 const STRIPE_API_BASE = 'https://api.stripe.com/v1';
@@ -200,10 +255,6 @@ const applyPercentDiscount = (amountInr: number, percent: number): number => {
   return Math.max(0, Math.round(amountInr * (1 - (percent / 100))));
 };
 
-const getEntitlementsRef = (uid: string) => firestore().collection('entitlements').doc(uid);
-const getStripeCustomerIndexRef = (customerId: string) => firestore().collection('stripe_customers').doc(customerId);
-const getBillingOperationRef = (operationId: string) => firestore().collection('billing_operations').doc(operationId);
-
 const normalizeOperationToken = (value: unknown): string => String(value ?? '')
   .trim()
   .toLowerCase()
@@ -216,6 +267,12 @@ const buildStripeCustomerIdempotencyKey = (uid: string): string => (
 );
 
 const updateEntitlement = async (uid: string, patch: Record<string, unknown>): Promise<void> => {
+  const db = await getBillingD1Db();
+  if (db) {
+    const current = await readD1JsonRecord(db, 'account_entitlements', 'uid', uid);
+    await writeD1JsonRecord(db, 'account_entitlements', 'uid', uid, { ...(current || {}), ...patch, uid }, currentIso());
+    return;
+  }
   await updateAccountEntitlements(uid, patch);
 };
 
@@ -250,11 +307,58 @@ const ensureStripeCustomer = async (user: ServerAuthedUserContext): Promise<stri
     },
   });
 
-  await Promise.all([
-    updateEntitlement(user.uid, { stripeCustomerId: created.id }),
-    getStripeCustomerIndexRef(created.id).set({ uid: user.uid, updatedAt: currentIso() }, { merge: true }),
-  ]);
+  const db = await getBillingD1Db();
+  if (db) {
+    await Promise.all([
+      updateEntitlement(user.uid, { stripeCustomerId: created.id }),
+      writeD1JsonRecord(db, BILLING_D1_TABLES.stripeCustomers, 'customer_id', created.id, { uid: user.uid }, currentIso()),
+    ]);
+  } else {
+    const now = currentIso();
+    await Promise.all([
+      updateEntitlement(user.uid, { stripeCustomerId: created.id }),
+      firestore().collection('stripe_customers').doc(created.id).set({ uid: user.uid, updatedAt: now }, { merge: true }),
+    ]);
+    // Dual-write: attempt D1 alongside Firestore
+    const d1Dual = await getBillingD1Db();
+    if (d1Dual) {
+      await writeD1JsonRecord(d1Dual, BILLING_D1_TABLES.stripeCustomers, 'customer_id', created.id, { uid: user.uid }, now);
+    }
+  }
   return created.id;
+};
+
+const resolveStripeCustomerId = async (uid: string): Promise<string | null> => {
+  const db = await getBillingD1Db();
+  if (db) {
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT customer_id FROM ${BILLING_D1_TABLES.stripeCustomers} WHERE uid = ? LIMIT 1`,
+      uid,
+    );
+    if (rows.length > 0) return asString(rows[0]?.customer_id) || null;
+  }
+  try {
+    const snapshot = await firestore().collection('stripe_customers').where('uid', '==', uid).limit(1).get();
+    if (!snapshot.empty) return snapshot.docs[0]?.id || null;
+  } catch {
+    // Firestore unavailable
+  }
+  return null;
+};
+
+const linkStripeCustomer = async (uid: string, customerId: string): Promise<void> => {
+  const db = await getBillingD1Db();
+  const now = currentIso();
+  await updateEntitlement(uid, { stripeCustomerId: customerId });
+  if (db) {
+    await writeD1JsonRecord(db, BILLING_D1_TABLES.stripeCustomers, 'customer_id', customerId, { uid }, now);
+  }
+  try {
+    await firestore().collection('stripe_customers').doc(customerId).set({ uid, updatedAt: now }, { merge: true });
+  } catch {
+    // Firestore unavailable
+  }
 };
 
 const checkoutLaunchFromStripe = (
@@ -679,50 +783,126 @@ export const redeemCoupon = async (
 ): Promise<{ ok: true; creditedVf: number; entitlements: Awaited<ReturnType<typeof getAccountEntitlements>> }> => {
   const code = asLower(input.code).toUpperCase();
   if (!code) throwHttpError(400, 'Coupon code is required.');
-  const couponIndexSnapshot = await firestore().collection('coupons').where('code', '==', code).limit(1).get();
-  if (couponIndexSnapshot.empty) throwHttpError(404, 'Coupon not found.');
-  const couponDoc = couponIndexSnapshot.docs[0]!;
-  const coupon = couponDoc.data() as Record<string, unknown>;
+
+  const db = await getBillingD1Db();
+  let couponId: string;
+  let coupon: Record<string, unknown>;
+
+  if (db) {
+    coupon = await readD1JsonRecord(db, BILLING_D1_TABLES.coupons, 'code', code) || {};
+    if (!coupon || Object.keys(coupon).length === 0) throwHttpError(404, 'Coupon not found.');
+    couponId = code;
+  } else {
+    const couponIndexSnapshot = await firestore().collection('coupons').where('code', '==', code).limit(1).get();
+    if (couponIndexSnapshot.empty) throwHttpError(404, 'Coupon not found.');
+    const couponDoc = couponIndexSnapshot.docs[0]!;
+    coupon = couponDoc.data() as Record<string, unknown>;
+    couponId = couponDoc.id;
+  }
+
   const creditedVf = asPositiveInt(coupon.creditVf);
   if (!asPositiveInt(creditedVf)) throwHttpError(400, 'Coupon has no redeemable value.');
   if (coupon.active === false) throwHttpError(400, 'Coupon is inactive.');
 
-  const redemptionId = `${couponDoc.id}::${user.uid}::wallet`;
-  const redemptionRef = firestore().collection('coupon_redemptions').doc(redemptionId);
-  const existingRedemption = await redemptionRef.get();
-  if (existingRedemption.exists) throwHttpError(409, 'Coupon already redeemed by this user.');
+  const redemptionId = `${couponId}::${user.uid}::wallet`;
+
+  if (db) {
+    const existingRedemption = await readD1JsonRecord(db, BILLING_D1_TABLES.couponRedemptions, 'redemption_id', redemptionId);
+    if (existingRedemption) throwHttpError(409, 'Coupon already redeemed by this user.');
+  } else {
+    const existingRedemption = await firestore().collection('coupon_redemptions').doc(redemptionId).get();
+    if (existingRedemption.exists) throwHttpError(409, 'Coupon already redeemed by this user.');
+  }
 
   const entitlements = await getAccountEntitlements(user);
   const nextPaidVfBalance = asPositiveNumber(entitlements.wallet?.paidVfBalance) + creditedVf;
 
-  await firestore().runTransaction(async (transaction) => {
-    const entRef = getEntitlementsRef(user.uid);
-    const entSnap = await transaction.get(entRef);
-    const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
-    transaction.set(entRef, {
-      paidVfBalance: asPositiveNumber(entitlement.paidVfBalance) + creditedVf,
-      updatedAt: currentIso(),
-    }, { merge: true });
-    transaction.set(redemptionRef, {
+  const now = currentIso();
+  const transactionId = `coupon_wallet_${couponId}_${user.uid}`;
+
+  if (db) {
+    const current = await readD1JsonRecord(db, 'account_entitlements', 'uid', user.uid);
+    await writeD1JsonRecord(db, 'account_entitlements', 'uid', user.uid, {
+      ...(current || {}),
+      paidVfBalance: nextPaidVfBalance,
+      updatedAt: now,
+    }, now);
+    await writeD1JsonRecord(db, BILLING_D1_TABLES.couponRedemptions, 'redemption_id', redemptionId, {
       id: redemptionId,
-      couponId: couponDoc.id,
+      couponId,
       uid: user.uid,
       code,
       creditedVf,
       channel: 'wallet',
       status: 'redeemed',
-      createdAt: currentIso(),
-    }, { merge: true });
-    transaction.set(firestore().collection('wallet_transactions').doc(`coupon_wallet_${couponDoc.id}_${user.uid}`), {
+      createdAt: now,
+    }, now);
+    await writeD1JsonRecord(db, BILLING_D1_TABLES.walletTransactions, 'transaction_id', transactionId, {
       uid: user.uid,
       kind: 'credit',
       bucket: 'paidVF',
       amount: creditedVf,
       reason: 'coupon_redeem',
-      metadata: { couponId: couponDoc.id, code, channel: 'wallet' },
-      createdAt: currentIso(),
-    }, { merge: true });
-  });
+      metadata: { couponId, code, channel: 'wallet' },
+      createdAt: now,
+    }, now);
+  } else {
+    // D1 write + Firestore write rather than Firestore-only transaction
+    const d1Fallback = await getBillingD1Db();
+    if (d1Fallback) {
+      const current = await readD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', user.uid);
+      await writeD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', user.uid, {
+        ...(current || {}),
+        paidVfBalance: nextPaidVfBalance,
+        updatedAt: now,
+      }, now);
+      await writeD1JsonRecord(d1Fallback, BILLING_D1_TABLES.couponRedemptions, 'redemption_id', redemptionId, {
+        id: redemptionId,
+        couponId,
+        uid: user.uid,
+        code,
+        creditedVf,
+        channel: 'wallet',
+        status: 'redeemed',
+        createdAt: now,
+      }, now);
+      await writeD1JsonRecord(d1Fallback, BILLING_D1_TABLES.walletTransactions, 'transaction_id', transactionId, {
+        uid: user.uid,
+        kind: 'credit',
+        bucket: 'paidVF',
+        amount: creditedVf,
+        reason: 'coupon_redeem',
+        metadata: { couponId, code, channel: 'wallet' },
+        createdAt: now,
+      }, now);
+    }
+    // Firestore writes alongside D1
+    await Promise.all([
+      firestore().collection('entitlements').doc(user.uid).set({
+        paidVfBalance: nextPaidVfBalance,
+        updatedAt: now,
+      }, { merge: true }),
+      firestore().collection('coupon_redemptions').doc(redemptionId).set({
+        id: redemptionId,
+        couponId,
+        uid: user.uid,
+        code,
+        creditedVf,
+        channel: 'wallet',
+        status: 'redeemed',
+        createdAt: now,
+      }, { merge: true }),
+      firestore().collection('wallet_transactions').doc(transactionId).set({
+        uid: user.uid,
+        kind: 'credit',
+        bucket: 'paidVF',
+        amount: creditedVf,
+        reason: 'coupon_redeem',
+        metadata: { couponId, code, channel: 'wallet' },
+        createdAt: now,
+      }, { merge: true }),
+    ]);
+  }
   await updateAccountEntitlements(user.uid, {
     paidVfBalance: nextPaidVfBalance,
   });
@@ -744,48 +924,52 @@ export const convertWalletVfToVc = async (
   if (vfAmount <= 0) throwHttpError(400, 'vfAmount is required.');
   const replayToken = normalizeOperationToken(input.idempotencyKey || input.requestId);
   const operationId = replayToken ? `vf_to_vc:${normalizeOperationToken(user.uid)}:${replayToken}` : '';
-  const operationRef = operationId ? getBillingOperationRef(operationId) : null;
   const entitlements = await getAccountEntitlements(user);
-  const nextPaidVfBalance = asPositiveNumber(entitlements.wallet?.paidVfBalance) - vfAmount;
-  const nextVcPaidBalance = asPositiveNumber(entitlements.wallet?.vcPaidBalance) + (vfAmount * rate);
-  const nextVcSpendableBalance = asPositiveNumber(entitlements.wallet?.vcSpendableBalance) + (vfAmount * rate);
+  const now = currentIso();
+  const vcCredited = vfAmount * rate;
+  const walletTransactionId = operationId
+    ? operationId.replace(/[:]/g, '_')
+    : `vf_to_vc_${normalizeOperationToken(user.uid)}_${Date.now()}`;
 
-  const outcome = await firestore().runTransaction(async (transaction) => {
-    const entRef = getEntitlementsRef(user.uid);
-    const [entSnap, operationSnap] = await Promise.all([
-      transaction.get(entRef),
-      operationRef ? transaction.get(operationRef) : Promise.resolve(null),
-    ]);
-    if (operationSnap?.exists) {
+  const db = await getBillingD1Db();
+  if (db && operationId) {
+    const existingOp = await readD1JsonRecord(db, BILLING_D1_TABLES.operations, 'id', operationId);
+    if (existingOp) {
       return {
-        alreadyProcessed: true,
-        vfDebited: asPositiveNumber(operationSnap.get('vfDebited')),
-        vcCredited: asPositiveNumber(operationSnap.get('vcCredited')),
+        ok: true,
+        vfDebited: asPositiveNumber(existingOp.vfDebited),
+        vcCredited: asPositiveNumber(existingOp.vcCredited),
+        entitlements: await getAccountEntitlements(user),
       };
     }
-    const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
-    const currentBalance = asPositiveNumber(entitlement.paidVfBalance);
-    if (currentBalance < vfAmount) throwHttpError(429, 'Insufficient paid VF balance.');
-    const vcCredited = vfAmount * rate;
-    const walletTransactionId = operationId
-      ? operationId.replace(/[:]/g, '_')
-      : `vf_to_vc_${normalizeOperationToken(user.uid)}_${Date.now()}`;
-    transaction.set(entRef, {
-      paidVfBalance: currentBalance - vfAmount,
-      vcPaidBalance: asPositiveNumber(entitlement.vcPaidBalance) + vcCredited,
-      vcSpendableBalance: asPositiveNumber(entitlement.vcSpendableBalance) + vcCredited,
-      updatedAt: currentIso(),
-    }, { merge: true });
-    transaction.set(firestore().collection('wallet_transactions').doc(walletTransactionId), {
+  }
+
+  const currentPaidVf = asPositiveNumber(entitlements.wallet?.paidVfBalance);
+  if (currentPaidVf < vfAmount) throwHttpError(429, 'Insufficient paid VF balance.');
+
+  const nextPaidVfBalance = currentPaidVf - vfAmount;
+  const nextVcPaidBalance = asPositiveNumber(entitlements.wallet?.vcPaidBalance) + vcCredited;
+  const nextVcSpendableBalance = asPositiveNumber(entitlements.wallet?.vcSpendableBalance) + vcCredited;
+
+  if (db) {
+    const current = await readD1JsonRecord(db, 'account_entitlements', 'uid', user.uid);
+    await writeD1JsonRecord(db, 'account_entitlements', 'uid', user.uid, {
+      ...(current || {}),
+      paidVfBalance: nextPaidVfBalance,
+      vcPaidBalance: nextVcPaidBalance,
+      vcSpendableBalance: nextVcSpendableBalance,
+      updatedAt: now,
+    }, now);
+    await writeD1JsonRecord(db, BILLING_D1_TABLES.walletTransactions, 'transaction_id', walletTransactionId, {
       uid: user.uid,
       kind: 'conversion',
       bucket: 'vcPaid',
       amount: vcCredited,
       metadata: { vfDebited: vfAmount, rate, ...(replayToken ? { replayToken } : {}) },
-      createdAt: currentIso(),
-    }, { merge: true });
-    if (operationRef) {
-      transaction.set(operationRef, {
+      createdAt: now,
+    }, now);
+    if (operationId) {
+      await writeD1JsonRecord(db, BILLING_D1_TABLES.operations, 'id', operationId, {
         id: operationId,
         uid: user.uid,
         kind: 'vf_to_vc',
@@ -793,24 +977,106 @@ export const convertWalletVfToVc = async (
         vfDebited: vfAmount,
         vcCredited,
         rate,
-        createdAt: currentIso(),
-        updatedAt: currentIso(),
-      }, { merge: true });
+        createdAt: now,
+        updatedAt: now,
+      }, now);
     }
-    return { alreadyProcessed: false, vfDebited: vfAmount, vcCredited };
-  });
-  if (!outcome.alreadyProcessed) {
-    await updateAccountEntitlements(user.uid, {
-      paidVfBalance: nextPaidVfBalance,
-      vcPaidBalance: nextVcPaidBalance,
-      vcSpendableBalance: nextVcSpendableBalance,
-    });
+  } else {
+    // D1 write + Firestore write rather than Firestore-only transaction
+    let alreadyProcessed = false;
+    if (operationId) {
+      const d1Fallback = await getBillingD1Db();
+      if (d1Fallback) {
+        const existingOp = await readD1JsonRecord(d1Fallback, BILLING_D1_TABLES.operations, 'id', operationId);
+        if (existingOp) {
+          return {
+            ok: true,
+            vfDebited: asPositiveNumber(existingOp.vfDebited),
+            vcCredited: asPositiveNumber(existingOp.vcCredited),
+            entitlements: await getAccountEntitlements(user),
+          };
+        }
+      } else {
+        const operationRef = firestore().collection('billing_operations').doc(operationId);
+        const opSnap = await operationRef.get();
+        if (opSnap.exists) {
+          alreadyProcessed = true;
+        }
+      }
+    }
+    if (!alreadyProcessed) {
+      const d1Fallback = await getBillingD1Db();
+      if (d1Fallback) {
+        const current = await readD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', user.uid);
+        await writeD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', user.uid, {
+          ...(current || {}),
+          paidVfBalance: nextPaidVfBalance,
+          vcPaidBalance: nextVcPaidBalance,
+          vcSpendableBalance: nextVcSpendableBalance,
+          updatedAt: now,
+        }, now);
+        await writeD1JsonRecord(d1Fallback, BILLING_D1_TABLES.walletTransactions, 'transaction_id', walletTransactionId, {
+          uid: user.uid,
+          kind: 'conversion',
+          bucket: 'vcPaid',
+          amount: vcCredited,
+          metadata: { vfDebited: vfAmount, rate, ...(replayToken ? { replayToken } : {}) },
+          createdAt: now,
+        }, now);
+        if (operationId) {
+          await writeD1JsonRecord(d1Fallback, BILLING_D1_TABLES.operations, 'id', operationId, {
+            id: operationId,
+            uid: user.uid,
+            kind: 'vf_to_vc',
+            replayToken,
+            vfDebited: vfAmount,
+            vcCredited,
+            rate,
+            createdAt: now,
+            updatedAt: now,
+          }, now);
+        }
+      }
+      // Firestore writes alongside D1
+      await Promise.all([
+        firestore().collection('entitlements').doc(user.uid).set({
+          paidVfBalance: nextPaidVfBalance,
+          vcPaidBalance: nextVcPaidBalance,
+          vcSpendableBalance: nextVcSpendableBalance,
+          updatedAt: now,
+        }, { merge: true }),
+        firestore().collection('wallet_transactions').doc(walletTransactionId).set({
+          uid: user.uid,
+          kind: 'conversion',
+          bucket: 'vcPaid',
+          amount: vcCredited,
+          metadata: { vfDebited: vfAmount, rate, ...(replayToken ? { replayToken } : {}) },
+          createdAt: now,
+        }, { merge: true }),
+        ...(operationId ? [firestore().collection('billing_operations').doc(operationId).set({
+          id: operationId,
+          uid: user.uid,
+          kind: 'vf_to_vc',
+          replayToken,
+          vfDebited: vfAmount,
+          vcCredited,
+          rate,
+          createdAt: now,
+          updatedAt: now,
+        }, { merge: true })] : []),
+      ]);
+    }
   }
+  await updateAccountEntitlements(user.uid, {
+    paidVfBalance: nextPaidVfBalance,
+    vcPaidBalance: nextVcPaidBalance,
+    vcSpendableBalance: nextVcSpendableBalance,
+  });
 
   return {
     ok: true,
-    vfDebited: outcome.vfDebited,
-    vcCredited: outcome.vcCredited,
+    vfDebited: vfAmount,
+    vcCredited,
     entitlements: await getAccountEntitlements(user),
   };
 };
@@ -848,57 +1114,115 @@ const processCheckoutCompletion = async (session: Record<string, unknown>): Prom
   }
 
   if (kind === 'token-pack') {
-    let nextPaidVfBalance = 0;
-    await firestore().runTransaction(async (transaction) => {
-      const entRef = getEntitlementsRef(uid);
-      const entSnap = await transaction.get(entRef);
-      const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
-      nextPaidVfBalance = asPositiveNumber(entitlement.paidVfBalance) + asPositiveNumber(metadata.packVf);
-      transaction.set(entRef, {
+    const db = await getBillingD1Db();
+    const now = currentIso();
+    if (db) {
+      const current = await readD1JsonRecord(db, 'account_entitlements', 'uid', uid);
+      const currentPaidVf = asPositiveNumber(current?.paidVfBalance);
+      const nextPaidVfBalance = currentPaidVf + asPositiveNumber(metadata.packVf);
+      await writeD1JsonRecord(db, 'account_entitlements', 'uid', uid, {
+        ...(current || {}),
         paidVfBalance: nextPaidVfBalance,
-        updatedAt: currentIso(),
+        updatedAt: now,
+      }, now);
+    } else {
+      // D1 write + Firestore write rather than Firestore-only transaction
+      const entSnap = await firestore().collection('entitlements').doc(uid).get();
+      const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
+      const nextPaidVfBalance = asPositiveNumber(entitlement.paidVfBalance) + asPositiveNumber(metadata.packVf);
+      const d1Fallback = await getBillingD1Db();
+      if (d1Fallback) {
+        const d1Current = await readD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', uid);
+        await writeD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', uid, {
+          ...(d1Current || {}),
+          paidVfBalance: nextPaidVfBalance,
+          updatedAt: now,
+        }, now);
+      }
+      await firestore().collection('entitlements').doc(uid).set({
+        paidVfBalance: nextPaidVfBalance,
+        updatedAt: now,
       }, { merge: true });
-    });
-    await updateAccountEntitlements(uid, { paidVfBalance: nextPaidVfBalance });
+      await updateAccountEntitlements(uid, { paidVfBalance: nextPaidVfBalance });
+    }
     return;
   }
 
   if (kind === 'vc-token-pack') {
-    let nextVcPaidBalance = 0;
-    let nextVcSpendableBalance = 0;
-    await firestore().runTransaction(async (transaction) => {
-      const entRef = getEntitlementsRef(uid);
-      const entSnap = await transaction.get(entRef);
-      const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
+    const db = await getBillingD1Db();
+    const now = currentIso();
+    if (db) {
+      const current = await readD1JsonRecord(db, 'account_entitlements', 'uid', uid);
       const credited = asPositiveNumber(metadata.packVc);
-      nextVcPaidBalance = asPositiveNumber(entitlement.vcPaidBalance) + credited;
-      nextVcSpendableBalance = asPositiveNumber(entitlement.vcSpendableBalance) + credited;
-      transaction.set(entRef, {
+      const nextVcPaidBalance = asPositiveNumber(current?.vcPaidBalance) + credited;
+      const nextVcSpendableBalance = asPositiveNumber(current?.vcSpendableBalance) + credited;
+      await writeD1JsonRecord(db, 'account_entitlements', 'uid', uid, {
+        ...(current || {}),
         vcPaidBalance: nextVcPaidBalance,
         vcSpendableBalance: nextVcSpendableBalance,
-        updatedAt: currentIso(),
+        updatedAt: now,
+      }, now);
+    } else {
+      // D1 write + Firestore write rather than Firestore-only transaction
+      const entSnap = await firestore().collection('entitlements').doc(uid).get();
+      const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
+      const credited = asPositiveNumber(metadata.packVc);
+      const nextVcPaidBalance = asPositiveNumber(entitlement.vcPaidBalance) + credited;
+      const nextVcSpendableBalance = asPositiveNumber(entitlement.vcSpendableBalance) + credited;
+      const d1Fallback = await getBillingD1Db();
+      if (d1Fallback) {
+        const d1Current = await readD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', uid);
+        await writeD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', uid, {
+          ...(d1Current || {}),
+          vcPaidBalance: nextVcPaidBalance,
+          vcSpendableBalance: nextVcSpendableBalance,
+          updatedAt: now,
+        }, now);
+      }
+      await firestore().collection('entitlements').doc(uid).set({
+        vcPaidBalance: nextVcPaidBalance,
+        vcSpendableBalance: nextVcSpendableBalance,
+        updatedAt: now,
       }, { merge: true });
-    });
-    await updateAccountEntitlements(uid, {
-      vcPaidBalance: nextVcPaidBalance,
-      vcSpendableBalance: nextVcSpendableBalance,
-    });
+      await updateAccountEntitlements(uid, {
+        vcPaidBalance: nextVcPaidBalance,
+        vcSpendableBalance: nextVcSpendableBalance,
+      });
+    }
     return;
   }
 
   if (kind === 'vn-token-pack') {
-    let nextVnBalance = 0;
-    await firestore().runTransaction(async (transaction) => {
-      const entRef = getEntitlementsRef(uid);
-      const entSnap = await transaction.get(entRef);
-      const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
-      nextVnBalance = asPositiveNumber(entitlement.vnBalance) + asPositiveNumber(metadata.packVn);
-      transaction.set(entRef, {
+    const db = await getBillingD1Db();
+    const now = currentIso();
+    if (db) {
+      const current = await readD1JsonRecord(db, 'account_entitlements', 'uid', uid);
+      const nextVnBalance = asPositiveNumber(current?.vnBalance) + asPositiveNumber(metadata.packVn);
+      await writeD1JsonRecord(db, 'account_entitlements', 'uid', uid, {
+        ...(current || {}),
         vnBalance: nextVnBalance,
-        updatedAt: currentIso(),
+        updatedAt: now,
+      }, now);
+    } else {
+      // D1 write + Firestore write rather than Firestore-only transaction
+      const entSnap = await firestore().collection('entitlements').doc(uid).get();
+      const entitlement = (entSnap.data() || {}) as Record<string, unknown>;
+      const nextVnBalance = asPositiveNumber(entitlement.vnBalance) + asPositiveNumber(metadata.packVn);
+      const d1Fallback = await getBillingD1Db();
+      if (d1Fallback) {
+        const d1Current = await readD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', uid);
+        await writeD1JsonRecord(d1Fallback, 'account_entitlements', 'uid', uid, {
+          ...(d1Current || {}),
+          vnBalance: nextVnBalance,
+          updatedAt: now,
+        }, now);
+      }
+      await firestore().collection('entitlements').doc(uid).set({
+        vnBalance: nextVnBalance,
+        updatedAt: now,
       }, { merge: true });
-    });
-    await updateAccountEntitlements(uid, { vnBalance: nextVnBalance });
+      await updateAccountEntitlements(uid, { vnBalance: nextVnBalance });
+    }
   }
 };
 
@@ -918,14 +1242,35 @@ export const handleStripeWebhook = async (
   const event = JSON.parse(rawBody || '{}') as { id?: string; type?: string; data?: { object?: Record<string, unknown> } };
   const eventId = asString(event.id);
   if (eventId) {
-    const eventRef = firestore().collection('billing_webhook_events').doc(eventId);
-    const existing = await eventRef.get();
-    if (existing.exists) return { ok: true };
-    await eventRef.set({
-      id: eventId,
-      type: asString(event.type),
-      createdAt: currentIso(),
-    }, { merge: true });
+    const db = await getBillingD1Db();
+    const now = currentIso();
+    if (db) {
+      const existing = await readD1JsonRecord(db, BILLING_D1_TABLES.webhookEvents, 'id', eventId);
+      if (existing) return { ok: true };
+      await writeD1JsonRecord(db, BILLING_D1_TABLES.webhookEvents, 'id', eventId, {
+        id: eventId,
+        type: asString(event.type),
+        createdAt: now,
+      }, now);
+    } else {
+      const eventRef = firestore().collection('billing_webhook_events').doc(eventId);
+      const existing = await eventRef.get();
+      if (existing.exists) return { ok: true };
+      await eventRef.set({
+        id: eventId,
+        type: asString(event.type),
+        createdAt: now,
+      }, { merge: true });
+      // Dual-write: attempt D1 alongside Firestore
+      const d1Dual = await getBillingD1Db();
+      if (d1Dual) {
+        await writeD1JsonRecord(d1Dual, BILLING_D1_TABLES.webhookEvents, 'id', eventId, {
+          id: eventId,
+          type: asString(event.type),
+          createdAt: now,
+        }, now);
+      }
+    }
   }
 
   const object = event.data?.object || {};

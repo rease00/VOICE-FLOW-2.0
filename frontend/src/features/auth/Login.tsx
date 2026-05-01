@@ -32,8 +32,6 @@ type LegalPopupPath = typeof TERMS_PATH | typeof PRIVACY_PATH;
 
 export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeToRoute, nextPath, navigateToPath }) => {
   const {
-    isFirebaseConfigured,
-    firebaseConfigIssue,
     signInWithEmail,
     resendEmailVerification,
     requestPasswordReset,
@@ -61,11 +59,9 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
   const [activeLegalPath, setActiveLegalPath] = useState<LegalPopupPath | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
   const activeLegalDocument = activeLegalPath ? resolveLegalDocument(activeLegalPath) : null;
-  const firebaseIssue = !isFirebaseConfigured
-    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* and restart frontend.')
-    : '';
-  const disableEmailAuthSubmit = Boolean(firebaseIssue);
-  const disableOAuthAuthSubmit = Boolean(firebaseIssue);
+  const firebaseIssue = '';
+  const disableEmailAuthSubmit = false;
+  const disableOAuthAuthSubmit = true;
   const signupRequestedByRoute = isSignupMode(initialMode);
   const signupRequestedByStorage = !initialMode && isSignupMode(readStorageString(STORAGE_KEYS.authIntent));
   const signupRequestDetected = signupRequestedByRoute || signupRequestedByStorage;

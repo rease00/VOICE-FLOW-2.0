@@ -1,4 +1,3 @@
-import { getFirebaseAdminAuth } from '../firebaseAdmin';
 import { verifyFirebaseRequest as verifyAuthedStudioRequest } from '../auth/requestAuth.ts';
 import {
   DEFAULT_TRANSLATION_MODEL,
@@ -31,6 +30,10 @@ import {
   handleAudioNovelJobCreateRoute,
   handleAudioNovelJobStatusRoute,
 } from '../audioNovel/service';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
+import { getFirebaseAdminFirestore } from '../firebaseAdmin';
+import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { readD1JsonRecord, writeD1JsonRecord, deleteD1JsonRecord, readD1JsonRows, parseJsonPayload } from '../d1/util';
 import type {
   ReaderModernizeRequest,
   ReaderModernizeResponse,
@@ -73,6 +76,267 @@ interface StudioTtsTransportPlan {
   textBytes: number;
   inputChunks: CloudTtsBidiInputChunk[];
 }
+
+// ── D1 persistence for Studio domain ──
+
+type StudioD1Statement = {
+  bind: (...values: unknown[]) => StudioD1Statement;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
+  run: () => Promise<unknown>;
+};
+
+type StudioD1Database = {
+  prepare: (sql: string) => StudioD1Statement;
+  exec: (sql: string) => Promise<unknown>;
+};
+
+const STUDIO_D1_TABLES = Object.freeze({
+  generations: 'studio_generations',
+  sessions: 'studio_sessions',
+  characterPresets: 'studio_character_presets',
+} as const);
+
+const STUDIO_D1_SCHEMA = `
+CREATE TABLE IF NOT EXISTS studio_generations (
+  id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS studio_generations_uid_idx ON studio_generations (uid);
+CREATE TABLE IF NOT EXISTS studio_sessions (
+  id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS studio_sessions_uid_idx ON studio_sessions (uid);
+CREATE TABLE IF NOT EXISTS studio_character_presets (
+  id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS studio_character_presets_uid_idx ON studio_character_presets (uid);
+`;
+
+let studioD1DatabasePromise: Promise<StudioD1Database | null> | null = null;
+let studioD1SchemaPromise: Promise<void> | null = null;
+
+const firestore = () => getFirebaseAdminFirestore();
+
+const getStudioD1Db = async (): Promise<StudioD1Database | null> => {
+  if (!studioD1DatabasePromise) {
+    studioD1DatabasePromise = (async () => {
+      try {
+        const { env } = await getCloudflareContext({ async: true });
+        const db = (env as { DB?: StudioD1Database }).DB;
+        return db && typeof db.prepare === 'function' ? db : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return studioD1DatabasePromise;
+};
+
+const ensureStudioD1Schema = async (db: StudioD1Database): Promise<void> => {
+  if (!studioD1SchemaPromise) {
+    studioD1SchemaPromise = db.exec(STUDIO_D1_SCHEMA).then(() => undefined).catch((error: unknown) => {
+      studioD1SchemaPromise = null;
+      throw error;
+    });
+  }
+  await studioD1SchemaPromise;
+};
+
+const writeStudioD1Row = async (
+  db: StudioD1Database,
+  table: string,
+  id: string,
+  uid: string,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  await db.prepare(`
+    INSERT INTO ${table} (id, uid, payload_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at
+  `).bind(id, uid, JSON.stringify(payload), new Date().toISOString(), new Date().toISOString()).run();
+};
+
+// ── Data access: Generation history ──
+
+const saveStudioGeneration = async (
+  id: string,
+  uid: string,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    await writeStudioD1Row(db, STUDIO_D1_TABLES.generations, id, uid, payload);
+    return;
+  }
+  await firestore().collection('studio_generations').doc(id).set({
+    ...payload, uid, createdAt: new Date().toISOString(),
+  });
+};
+
+const getStudioGeneration = async (id: string): Promise<Record<string, unknown> | null> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    return readD1JsonRecord(db, STUDIO_D1_TABLES.generations, 'id', id);
+  }
+  const doc = await firestore().collection('studio_generations').doc(id).get();
+  return doc.exists ? { id: doc.id, ...doc.data() } : null;
+};
+
+const listStudioGenerations = async (uid: string, limit = 50): Promise<Record<string, unknown>[]> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT id, uid, payload_json FROM ${STUDIO_D1_TABLES.generations} WHERE uid = ? ORDER BY created_at DESC LIMIT ?`,
+      uid, limit,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      uid: row.uid,
+      ...parseJsonPayload(row.payload_json as string) || {},
+    }));
+  }
+  const snapshot = await firestore()
+    .collection('studio_generations')
+    .where('uid', '==', uid)
+    .orderBy('createdAt', 'desc')
+    .limit(limit)
+    .get();
+  return snapshot.docs.map((doc: QueryDocumentSnapshot) => ({ id: doc.id, ...doc.data() }));
+};
+
+// ── Data access: Sessions ──
+
+const saveStudioSession = async (
+  id: string,
+  uid: string,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    await writeStudioD1Row(db, STUDIO_D1_TABLES.sessions, id, uid, payload);
+    return;
+  }
+  await firestore().collection('studio_sessions').doc(id).set({
+    ...payload, uid, createdAt: new Date().toISOString(),
+  });
+};
+
+const getStudioSession = async (id: string): Promise<Record<string, unknown> | null> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    return readD1JsonRecord(db, STUDIO_D1_TABLES.sessions, 'id', id);
+  }
+  const doc = await firestore().collection('studio_sessions').doc(id).get();
+  return doc.exists ? { id: doc.id, ...doc.data() } : null;
+};
+
+const listStudioSessions = async (uid: string, limit = 50): Promise<Record<string, unknown>[]> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT id, uid, payload_json FROM ${STUDIO_D1_TABLES.sessions} WHERE uid = ? ORDER BY created_at DESC LIMIT ?`,
+      uid, limit,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      uid: row.uid,
+      ...parseJsonPayload(row.payload_json as string) || {},
+    }));
+  }
+  const snapshot = await firestore()
+    .collection('studio_sessions')
+    .where('uid', '==', uid)
+    .orderBy('createdAt', 'desc')
+    .limit(limit)
+    .get();
+  return snapshot.docs.map((doc: QueryDocumentSnapshot) => ({ id: doc.id, ...doc.data() }));
+};
+
+// ── Data access: Character presets ──
+
+const saveStudioCharacterPreset = async (
+  id: string,
+  uid: string,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    await writeStudioD1Row(db, STUDIO_D1_TABLES.characterPresets, id, uid, payload);
+    return;
+  }
+  await firestore().collection('studio_character_presets').doc(id).set({
+    ...payload, uid, createdAt: new Date().toISOString(),
+  });
+};
+
+const getStudioCharacterPreset = async (id: string): Promise<Record<string, unknown> | null> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    return readD1JsonRecord(db, STUDIO_D1_TABLES.characterPresets, 'id', id);
+  }
+  const doc = await firestore().collection('studio_character_presets').doc(id).get();
+  return doc.exists ? { id: doc.id, ...doc.data() } : null;
+};
+
+const listStudioCharacterPresets = async (uid: string, limit = 50): Promise<Record<string, unknown>[]> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    const rows = await readD1JsonRows(
+      db,
+      `SELECT id, uid, payload_json FROM ${STUDIO_D1_TABLES.characterPresets} WHERE uid = ? ORDER BY created_at DESC LIMIT ?`,
+      uid, limit,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      uid: row.uid,
+      ...parseJsonPayload(row.payload_json as string) || {},
+    }));
+  }
+  const snapshot = await firestore()
+    .collection('studio_character_presets')
+    .where('uid', '==', uid)
+    .orderBy('createdAt', 'desc')
+    .limit(limit)
+    .get();
+  return snapshot.docs.map((doc: QueryDocumentSnapshot) => ({ id: doc.id, ...doc.data() }));
+};
+
+const deleteStudioCharacterPreset = async (id: string): Promise<void> => {
+  const db = await getStudioD1Db();
+  if (db) {
+    await ensureStudioD1Schema(db);
+    await deleteD1JsonRecord(db, STUDIO_D1_TABLES.characterPresets, 'id', id);
+    return;
+  }
+  await firestore().collection('studio_character_presets').doc(id).delete();
+};
+
+// ── End D1 persistence ──
 
 const normalizeStudioEngine = (value: unknown): TtsEngine => {
   const token = String(value || 'VECTOR').trim().toUpperCase();

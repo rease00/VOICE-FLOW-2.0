@@ -73,9 +73,11 @@ export const REPLATFORM_CONTRACT_DOMAINS: ReplatformContractDomain[] = [
     phase: 5,
     canonicalBase: CANONICAL_API_FAMILIES.voiceClone,
     legacyPrefixes: ['/voice-clone', '/voice-lab'],
-    status: 'planned',
+    status: 'migrating',
     notes: [
-      'Voice clone and heavy media orchestration are intentionally deferred behind managed runtimes until the control plane is ready.',
+      'Voice clone artifacts are now stored in the D1 voice_clone_artifacts table with full CRUD operations.',
+      'Voice clone job records are persisted to D1 via the dedicated voice_clone_jobs table in addition to the domain job store.',
+      'The domain job store also works with D1 via the native adapter across all domains.',
       'Proxy mode is launch-safe only when VF_MEDIA_BACKEND_URL is configured to a real compatibility backend.',
     ],
   },

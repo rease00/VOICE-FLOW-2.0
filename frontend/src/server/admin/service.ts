@@ -12,12 +12,16 @@ import {
   getAccountProfile,
   updateAccountEntitlements,
   upsertAccountProfile,
+  readCouponD1Record,
+  writeCouponD1Record,
+  listCouponD1Records,
 } from '../account/service';
 import { verifyFirebaseRequest } from '../auth/requestAuth.ts';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../firebaseAdmin';
 import { getReplatformRuntimeSummary } from '../replatform/runtime';
 import { readEnvBoolean, readEnvValue } from '../../shared/runtime/env';
 import { isAdminOpsProxyMode } from './mode';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -105,6 +109,176 @@ const COLLECTIONS = Object.freeze({
   adminFinanceProviderSyncRuns: 'admin_finance_provider_sync_runs',
   adminFinanceAdjustments: 'admin_finance_adjustments',
 });
+
+const ADMIN_D1_TABLES = Object.freeze({
+  auditEvents: 'admin_audit_events',
+  rbacAssignments: 'admin_rbac_assignments',
+  config: 'admin_config',
+} as const);
+
+const ADMIN_D1_SCHEMA = `
+CREATE TABLE IF NOT EXISTS admin_audit_events (
+  event_id TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  ts TEXT NOT NULL,
+  actor_uid TEXT,
+  action TEXT,
+  resource_type TEXT,
+  subject_uid TEXT
+);
+CREATE INDEX IF NOT EXISTS admin_audit_events_ts_idx ON admin_audit_events (ts DESC);
+CREATE INDEX IF NOT EXISTS admin_audit_events_actor_uid_idx ON admin_audit_events (actor_uid);
+CREATE INDEX IF NOT EXISTS admin_audit_events_action_idx ON admin_audit_events (action);
+CREATE INDEX IF NOT EXISTS admin_audit_events_subject_uid_idx ON admin_audit_events (subject_uid);
+CREATE INDEX IF NOT EXISTS admin_audit_events_sequence_idx ON admin_audit_events (sequence DESC);
+CREATE TABLE IF NOT EXISTS admin_rbac_assignments (
+  uid TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_config (
+  config_key TEXT PRIMARY KEY NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
+type AdminD1Statement = {
+  bind: (...values: unknown[]) => AdminD1Statement;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
+  run: () => Promise<unknown>;
+};
+
+type AdminD1Database = {
+  prepare: (sql: string) => AdminD1Statement;
+  exec: (sql: string) => Promise<unknown>;
+};
+
+let adminD1DatabasePromise: Promise<AdminD1Database | null> | null = null;
+let adminD1SchemaPromise: Promise<void> | null = null;
+
+const parseAdminPersistedJsonRecord = (value: string | null | undefined): Record<string, unknown> | null => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const getAdminD1Database = async (): Promise<AdminD1Database | null> => {
+  if (!adminD1DatabasePromise) {
+    adminD1DatabasePromise = (async () => {
+      try {
+        const { env } = await getCloudflareContext({ async: true });
+        const db = (env as { DB?: AdminD1Database }).DB;
+        return db && typeof db.prepare === 'function' ? db : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return adminD1DatabasePromise;
+};
+
+const ensureAdminD1Schema = async (db: AdminD1Database): Promise<void> => {
+  if (!adminD1SchemaPromise) {
+    adminD1SchemaPromise = db.exec(ADMIN_D1_SCHEMA).then(() => undefined).catch((error: unknown) => {
+      adminD1SchemaPromise = null;
+      throw error;
+    });
+  }
+  await adminD1SchemaPromise;
+};
+
+const readAdminD1Record = async (
+  db: AdminD1Database,
+  table: string,
+  keyColumn: string,
+  keyValue: string
+): Promise<Record<string, unknown> | null> => {
+  const row = await db.prepare(`SELECT payload_json FROM ${table} WHERE ${keyColumn} = ? LIMIT 1`)
+    .bind(keyValue)
+    .first<{ payload_json?: string }>();
+  return parseAdminPersistedJsonRecord(row?.payload_json || null);
+};
+
+const readAdminD1Rows = async (
+  db: AdminD1Database,
+  sql: string,
+  ...values: unknown[]
+): Promise<Record<string, unknown>[]> => {
+  const response = await db.prepare(sql).bind(...values).all<Record<string, unknown>>();
+  return Array.isArray(response?.results) ? response.results : [];
+};
+
+const writeAdminD1Record = async (
+  db: AdminD1Database,
+  table: string,
+  keyColumn: string,
+  keyValue: string,
+  payload: Record<string, unknown>,
+  updatedAt = new Date().toISOString()
+): Promise<void> => {
+  await db.prepare(`
+    INSERT INTO ${table} (${keyColumn}, payload_json, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(${keyColumn}) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at
+  `)
+    .bind(keyValue, JSON.stringify(payload), updatedAt)
+    .run();
+};
+
+const deleteAdminD1Record = async (
+  db: AdminD1Database,
+  table: string,
+  keyColumn: string,
+  keyValue: string
+): Promise<void> => {
+  await db.prepare(`DELETE FROM ${table} WHERE ${keyColumn} = ?`)
+    .bind(keyValue)
+    .run();
+};
+
+const writeAdminD1AuditEvent = async (
+  db: AdminD1Database,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  const eventId = asString(payload.eventId) || randomUUID();
+  const sequence = asPositiveInt(payload.sequence, 0);
+  const ts = asString(payload.ts) || nowIso();
+  await db.prepare(`
+    INSERT INTO ${ADMIN_D1_TABLES.auditEvents} (event_id, payload_json, sequence, ts, actor_uid, action, resource_type, subject_uid)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_id) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      sequence = excluded.sequence,
+      ts = excluded.ts,
+      actor_uid = excluded.actor_uid,
+      action = excluded.action,
+      resource_type = excluded.resource_type,
+      subject_uid = excluded.subject_uid
+  `)
+    .bind(
+      eventId,
+      JSON.stringify(payload),
+      sequence,
+      ts,
+      asString(payload.actorUid) || null,
+      asString(payload.action) || null,
+      asString(payload.resourceType) || null,
+      asString(payload.subjectUid) || null,
+    )
+    .run();
+};
 
 const DEFAULT_ADMIN_AUTOMATION_MODEL = 'gemini-2.5-flash-lite';
 
@@ -216,6 +390,16 @@ const asBoolean = (value: unknown): boolean => {
 const nowIso = (): string => new Date().toISOString();
 const nowMs = (): number => Date.now();
 const cloneRecord = <T>(value: T): T => JSON.parse(JSON.stringify(value ?? null)) as T;
+const parseJsonRecord = (value: unknown): AnyRecord | null => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as AnyRecord : null;
+  } catch {
+    return null;
+  }
+};
 
 type FinanceProvidersModule = typeof import('./financeProviders');
 let financeProvidersModulePromise: Promise<FinanceProvidersModule> | null = null;
@@ -430,14 +614,13 @@ const buildFallbackEntitlements = (uid: string, userData: AnyRecord | null, enti
 
 const getUserEntitlements = async (uid: string, userData: AnyRecord | null): Promise<AnyRecord> => {
   const firestore = getFirestoreHandle();
-  const entitlementDoc = await readRecord(COLLECTIONS.entitlements, uid);
-  if (!firestore) {
-    return buildFallbackEntitlements(uid, userData, entitlementDoc);
-  }
+  const ref = firestore
+    ? firestore.collection(COLLECTIONS.users).doc(uid)
+    : null;
   return getAccountEntitlements({
     uid,
     decodedToken: { uid } as never,
-    userRef: firestore.collection(COLLECTIONS.users).doc(uid) as never,
+    userRef: ref as never,
     userData,
     userExists: Boolean(userData),
   } as never) as unknown as AnyRecord;
@@ -502,7 +685,19 @@ const resolveAdminContext = async (request: NextRequest): Promise<AdminContext> 
     asBoolean(request.headers.get('x-dev-admin'))
     || asLower(request.headers.get('x-dev-role')) === 'admin'
   );
-  const assignment = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  const db = await getAdminD1Database();
+  let assignment: AnyRecord | null = null;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      assignment = await readAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid) as AnyRecord | null;
+    } catch {
+      // D1 read fallback to Firestore
+    }
+  }
+  if (!assignment) {
+    assignment = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  }
   const hasIntrinsicAdmin =
     devHeaderAdmin
     || asBoolean((decodedToken as AnyRecord).admin)
@@ -624,14 +819,44 @@ const recordAuditEvent = async (
     after: input.after,
   };
   const eventHash = createHash('sha256').update(JSON.stringify({ prevHash, payload })).digest('hex');
-  return writeRecord(COLLECTIONS.adminAuditEvents, eventId, { ...payload, eventHash }, false);
+  const fullEntry = { ...payload, eventHash };
+  // Dual-write: D1 primary, Firestore secondary
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      await writeAdminD1AuditEvent(db, fullEntry);
+    } catch {
+      // D1 write is best-effort
+    }
+  }
+  return writeRecord(COLLECTIONS.adminAuditEvents, eventId, fullEntry, false);
 };
 
 const verifyAuditChain = async (request: NextRequest): Promise<Response> => {
   await requirePermission(request, 'audit.read');
-  const rows = await queryRecords(COLLECTIONS.adminAuditEvents, {
-    sort: (left, right) => asPositiveInt(left.data.sequence) - asPositiveInt(right.data.sequence),
-  });
+  const db = await getAdminD1Database();
+  let rows: Array<{ id: string; data: AnyRecord }>;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      const d1Rows = await readAdminD1Rows(db, `SELECT event_id, payload_json FROM ${ADMIN_D1_TABLES.auditEvents} ORDER BY sequence ASC`);
+      rows = d1Rows
+        .map((row) => {
+          const data = parseAdminPersistedJsonRecord(asString(row.payload_json)) || {};
+          return { id: asString(row.event_id) || asString(data.eventId), data };
+        })
+        .filter((item) => item.id && Object.keys(item.data).length > 0);
+    } catch {
+      rows = await queryRecords(COLLECTIONS.adminAuditEvents, {
+        sort: (left, right) => asPositiveInt(left.data.sequence) - asPositiveInt(right.data.sequence),
+      });
+    }
+  } else {
+    rows = await queryRecords(COLLECTIONS.adminAuditEvents, {
+      sort: (left, right) => asPositiveInt(left.data.sequence) - asPositiveInt(right.data.sequence),
+    });
+  }
   let prevHash = '';
   let mismatchAtSequence: number | null = null;
   let mismatchEventId: string | null = null;
@@ -702,13 +927,26 @@ const listSupportMessagesByConversation = async (conversationId: string): Promis
 const buildAdminUserSummary = async (uid: string, userData: AnyRecord | null): Promise<AnyRecord> => {
   const profile = await getAdminAccountProfile(uid, userData);
   const entitlements = await getUserEntitlements(uid, userData);
+  const db = await getAdminD1Database();
+  let hasRbacAssignment = false;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      const d1Assignment = await readAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid) as AnyRecord | null;
+      hasRbacAssignment = Boolean(d1Assignment);
+    } catch {
+      hasRbacAssignment = Boolean(await readRecord(COLLECTIONS.adminRbacAssignments, uid));
+    }
+  } else {
+    hasRbacAssignment = Boolean(await readRecord(COLLECTIONS.adminRbacAssignments, uid));
+  }
   return {
     uid,
     userId: asString(profile.userId || userData?.userId) || undefined,
     email: asString(profile.email || userData?.email),
     displayName: asString(profile.displayName || userData?.displayName || userData?.name),
     disabled: asBoolean(userData?.disabled),
-    admin: asBoolean(userData?.isAdmin) || asLower(userData?.role) === 'admin' || Boolean(await readRecord(COLLECTIONS.adminRbacAssignments, uid)),
+    admin: asBoolean(userData?.isAdmin) || asLower(userData?.role) === 'admin' || hasRbacAssignment,
     role: asString(userData?.role) || undefined,
     plan: entitlements.plan,
     accountStatus: asString(userData?.status || entitlements.status) || undefined,
@@ -886,6 +1124,16 @@ const deleteAdminUserHandler = async (request: NextRequest, uid: string): Promis
       deleteRecord(COLLECTIONS.adminRbacAssignments, uid),
     ]);
   }
+  // Clean D1 RBAC assignment
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      await deleteAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid);
+    } catch {
+      // D1 delete is best-effort
+    }
+  }
   await recordAuditEvent(context, {
     action: 'admin.users.delete',
     resourceType: 'user',
@@ -926,11 +1174,10 @@ const grantAdminUserVcHandler = async (request: NextRequest, uid: string): Promi
   const amount = asPositiveNumber(input.amount);
   if (amount <= 0) httpError(400, 'amount must be greater than zero.');
   const beforeEntitlements = await getUserEntitlements(uid, await readRecord(COLLECTIONS.users, uid));
-  await writeRecord(COLLECTIONS.entitlements, uid, {
+  await updateAccountEntitlements(uid, {
     vcGrantedBalance: asPositiveNumber(beforeEntitlements.wallet?.vcGrantedBalance) + amount,
     vcSpendableBalance: asPositiveNumber(beforeEntitlements.wallet?.vcSpendableBalance) + amount,
-    updatedAt: nowIso(),
-  }, true);
+  });
   const afterEntitlements = await getUserEntitlements(uid, await readRecord(COLLECTIONS.users, uid));
   await writeRecord(COLLECTIONS.adminVcGrantRecords, randomUUID(), {
     uid,
@@ -981,12 +1228,27 @@ const listCouponsHandler = async (request: NextRequest): Promise<Response> => {
   await requirePermission(request, 'coupons.read');
   const limit = getQueryInt(request, 'limit', 100);
   const couponType = asString(request.nextUrl.searchParams.get('couponType'));
-  const coupons = await queryRecords(COLLECTIONS.coupons, {
-    filter: (row) => !couponType || asString(row.data.couponType) === couponType,
-    sort: (left, right) => asString(right.data.updatedAt || right.data.createdAt).localeCompare(asString(left.data.updatedAt || left.data.createdAt)),
-    limit,
-  });
-  return json({ coupons: coupons.map((row) => ({ id: row.id, ...row.data })) });
+  const d1Rows = await listCouponD1Records();
+  let coupons: AnyRecord[];
+  if (d1Rows.length > 0) {
+    const parsed = d1Rows
+      .map((row) => {
+        const data = parseJsonRecord(row.payload_json) || {};
+        return { id: row.coupon_id, ...data };
+      })
+      .filter((row) => !couponType || asString(row.couponType) === couponType)
+      .sort((a, b) => asString(b.updatedAt || b.createdAt).localeCompare(asString(a.updatedAt || a.createdAt)))
+      .slice(0, limit);
+    coupons = parsed;
+  } else {
+    const rows = await queryRecords(COLLECTIONS.coupons, {
+      filter: (row) => !couponType || asString(row.data.couponType) === couponType,
+      sort: (left, right) => asString(right.data.updatedAt || right.data.createdAt).localeCompare(asString(left.data.updatedAt || left.data.createdAt)),
+      limit,
+    });
+    coupons = rows.map((row) => ({ id: row.id, ...row.data }));
+  }
+  return json({ coupons });
 };
 
 const createCouponHandler = async (request: NextRequest): Promise<Response> => {
@@ -995,14 +1257,16 @@ const createCouponHandler = async (request: NextRequest): Promise<Response> => {
   const input = normalizeCouponInput(await readJsonBody(request));
   if (!input.code) httpError(400, 'Coupon code is required.');
   const couponId = randomUUID();
-  const coupon = await writeRecord(COLLECTIONS.coupons, couponId, {
+  const coupon = {
     ...input,
     redeemedCount: 0,
     reservedCount: 0,
     createdBy: context.uid,
     createdAt: nowIso(),
     updatedAt: nowIso(),
-  }, false);
+  };
+  await writeCouponD1Record(couponId, coupon);
+  await writeRecord(COLLECTIONS.coupons, couponId, coupon, false);
   await recordAuditEvent(context, {
     action: 'admin.coupons.create',
     resourceType: 'coupon',
@@ -1027,10 +1291,15 @@ const generateCouponCodeHandler = async (request: NextRequest): Promise<Response
 const patchCouponHandler = async (request: NextRequest, couponId: string): Promise<Response> => {
   const context = await requirePermission(request, 'coupons.write');
   await requireUnlockForMutation(request, context);
-  const before = await readRecord(COLLECTIONS.coupons, couponId);
+  let before = await readCouponD1Record(couponId) as AnyRecord;
+  if (!before) {
+    before = await readRecord(COLLECTIONS.coupons, couponId);
+  }
   if (!before) httpError(404, 'Coupon not found.');
   const input = normalizeCouponInput({ ...before, ...(await readJsonBody(request)) });
-  const coupon = await writeRecord(COLLECTIONS.coupons, couponId, { ...input, updatedAt: nowIso() }, true);
+  const coupon = { ...before, ...input, updatedAt: nowIso() };
+  await writeCouponD1Record(couponId, coupon);
+  await writeRecord(COLLECTIONS.coupons, couponId, coupon, true);
   await recordAuditEvent(context, {
     action: 'admin.coupons.patch',
     resourceType: 'coupon',
@@ -1337,6 +1606,20 @@ const getRoleCatalogHandler = async (request: NextRequest): Promise<Response> =>
 };
 
 const countActiveSuperAdmins = async (): Promise<number> => {
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      const rows = await readAdminD1Rows(db, `SELECT payload_json FROM ${ADMIN_D1_TABLES.rbacAssignments}`);
+      const assignments = rows
+        .map((row) => parseAdminPersistedJsonRecord(asString(row.payload_json)))
+        .filter(Boolean)
+        .filter((data) => asString(data!.role) === 'super_admin' && asLower(asString(data!.status)) !== 'disabled');
+      return assignments.length;
+    } catch {
+      // Fall through to Firestore
+    }
+  }
   const assignments = await queryRecords(COLLECTIONS.adminRbacAssignments, {
     filter: (row) => asString(row.data.role) === 'super_admin' && asLower(row.data.status) !== 'disabled',
   });
@@ -1347,9 +1630,28 @@ const listRbacUsersHandler = async (request: NextRequest): Promise<Response> => 
   await requirePermission(request, 'rbac.read');
   const q = asLower(request.nextUrl.searchParams.get('q'));
   const limit = getQueryInt(request, 'limit', 200);
-  const items = await queryRecords(COLLECTIONS.adminRbacAssignments, {
-    sort: (left, right) => asString(right.data.updatedAt).localeCompare(asString(left.data.updatedAt)),
-  });
+  let items: Array<{ id: string; data: AnyRecord }>;
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      const rows = await readAdminD1Rows(db, `SELECT uid, payload_json, updated_at FROM ${ADMIN_D1_TABLES.rbacAssignments} ORDER BY updated_at DESC`);
+      items = rows
+        .map((row) => {
+          const data = parseAdminPersistedJsonRecord(asString(row.payload_json)) || {};
+          return { id: asString(row.uid), data };
+        })
+        .filter((item) => item.id);
+    } catch {
+      items = await queryRecords(COLLECTIONS.adminRbacAssignments, {
+        sort: (left, right) => asString(right.data.updatedAt).localeCompare(asString(left.data.updatedAt)),
+      });
+    }
+  } else {
+    items = await queryRecords(COLLECTIONS.adminRbacAssignments, {
+      sort: (left, right) => asString(right.data.updatedAt).localeCompare(asString(left.data.updatedAt)),
+    });
+  }
   const filtered = items
     .map((row) => ({
       uid: row.id,
@@ -1376,7 +1678,18 @@ const upsertRbacAssignment = async (request: NextRequest, uid: string): Promise<
   const context = await requirePermission(request, 'rbac.write');
   await requireUnlockForMutation(request, context);
   const input = await readJsonBody(request);
-  const existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  const db = await getAdminD1Database();
+  let existing: AnyRecord | null = null;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      existing = await readAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid) as AnyRecord | null;
+    } catch {
+      existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+    }
+  } else {
+    existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  }
   const targetRole = asString(input.role) || 'viewer';
   const targetStatus = asString(input.status) || 'active';
   if (uid === context.uid && targetRole !== asString(context.actor.role)) httpError(409, 'rbac_self_demote_forbidden');
@@ -1395,6 +1708,13 @@ const upsertRbacAssignment = async (request: NextRequest, uid: string): Promise<
     updatedAt: nowIso(),
     updatedBy: context.uid,
   }, true);
+  if (db) {
+    try {
+      await writeAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid, assignment, asString(assignment.updatedAt));
+    } catch {
+      // D1 write is best-effort
+    }
+  }
   const actor = {
     uid,
     userId: asString(userData?.userId) || undefined,
@@ -1413,12 +1733,31 @@ const upsertRbacAssignment = async (request: NextRequest, uid: string): Promise<
 const disableRbacUser = async (request: NextRequest, uid: string): Promise<Response> => {
   const context = await requirePermission(request, 'rbac.write');
   await requireUnlockForMutation(request, context);
-  const existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  const db = await getAdminD1Database();
+  let existing: AnyRecord | null = null;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      existing = await readAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid) as AnyRecord | null;
+    } catch {
+      existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+    }
+  } else {
+    existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  }
   if (uid === context.uid) httpError(409, 'rbac_self_disable_forbidden');
   if (asString(existing?.role) === 'super_admin' && asLower(existing?.status) !== 'disabled' && (await countActiveSuperAdmins()) <= 1) {
     httpError(409, 'rbac_last_super_admin_forbidden');
   }
-  const assignment = await writeRecord(COLLECTIONS.adminRbacAssignments, uid, { status: 'disabled', updatedAt: nowIso(), updatedBy: context.uid }, true);
+  const now = nowIso();
+  const assignment = await writeRecord(COLLECTIONS.adminRbacAssignments, uid, { status: 'disabled', updatedAt: now, updatedBy: context.uid }, true);
+  if (db) {
+    try {
+      await writeAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid, { ...existing, status: 'disabled', updatedAt: now, updatedBy: context.uid }, now);
+    } catch {
+      // D1 write is best-effort
+    }
+  }
   const actor = {
     uid,
     userId: asString(existing?.userId) || undefined,
@@ -1437,8 +1776,27 @@ const disableRbacUser = async (request: NextRequest, uid: string): Promise<Respo
 const enableRbacUser = async (request: NextRequest, uid: string): Promise<Response> => {
   const context = await requirePermission(request, 'rbac.write');
   await requireUnlockForMutation(request, context);
-  const existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
-  const assignment = await writeRecord(COLLECTIONS.adminRbacAssignments, uid, { status: 'active', updatedAt: nowIso(), updatedBy: context.uid }, true);
+  const db = await getAdminD1Database();
+  let existing: AnyRecord | null = null;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      existing = await readAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid) as AnyRecord | null;
+    } catch {
+      existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+    }
+  } else {
+    existing = await readRecord(COLLECTIONS.adminRbacAssignments, uid);
+  }
+  const now = nowIso();
+  const assignment = await writeRecord(COLLECTIONS.adminRbacAssignments, uid, { status: 'active', updatedAt: now, updatedBy: context.uid }, true);
+  if (db) {
+    try {
+      await writeAdminD1Record(db, ADMIN_D1_TABLES.rbacAssignments, 'uid', uid, { ...(existing || {}), status: 'active', updatedAt: now, updatedBy: context.uid }, now);
+    } catch {
+      // D1 write is best-effort
+    }
+  }
   const actor = {
     uid,
     userId: asString(existing?.userId) || undefined,
@@ -1465,24 +1823,82 @@ const listAuditEventsHandler = async (request: NextRequest): Promise<Response> =
     action: asString(request.nextUrl.searchParams.get('action')),
     resourceType: asString(request.nextUrl.searchParams.get('resourceType')),
   };
-  const items = await queryRecords(COLLECTIONS.adminAuditEvents, {
-    filter: (row) => (
-      (!queryTokens.actorUid || asString(row.data.actorUid) === queryTokens.actorUid)
-      && (!queryTokens.actorUserId || asString(row.data.actorUserId) === queryTokens.actorUserId)
-      && (!queryTokens.subjectUid || asString(row.data.subjectUid) === queryTokens.subjectUid)
-      && (!queryTokens.subjectUserId || asString(row.data.subjectUserId) === queryTokens.subjectUserId)
-      && (!queryTokens.action || asString(row.data.action) === queryTokens.action)
-      && (!queryTokens.resourceType || asString(row.data.resourceType) === queryTokens.resourceType)
-    ),
-    sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
-    limit,
-  });
+  let items: Array<{ id: string; data: AnyRecord }>;
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      // Build SQL WHERE clauses from indexed columns
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      if (queryTokens.actorUid) { conditions.push('actor_uid = ?'); params.push(queryTokens.actorUid); }
+      if (queryTokens.subjectUid) { conditions.push('subject_uid = ?'); params.push(queryTokens.subjectUid); }
+      if (queryTokens.action) { conditions.push('action = ?'); params.push(queryTokens.action); }
+      if (queryTokens.resourceType) { conditions.push('resource_type = ?'); params.push(queryTokens.resourceType); }
+      const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+      const rows = await readAdminD1Rows(db,
+        `SELECT event_id, payload_json FROM ${ADMIN_D1_TABLES.auditEvents}${whereClause} ORDER BY sequence DESC LIMIT ?`,
+        ...params, limit * 2, // Read extra for post-filtering
+      );
+      let filtered = rows
+        .map((row) => {
+          const data = parseAdminPersistedJsonRecord(asString(row.payload_json)) || {};
+          return { id: asString(row.event_id) || asString(data.eventId), data };
+        })
+        .filter((item) => item.id);
+      // Apply in-memory filters for fields not indexed in D1
+      if (queryTokens.actorUserId) {
+        filtered = filtered.filter((item) => asString(item.data.actorUserId) === queryTokens.actorUserId);
+      }
+      if (queryTokens.subjectUserId) {
+        filtered = filtered.filter((item) => asString(item.data.subjectUserId) === queryTokens.subjectUserId);
+      }
+      items = filtered.slice(0, limit);
+    } catch {
+      items = await queryRecords(COLLECTIONS.adminAuditEvents, {
+        filter: (row) => (
+          (!queryTokens.actorUid || asString(row.data.actorUid) === queryTokens.actorUid)
+          && (!queryTokens.actorUserId || asString(row.data.actorUserId) === queryTokens.actorUserId)
+          && (!queryTokens.subjectUid || asString(row.data.subjectUid) === queryTokens.subjectUid)
+          && (!queryTokens.subjectUserId || asString(row.data.subjectUserId) === queryTokens.subjectUserId)
+          && (!queryTokens.action || asString(row.data.action) === queryTokens.action)
+          && (!queryTokens.resourceType || asString(row.data.resourceType) === queryTokens.resourceType)
+        ),
+        sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
+        limit,
+      });
+    }
+  } else {
+    items = await queryRecords(COLLECTIONS.adminAuditEvents, {
+      filter: (row) => (
+        (!queryTokens.actorUid || asString(row.data.actorUid) === queryTokens.actorUid)
+        && (!queryTokens.actorUserId || asString(row.data.actorUserId) === queryTokens.actorUserId)
+        && (!queryTokens.subjectUid || asString(row.data.subjectUid) === queryTokens.subjectUid)
+        && (!queryTokens.subjectUserId || asString(row.data.subjectUserId) === queryTokens.subjectUserId)
+        && (!queryTokens.action || asString(row.data.action) === queryTokens.action)
+        && (!queryTokens.resourceType || asString(row.data.resourceType) === queryTokens.resourceType)
+      ),
+      sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
+      limit,
+    });
+  }
   return json({ ok: true, items: items.map((row) => row.data), count: items.length, nextCursor: null });
 };
 
 const getAuditEventByIdHandler = async (request: NextRequest, eventId: string): Promise<Response> => {
   await requirePermission(request, 'audit.read');
-  const event = await readRecord(COLLECTIONS.adminAuditEvents, eventId);
+  const db = await getAdminD1Database();
+  let event: AnyRecord | null = null;
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      event = await readAdminD1Record(db, ADMIN_D1_TABLES.auditEvents, 'event_id', eventId) as AnyRecord | null;
+    } catch {
+      event = await readRecord(COLLECTIONS.adminAuditEvents, eventId);
+    }
+  } else {
+    event = await readRecord(COLLECTIONS.adminAuditEvents, eventId);
+  }
   if (!event) httpError(404, 'Audit event not found.');
   return json({ event });
 };
@@ -3286,6 +3702,60 @@ const buildAdminMoneySummary = async (
   };
 };
 
+const readAdminAuditRows = async (limit: number): Promise<Array<{ id: string; data: AnyRecord }>> => {
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      const rows = await readAdminD1Rows(db, `SELECT event_id, payload_json FROM ${ADMIN_D1_TABLES.auditEvents} ORDER BY sequence DESC LIMIT ?`, limit);
+      return rows
+        .map((row) => {
+          const data = parseAdminPersistedJsonRecord(asString(row.payload_json)) || {};
+          return { id: asString(row.event_id) || asString(data.eventId), data };
+        })
+        .filter((item) => item.id && Object.keys(item.data).length > 0)
+        .slice(0, limit);
+    } catch {
+      return queryRecords(COLLECTIONS.adminAuditEvents, {
+        sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
+        limit,
+      });
+    }
+  }
+  return queryRecords(COLLECTIONS.adminAuditEvents, {
+    sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
+    limit,
+  });
+};
+
+const readAdminAuditRowsForUid = async (uid: string, limit: number): Promise<Array<{ id: string; data: AnyRecord }>> => {
+  const db = await getAdminD1Database();
+  if (db) {
+    try {
+      await ensureAdminD1Schema(db);
+      const rows = await readAdminD1Rows(db, `SELECT event_id, payload_json, sequence FROM ${ADMIN_D1_TABLES.auditEvents} WHERE actor_uid = ? OR subject_uid = ? ORDER BY sequence DESC LIMIT ?`, uid, uid, limit);
+      return rows
+        .map((row) => {
+          const data = parseAdminPersistedJsonRecord(asString(row.payload_json)) || {};
+          return { id: asString(row.event_id) || asString(data.eventId), data };
+        })
+        .filter((item) => item.id && Object.keys(item.data).length > 0)
+        .slice(0, limit);
+    } catch {
+      return queryRecords(COLLECTIONS.adminAuditEvents, {
+        filter: (row) => asString(row.data.subjectUid) === uid || asString(row.data.actorUid) === uid,
+        sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
+        limit,
+      });
+    }
+  }
+  return queryRecords(COLLECTIONS.adminAuditEvents, {
+    filter: (row) => asString(row.data.subjectUid) === uid || asString(row.data.actorUid) === uid,
+    sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
+    limit,
+  });
+};
+
 const dashboardSummaryHandler = async (request: NextRequest): Promise<Response> => {
   await requirePermission(request, 'ops.read');
   const [runtime, moneyContext, queues, incidentsRows, auditRows, flags, alerts] = await Promise.all([
@@ -3296,10 +3766,7 @@ const dashboardSummaryHandler = async (request: NextRequest): Promise<Response> 
       sort: (left, right) => asString(right.data.updatedAt || right.data.createdAt).localeCompare(asString(left.data.updatedAt || left.data.createdAt)),
       limit: 10,
     }),
-    queryRecords(COLLECTIONS.adminAuditEvents, {
-      sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
-      limit: 12,
-    }),
+    readAdminAuditRows(12),
     listFeatureFlagRecords(),
     queryRecords(COLLECTIONS.adminAlertEvents, {
       filter: (row) => !['resolved', 'dismissed'].includes(asLower(row.data.status)),
@@ -3571,11 +4038,7 @@ const userTimelineHandler = async (request: NextRequest, uid: string): Promise<R
       sort: (left, right) => asString(right.data.updatedAt || right.data.createdAt).localeCompare(asString(left.data.updatedAt || left.data.createdAt)),
       limit: 10,
     }),
-    queryRecords(COLLECTIONS.adminAuditEvents, {
-      filter: (row) => asString(row.data.subjectUid) === uid || asString(row.data.actorUid) === uid,
-      sort: (left, right) => asPositiveInt(right.data.sequence) - asPositiveInt(left.data.sequence),
-      limit: 10,
-    }),
+    readAdminAuditRowsForUid(uid, 10),
     queryRecords(COLLECTIONS.adminVcGrantRecords, {
       filter: (row) => asString(row.data.uid) === uid,
       sort: (left, right) => asString(right.data.createdAt).localeCompare(asString(left.data.createdAt)),

@@ -1,8 +1,8 @@
 import { authFetch } from './authHttpClient';
+import { readStoredAuthSessionUid } from './authSessionService';
 import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
 import { requestJson } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
-import { firebaseAuth } from './firebaseClient';
 import { primeLoginRoutingAfterAccountBootstrap } from './backendRoutingService';
 import { HistoryItem } from '../types';
 
@@ -26,7 +26,7 @@ const normalizeBillingIdempotencyToken = (value: string): string =>
     .replace(/^-+|-+$/g, '');
 
 const resolveBillingIdempotencyActor = (): string => {
-  const uid = String(firebaseAuth.currentUser?.uid || '').trim();
+  const uid = readStoredAuthSessionUid();
   if (uid) return `uid:${uid}`;
   return 'uid:anonymous';
 };

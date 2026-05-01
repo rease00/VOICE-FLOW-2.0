@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "v-flow-ai",
+  "workers_dev": true,
   "compatibility_date": "2026-04-18",
   "main": ".open-next/worker.js",
   "minify": true,
@@ -8,5 +9,26 @@
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "v-flow-ai-db",
+      "database_id": "d6b6d097-6699-4494-baa0-fd929047c4ac",
+      "preview_database_id": "b19789ad-3d84-4c7c-ab26-8a5e8b5113f2",
+      "migrations_dir": "./src/server/d1/migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "VF_NOVEL_STORAGE",
+      "bucket_name": "vf-novel-storage"
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "dev.v-flow-ai.com/*",
+      "zone_name": "v-flow-ai.com"
+    }
+  ]
 }

@@ -389,10 +389,6 @@ describe('adminService D1-backed account mutations', () => {
       user_id: 'reader_two',
       uid: 'uid-1',
     });
-    expect(collections.get('user_profiles')?.get('uid-1')).toMatchObject({
-      uid: 'uid-1',
-      userId: 'reader_two',
-    });
 
     const patchResponse = await handleAdminRoute(
       new Request('http://localhost/api/admin/users/uid-1', {
@@ -413,12 +409,6 @@ describe('adminService D1-backed account mutations', () => {
       plan: 'Pro',
     });
     expect(JSON.parse(String(d1.tables.accountEntitlements.get('uid-1')?.payload_json || '{}'))).toMatchObject({
-      uid: 'uid-1',
-      plan: 'Pro',
-      paidVfBalance: 250,
-      vffBalance: 50,
-    });
-    expect(collections.get('entitlements')?.get('uid-1')).toMatchObject({
       uid: 'uid-1',
       plan: 'Pro',
       paidVfBalance: 250,

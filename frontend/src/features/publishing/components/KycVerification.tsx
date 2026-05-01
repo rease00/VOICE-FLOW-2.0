@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { useUser } from '../../../../contexts/UserContext';
 import type { KycStatus } from '../model/types';
 import {
   Shield,
@@ -11,43 +10,23 @@ import {
   Loader2,
   ExternalLink,
 } from 'lucide-react';
-import { API_ROUTES } from '../../../shared/api/routes';
+import { getPublishingStatus, startKycSession } from '../services/publishingService';
 
 interface KycVerificationProps {
   onStatusChange?: (status: KycStatus) => void;
 }
 
 export function KycVerification({ onStatusChange }: KycVerificationProps) {
-  const user = useUser();
   const [kycStatus, setKycStatus] = useState<KycStatus>('none');
   const [sessionUrl, setSessionUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const startKycSession = useCallback(async () => {
+  const beginKycSession = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const { firebaseAuth } = await import('../../../../services/firebaseClient');
-      const token = await firebaseAuth.currentUser?.getIdToken();
-      if (!token) throw new Error('Not authenticated');
-
-      const res = await fetch(API_ROUTES.account.kyc, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ action: 'create-session' }),
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to start verification session');
-      }
-
-      const data = await res.json();
+      const data = await startKycSession(AbortSignal.timeout(10000));
       setSessionUrl(data.session?.url || null);
       setKycStatus('pending');
       onStatusChange?.('pending');
@@ -62,21 +41,7 @@ export function KycVerification({ onStatusChange }: KycVerificationProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const { firebaseAuth } = await import('../../../../services/firebaseClient');
-      const token = await firebaseAuth.currentUser?.getIdToken();
-      if (!token) throw new Error('Not authenticated');
-
-      const res = await fetch(API_ROUTES.account.kyc, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to check status');
-      }
-
-      const data = await res.json();
+      const data = await getPublishingStatus(AbortSignal.timeout(10000));
       const status: KycStatus = data.kycStatus || 'none';
       setKycStatus(status);
       onStatusChange?.(status);
@@ -113,7 +78,7 @@ export function KycVerification({ onStatusChange }: KycVerificationProps) {
           </p>
           {error && <p className="text-sm text-red-500">{error}</p>}
           <button
-            onClick={startKycSession}
+            onClick={beginKycSession}
             disabled={isLoading}
             className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -173,7 +138,7 @@ export function KycVerification({ onStatusChange }: KycVerificationProps) {
         </p>
         {error && <p className="text-sm text-red-500">{error}</p>}
         <button
-          onClick={startKycSession}
+          onClick={beginKycSession}
           disabled={isLoading}
           className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >

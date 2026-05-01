@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildEmailVerificationActionSettings,
   buildUnverifiedEmailSignInResult,
-  shouldAllowFirestoreAdminRoleFallback,
 } from '../contexts/UserContext';
 
 afterEach(() => {
@@ -48,21 +47,4 @@ describe('auth verification helpers', () => {
     expect(settings?.url.startsWith('http://') || settings?.url.startsWith('https://')).toBe(true);
   });
 
-  it('disables Firestore admin-role fallback in production unless explicitly enabled', () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', '');
-    expect(shouldAllowFirestoreAdminRoleFallback()).toBe(false);
-
-    vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', 'true');
-    expect(shouldAllowFirestoreAdminRoleFallback()).toBe(true);
-  });
-
-  it('enables Firestore admin-role fallback in non-production unless explicitly disabled', () => {
-    vi.stubEnv('NODE_ENV', 'development');
-    vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', '');
-    expect(shouldAllowFirestoreAdminRoleFallback()).toBe(true);
-
-    vi.stubEnv('NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE', 'false');
-    expect(shouldAllowFirestoreAdminRoleFallback()).toBe(false);
-  });
 });

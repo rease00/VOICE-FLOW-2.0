@@ -19,7 +19,7 @@ import { Button } from "@/ui/Button";
 import { useAdminStore, type AdminTab, type AdminUser } from "./adminStore";
 import { adminApi } from "@/api/index";
 import { isAdminLoginEmail } from "@/shared/auth/adminProvisioning";
-import { firebaseAuth } from "../../../../services/firebaseClient";
+import { useOptionalUser } from "../../../../contexts/UserContext";
 
 /* ── Helpers ─────────────────────────────────────────── */
 
@@ -208,6 +208,7 @@ function AccessDenied() {
 /* ── Main dashboard ──────────────────────────────────── */
 
 export function AdminDashboardV2() {
+  const userCtx = useOptionalUser();
   const {
     tab,
     metrics,
@@ -223,7 +224,7 @@ export function AdminDashboardV2() {
   } = useAdminStore();
 
   /* ── admin guard (UI-only; server enforces auth via JWT on all /api/admin/* endpoints) ── */
-  const currentEmail = firebaseAuth?.currentUser?.email ?? "";
+  const currentEmail = String(userCtx?.user?.email || "").trim();
   const isAdmin = Boolean(currentEmail && isAdminLoginEmail(currentEmail));
 
   /* ── data loaders ─────────────────────────────── */

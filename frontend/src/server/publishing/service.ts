@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server';
+import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../firebaseAdmin';
 import type { Book } from '../../features/library/model/types';
@@ -208,9 +209,9 @@ export const listPublishedBooksForLibrary = async (input?: {
   const languages = String(input?.languages || '').trim().toLowerCase();
 
   return snapshot.docs
-    .map((doc) => toPublishedBook(doc))
-    .filter((book): book is PublishedBook => Boolean(book))
-    .filter((book) => {
+    .map((doc: QueryDocumentSnapshot) => toPublishedBook(doc))
+    .filter((book: PublishedBook | null): book is PublishedBook => Boolean(book))
+    .filter((book: PublishedBook) => {
       if (languages && languages !== 'all' && String(book.language || '').trim().toLowerCase() !== languages) {
         return false;
       }
@@ -224,13 +225,13 @@ export const listPublishedBooksForLibrary = async (input?: {
       }
       return true;
     })
-    .sort((left, right) => {
+    .sort((left: PublishedBook, right: PublishedBook) => {
       const rightPublishedAt = toSortableTimestamp(right.publishedAt || right.createdAt);
       const leftPublishedAt = toSortableTimestamp(left.publishedAt || left.createdAt);
       return rightPublishedAt - leftPublishedAt;
     })
     .slice(0, 50)
-    .map((book) => mapPublishedBookToLibraryBook(book));
+    .map((book: PublishedBook) => mapPublishedBookToLibraryBook(book));
 };
 
 export const handlePublishingBooksRoute = async (request: NextRequest): Promise<Response> => {
@@ -269,8 +270,8 @@ export const handlePublishingBooksRoute = async (request: NextRequest): Promise<
         .orderBy('createdAt', 'desc')
         .get();
       const books = snapshot.docs
-        .map((doc) => toPublishedBook(doc))
-        .filter((book): book is PublishedBook => Boolean(book));
+        .map((doc: QueryDocumentSnapshot) => toPublishedBook(doc))
+        .filter((book: PublishedBook | null): book is PublishedBook => Boolean(book));
       return Response.json({ books });
     }
 

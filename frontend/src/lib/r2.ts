@@ -24,6 +24,10 @@ type NativeR2Bucket = {
       customMetadata?: Record<string, string>;
     },
   ) => Promise<unknown> | unknown;
+  createSignedUrl?: (
+    key: string,
+    options?: { expirationInSeconds?: number; httpMethod?: string },
+  ) => Promise<string> | string;
 };
 
 type RuntimeBindings = {
@@ -318,10 +322,21 @@ export const getR2SignedObjectUrl = async (
     throw new Error('objectKey is required.');
   }
 
-  if (!isR2Configured) {
-    if (!resolveNativeR2Bucket()) {
-      warnIfR2NotConfigured('Signed R2 URL generation');
+  const nativeBucket = resolveNativeR2Bucket();
+  if (nativeBucket && typeof nativeBucket.createSignedUrl === 'function') {
+    try {
+      const url = await nativeBucket.createSignedUrl(safeKey, {
+        expirationInSeconds: Math.max(60, Math.floor(expiresInSeconds)),
+        httpMethod: 'GET',
+      });
+      return String(url).trim();
+    } catch {
+      // Fall through to S3-compatible signing
     }
+  }
+
+  if (!isR2Configured) {
+    warnIfR2NotConfigured('Signed R2 URL generation');
     return getR2PublicObjectUrl(safeKey);
   }
 

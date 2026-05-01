@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { getD1Database, ensureD1Schema } from '../../../src/server/d1/util';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../../../src/server/firebaseAdmin';
 
 async function verifyToken(req: NextRequest) {
@@ -31,6 +32,16 @@ function verifyVeriffSignature(
   );
 }
 
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS agreements (
+  agreement_id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agreements_uid ON agreements(uid);
+`;
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -46,7 +57,8 @@ export async function POST(req: NextRequest) {
 
     const decoded = await verifyToken(req);
     const uid = decoded.uid;
-    const db = getFirebaseAdminFirestore();
+
+    const d1 = await getD1Database();
 
     if (action === 'create-session') {
       let session: { id: string; url: string; status: string };
@@ -90,6 +102,8 @@ export async function POST(req: NextRequest) {
         };
       }
 
+      // Always use Firestore compat for user doc since users don't have dedicated D1 table
+      const db = getFirebaseAdminFirestore();
       await db.doc(`users/${uid}`).set(
         { kycStatus: 'pending', kycSessionId: session.id },
         { merge: true },
@@ -114,19 +128,37 @@ export async function POST(req: NextRequest) {
         signatureHash: `${uid}:${version}:${Date.now()}`,
       };
 
-      const docRef = await db.collection('agreements').add(agreement);
+      let agreementId: string;
 
+      if (d1) {
+        await ensureD1Schema(d1, SCHEMA);
+        agreementId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        await d1.prepare(`
+          INSERT INTO agreements (agreement_id, uid, payload_json, created_at)
+          VALUES (?, ?, ?, ?)
+        `).bind(agreementId, uid, JSON.stringify(agreement), now).run();
+      } else {
+        const db = getFirebaseAdminFirestore();
+        const docRef = await db.collection('agreements').add(agreement);
+        agreementId = docRef.id;
+      }
+
+      // Always use Firestore compat for user doc
+      const db = getFirebaseAdminFirestore();
       await db.doc(`users/${uid}`).set(
         { agreementSigned: true, agreementVersion: version },
         { merge: true },
       );
 
       return NextResponse.json({
-        agreement: { id: docRef.id, ...agreement },
+        agreement: { id: agreementId, ...agreement },
       });
     }
 
     if (action === 'check-status') {
+      // User data lives in Firestore compat
+      const db = getFirebaseAdminFirestore();
       const doc = await db.doc(`users/${uid}`).get();
       const data = doc.data();
       return NextResponse.json({
@@ -146,8 +178,8 @@ export async function GET(req: NextRequest) {
   try {
     const decoded = await verifyToken(req);
     const uid = decoded.uid;
-    const db = getFirebaseAdminFirestore();
 
+    const db = getFirebaseAdminFirestore();
     const doc = await db.doc(`users/${uid}`).get();
     const data = doc.data();
 

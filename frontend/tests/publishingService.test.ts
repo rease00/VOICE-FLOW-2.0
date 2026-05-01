@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const getIdTokenMock = vi.hoisted(() => vi.fn());
+const mockSessionState = vi.hoisted(() => ({ token: '', uid: '' }));
 
-vi.mock('../services/firebaseClient', () => ({
-  firebaseAuth: {
-    currentUser: {
-      getIdToken: (...args: unknown[]) => getIdTokenMock(...args),
-    },
+vi.mock('../services/authSessionService', () => ({
+  readStoredAuthSessionState: () => {
+    const t = mockSessionState.token;
+    const u = mockSessionState.uid;
+    return t || u ? { token: t, uid: u } : null;
   },
 }));
 
@@ -14,7 +14,8 @@ describe('publishingService canonical payload unwrapping', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
-    getIdTokenMock.mockResolvedValue('token-1');
+    mockSessionState.token = 'd1-session-token';
+    mockSessionState.uid = 'publisher-uid';
   });
 
   afterEach(() => {

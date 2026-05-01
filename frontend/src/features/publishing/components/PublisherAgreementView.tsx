@@ -1,10 +1,9 @@
 'use client';
 
 import React, { useState, useRef, useCallback } from 'react';
-import { useUser } from '../../../../contexts/UserContext';
 import type { PublisherAgreement, AgreementTerms, AgreementSection } from '../model/types';
 import { FileText, CheckCircle2, ScrollText, Loader2 } from 'lucide-react';
-import { API_ROUTES } from '../../../shared/api/routes';
+import { signAgreement as submitPublisherAgreement } from '../services/publishingService';
 
 interface PublisherAgreementViewProps {
   onSigned?: (agreement: PublisherAgreement) => void;
@@ -53,7 +52,6 @@ const AGREEMENT_TERMS: AgreementTerms = {
 };
 
 export function PublisherAgreementView({ onSigned }: PublisherAgreementViewProps) {
-  const user = useUser();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isSigned, setIsSigned] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -69,33 +67,11 @@ export function PublisherAgreementView({ onSigned }: PublisherAgreementViewProps
     }
   }, []);
 
-  const signAgreement = useCallback(async () => {
+  const handleSignAgreement = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const { firebaseAuth } = await import('../../../../services/firebaseClient');
-      const token = await firebaseAuth.currentUser?.getIdToken();
-      if (!token) throw new Error('Not authenticated');
-
-      const res = await fetch(API_ROUTES.account.kyc, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: 'sign-agreement',
-          version: AGREEMENT_TERMS.version,
-        }),
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to sign agreement');
-      }
-
-      const data = await res.json();
+      const data = await submitPublisherAgreement(AGREEMENT_TERMS.version, AbortSignal.timeout(10000));
       setIsSigned(true);
       onSigned?.(data.agreement);
     } catch (err) {
@@ -174,7 +150,7 @@ export function PublisherAgreementView({ onSigned }: PublisherAgreementViewProps
         </label>
 
         <button
-          onClick={signAgreement}
+          onClick={handleSignAgreement}
           disabled={!agreed || isLoading}
           className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >

@@ -1,3 +1,4 @@
+import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { getFirebaseAdminFirestore } from '../firebaseAdmin.ts';
 
 export const VOICE_REGISTRY = Object.freeze({
@@ -42,7 +43,7 @@ export const resolveVoice = async (speaker: string, bookId?: string): Promise<st
     } else {
       const snapshot = await db.collection('publishedBooks').doc(bookId).collection('cast').get();
       const cast: Record<string, string> = {};
-      snapshot.forEach((doc) => {
+      snapshot.forEach((doc: QueryDocumentSnapshot) => {
         cast[doc.id] = String(doc.data()?.voiceName || '').trim();
       });
       castCache.set(bookId, cast);

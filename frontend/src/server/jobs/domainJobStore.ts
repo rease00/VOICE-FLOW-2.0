@@ -1,7 +1,143 @@
-import { getFirebaseAdminFirestore } from '../firebaseAdmin.ts';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 
-const DEFAULT_DOMAIN_JOB_COLLECTION = 'domainJobs';
+const DOMAIN_JOB_D1_TABLE = 'domain_jobs';
 const memoryDomainJobs = new Map<string, DomainJobRecord<any, any, any>>();
+
+type DomainJobD1Statement = {
+  bind: (...values: unknown[]) => DomainJobD1Statement;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
+  run: () => Promise<unknown>;
+};
+
+type DomainJobD1Database = {
+  prepare: (sql: string) => DomainJobD1Statement;
+  exec: (sql: string) => Promise<unknown>;
+};
+
+let d1DatabasePromise: Promise<DomainJobD1Database | null> | null = null;
+let d1SchemaPromise: Promise<void> | null = null;
+
+const getD1Database = async (): Promise<DomainJobD1Database | null> => {
+  if (!d1DatabasePromise) {
+    d1DatabasePromise = (async () => {
+      try {
+        const { env } = await getCloudflareContext({ async: true });
+        const db = (env as { DB?: DomainJobD1Database }).DB;
+        return db && typeof db.prepare === 'function' ? db : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return d1DatabasePromise;
+};
+
+const ensureD1Schema = async (db: DomainJobD1Database): Promise<void> => {
+  if (!d1SchemaPromise) {
+    d1SchemaPromise = db.exec(`
+CREATE TABLE IF NOT EXISTS domain_jobs (
+  id TEXT PRIMARY KEY NOT NULL,
+  uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS domain_jobs_uid_idx ON domain_jobs(uid);
+`).then(() => undefined).catch((error: unknown) => {
+      d1SchemaPromise = null;
+      throw error;
+    });
+  }
+  await d1SchemaPromise;
+};
+
+const parsePayloadJson = (value: string | null | undefined): Record<string, unknown> | null => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const readD1DomainJob = async (id: string): Promise<DomainJobRecord | null> => {
+  const db = await getD1Database();
+  if (!db) return null;
+  await ensureD1Schema(db);
+  const row = await db.prepare(`SELECT payload_json FROM ${DOMAIN_JOB_D1_TABLE} WHERE id = ? LIMIT 1`)
+    .bind(id)
+    .first<{ payload_json?: string }>();
+  const parsed = parsePayloadJson(row?.payload_json || null);
+  return parsed ? parsed as unknown as DomainJobRecord : null;
+};
+
+const writeD1DomainJob = async (record: DomainJobRecord): Promise<void> => {
+  const db = await getD1Database();
+  if (!db) return;
+  await ensureD1Schema(db);
+  await db.prepare(`
+    INSERT INTO ${DOMAIN_JOB_D1_TABLE} (id, uid, payload_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      uid = excluded.uid,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at
+  `)
+    .bind(record.id, record.ownerUid || '', JSON.stringify(record), record.createdAt, record.updatedAt)
+    .run();
+};
+
+const deleteD1DomainJob = async (id: string): Promise<void> => {
+  const db = await getD1Database();
+  if (!db) return;
+  await ensureD1Schema(db);
+  await db.prepare(`DELETE FROM ${DOMAIN_JOB_D1_TABLE} WHERE id = ?`)
+    .bind(id)
+    .run();
+};
+
+const listD1DomainJobsForUid = async (uid: string): Promise<DomainJobRecord[]> => {
+  const db = await getD1Database();
+  if (!db) return [];
+  await ensureD1Schema(db);
+  const response = await db.prepare(`SELECT payload_json FROM ${DOMAIN_JOB_D1_TABLE} WHERE uid = ? ORDER BY created_at DESC`)
+    .bind(uid)
+    .all<{ payload_json?: string }>();
+  if (!Array.isArray(response?.results)) return [];
+  return response.results
+    .map(row => parsePayloadJson(row?.payload_json || null))
+    .filter((r): r is Record<string, unknown> => r !== null)
+    .map(r => r as unknown as DomainJobRecord);
+};
+
+const listAllD1DomainJobs = async (): Promise<DomainJobRecord[]> => {
+  const db = await getD1Database();
+  if (!db) return [];
+  await ensureD1Schema(db);
+  const response = await db.prepare(`SELECT payload_json FROM ${DOMAIN_JOB_D1_TABLE} ORDER BY created_at DESC`)
+    .all<{ payload_json?: string }>();
+  if (!Array.isArray(response?.results)) return [];
+  return response.results
+    .map(row => parsePayloadJson(row?.payload_json || null))
+    .filter((r): r is Record<string, unknown> => r !== null)
+    .map(r => r as unknown as DomainJobRecord);
+};
+
+const countD1DomainJobs = async (days: number): Promise<number> => {
+  const db = await getD1Database();
+  if (!db) return 0;
+  await ensureD1Schema(db);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const row = await db.prepare(`SELECT COUNT(*) as cnt FROM ${DOMAIN_JOB_D1_TABLE} WHERE created_at >= ?`)
+    .bind(since)
+    .first<{ cnt?: number }>();
+  return typeof row?.cnt === 'number' ? row.cnt : 0;
+};
 
 type NativeDomainJobStoreAdapter = {
   getRecord: (id: string) => Promise<DomainJobRecord | null> | DomainJobRecord | null;
@@ -32,19 +168,6 @@ export interface DomainJobRecord<TPayload = Record<string, unknown>, TResult = R
   completedAt?: string | undefined;
   cancelledAt?: string | undefined;
 }
-
-const getJobCollectionName = (): string => {
-  return String(process.env.VF_DOMAIN_JOB_COLLECTION || DEFAULT_DOMAIN_JOB_COLLECTION).trim()
-    || DEFAULT_DOMAIN_JOB_COLLECTION;
-};
-
-const getFirestoreHandle = () => {
-  try {
-    return getFirebaseAdminFirestore();
-  } catch {
-    return null;
-  }
-};
 
 const getRuntimeBindings = (): RuntimeBindings | null => {
   const bindings = (globalThis as Record<string, unknown>).__vfRuntimeBindings;
@@ -110,16 +233,13 @@ const readLegacyDomainJobRecord = async <
   TResult = Record<string, unknown>,
   TProgress = Record<string, unknown>,
 >(safeId: string): Promise<DomainJobRecord<TPayload, TResult, TProgress> | null> => {
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    return (memoryDomainJobs.get(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
+  const d1Record = await readD1DomainJob(safeId);
+  if (d1Record) {
+    memoryDomainJobs.set(safeId, d1Record);
+    return d1Record as DomainJobRecord<TPayload, TResult, TProgress>;
   }
 
-  const snapshot = await firestore.collection(getJobCollectionName()).doc(safeId).get();
-  if (!snapshot.exists) {
-    return null;
-  }
-  return (snapshot.data() as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
+  return (memoryDomainJobs.get(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
 };
 
 const saveLegacyDomainJobRecord = async <
@@ -127,13 +247,8 @@ const saveLegacyDomainJobRecord = async <
   TResult = Record<string, unknown>,
   TProgress = Record<string, unknown>,
 >(safeRecord: DomainJobRecord<TPayload, TResult, TProgress>): Promise<DomainJobRecord<TPayload, TResult, TProgress>> => {
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    memoryDomainJobs.set(safeRecord.id, safeRecord);
-    return safeRecord;
-  }
-
-  await firestore.collection(getJobCollectionName()).doc(safeRecord.id).set(safeRecord, { merge: true });
+  await writeD1DomainJob(safeRecord as DomainJobRecord);
+  memoryDomainJobs.set(safeRecord.id, safeRecord);
   return safeRecord;
 };
 
@@ -145,32 +260,20 @@ const createLegacyDomainJobRecordIfAbsent = async <
   record: DomainJobRecord<TPayload, TResult, TProgress>;
   created: boolean;
 }> => {
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    const existing = memoryDomainJobs.get(safeRecord.id) as DomainJobRecord<TPayload, TResult, TProgress> | undefined;
-    if (existing) {
-      return { record: existing, created: false };
-    }
-    memoryDomainJobs.set(safeRecord.id, safeRecord);
-    return { record: safeRecord, created: true };
+  const existing = memoryDomainJobs.get(safeRecord.id) as DomainJobRecord<TPayload, TResult, TProgress> | undefined;
+  if (existing) {
+    return { record: existing, created: false };
   }
 
-  const docRef = firestore.collection(getJobCollectionName()).doc(safeRecord.id);
-  let created = false;
-  let resolvedRecord: DomainJobRecord<TPayload, TResult, TProgress> = safeRecord;
-  await firestore.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef);
-    if (snapshot.exists) {
-      resolvedRecord = (snapshot.data() as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || safeRecord;
-      created = false;
-      return;
-    }
-    transaction.set(docRef, safeRecord, { merge: false });
-    resolvedRecord = safeRecord;
-    created = true;
-  });
+  const d1Existing = await readD1DomainJob(safeRecord.id);
+  if (d1Existing) {
+    memoryDomainJobs.set(safeRecord.id, d1Existing);
+    return { record: d1Existing as DomainJobRecord<TPayload, TResult, TProgress>, created: false };
+  }
 
-  return { record: resolvedRecord, created };
+  await writeD1DomainJob(safeRecord as DomainJobRecord);
+  memoryDomainJobs.set(safeRecord.id, safeRecord);
+  return { record: safeRecord, created: true };
 };
 
 export const createDomainJobRecord = <TPayload = Record<string, unknown>>(
@@ -264,4 +367,122 @@ export const createDomainJobRecordIfAbsent = async <
   }
 
   return createLegacyDomainJobRecordIfAbsent(safeRecord);
+};
+
+export const createDomainJob = async <TPayload = Record<string, unknown>>(
+  input: {
+    id: string;
+    domain: string;
+    ownerUid?: string | undefined;
+    payload?: TPayload | undefined;
+  }
+): Promise<DomainJobRecord<TPayload>> => {
+  const record = createDomainJobRecord<TPayload>(input);
+  await writeD1DomainJob(record as DomainJobRecord);
+  memoryDomainJobs.set(record.id, record);
+  return record;
+};
+
+export const getDomainJob = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(jobId: string): Promise<DomainJobRecord<TPayload, TResult, TProgress> | null> => {
+  const safeId = String(jobId || '').trim();
+  if (!safeId) return null;
+
+  const d1Record = await readD1DomainJob(safeId);
+  if (d1Record) {
+    memoryDomainJobs.set(safeId, d1Record);
+    return d1Record as DomainJobRecord<TPayload, TResult, TProgress>;
+  }
+
+  return (memoryDomainJobs.get(safeId) as DomainJobRecord<TPayload, TResult, TProgress> | undefined) || null;
+};
+
+export const updateDomainJob = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(
+  jobId: string,
+  patch: Partial<DomainJobRecord<TPayload, TResult, TProgress>>,
+): Promise<DomainJobRecord<TPayload, TResult, TProgress> | null> => {
+  const safeId = String(jobId || '').trim();
+  if (!safeId) return null;
+
+  const existing = await getDomainJob<TPayload, TResult, TProgress>(safeId);
+  if (!existing) return null;
+
+  const updated: DomainJobRecord<TPayload, TResult, TProgress> = {
+    ...existing,
+    ...patch,
+    id: safeId,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await writeD1DomainJob(updated as DomainJobRecord);
+  memoryDomainJobs.set(safeId, updated);
+  return updated;
+};
+
+export const deleteDomainJob = async (jobId: string): Promise<boolean> => {
+  const safeId = String(jobId || '').trim();
+  if (!safeId) return false;
+
+  await deleteD1DomainJob(safeId);
+  return memoryDomainJobs.delete(safeId);
+};
+
+export const listDomainJobs = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(ownerUid: string): Promise<DomainJobRecord<TPayload, TResult, TProgress>[]> => {
+  const safeUid = String(ownerUid || '').trim();
+
+  const d1Records = await listD1DomainJobsForUid(safeUid);
+  if (d1Records.length > 0) {
+    for (const rec of d1Records) {
+      memoryDomainJobs.set(rec.id, rec);
+    }
+    return d1Records as DomainJobRecord<TPayload, TResult, TProgress>[];
+  }
+
+  return Array.from(memoryDomainJobs.values())
+    .filter(rec => rec.ownerUid === safeUid)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt)) as DomainJobRecord<TPayload, TResult, TProgress>[];
+};
+
+export const getAllDomainJobs = async <
+  TPayload = Record<string, unknown>,
+  TResult = Record<string, unknown>,
+  TProgress = Record<string, unknown>,
+>(): Promise<DomainJobRecord<TPayload, TResult, TProgress>[]> => {
+  const d1Records = await listAllD1DomainJobs();
+  if (d1Records.length > 0) {
+    for (const rec of d1Records) {
+      memoryDomainJobs.set(rec.id, rec);
+    }
+    return d1Records as DomainJobRecord<TPayload, TResult, TProgress>[];
+  }
+
+  return Array.from(memoryDomainJobs.values())
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt)) as DomainJobRecord<TPayload, TResult, TProgress>[];
+};
+
+export const countDomainJobs = async (days: number): Promise<number> => {
+  const safeDays = Math.max(0, typeof days === 'number' ? Math.floor(days) : 0);
+
+  const d1Count = await countD1DomainJobs(safeDays);
+  if (d1Count > 0) return d1Count;
+
+  if (safeDays === 0) return memoryDomainJobs.size;
+
+  const since = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+  let count = 0;
+  for (const rec of memoryDomainJobs.values()) {
+    if (rec.createdAt >= since) count++;
+  }
+  return count;
 };

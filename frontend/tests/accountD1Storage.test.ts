@@ -417,9 +417,5 @@ describe('account server D1 storage', () => {
       uid: 'uid-1',
       userId: 'reader_two',
     });
-    expect(firestoreCollections.get('user_profiles')?.get('uid-1')).toMatchObject({
-      uid: 'uid-1',
-      userId: 'reader_two',
-    });
   });
 });

@@ -10,6 +10,7 @@ import {
   serverTimestamp,
   Timestamp,
   type Firestore,
+  type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import type { ChapterComment } from '../model/types';
 
@@ -39,7 +40,7 @@ export async function getChapterComments(bookId: string): Promise<ChapterComment
       orderBy('createdAt', 'desc')
     );
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((d) => {
+    return snapshot.docs.map((d: QueryDocumentSnapshot) => {
       const data = d.data();
       return {
         id: d.id,

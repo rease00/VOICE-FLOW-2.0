@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, Coins, CreditCard, Sparkles, Wallet } from 'lucide-react';
 import type { BillingPlanKey, TokenPackKey, VnTokenPackKey } from '../../../../services/accountService';
 import { BrandLogo } from '../../../../components/BrandLogo';
-import { firebaseAuth } from '../../../../services/firebaseClient';
 import { useBillingActions } from '../hooks/useBillingActions';
 import { BILLING_PLAN_ROWS, BILLING_TOKEN_PACK_ROWS, BILLING_VC_PACK_ROWS, BILLING_VN_PACK_ROWS, type BillingVcPackCatalogKey } from '../catalog';
 import { useManagedTabs } from '../../../shared/ui/tabs';
@@ -259,7 +258,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   const resolvedAuthMode = 'login';
   // isAuthenticated already comes from UserContext via props — no need for a
   // separate onAuthStateChanged that would open a redundant Firebase connection.
-  const hasActiveAuthSession = Boolean(isAuthenticated || firebaseAuth.currentUser);
+  const hasActiveAuthSession = Boolean(isAuthenticated);
   const nativeCurrencyCode = useMemo(() => resolveNativeCurrencyCode(billingCountry), [billingCountry]);
   const billingCheckoutLocked = isBillingCheckoutLocked();
 

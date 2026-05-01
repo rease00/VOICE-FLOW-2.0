@@ -1,8 +1,5 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 
-import { getFirebaseAdminFirestore } from '../firebaseAdmin';
-
-const READER_LEGAL_ACK_COLLECTION = 'reader_legal_ack';
 const READER_LEGAL_ACK_D1_TABLE = 'reader_legal_ack';
 const memoryReaderLegalAck = new Map<string, ReaderLegalAckRecord>();
 
@@ -28,14 +25,6 @@ export interface ReaderLegalAckRecord {
   updatedAt: string;
   acceptedAt: string;
 }
-
-const getFirestoreHandle = () => {
-  try {
-    return getFirebaseAdminFirestore();
-  } catch {
-    return null;
-  }
-};
 
 const parsePersistedJsonRecord = (value: string | null | undefined): Record<string, unknown> | null => {
   const raw = String(value || '').trim();
@@ -138,29 +127,6 @@ export const getReaderLegalAck = async (uid: string): Promise<ReaderLegalAckReco
       updatedAt: String(d1Record.updatedAt || ''),
       acceptedAt: String(d1Record.acceptedAt || ''),
     };
-    const firestore = getFirestoreHandle();
-    if (firestore) {
-      await firestore.collection(READER_LEGAL_ACK_COLLECTION).doc(safeUid).set(record, { merge: true });
-    }
-    memoryReaderLegalAck.set(safeUid, record);
-    return record;
-  }
-
-  const firestore = getFirestoreHandle();
-  if (firestore) {
-    const snapshot = await firestore.collection(READER_LEGAL_ACK_COLLECTION).doc(safeUid).get();
-    if (!snapshot.exists) {
-      return memoryReaderLegalAck.get(safeUid) || emptyAck(safeUid);
-    }
-
-    const payload = snapshot.data() as Partial<ReaderLegalAckRecord> | undefined;
-    const record = {
-      uid: safeUid,
-      accepted: Boolean(payload?.accepted),
-      updatedAt: String(payload?.updatedAt || ''),
-      acceptedAt: String(payload?.acceptedAt || ''),
-    };
-    await writeReaderLegalAckD1Record(record);
     memoryReaderLegalAck.set(safeUid, record);
     return record;
   }
@@ -179,13 +145,6 @@ export const setReaderLegalAck = async (uid: string, accepted: boolean): Promise
   };
 
   await writeReaderLegalAckD1Record(payload);
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    memoryReaderLegalAck.set(safeUid, payload);
-    return payload;
-  }
-
-  await firestore.collection(READER_LEGAL_ACK_COLLECTION).doc(safeUid).set(payload, { merge: true });
   memoryReaderLegalAck.set(safeUid, payload);
   return payload;
 };
@@ -193,10 +152,6 @@ export const setReaderLegalAck = async (uid: string, accepted: boolean): Promise
 export const deleteReaderLegalAck = async (uid: string): Promise<number> => {
   const safeUid = String(uid || '').trim();
   if (!safeUid) return 0;
-  const firestore = getFirestoreHandle();
-  if (firestore) {
-    await firestore.collection(READER_LEGAL_ACK_COLLECTION).doc(safeUid).delete().catch(() => undefined);
-  }
   memoryReaderLegalAck.delete(safeUid);
   return deleteReaderLegalAckD1Record(safeUid);
 };

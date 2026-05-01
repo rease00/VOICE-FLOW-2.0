@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server';
+import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
 import type { Book, GutendexResponse } from '../../features/library/model/types';
 import { fetchBookById, fetchDiscoveredBooks, type BookDiscoveryOptions } from '../bookDiscovery';
@@ -10,6 +11,25 @@ import {
   mapPublishedBookToLibraryBook,
   readPublishedBookById,
 } from '../publishing/service';
+import {
+  LIBRARY_D1_TABLES,
+  readReaderD1Record,
+  readReaderD1Rows,
+  writeReaderD1Record,
+  writeReaderD1UpsertMultiKey,
+  deleteReaderD1Record,
+  getLibraryReaderD1Database,
+  ensureLibraryReaderD1Schema,
+} from './d1Storage';
+import { getFirebaseAdminFirestore } from '../firebaseAdmin';
+
+const firestore = () => getFirebaseAdminFirestore();
+
+const READER_FIRESTORE_COLLECTIONS = Object.freeze({
+  readerProgress: 'reader_progress',
+  readerSessions: 'reader_sessions',
+  readerPreferences: 'reader_preferences',
+} as const);
 
 type LibraryDiscoveryMeta = {
   publishedBooksAvailable: boolean;
@@ -198,4 +218,198 @@ export const handleLibraryReaderObjectRoute = async (request: Request): Promise<
       'Cache-Control': 'no-store',
     },
   });
+};
+
+// ── Reader Progress ──────────────────────────────────────────────────────────────
+
+export const readReaderProgress = async (
+  uid: string,
+  bookId: string,
+): Promise<Record<string, unknown> | null> => {
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    const d1Record = await readReaderD1Record(LIBRARY_D1_TABLES.readerProgress, 'uid', uid);
+    if (d1Record) {
+      return d1Record;
+    }
+    return null;
+  }
+
+  const snapshot = await firestore()
+    .collection(READER_FIRESTORE_COLLECTIONS.readerProgress)
+    .where('uid', '==', uid)
+    .where('bookId', '==', bookId)
+    .limit(1)
+    .get();
+  if (snapshot.empty) return null;
+  return snapshot.docs[0].data() as Record<string, unknown>;
+};
+
+export const writeReaderProgress = async (
+  uid: string,
+  bookId: string,
+  progress: Record<string, unknown>,
+): Promise<void> => {
+  const nowIso = new Date().toISOString();
+  const payload = { ...progress, uid, bookId, updatedAt: nowIso };
+
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    await writeReaderD1UpsertMultiKey(
+      LIBRARY_D1_TABLES.readerProgress,
+      ['uid', 'book_id'],
+      [uid, bookId],
+      payload,
+      nowIso,
+    );
+    return;
+  }
+
+  const query = await firestore()
+    .collection(READER_FIRESTORE_COLLECTIONS.readerProgress)
+    .where('uid', '==', uid)
+    .where('bookId', '==', bookId)
+    .limit(1)
+    .get();
+  if (!query.empty) {
+    await query.docs[0].ref.set(payload, { merge: true });
+    return;
+  }
+  await firestore().collection(READER_FIRESTORE_COLLECTIONS.readerProgress).add(payload);
+};
+
+export const deleteReaderProgress = async (uid: string, bookId: string): Promise<number> => {
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    const existing = await readReaderD1Record(LIBRARY_D1_TABLES.readerProgress, 'uid', uid);
+    await db.prepare(`DELETE FROM ${LIBRARY_D1_TABLES.readerProgress} WHERE uid = ? AND book_id = ?`)
+      .bind(uid, bookId)
+      .run();
+    return existing ? 1 : 0;
+  }
+
+  const query = await firestore()
+    .collection(READER_FIRESTORE_COLLECTIONS.readerProgress)
+    .where('uid', '==', uid)
+    .where('bookId', '==', bookId)
+    .limit(1)
+    .get();
+  if (query.empty) return 0;
+  await query.docs[0].ref.delete();
+  return 1;
+};
+
+// ── Reader Sessions ──────────────────────────────────────────────────────────────
+
+export const readReaderSession = async (
+  sessionId: string,
+): Promise<Record<string, unknown> | null> => {
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    return readReaderD1Record(LIBRARY_D1_TABLES.readerSessions, 'session_id', sessionId);
+  }
+
+  const snapshot = await firestore().collection(READER_FIRESTORE_COLLECTIONS.readerSessions).doc(sessionId).get();
+  return snapshot.exists ? (snapshot.data() as Record<string, unknown>) : null;
+};
+
+export const listReaderSessions = async (uid: string, limit = 50): Promise<Record<string, unknown>[]> => {
+  const safeLimit = Math.max(1, Math.min(200, limit));
+
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    return readReaderD1Rows(
+      `SELECT session_id, payload_json, updated_at FROM ${LIBRARY_D1_TABLES.readerSessions} WHERE uid = ? ORDER BY updated_at DESC, session_id DESC LIMIT ?`,
+      uid,
+      safeLimit,
+    );
+  }
+
+  const snapshot = await firestore()
+    .collection(READER_FIRESTORE_COLLECTIONS.readerSessions)
+    .where('uid', '==', uid)
+    .orderBy('updatedAt', 'desc')
+    .limit(safeLimit)
+    .get();
+  return snapshot.docs.map((doc: QueryDocumentSnapshot) => doc.data() as Record<string, unknown>);
+};
+
+export const writeReaderSession = async (
+  sessionId: string,
+  session: Record<string, unknown>,
+): Promise<void> => {
+  const nowIso = new Date().toISOString();
+  const payload = { ...session, sessionId, updatedAt: nowIso };
+
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    await writeReaderD1Record(LIBRARY_D1_TABLES.readerSessions, 'session_id', sessionId, payload, nowIso);
+    return;
+  }
+
+  await firestore().collection(READER_FIRESTORE_COLLECTIONS.readerSessions).doc(sessionId).set(payload, { merge: true });
+};
+
+export const deleteReaderSession = async (sessionId: string): Promise<number> => {
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    return deleteReaderD1Record(LIBRARY_D1_TABLES.readerSessions, 'session_id', sessionId);
+  }
+
+  const ref = firestore().collection(READER_FIRESTORE_COLLECTIONS.readerSessions).doc(sessionId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return 0;
+  await ref.delete();
+  return 1;
+};
+
+// ── Reader Preferences ───────────────────────────────────────────────────────────
+
+export const readReaderPreferences = async (uid: string): Promise<Record<string, unknown> | null> => {
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    return readReaderD1Record(LIBRARY_D1_TABLES.readerPreferences, 'uid', uid);
+  }
+
+  const snapshot = await firestore().collection(READER_FIRESTORE_COLLECTIONS.readerPreferences).doc(uid).get();
+  return snapshot.exists ? (snapshot.data() as Record<string, unknown>) : null;
+};
+
+export const writeReaderPreferences = async (
+  uid: string,
+  preferences: Record<string, unknown>,
+): Promise<void> => {
+  const nowIso = new Date().toISOString();
+  const payload = { ...preferences, uid, updatedAt: nowIso };
+
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    await writeReaderD1Record(LIBRARY_D1_TABLES.readerPreferences, 'uid', uid, payload, nowIso);
+    return;
+  }
+
+  await firestore().collection(READER_FIRESTORE_COLLECTIONS.readerPreferences).doc(uid).set(payload, { merge: true });
+};
+
+export const deleteReaderPreferences = async (uid: string): Promise<number> => {
+  const db = await getLibraryReaderD1Database();
+  if (db) {
+    await ensureLibraryReaderD1Schema(db);
+    return deleteReaderD1Record(LIBRARY_D1_TABLES.readerPreferences, 'uid', uid);
+  }
+
+  const ref = firestore().collection(READER_FIRESTORE_COLLECTIONS.readerPreferences).doc(uid);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return 0;
+  await ref.delete();
+  return 1;
 };

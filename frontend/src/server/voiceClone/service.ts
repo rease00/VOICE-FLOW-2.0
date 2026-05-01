@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 
 import type { NextRequest } from 'next/server';
 
@@ -13,7 +14,6 @@ import type {
   VoiceCloneRenderRequest,
   VoiceCloneStemSeparationResponse,
 } from '../../features/voice-cloning/api';
-import { getFirebaseAdminFirestore } from '../firebaseAdmin';
 import {
   createDomainJobRecordIfAbsent,
   createDomainJobRecord,
@@ -26,7 +26,26 @@ import { readEnvNumber, readEnvValue } from '../../shared/runtime/env';
 import { hasLegacyVoiceCloneProxyConfigured, isVoiceCloneProxyMode } from './mode';
 
 const VOICE_CLONE_DOMAIN = 'voiceClone';
-const VOICE_CLONE_ARTIFACT_COLLECTION = 'voiceCloneArtifacts';
+const VOICE_CLONE_ARTIFACT_D1_TABLE = 'voice_clone_artifacts';
+const VOICE_CLONE_JOBS_D1_TABLE = 'voice_clone_jobs';
+const VOICE_CLONE_D1_SCHEMA = `
+CREATE TABLE IF NOT EXISTS ${VOICE_CLONE_ARTIFACT_D1_TABLE} (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_uid TEXT NOT NULL,
+  download_url TEXT NOT NULL,
+  file_name TEXT,
+  content_type TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ${VOICE_CLONE_JOBS_D1_TABLE} (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_uid TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
 const DEFAULT_PROVIDER_LABEL = 'hosted-runtime';
 const DEFAULT_RUNTIME_TIMEOUT_MS = 120_000;
 const VOICE_CLONE_ROUTE_BASE = '/api/v1/voice-clone';
@@ -71,8 +90,21 @@ type RuntimeConfig = {
   providerLabel: string;
 };
 
+type VoiceCloneArtifactD1Statement = {
+  bind: (...values: unknown[]) => VoiceCloneArtifactD1Statement;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  run: () => Promise<unknown>;
+};
+
+type VoiceCloneArtifactD1Database = {
+  prepare: (sql: string) => VoiceCloneArtifactD1Statement;
+  exec: (sql: string) => Promise<unknown>;
+};
+
 const activeVoiceCloneJobs = new Map<string, AbortController>();
 const memoryArtifacts = new Map<string, VoiceCloneArtifactRecord>();
+let voiceCloneArtifactD1DatabasePromise: Promise<VoiceCloneArtifactD1Database | null> | null = null;
+let voiceCloneArtifactD1SchemaPromise: Promise<void> | null = null;
 
 const normalizeBaseUrl = (value: string): string => String(value || '').trim().replace(/\/+$/, '');
 
@@ -154,28 +186,117 @@ const buildArtifactId = (ownerUid: string, url: string): string => (
   buildHashId('vca', ownerUid, url)
 );
 
-const getFirestoreHandle = () => {
+const getVoiceCloneArtifactD1Database = async (): Promise<VoiceCloneArtifactD1Database | null> => {
+  if (!voiceCloneArtifactD1DatabasePromise) {
+    voiceCloneArtifactD1DatabasePromise = (async () => {
+      try {
+        const { env } = await getCloudflareContext({ async: true });
+        const db = (env as { DB?: VoiceCloneArtifactD1Database }).DB;
+        return db && typeof db.prepare === 'function' ? db : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return voiceCloneArtifactD1DatabasePromise;
+};
+
+const ensureVoiceCloneArtifactD1Schema = async (db: VoiceCloneArtifactD1Database): Promise<void> => {
+  if (!voiceCloneArtifactD1SchemaPromise) {
+    voiceCloneArtifactD1SchemaPromise = db.exec(VOICE_CLONE_D1_SCHEMA).then(() => undefined).catch((error: unknown) => {
+      voiceCloneArtifactD1SchemaPromise = null;
+      throw error;
+    });
+  }
+  await voiceCloneArtifactD1SchemaPromise;
+};
+
+const readVoiceCloneArtifactD1Record = async (artifactId: string): Promise<VoiceCloneArtifactRecord | null> => {
+  const db = await getVoiceCloneArtifactD1Database();
+  if (!db) return null;
+  await ensureVoiceCloneArtifactD1Schema(db);
+  const row = await db.prepare(`SELECT * FROM ${VOICE_CLONE_ARTIFACT_D1_TABLE} WHERE id = ? LIMIT 1`)
+    .bind(artifactId)
+    .first<Record<string, unknown>>();
+  if (!row) return null;
+  return {
+    id: String(row.id || '').trim(),
+    ownerUid: String(row.owner_uid || row.ownerUid || '').trim(),
+    downloadUrl: String(row.download_url || row.downloadUrl || '').trim(),
+    ...(String(row.file_name || row.fileName || '').trim() ? { fileName: String(row.file_name || row.fileName || '').trim() } : {}),
+    ...(String(row.content_type || row.contentType || '').trim() ? { contentType: String(row.content_type || row.contentType || '').trim() } : {}),
+    createdAt: String(row.created_at || row.createdAt || '').trim(),
+  };
+};
+
+const writeVoiceCloneArtifactD1Record = async (record: VoiceCloneArtifactRecord): Promise<void> => {
+  const db = await getVoiceCloneArtifactD1Database();
+  if (!db) return;
+  await ensureVoiceCloneArtifactD1Schema(db);
+  await db.prepare(`
+    INSERT INTO ${VOICE_CLONE_ARTIFACT_D1_TABLE} (id, owner_uid, download_url, file_name, content_type, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      owner_uid = excluded.owner_uid,
+      download_url = excluded.download_url,
+      file_name = excluded.file_name,
+      content_type = excluded.content_type,
+      created_at = excluded.created_at
+  `).bind(
+    record.id,
+    record.ownerUid,
+    record.downloadUrl,
+    record.fileName || null,
+    record.contentType || null,
+    record.createdAt,
+  ).run();
+};
+
+const readVoiceCloneJobD1Record = async (
+  jobId: string,
+): Promise<DomainJobRecord<VoiceCloneJobPayload, VoiceCloneBenchmarkResponse, VoiceCloneJobProgress> | null> => {
+  const db = await getVoiceCloneArtifactD1Database();
+  if (!db) return null;
+  await ensureVoiceCloneArtifactD1Schema(db);
+  const row = await db.prepare(`SELECT payload_json FROM ${VOICE_CLONE_JOBS_D1_TABLE} WHERE id = ? LIMIT 1`)
+    .bind(jobId)
+    .first<{ payload_json?: string }>();
+  if (!row?.payload_json) return null;
   try {
-    return getFirebaseAdminFirestore();
+    return JSON.parse(row.payload_json) as DomainJobRecord<VoiceCloneJobPayload, VoiceCloneBenchmarkResponse, VoiceCloneJobProgress>;
   } catch {
     return null;
   }
 };
 
+const writeVoiceCloneJobD1Record = async (
+  record: DomainJobRecord<VoiceCloneJobPayload, VoiceCloneBenchmarkResponse, VoiceCloneJobProgress>,
+): Promise<void> => {
+  const db = await getVoiceCloneArtifactD1Database();
+  if (!db) return;
+  await ensureVoiceCloneArtifactD1Schema(db);
+  await db.prepare(`
+    INSERT INTO ${VOICE_CLONE_JOBS_D1_TABLE} (id, owner_uid, payload_json, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      owner_uid = excluded.owner_uid,
+      payload_json = excluded.payload_json,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).bind(
+    record.id,
+    record.ownerUid || '',
+    JSON.stringify(record),
+    record.status,
+    record.createdAt,
+    record.updatedAt,
+  ).run();
+};
+
 const readArtifactRecord = async (artifactId: string): Promise<VoiceCloneArtifactRecord | null> => {
   const safeArtifactId = String(artifactId || '').trim();
   if (!safeArtifactId) return null;
-
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    return memoryArtifacts.get(safeArtifactId) || null;
-  }
-
-  const snapshot = await firestore.collection(VOICE_CLONE_ARTIFACT_COLLECTION).doc(safeArtifactId).get();
-  if (!snapshot.exists) {
-    return null;
-  }
-  return (snapshot.data() as VoiceCloneArtifactRecord | undefined) || null;
+  return (await readVoiceCloneArtifactD1Record(safeArtifactId)) || memoryArtifacts.get(safeArtifactId) || null;
 };
 
 const saveArtifactRecord = async (record: VoiceCloneArtifactRecord): Promise<void> => {
@@ -187,13 +308,8 @@ const saveArtifactRecord = async (record: VoiceCloneArtifactRecord): Promise<voi
     createdAt: record.createdAt || toIsoNow(),
   };
 
-  const firestore = getFirestoreHandle();
-  if (!firestore) {
-    memoryArtifacts.set(safeRecord.id, safeRecord);
-    return;
-  }
-
-  await firestore.collection(VOICE_CLONE_ARTIFACT_COLLECTION).doc(safeRecord.id).set(safeRecord, { merge: true });
+  await writeVoiceCloneArtifactD1Record(safeRecord);
+  memoryArtifacts.set(safeRecord.id, safeRecord);
 };
 
 const buildArtifactRoute = (artifactId: string): string => (
@@ -384,6 +500,7 @@ const saveVoiceCloneJobRecord = async (
   record: DomainJobRecord<VoiceCloneJobPayload, VoiceCloneBenchmarkResponse, VoiceCloneJobProgress>,
 ): Promise<DomainJobRecord<VoiceCloneJobPayload, VoiceCloneBenchmarkResponse, VoiceCloneJobProgress>> => {
   await saveDomainJobRecord<VoiceCloneJobPayload, VoiceCloneBenchmarkResponse, VoiceCloneJobProgress>(record);
+  await writeVoiceCloneJobD1Record(record).catch(() => {});
   return record;
 };
 

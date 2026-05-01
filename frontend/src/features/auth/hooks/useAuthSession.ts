@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { useUser } from '../../../../contexts/UserContext';
-import { firebaseConfigIssue, isFirebaseConfigured } from '../../../../services/firebaseClient';
 
 export const useAuthSession = () => {
   const {
@@ -24,8 +23,8 @@ export const useAuthSession = () => {
     isAuthenticated,
     isAdmin,
     hasUnlimitedAccess,
-    isFirebaseConfigured,
-    firebaseConfigIssue,
+    isFirebaseConfigured: true,
+    firebaseConfigIssue: '',
     signInWithEmail,
     signUpWithEmail,
     resendEmailVerification,

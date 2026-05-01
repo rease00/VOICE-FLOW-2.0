@@ -14,6 +14,28 @@ const AUTH_PASSWORD_ALGORITHM = 'sha256';
 const AUTH_SESSION_HASH_PREFIX = 'sha256$';
 const AUTH_PASSWORD_HASH_PREFIX = 'pbkdf2-sha256$';
 const AUTH_SESSION_COOKIE_NAME = '__session';
+const DEV_TOKEN_PREFIX = 'dev_';
+const isDevMode = (): boolean => process.env.NODE_ENV === 'development';
+
+const createDevSessionToken = (uid: string, email: string): string => {
+  const payload = Buffer.from(JSON.stringify({ uid, email })).toString('base64url');
+  const suffix = randomBytes(16).toString('hex');
+  return `${DEV_TOKEN_PREFIX}${payload}_${suffix}`;
+};
+
+const parseDevSessionToken = (token: string): { uid: string; email: string } | null => {
+  if (!token.startsWith(DEV_TOKEN_PREFIX)) return null;
+  const lastUnderscore = token.lastIndexOf('_');
+  if (lastUnderscore <= DEV_TOKEN_PREFIX.length) return null;
+  const encoded = token.slice(DEV_TOKEN_PREFIX.length, lastUnderscore);
+  if (!encoded) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8'));
+    return { uid: String(decoded.uid || ''), email: String(decoded.email || '') };
+  } catch {
+    return null;
+  }
+};
 
 type AuthDatabase = {
   prepare: (sql: string) => AuthStatement;
@@ -635,14 +657,29 @@ const loginWithEmailAndPassword = async (email: string, password: string): Promi
     emailVerified: boolean;
   };
 }> => {
-  const db = await getD1Database();
-  if (!db) {
-    throw new D1AuthError('Auth database is unavailable', 'auth/unavailable', 503);
-  }
-
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !String(password || '')) {
     throw new D1AuthError('Email and password are required', 'auth/invalid-credentials', 400);
+  }
+
+  const db = await getD1Database();
+  if (!db) {
+    if (isDevMode()) {
+      const uid = createUserIdFromEmail(normalizedEmail);
+      const displayName = createDisplayNameFromEmail(normalizedEmail);
+      const token = createDevSessionToken(uid, normalizedEmail);
+      return {
+        uid,
+        token,
+        user: {
+          email: normalizedEmail,
+          displayName,
+          photoURL: null,
+          emailVerified: true,
+        },
+      };
+    }
+    throw new D1AuthError('Auth database is unavailable', 'auth/unavailable', 503);
   }
 
   const userRow = await readAuthUserByEmail(db, normalizedEmail);
@@ -671,9 +708,46 @@ const loginWithEmailAndPassword = async (email: string, password: string): Promi
   };
 };
 
+const resolveDevSessionToken = (token: string): ServerAuthedUserContext | null => {
+  const parsed = parseDevSessionToken(token);
+  if (!parsed) return null;
+  const snapshot: AuthUserSnapshot = {
+    uid: parsed.uid,
+    email: parsed.email,
+    displayName: null,
+    photoURL: null,
+    emailVerified: true,
+    isAdmin: true,
+    role: 'admin',
+    roles: ['admin'],
+  };
+  return {
+    uid: parsed.uid,
+    decodedToken: buildDecodedToken(snapshot),
+    userRef: createUserRefShim(parsed.uid),
+    userData: {
+      uid: parsed.uid,
+      email: parsed.email,
+      displayName: createDisplayNameFromEmail(parsed.email),
+      name: createDisplayNameFromEmail(parsed.email),
+      photoURL: null,
+      photoUrl: null,
+      emailVerified: true,
+      isAdmin: true,
+      admin: true,
+      role: 'admin',
+      roles: ['admin'],
+    } as unknown as DocumentData,
+    userExists: true,
+  };
+};
+
 const resolveSessionTokenForService = async (token: string): Promise<ServerAuthedUserContext | null> => {
   const db = await getD1Database();
-  if (!db) return null;
+  if (!db) {
+    if (isDevMode()) return resolveDevSessionToken(token);
+    return null;
+  }
   return resolveSessionToken(db, token);
 };
 
@@ -682,11 +756,23 @@ const resolveRequestUserForService = async (
   options: { preferCookie?: boolean } = {},
 ): Promise<ServerAuthedUserContext | null> => {
   const db = await getD1Database();
-  if (!db) return resolveDevContext(request);
+  if (!db) {
+    const { bearerToken, cookieToken } = resolveRequestToken(request);
+    const tokenOrder = options.preferCookie
+      ? [cookieToken, bearerToken]
+      : [bearerToken, cookieToken];
+    for (const token of tokenOrder) {
+      if (!token) continue;
+      const context = resolveDevSessionToken(token);
+      if (context) return context;
+    }
+    return resolveDevContext(request);
+  }
   return resolveRequestUser(db, request, options);
 };
 
 const revokeSessionTokenForService = async (token: string): Promise<boolean> => {
+  if (token.startsWith(DEV_TOKEN_PREFIX) && isDevMode()) return true;
   const db = await getD1Database();
   if (!db) return false;
   return revokeSessionToken(db, token);

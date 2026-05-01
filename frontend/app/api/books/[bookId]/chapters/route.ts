@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { FieldValue } from 'firebase-admin/firestore';
+import { FieldValue, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { getFirebaseAdminAuth, getFirebaseAdminFirestore } from '../../../../../src/server/firebaseAdmin';
 
 async function verifyRequest(req: NextRequest): Promise<{ uid: string }> {
@@ -32,7 +32,7 @@ export async function GET(
       .get();
 
     const chapters = await Promise.all(
-      snap.docs.map(async (doc) => {
+      snap.docs.map(async (doc: QueryDocumentSnapshot) => {
         const data = doc.data();
         const unlockSnap = await db
           .collection('chapterUnlocks')

@@ -7,23 +7,29 @@ import type {
   UpdatePublishedBookPayload,
   PublisherAgreement,
 } from '../model/types';
-import { firebaseAuth } from '../../../../services/firebaseClient';
+import { authFetch } from '../../../../services/authHttpClient';
 import { API_ROUTES } from '../../../shared/api/routes';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 async function authFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const token = await firebaseAuth.currentUser?.getIdToken();
-  if (!token) throw new Error('Not authenticated');
-  const res = await fetch(url, {
+  const requestInit: RequestInit = {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
       ...(init?.headers || {}),
     },
-    signal: init?.signal || AbortSignal.timeout(15000),
-  });
+  };
+  if (init?.signal) {
+    requestInit.signal = init.signal;
+  }
+
+  const authOptions: { requireAuth: true; signal?: AbortSignal } = { requireAuth: true };
+  if (init?.signal) {
+    authOptions.signal = init.signal;
+  }
+
+  const res = await authFetch(url, requestInit, authOptions);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(body || `Request failed: ${res.status}`);
@@ -61,29 +67,42 @@ const unwrapChaptersPayload = async (
 
 // ─── KYC & Agreement ───────────────────────────────────────────────────────
 
-export async function getPublishingStatus(): Promise<{
+export async function getPublishingStatus(signal?: AbortSignal): Promise<{
   kycStatus: KycStatus;
   agreementSigned: boolean;
 }> {
-  return authFetchJson(API_ROUTES.account.kyc);
+  return authFetchJson<{ kycStatus: KycStatus; agreementSigned: boolean }>(
+    API_ROUTES.account.kyc,
+    signal ? { signal } : undefined
+  );
 }
 
-export async function startKycSession(): Promise<{
-  id: string;
-  url: string;
-  status: string;
+export async function startKycSession(signal?: AbortSignal): Promise<{
+  session: {
+    id: string;
+    url: string;
+    status: string;
+  };
 }> {
-  return authFetchJson(API_ROUTES.account.kyc, {
+  const requestInit: RequestInit = {
     method: 'POST',
     body: JSON.stringify({ action: 'create-session' }),
-  });
+  };
+  if (signal) {
+    requestInit.signal = signal;
+  }
+  return authFetchJson<{ session: { id: string; url: string; status: string } }>(API_ROUTES.account.kyc, requestInit);
 }
 
-export async function signAgreement(version: string): Promise<PublisherAgreement> {
-  return authFetchJson(API_ROUTES.account.kyc, {
+export async function signAgreement(version: string, signal?: AbortSignal): Promise<{ agreement: PublisherAgreement }> {
+  const requestInit: RequestInit = {
     method: 'POST',
     body: JSON.stringify({ action: 'sign-agreement', version }),
-  });
+  };
+  if (signal) {
+    requestInit.signal = signal;
+  }
+  return authFetchJson<{ agreement: PublisherAgreement }>(API_ROUTES.account.kyc, requestInit);
 }
 
 // ─── Eligibility (pure) ────────────────────────────────────────────────────
@@ -134,7 +153,7 @@ export function checkEligibility(
 // ─── Book CRUD ──────────────────────────────────────────────────────────────
 
 export async function publishBook(payload: PublishBookPayload): Promise<PublishedBook> {
-  return unwrapBookPayload(authFetchJson(API_ROUTES.publishing.books, {
+  return unwrapBookPayload(authFetchJson<PublishedBook | { book?: PublishedBook | null }>(API_ROUTES.publishing.books, {
     method: 'POST',
     body: JSON.stringify(payload),
   }));
@@ -144,18 +163,18 @@ export async function updatePublishedBook(
   bookId: string,
   payload: UpdatePublishedBookPayload,
 ): Promise<PublishedBook> {
-  return unwrapBookPayload(authFetchJson(API_ROUTES.publishing.books, {
+  return unwrapBookPayload(authFetchJson<PublishedBook | { book?: PublishedBook | null }>(API_ROUTES.publishing.books, {
     method: 'PATCH',
     body: JSON.stringify({ bookId, ...payload }),
   }));
 }
 
 export async function getMyPublishedBooks(): Promise<PublishedBook[]> {
-  return unwrapBooksPayload(authFetchJson(API_ROUTES.publishing.books));
+  return unwrapBooksPayload(authFetchJson<PublishedBook[] | { books?: PublishedBook[] | null }>(API_ROUTES.publishing.books));
 }
 
 export async function getPublishedBookChapters(
   bookId: string,
 ): Promise<PublishedChapter[]> {
-  return unwrapChaptersPayload(authFetchJson(API_ROUTES.publishing.bookChapters(bookId)));
+  return unwrapChaptersPayload(authFetchJson<PublishedChapter[] | { chapters?: PublishedChapter[] | null }>(API_ROUTES.publishing.bookChapters(bookId)));
 }

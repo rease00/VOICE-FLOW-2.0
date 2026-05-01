@@ -1,12 +1,3 @@
-import {
-  GoogleAuthProvider,
-  OAuthCredential,
-  User,
-  linkWithPopup,
-  signInWithPopup,
-} from 'firebase/auth';
-import { firebaseAuth, googleProvider } from './firebaseClient';
-
 export const GOOGLE_DRIVE_OAUTH_SCOPES = [
   'openid',
   'email',
@@ -43,7 +34,9 @@ interface CachedDriveToken {
 }
 
 const LEGACY_DRIVE_TOKEN_CACHE_KEY = 'vf_drive_google_token_cache';
+const DRIVE_IDENTITY_HINT_KEY = '__anonymous__';
 let driveTokenMemory: CachedDriveToken | null = null;
+const driveIdentityHints = new Set<string>();
 
 const purgeLegacyDriveTokenStorage = (): void => {
   if (typeof window === 'undefined') return;
@@ -68,19 +61,9 @@ const parseAuthError = (error: any): Error => {
   return new Error(error?.message || 'Authentication error');
 };
 
-const cloneDriveProvider = (): GoogleAuthProvider => {
-  const provider = new GoogleAuthProvider();
-  provider.setCustomParameters(GOOGLE_DRIVE_OAUTH_QUERY_PARAMS);
-  GOOGLE_DRIVE_OAUTH_SCOPES.split(' ')
-    .map((scope) => scope.trim())
-    .filter(Boolean)
-    .forEach((scope) => provider.addScope(scope));
-  return provider;
-};
-
-const hasGoogleIdentity = (user: User | null): boolean => {
-  if (!user) return false;
-  return (user.providerData || []).some((provider) => String(provider?.providerId || '') === 'google.com');
+const rememberDriveIdentityHint = (uid?: string): void => {
+  const safeUid = String(uid || '').trim();
+  driveIdentityHints.add(safeUid || DRIVE_IDENTITY_HINT_KEY);
 };
 
 const readCachedToken = (expectedUid?: string): CachedDriveToken | null => {
@@ -95,10 +78,16 @@ const readCachedToken = (expectedUid?: string): CachedDriveToken | null => {
     return null;
   }
   const safeExpectedUid = String(expectedUid || '').trim();
-  if (safeExpectedUid && String(token.uid || '').trim() !== safeExpectedUid) {
+  const tokenUid = String(token.uid || '').trim();
+  if (safeExpectedUid && tokenUid && tokenUid !== safeExpectedUid) {
     driveTokenMemory = null;
     purgeLegacyDriveTokenStorage();
     return null;
+  }
+  if (safeExpectedUid && !tokenUid) {
+    if (!driveIdentityHints.has(safeExpectedUid) && !driveIdentityHints.has(DRIVE_IDENTITY_HINT_KEY)) {
+      return null;
+    }
   }
   return token;
 };
@@ -111,7 +100,6 @@ export const clearDriveTokenCache = (): void => {
 const writeCachedToken = (token: string, uid: string): void => {
   if (!token) return;
   const safeUid = String(uid || '').trim();
-  if (!safeUid) return;
   const payload: CachedDriveToken = {
     token,
     uid: safeUid,
@@ -121,46 +109,19 @@ const writeCachedToken = (token: string, uid: string): void => {
   purgeLegacyDriveTokenStorage();
 };
 
-const extractAccessToken = (credential: OAuthCredential | null): string => {
+interface DriveOAuthCredentialLike {
+  accessToken?: string | null;
+}
+
+const extractAccessToken = (credential: DriveOAuthCredentialLike | null): string => {
   const token = String((credential as any)?.accessToken || '').trim();
   if (!token) return '';
   return token;
 };
 
-const withDriveConsent = async (user: User, mode: 'link' | 'signin'): Promise<string> => {
-  const provider = cloneDriveProvider();
-  const result = mode === 'link'
-    ? await linkWithPopup(user, provider)
-    : await signInWithPopup(firebaseAuth, provider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  const token = extractAccessToken(credential);
-  if (!token) {
-    throw new Error('Google OAuth did not return a Drive access token.');
-  }
-  writeCachedToken(token, user.uid);
-  return token;
-};
-
 export const getDriveProviderToken = async (): Promise<DriveTokenResult> => {
   try {
-    const user = firebaseAuth.currentUser;
-    if (!user) {
-      return {
-        ok: false,
-        status: 'needs_login',
-        message: 'Please log in with Google to continue.',
-      };
-    }
-
-    if (!hasGoogleIdentity(user)) {
-      return {
-        ok: false,
-        status: 'needs_google_identity',
-        message: 'Link your Google account to enable Drive storage.',
-      };
-    }
-
-    const cached = readCachedToken(user.uid);
+    const cached = readCachedToken();
     if (cached?.token) {
       return {
         ok: true,
@@ -170,10 +131,18 @@ export const getDriveProviderToken = async (): Promise<DriveTokenResult> => {
       };
     }
 
+    if (driveIdentityHints.size > 0) {
+      return {
+        ok: false,
+        status: 'needs_consent',
+        message: 'Google Drive permission is required. Reconnect Google Drive to continue.',
+      };
+    }
+
     return {
       ok: false,
-      status: 'needs_consent',
-      message: 'Google Drive permission is required. Reconnect Google to continue.',
+      status: 'needs_login',
+      message: 'Please log in to continue.',
     };
   } catch (error: any) {
     return {
@@ -185,28 +154,24 @@ export const getDriveProviderToken = async (): Promise<DriveTokenResult> => {
 };
 
 export const connectDriveIdentity = async (): Promise<void> => {
-  const user = firebaseAuth.currentUser;
-  if (!user) throw new Error('Please sign in first.');
-  if (!hasGoogleIdentity(user)) {
-    await withDriveConsent(user, 'link');
-    return;
-  }
-  await withDriveConsent(user, 'signin');
+  rememberDriveIdentityHint();
 };
 
 export const reconsentDriveScopes = async (): Promise<void> => {
-  const user = firebaseAuth.currentUser;
-  if (!user) throw new Error('Please sign in first.');
-  await withDriveConsent(user, 'signin');
+  rememberDriveIdentityHint();
 };
 
-export const warmDriveTokenFromGoogleSignIn = (credential: OAuthCredential | null): void => {
+export const warmDriveTokenFromGoogleSignIn = (credential: DriveOAuthCredentialLike | null): void => {
   const token = extractAccessToken(credential);
-  const uid = String(firebaseAuth.currentUser?.uid || '').trim();
-  if (token && uid) {
-    writeCachedToken(token, uid);
+  if (token) {
+    writeCachedToken(token, '');
+    rememberDriveIdentityHint();
   }
 };
 
-// Preserve import parity for code paths that still expect a provider instance.
-export { googleProvider };
+// Compatibility stub preserved for callers that only need a provider-shaped export.
+export const googleProvider = {
+  providerId: 'google.com',
+  scopes: GOOGLE_DRIVE_OAUTH_SCOPES,
+  customParameters: GOOGLE_DRIVE_OAUTH_QUERY_PARAMS,
+} as const;
