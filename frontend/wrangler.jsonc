@@ -10,6 +10,26 @@
     "directory": ".open-next/assets",
     "binding": "ASSETS"
   },
+  "vars": {
+    "NODE_ENV": "production",
+    "NEXT_PUBLIC_API_BASE_URL": "/api/v1",
+    "VF_STUDIO_MODE": "native",
+    "VF_ADMIN_OPS_MODE": "native",
+    "VF_VOICE_CLONE_MODE": "native",
+    "VF_ACCOUNT_BILLING_MODE": "native",
+    "VF_TTS_TEXTTOSPEECH_MODEL": "gemini-2.5-flash-tts",
+    "VF_READER_TRANSLATION_MODEL": "gemini-2.5-flash-lite",
+    "VF_NOVEL_IMPORT_MODEL_CANDIDATES": "gemini-2.5-flash,gemini-2.5-flash-lite",
+    "R2_BUCKET_NAME": "vf-novel-storage",
+    "VF_ADMIN_USD_TO_INR": "85",
+    "VF_ADMIN_EUR_TO_INR": "92",
+    "VF_ADMIN_GBP_TO_INR": "108",
+    "VF_GEMINI_VERTEX_LOCATION": "us-central1",
+    "NEXT_PUBLIC_VOICE_CLONE_MODE": "native",
+    "NEXT_PUBLIC_STUDIO_MODE": "native",
+    "NEXT_PUBLIC_ACCOUNT_BILLING_MODE": "native",
+    "NEXT_PUBLIC_ADMIN_OPS_MODE": "native"
+  },
   "d1_databases": [
     {
       "binding": "DB",
