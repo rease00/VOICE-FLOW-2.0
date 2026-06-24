@@ -12,6 +12,9 @@ export const metadata: Metadata = {
   },
   description: 'V FLOW AI helps creators build polished voice experiences and production-ready audio workflows.',
   applicationName: 'V FLOW AI',
+  other: {
+    'cf-2fa-verify': 'ac21052dfb42285',
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
